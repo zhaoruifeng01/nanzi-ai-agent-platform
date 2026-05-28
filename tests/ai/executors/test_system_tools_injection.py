@@ -1,0 +1,42 @@
+import pytest
+from unittest.mock import MagicMock, patch
+from app.services.ai.tools.registry import ToolRegistry
+from app.services.ai.tools.system_tools import get_current_time
+
+pytestmark = pytest.mark.no_infrastructure
+
+def test_system_implicit_tools_registry():
+    """Verify that system implicit tools are correctly registered."""
+    tools = ToolRegistry.get_system_implicit_tools()
+    assert len(tools) >= 1
+    tool_names = [t.name for t in tools]
+    assert "get_current_time" in tool_names
+    assert len(tool_names) == len(set(tool_names))
+    assert {
+        "system_http_request",
+        "fetch_static_web_url",
+        "web_renderer_and_snapshot",
+        "web_search_baidu",
+    }.issubset(set(tool_names))
+
+def test_get_current_time_function():
+    """Verify the functionality of get_current_time."""
+    # Test default
+    time_str = get_current_time.invoke({})
+    assert isinstance(time_str, str)
+    assert ":" in time_str
+    
+    # Test specific timezone
+    time_utc = get_current_time.invoke({"timezone": "UTC"})
+    assert "+0000" in time_utc or "UTC" in time_utc
+
+if __name__ == "__main__":
+    # Manual run check
+    print("Testing registry...")
+    test_system_implicit_tools_registry()
+    print("Registry OK.")
+    
+    print("Testing function...")
+    test_get_current_time_function()
+    print(f"Function output: {get_current_time.invoke({})}")
+    print("Function OK.")

@@ -1,0 +1,251 @@
+import pytest
+import json
+import asyncio
+from unittest.mock import MagicMock, AsyncMock, patch
+from httpx import AsyncClient
+from pydantic import ValidationError
+from types import SimpleNamespace
+
+from app.api.v1.endpoints import chatbi
+from app.api.v1.endpoints.chatbi import ChatBiSqlExecuteRequest
+
+# 构造 Mock Dataset
+mock_dataset = SimpleNamespace(
+    id=1,
+    name="test_dataset",
+    enable_data_perm=False,
+    row_filter_config=None
+)
+
+@pytest.fixture
+def mock_infrastructure():
+    """Mock metadata and permissions checks to focus on SQL execution routing"""
+    with patch("app.services.metadata_service.MetadataService.get_dataset_by_name", return_value=mock_dataset), \
+         patch("app.services.sql_query_execution_service.enforce_physical_table_permissions_for_select", return_value=None):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_request_requires_sessionid():
+    """执行 SQL 请求模型必须提供 OpenClaw 会话 ID。"""
+    with pytest.raises(ValidationError) as exc_info:
+        ChatBiSqlExecuteRequest.model_validate({
+            "sql": "SELECT 1",
+            "data_source": "default_clickhouse",
+            "dataset_name": "test_dataset",
+        })
+
+    assert "sessionid" in str(exc_info.value)
+
+
+def test_openclaw_openai_sessionid_extracts_username():
+    username = chatbi._openclaw_openai_username_from_sessionid(
+        "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2"
+    )
+
+    assert username == "chenxiaolong"
+
+
+def test_openclaw_openai_sessionid_ignores_other_formats():
+    assert chatbi._openclaw_openai_username_from_sessionid("openclaw-session-1") is None
+    assert chatbi._openclaw_openai_username_from_sessionid(
+        "agent:chatbi_bot:web-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2"
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_openclaw_session_auth_uses_session_username(monkeypatch):
+    body = ChatBiSqlExecuteRequest.model_validate({
+        "sql": "SELECT 1",
+        "data_source": "default_clickhouse",
+        "dataset_name": "test_dataset",
+        "sessionid": "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2",
+    })
+    captured = {}
+
+    async def fake_resolve_user_by_username(username, db):
+        captured["username"] = username
+        return {
+            "user_id": "42",
+            "user_name": username,
+            "real_name": username,
+            "role": "user",
+            "dept_code": "",
+            "org_path": "",
+            "extra_data": "",
+        }
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        captured["auth_kwargs"] = kwargs
+        return json.dumps({"allowed": True})
+
+    monkeypatch.setattr(chatbi.AuthService, "resolve_user_by_username", fake_resolve_user_by_username)
+    monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    await chatbi._enforce_openclaw_session_sql_auth(AsyncMock(), body)
+
+    assert captured["username"] == "chenxiaolong"
+    assert captured["auth_kwargs"]["user_id"] == 42
+    assert captured["auth_kwargs"]["auth_check_only"] is True
+    assert captured["auth_kwargs"]["dry_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_local_success(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+    """测试本地模式下执行只读 SQL 成功返回数据"""
+    mock_adapter = AsyncMock()
+    mock_adapter.execute_sql.return_value = {
+        "columns": [{"name": "id", "type": "int"}, {"name": "name", "type": "str"}],
+        "items": [[1, "Alice"]]
+    }
+    
+    headers = {"X-API-Key": valid_api_key}
+    
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
+         patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter) as mock_get_adapter, \
+         patch("app.core.redis.get_redis", return_value=None):
+         
+        response = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "SELECT id, name FROM users",
+                "data_source": "mysql_test",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["code"] == 200
+        assert body["data"]["items"] == [[1, "Alice"]]
+        assert "SELECT * FROM (SELECT id, name FROM users) AS _sub LIMIT 1000" in mock_adapter.execute_sql.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_local_safety_block(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+    """测试本地模式下执行危险 SQL 被拦截，返回 403 权限拒绝"""
+    headers = {"X-API-Key": valid_api_key}
+    
+    # 模拟 SQLSafetyError 拦截
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
+         patch("app.core.redis.get_redis", return_value=None):
+         
+        response = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "DROP TABLE users",
+                "data_source": "mysql_test",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        
+        # 被 validate_sql (AST 解析) 拦截返回 400 Bad Request
+        assert response.status_code == 400
+        assert "Only SELECT queries are allowed" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_local_timeout(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+    """测试本地模式下 SQL 执行超时，返回 502 Bad Gateway"""
+    mock_adapter = AsyncMock()
+    # 模拟超时异常
+    mock_adapter.execute_sql.side_effect = asyncio.TimeoutError()
+    
+    headers = {"X-API-Key": valid_api_key}
+    
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
+         patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter), \
+         patch("app.services.config_service.ConfigService.get", return_value="0.01"), \
+         patch("app.core.redis.get_redis", return_value=None):
+         
+        response = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "SELECT * FROM giant_table",
+                "data_source": "mysql_test",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        
+        assert response.status_code == 502
+        assert "[TOOL_ERROR]" in response.json()["message"]
+        assert "超时" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_local_source_not_found(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+    """测试数据源不存在时，本地模式返回 502 错误并且包含 TOOL_ERROR"""
+    headers = {"X-API-Key": valid_api_key}
+    
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
+         patch("app.services.data_adapter.factory.get_adapter", side_effect=ValueError("数据源不存在")), \
+         patch("app.core.redis.get_redis", return_value=None):
+         
+        response = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "SELECT 1",
+                "data_source": "non_existent_db",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        
+        assert response.status_code == 502
+        assert "[TOOL_ERROR]" in response.json()["message"]
+        assert "数据源" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_chatbi_execute_response_contains_execution_mode(client: AsyncClient, valid_api_key: str, mock_infrastructure):
+    """测试无论成功还是失败，响应 JSON 的 trace_id 后面都会带上 execution_mode 字段"""
+    headers = {"X-API-Key": valid_api_key}
+    
+    mock_adapter = AsyncMock()
+    mock_adapter.execute_sql.return_value = {
+        "columns": [{"name": "id", "type": "int"}],
+        "items": [[1]]
+    }
+    
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}), \
+         patch("app.services.data_adapter.factory.get_adapter", return_value=mock_adapter), \
+         patch("app.core.redis.get_redis", return_value=None):
+         
+        # 1. 测试成功响应带上 execution_mode
+        response = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "SELECT id FROM users",
+                "data_source": "mysql_test",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "execution_mode" in body
+        assert body["execution_mode"] == "local"
+        
+        # 2. 测试失败响应 (如校验失败) 带上 execution_mode
+        response_fail = await client.post(
+            "/api/v1/chatbi/sql/execute",
+            headers=headers,
+            json={
+                "sql": "DROP TABLE users",
+                "data_source": "mysql_test",
+                "dataset_name": "test_dataset",
+                "sessionid": "openclaw-session-1"
+            }
+        )
+        assert response_fail.status_code == 400
+        body_fail = response_fail.json()
+        assert "execution_mode" in body_fail
+        assert body_fail["execution_mode"] == "local"
