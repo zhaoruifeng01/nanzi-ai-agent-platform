@@ -19,19 +19,23 @@ from sqlglot import exp
 def validate_sql(sql: str, dialect: str = "clickhouse") -> Optional[str]:
     """
     Validates the input SQL string for safety and policy compliance.
-    Uses sqlglot for robust syntax checking (ClickHouse or MySQL).
+    Uses sqlglot for robust syntax checking.
+    Allows read-only statements: SELECT, WITH...SELECT, EXPLAIN, SHOW, DESCRIBE/DESC.
     """
     # Normalize
     sql_clean = sql.strip()
     if not sql_clean:
         return "Empty SQL query."
-    if not re.match(r"^\s*SELECT\b", sql_clean, re.IGNORECASE):
-        return "Only SELECT queries are allowed."
+
+    # Strip leading SQL comments (/* ... */ block and -- line) before keyword check
+    sql_for_check = re.sub(
+        r'^(\s*/\*.*?\*/|\s*--[^\n]*\n)*\s*', '', sql_clean, flags=re.DOTALL
+    )
+    if not re.match(r"^(SELECT|WITH|EXPLAIN|SHOW|DESC(?:RIBE)?)\b", sql_for_check, re.IGNORECASE):
+        return "Only read-only queries (SELECT, EXPLAIN, SHOW, DESCRIBE) are allowed."
 
     try:
-        # 3. Syntax & Structure Validation via SQLGlot
-        # We parse the SQL and ensure it's a SELECT expression
-        # dialect: "clickhouse" or "mysql"
+        # Syntax & Structure Validation via SQLGlot
         parsed = sqlglot.parse(sql_clean, read=dialect)
 
         # Ensure it's not multiple statements
@@ -39,14 +43,20 @@ def validate_sql(sql: str, dialect: str = "clickhouse") -> Optional[str]:
             return "Multi-statement queries are prohibited."
 
         expression = parsed[0]
-        if not isinstance(expression, exp.Select):
-            return "Only SELECT queries are allowed."
 
-        # 4. Deep check for dangerous keywords/expressions (via AST)
-        # Check if there are any dangerous expressions like 'drop', 'delete', 'truncate' inside the AST
-        # (Though sqlglot.parse would likely fail if those are mixed incorrectly, but explicit check is safer)
+        # Block known write/DDL operation types (blacklist approach)
+        _WRITE_TYPE_NAMES = ("Insert", "Update", "Delete", "Drop", "Create", "AlterTable", "Merge")
+        _WRITE_TYPES = tuple(getattr(exp, n) for n in _WRITE_TYPE_NAMES if hasattr(exp, n))
+        if isinstance(expression, _WRITE_TYPES):
+            return "Write/DDL operations are not allowed."
+
+        # Deep check for dangerous commands in AST
+        # Allow safe read-only commands; block system commands like OPTIMIZE, KILL, etc.
+        _SAFE_COMMANDS = {"EXPLAIN", "SHOW", "DESCRIBE", "DESC"}
         for node in expression.find_all(exp.Command):
-            return f"System command or dangerous keyword detected: {node}"
+            cmd_name = str(getattr(node, "this", "")).strip().upper()
+            if cmd_name not in _SAFE_COMMANDS:
+                return f"System command or dangerous keyword detected: {node}"
 
     except ParseError as e:
         # sqlglot ParseError might have different structures depending on version

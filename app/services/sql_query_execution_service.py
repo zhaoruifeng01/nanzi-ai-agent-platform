@@ -86,7 +86,8 @@ def _collect_subquery_alias_lowers(expression: exp.Expression) -> set[str]:
 
 def extract_physical_table_refs_from_select_sql(sql: str, dialect: str) -> Tuple[Optional[str], Dict[str, str]]:
     """
-    解析单条 SELECT，提取物理表引用（视图与普通表同等对待）。
+    解析单条只读 SQL，提取物理表引用（视图与普通表同等对待）。
+    支持 SELECT、WITH...SELECT；对 EXPLAIN / SHOW / DESCRIBE 等无表引用的只读语句返回空字典。
     返回 (错误信息或 None, {physical_lower -> SQL 中的展示名（保留原始大小写）})
     """
     sql_clean = sql.strip()
@@ -109,8 +110,16 @@ def extract_physical_table_refs_from_select_sql(sql: str, dialect: str) -> Tuple
         return "Multi-statement queries are prohibited.", {}
 
     expression = parsed[0]
+
+    # Block known write/DDL types
+    _WRITE_TYPE_NAMES = ("Insert", "Update", "Delete", "Drop", "Create", "AlterTable", "Merge")
+    _WRITE_TYPES = tuple(getattr(exp, n) for n in _WRITE_TYPE_NAMES if hasattr(exp, n))
+    if isinstance(expression, _WRITE_TYPES):
+        return "Write/DDL operations are not allowed.", {}
+
+    # For EXPLAIN / SHOW / DESCRIBE etc., no physical table refs to extract
     if not isinstance(expression, exp.Select):
-        return "Only SELECT queries are allowed.", {}
+        return None, {}
 
     skip_aliases = _collect_cte_alias_lowers(expression) | _collect_subquery_alias_lowers(expression)
 
