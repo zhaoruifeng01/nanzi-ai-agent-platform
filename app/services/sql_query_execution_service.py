@@ -251,7 +251,7 @@ async def execute_sql_query_core(
     if perm_err:
         return perm_err
 
-    if ds.enable_data_perm:
+    if ds and ds.enable_data_perm:
         _append_trace(
             agent_context,
             trace_logs,
