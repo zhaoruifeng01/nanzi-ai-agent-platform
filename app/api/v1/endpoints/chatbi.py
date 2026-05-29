@@ -87,10 +87,10 @@ def _openclaw_openai_username_from_sessionid(sessionid: str) -> Optional[str]:
 async def _enforce_openclaw_session_sql_auth(
     db: AsyncSession,
     body: ChatBiSqlExecuteRequest,
-) -> None:
+) -> Optional[Dict[str, Any]]:
     username = _openclaw_openai_username_from_sessionid(body.sessionid)
     if not username:
-        return
+        return None
 
     session_user_info = await AuthService.resolve_user_by_username(username, db)
     if not session_user_info:
@@ -116,7 +116,7 @@ async def _enforce_openclaw_session_sql_auth(
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and parsed.get("allowed") is True:
-            return
+            return session_user_info
     except json.JSONDecodeError:
         pass
 
@@ -149,7 +149,10 @@ async def chatbi_sql_execute(
     user_id = int(user_info["user_id"])
     user_dimensions = _chatbi_user_dimensions(user_info, user_id)
 
-    await _enforce_openclaw_session_sql_auth(db, body)
+    session_user_info = await _enforce_openclaw_session_sql_auth(db, body)
+    if session_user_info:
+        user_id = int(session_user_info["user_id"])
+        user_dimensions = _chatbi_user_dimensions(session_user_info, user_id)
 
     is_openclaw_user = bool(_openclaw_openai_username_from_sessionid(body.sessionid))
     bypass_table_auth = not is_openclaw_user

@@ -37,6 +37,7 @@ async def test_chatbi_execute_request_requires_sessionid():
     assert "sessionid" in str(exc_info.value)
 
 
+@pytest.mark.no_infrastructure
 def test_openclaw_openai_sessionid_extracts_username():
     username = chatbi._openclaw_openai_username_from_sessionid(
         "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2"
@@ -45,6 +46,7 @@ def test_openclaw_openai_sessionid_extracts_username():
     assert username == "chenxiaolong"
 
 
+@pytest.mark.no_infrastructure
 def test_openclaw_openai_sessionid_ignores_other_formats():
     assert chatbi._openclaw_openai_username_from_sessionid("openclaw-session-1") is None
     assert chatbi._openclaw_openai_username_from_sessionid(
@@ -53,6 +55,7 @@ def test_openclaw_openai_sessionid_ignores_other_formats():
 
 
 @pytest.mark.asyncio
+@pytest.mark.no_infrastructure
 async def test_openclaw_session_auth_uses_session_username(monkeypatch):
     body = ChatBiSqlExecuteRequest.model_validate({
         "sql": "SELECT 1",
@@ -86,6 +89,56 @@ async def test_openclaw_session_auth_uses_session_username(monkeypatch):
     assert captured["auth_kwargs"]["user_id"] == 42
     assert captured["auth_kwargs"]["auth_check_only"] is True
     assert captured["auth_kwargs"]["dry_run"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chatbi_execute_uses_session_user_for_openclaw_sql_execution(monkeypatch):
+    body = ChatBiSqlExecuteRequest.model_validate({
+        "sql": "SELECT COUNT(*) FROM view_ai_cabinet_sales",
+        "data_source": "mysql_zhifu",
+        "sessionid": "agent:chatbi_bot:openai-user:chenxiaolong-5f6d6e95-5415-4d89-bedb-3a0a5ab87cf3",
+    })
+    api_key_user = {
+        "user_id": "898",
+        "user_name": "openclaw",
+        "real_name": "openclaw",
+        "role": "user",
+        "dept_code": "",
+        "org_path": "",
+        "extra_data": "",
+    }
+    calls = []
+
+    async def fake_resolve_user_by_username(username, db):
+        assert username == "chenxiaolong"
+        return {
+            "user_id": "4",
+            "user_name": "chenxiaolong",
+            "real_name": "陈小龙",
+            "role": "user",
+            "dept_code": "",
+            "org_path": "",
+            "extra_data": "",
+        }
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("auth_check_only"):
+            return json.dumps({"allowed": True})
+        return json.dumps({"columns": [], "items": []})
+
+    monkeypatch.setattr(chatbi.AuthService, "resolve_user_by_username", fake_resolve_user_by_username)
+    monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}):
+        await chatbi.chatbi_sql_execute(body, user_info=api_key_user, db=AsyncMock())
+
+    assert calls[0]["user_id"] == 4
+    assert calls[0]["auth_check_only"] is True
+    assert calls[1]["user_id"] == 4
+    assert calls[1]["user_dimensions"]["user_name"] == "chenxiaolong"
+    assert calls[1].get("bypass_table_auth") is False
 
 
 @pytest.mark.asyncio
