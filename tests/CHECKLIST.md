@@ -91,3 +91,4 @@
 | 个人记忆管理面板 (My Memory Panel) | `tests/test_memory_my_portal.py`, `frontend/src/views/PersonalCenter.vue` | **个人中心“我的记忆”**：验证普通用户免高阶权限安全隔离获取自己的会话摘要与 Redis 历史、清除会话记忆；验证长期记忆 (LTM) 偏好查询、更新与删除，实现防水平越权 (IDOR) 安全隔离机制。 | ✅ 已完成 | 2026-05-29 |
 | 记忆检索时间优化 (Memory Search Date Parse) | `tests/test_memory_search_date_parsing.py` | **记忆检索时间敏感优化**：验证包含“今天/昨天/前天/X天前/绝对日期”的时间敏感查询的日期提取与格式化，以及将每日摘要和当日会话摘要融合成结构化文本返回的拼装效果。 | 🛠 待验证 | 2026-05-29 |
 | 智能体双重优化机制 (Agent Combo Optimization) | `tests/test_combo_memory_and_search.py` | **记忆前置与百度联动提取双重优化**：验证当用户提问包含时间或回忆词时系统前置静默调阅记忆并无感注入 System Prompt 的机制；验证百度检索后台并发重定向拉取真实网页并自动清洗去噪提取深度正文切片返回。 | 🛠 待验证 | 2026-05-29 |
+| 物理表权限报错信息中显示用户身份标签 (SQL Permission User Label) | `tests/services/test_sql_permission_messages.py` | **SQL 执行权限报错提示优化**：验证物理表权限拦截时报错信息正确包含用户名和用户ID等身份标签（形如 `chenxiaolong(4)`），以提升故障排查体验。 | ✅ 已完成 | 2026-05-29 |

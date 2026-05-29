@@ -159,6 +159,7 @@ async def enforce_physical_table_permissions_for_select(
     dialect: str,
     user_id_eff: Optional[int],
     is_admin_eff: bool,
+    user_identity_label: Optional[str] = None,
 ) -> Optional[str]:
     """
     按 MetaTable.physical_name（不区分大小写）校验 SQL 中出现的物理表是否在用户可访问的数据集中。
@@ -183,9 +184,10 @@ async def enforce_physical_table_permissions_for_select(
     for lk, display in refs.items():
         if lk in allowed_lower:
             continue
+        subject = f"{user_identity_label} " if user_identity_label else ""
         if lk in registered_lower:
-            return f"[Permission Denied] 无权访问表 '{display}'"
-        return f"[Permission Denied] 表 '{display}' 未在元数据中注册，拒绝执行"
+            return f"[Permission Denied] {subject}无权访问表 '{display}'"
+        return f"[Permission Denied] {subject}表 '{display}' 未在元数据中注册，拒绝执行"
 
     return None
 
@@ -240,6 +242,10 @@ async def execute_sql_query_core(
     if agent_context is not None and getattr(agent_context, "is_admin", False):
         is_admin_eff = True
     ud = _user_dims_for_rewrite(agent_context, user_dimensions)
+    user_identity_label = None
+    if user_id_eff is not None:
+        user_name = str(ud.get("user_name") or "").strip()
+        user_identity_label = f"{user_name}({user_id_eff})" if user_name else f"user_id={user_id_eff}"
     if str(ud.get("role") or "").strip().lower() == "admin":
         is_admin_eff = True
 
@@ -258,6 +264,7 @@ async def execute_sql_query_core(
             dialect=dialect,
             user_id_eff=user_id_eff,
             is_admin_eff=is_admin_eff,
+            user_identity_label=user_identity_label,
         )
         if perm_err:
             return perm_err

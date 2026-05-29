@@ -169,7 +169,7 @@ const segments = computed<ContentSegment[]>(() => {
     else if (match[5] || match[6]) {
       result.push({ 
         type: 'analysis', 
-        title: match[5]?.trim() || '分析推理过程', 
+        title: 'AI分析推理过程 ...',
         content: renderMarkdown(match[6]?.trim() || '') 
       });
     }
