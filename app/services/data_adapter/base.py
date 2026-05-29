@@ -13,8 +13,9 @@ class SQLSafetyError(ValueError):
 class DataSourceAdapter(ABC):
     """数据源适配器基类：提供统一的安全过滤与只读 SQL 校验逻辑"""
     
-    # 本地执行为了安全度最大化，严格仅允许以 SELECT 开头的查询，拒绝 EXPLAIN / SHOW / DESCRIBE 等库表探测
-    ALLOWED_SQL_KEYWORDS = {"SELECT"}
+    # 本地执行仅允许只读查询/元信息/执行计划语句，拒绝任何数据变更与结构修改。
+    ALLOWED_SQL_KEYWORDS = {"SELECT", "WITH", "EXPLAIN", "SHOW", "DESCRIBE", "DESC"}
+    SELECT_LIKE_KEYWORDS = {"SELECT", "WITH"}
 
     @abstractmethod
     async def execute(self, query: LogicalQuery) -> ResultSet:
@@ -67,8 +68,8 @@ class DataSourceAdapter(ABC):
                 raise SQLSafetyError(f"安全策略违规：禁止执行 '{keyword}' 指令。本地模式仅允许执行只读 SELECT 查询")
 
             # 5. 再次防御性核对 sqlparse 解析出的类型
-            if stmt_type != "SELECT" and keyword == "SELECT":
-                # 即使首词是 SELECT 但被 sqlparse 识别为其他非法结构
+            if keyword in self.SELECT_LIKE_KEYWORDS and stmt_type != "SELECT":
+                # 即使首词是 SELECT/WITH 但被 sqlparse 识别为其他非法结构
                 raise SQLSafetyError("安全策略违规：非法的 SQL 查询结构")
                 
             return

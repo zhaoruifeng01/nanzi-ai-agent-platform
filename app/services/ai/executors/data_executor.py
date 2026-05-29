@@ -1213,10 +1213,19 @@ class DataQueryExecutor(BaseExecutor):
 
         out_str = str(output or "")
         low = out_str.lower()
+        critical_signals = (
+            "critical",
+            "authentication failed",
+            "unauthorized",
+            "forbidden",
+            "connection refused",
+            "timed out",
+            "timeout",
+        )
 
         # Explicit executor-side tool error marker
         if low.startswith("[tool_error]"):
-            return "error", out_str[:200], True
+            return "error", out_str[:200], any(s in low for s in critical_signals)
 
         # Strong error signals
         strong_signals = (
@@ -1234,7 +1243,7 @@ class DataQueryExecutor(BaseExecutor):
             "failed",
         )
         if any(s in low for s in strong_signals):
-            return "error", out_str[:200], ("critical" in low)
+            return "error", out_str[:200], any(s in low for s in critical_signals)
 
         # Best-effort: if it looks like JSON and can be parsed, treat as success.
         # (Many successful SQL APIs return JSON strings.)

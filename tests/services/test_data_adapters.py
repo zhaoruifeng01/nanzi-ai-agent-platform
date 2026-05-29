@@ -6,6 +6,7 @@ from app.services.data_adapter.clickhouse import ClickHouseAdapter
 from app.services.data_adapter.oracle import OracleAdapter
 
 # 测试 SQL 安全策略校验（基于基类的 _validate_sql_safety 逻辑）
+@pytest.mark.no_infrastructure
 def test_sql_safety_validation():
     # 实例化一个 Adapter 来测试 safety
     adapter = MySQLAdapter(source_id=1)
@@ -15,6 +16,11 @@ def test_sql_safety_validation():
         "SELECT * FROM users",
         "select id, name from users where age > 18",
         "  SELECT * FROM orders;  ", # 带有空格和分号
+        "WITH cte AS (SELECT 1) SELECT * FROM cte", # 只读 CTE 查询
+        "EXPLAIN SELECT * FROM users", # 只读执行计划
+        "SHOW TABLES", # 只读元数据查询
+        "DESCRIBE users", # 只读表结构查询
+        "DESC users", # DESCRIBE 简写
     ]
     for sql in allowed_sqls:
         # 不抛出异常即为通过
@@ -28,10 +34,6 @@ def test_sql_safety_validation():
         "DROP TABLE users",
         "ALTER TABLE users ADD COLUMN age INT",
         "CREATE TABLE users (id INT)",
-        "EXPLAIN SELECT * FROM users", # 拒绝 EXPLAIN
-        "SHOW TABLES", # 拒绝 SHOW
-        "DESCRIBE users", # 拒绝 DESCRIBE
-        "WITH cte AS (SELECT 1) SELECT * FROM cte", # 仅允许以 SELECT 开头
         "SELECT * FROM users; DROP TABLE users", # 多语句执行限制
         "SELECT * FROM users; SELECT * FROM orders", # 多语句限制
         "", # 空语句

@@ -396,3 +396,52 @@ async def test_data_executor_critical_error_stop(data_config, mock_tool_sql):
         # Only 1 call to LLM (Orchestrator) before stopping
         assert mock_llm.call_count == 1
         assert any(step.status == "error" and step.error_message.find("Authentication failed") != -1 for step in executor.trace_buffer)
+
+@pytest.mark.asyncio
+async def test_data_executor_retries_after_recoverable_sql_tool_error(data_config, mock_tool_sql):
+    """SQL 安全/语法类工具错误应反馈给模型继续修正，而不是直接进入总结。"""
+    executor = DataQueryExecutor(config=data_config, trace_id="test-recoverable-sql-error", trace_buffer=[])
+
+    msg_bad_sql = AIMessage(
+        content="",
+        tool_calls=[{"name": "execute_sql_query", "args": {"query": "WITH t AS (SELECT 1) SELECT * FROM t"}, "id": "c1"}],
+    )
+    msg_fixed_sql = AIMessage(
+        content="",
+        tool_calls=[{"name": "execute_sql_query", "args": {"query": "SELECT 1"}, "id": "c2"}],
+    )
+    mock_llm = MockLLM([msg_bad_sql, msg_fixed_sql])
+
+    mock_syn = MagicMock()
+    async def mock_astream_syn(*args, **kwargs):
+        yield AIMessage(content="Synthesis")
+    mock_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", new_callable=AsyncMock) as mock_get_syn, \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", new_callable=AsyncMock) as mock_get_menu, \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock) as mock_get_tools, \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tool", new_callable=AsyncMock) as mock_get_tool, \
+         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config_get, \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", new_callable=AsyncMock) as mock_search, \
+         patch("app.services.chatbi_example_service.ExampleService.record_usage", new_callable=AsyncMock):
+
+        mock_search.return_value = []
+        mock_get_llm.return_value = mock_llm
+        mock_get_syn.return_value = mock_syn
+        mock_get_menu.return_value = ""
+        mock_get_tools.return_value = [mock_tool_sql]
+        mock_get_tool.return_value = mock_tool_sql
+        mock_config_get.return_value = "5"
+        mock_tool_sql.ainvoke.side_effect = [
+            "[TOOL_ERROR] 安全策略违规：禁止执行 'WITH' 指令。本地模式仅允许执行只读 SELECT 查询",
+            [{"ok": 1}],
+        ]
+
+        async for _ in executor.execute([{"role": "user", "content": "query"}]):
+            pass
+
+        assert mock_llm.call_count >= 2
+        assert mock_tool_sql.ainvoke.call_count == 2
+        tool_steps = [step for step in executor.trace_buffer if step.event_type == "tool_call"]
+        assert [step.status for step in tool_steps] == ["error", "success"]
