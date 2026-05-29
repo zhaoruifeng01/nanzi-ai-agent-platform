@@ -103,21 +103,29 @@ async def get_database_schema(
             ))
             
         # B. Retrieve from RAGFlow with Auto-Retry
-        from app.services.metadata_rag_service import MetadataRagService
+        from app.services.metadata_rag_service import MetadataRagService, MetadataServiceUnavailableError
         client = RagFlowClient()
         query = request.query or "latest schema"
         msg = f"[Metadata Gateway] RAG Retrieval Query: '{query}' on {len(rag_ids)} IDs."
         logger.info(msg)
         trace_logs.append(msg)
         
-        chunks, r_logs = await MetadataRagService.retrieve_with_retry(
-            client,
-            query, 
-            rag_ids, 
-            top_k=top_k,
-            threshold=threshold,
-            weight=weight
-        )
+        try:
+            chunks, r_logs = await MetadataRagService.retrieve_with_retry(
+                client,
+                query, 
+                rag_ids, 
+                top_k=top_k,
+                threshold=threshold,
+                weight=weight
+            )
+        except MetadataServiceUnavailableError as e:
+            logger.error(f"[Metadata Gateway] RAGFlow unavailable: {e}")
+            trace_logs.append(f"RAGFlow service unavailable, aborted without retry: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="元数据检索服务（RAGFlow）暂时不可用，请稍后重试或联系管理员。"
+            )
         trace_logs.extend(r_logs)
         
         if not chunks:

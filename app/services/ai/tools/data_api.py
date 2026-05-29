@@ -357,7 +357,7 @@ async def get_dataset_schema(keywords: Optional[str] = None) -> str:
             # --- RAGFlow Mode ---
             if provider == "ragflow":
                 from app.services.ai.ragflow_client import RagFlowClient
-                from app.services.metadata_rag_service import MetadataRagService
+                from app.services.metadata_rag_service import MetadataRagService, MetadataServiceUnavailableError
 
                 # Filter for datasets that actually have a RAG ID
                 rag_ids = [ds.rag_dataset_id for ds in authorized_datasets if ds.rag_dataset_id]
@@ -385,14 +385,18 @@ async def get_dataset_schema(keywords: Optional[str] = None) -> str:
                 logger.info(f"[Agent Debug] Tool get_dataset_schema: top_k={top_k}, threshold={threshold}, weight={weight}")
 
                 client = RagFlowClient()
-                chunks, trace_logs = await MetadataRagService.retrieve_with_retry(
-                    client,
-                    query,
-                    rag_ids,
-                    top_k=top_k,
-                    threshold=threshold,
-                    weight=weight
-                )
+                try:
+                    chunks, trace_logs = await MetadataRagService.retrieve_with_retry(
+                        client,
+                        query,
+                        rag_ids,
+                        top_k=top_k,
+                        threshold=threshold,
+                        weight=weight
+                    )
+                except MetadataServiceUnavailableError as e:
+                    logger.error(f"[Tool: get_dataset_schema] Metadata service unavailable: {e}")
+                    return MetadataRagService.unavailable_hint(str(e))
 
                 if not chunks:
                     return f"No relevant schema info found for '{query}'.\nDebug Logs: {'; '.join(trace_logs)}"

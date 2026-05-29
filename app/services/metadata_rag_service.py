@@ -12,10 +12,49 @@ from app.services.metadata_service import MetadataService
 
 logger = logging.getLogger(__name__)
 
+
+class MetadataServiceUnavailableError(Exception):
+    """RAGFlow 元数据检索服务不可用（502/503/504、网关超时、连接失败等）。
+
+    这类故障重试也无济于事，应立即终止并向上层返回明确的「服务不可用」信号，
+    而不是把它当成「没有检索到结果」继续重试或让模型臆测表结构。
+    """
+    pass
+
+
+# 服务级不可用的错误特征（与「坏数据集 ID」类错误区分开）
+_SERVICE_UNAVAILABLE_HINTS = (
+    "502", "503", "504",
+    "bad gateway", "service unavailable", "gateway timeout",
+    "temporarily unavailable", "timed out", "timeout",
+    "connection refused", "connection error", "connection aborted",
+    "connect timeout", "read timeout", "max retries",
+    "name or service not known", "failed to establish",
+)
+
+
 class MetadataRagService:
     """
     Service to synchronize Metadata (Datasets/Tables) to RAGFlow.
     """
+
+    @staticmethod
+    def _is_service_unavailable(err_msg: str) -> bool:
+        """判断错误是否属于「服务级不可用」（应立即终止，而非重试/剔除坏 ID）。"""
+        m = (err_msg or "").lower()
+        return any(hint in m for hint in _SERVICE_UNAVAILABLE_HINTS)
+
+    @staticmethod
+    def unavailable_hint(detail: str = "") -> str:
+        """统一的「元数据服务不可用」用户/模型可读提示。"""
+        base = (
+            "[元数据服务不可用] 元数据检索服务（RAGFlow）当前无法访问，暂时无法获取数据集结构信息。"
+            "请直接告知用户「元数据服务暂时不可用，请稍后重试或联系管理员」，"
+            "不要重复调用本工具，也不要臆测/编造表结构或字段。"
+        )
+        if detail:
+            base += f"\n（错误详情：{detail}）"
+        return base
 
     @staticmethod
     def generate_table_content(dataset: MetaDataset, table: MetaTable, relationships: List[Any] = []) -> str:
@@ -263,11 +302,21 @@ class MetadataRagService:
                     vector_similarity_weight=weight
                 )
                 break # Success
+            except MetadataServiceUnavailableError:
+                raise
             except Exception as e:
                 err_msg = str(e)
                 trace_logs.append(f"Attempt {attempt+1} failed: {err_msg}")
                 logger.error(f"[RAG Retrieval] Attempt {attempt+1} failed on IDs {rag_ids}: {err_msg}")
-                
+
+                # 服务级不可用（502/503/504、超时、连接失败）：重试无意义，立即终止。
+                if MetadataRagService._is_service_unavailable(err_msg):
+                    trace_logs.append("Search aborted: metadata service unavailable")
+                    logger.error(
+                        f"[RAG Retrieval] Metadata service unavailable, abort without retry: {err_msg}"
+                    )
+                    raise MetadataServiceUnavailableError(err_msg)
+
                 # Identify bad ID from error message
                 found_bad_id = None
                 for rid in rag_ids:

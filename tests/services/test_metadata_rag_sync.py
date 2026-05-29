@@ -209,3 +209,50 @@ async def test_schema_gateway_retry(db_session: AsyncSession):
         assert any("Attempt 1 failed" in log for log in logs)
         assert any("Excluding bad ID: bad_id" in log for log in logs)
         assert mock_retrieve.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_retrieve_aborts_on_service_unavailable():
+    """服务级故障（502）应立即终止、不重试，并抛出 MetadataServiceUnavailableError。"""
+    from app.services.metadata_rag_service import MetadataServiceUnavailableError
+
+    client = MagicMock()
+    client.retrieve = AsyncMock(side_effect=Exception("RAGFlow HTTP Error 502: "))
+
+    with pytest.raises(MetadataServiceUnavailableError):
+        await MetadataRagService.retrieve_with_retry(
+            client, "智能体用户表", ["id_a", "id_b"], max_retries=2
+        )
+
+    # 关键：只调用一次，不因 502 反复重试
+    assert client.retrieve.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_schema_tool_reports_service_unavailable():
+    """get_dataset_schema 工具在元数据服务 502 时应返回明确的「不可用」提示，而非「未找到」。"""
+    from app.services.ai.tools.data_api import get_dataset_schema
+
+    async def mock_config_get(key, default=None):
+        mapping = {
+            "metadata_provider": "ragflow",
+            "ragflow_similarity_threshold": "0.2",
+            "ragflow_vector_weight": "0.3",
+            "ragflow_metadata_top_k": "5",
+        }
+        return mapping.get(key, default)
+
+    mock_ds = MagicMock(rag_dataset_id="rid_1", display_name="测试集", name="ds", data_source="clickhouse", description="")
+
+    p1 = patch("app.services.config_service.ConfigService.get", side_effect=mock_config_get)
+    p2 = patch("app.services.metadata_service.MetadataService.search_datasets", AsyncMock(return_value=[mock_ds]))
+    p3 = patch("app.services.ai.ragflow_client.RagFlowClient.retrieve", new_callable=AsyncMock)
+    p4 = patch("app.core.context.get_current_agent_context", return_value=MagicMock(user_id=1, is_admin=True, api_key=None))
+
+    with p1, p2, p3 as mock_retrieve, p4:
+        mock_retrieve.side_effect = Exception("RAGFlow HTTP Error 502: ")
+        result = await get_dataset_schema.ainvoke({"keywords": "智能体用户表"})
+
+    assert "元数据服务不可用" in result
+    assert "No relevant schema info found" not in result
+    assert mock_retrieve.call_count == 1
