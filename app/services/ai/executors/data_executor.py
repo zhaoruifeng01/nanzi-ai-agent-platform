@@ -20,6 +20,7 @@ from app.services.ai.config import AgentConfigProvider
 
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.prompts import DataQueryPrompts, SharedPrompts
+from app.services.ai.intent_service import looks_like_context_action
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,14 @@ class DataQueryExecutor(BaseExecutor):
         self._sql_after_schema_nudge_sent = False
         self._current_user_question = ""
         self._no_tool_call_streak = 0
+        self._non_data_tool_called = False
+        # 本轮是否“需要重新查数”（K1）。对已有结果做保存/导出/发送/记忆/建技能等动作（K3）时为 False，
+        # 届时关闭“必须先查库”的强制护栏，允许直接基于上下文调用工具或作答。
+        self._requires_fresh_data = True
+
+    # 数据查询类工具：调用这些以外的工具（如 create_skills）视为“元操作/外部动作”，
+    # 不应再被“必须先查库”的护栏阻断。
+    DATA_TOOL_NAMES = {"get_dataset_schema", "execute_sql_query", "update_dashboard_context"}
 
     def _increment_step(self):
         self.step_counter += 1
@@ -264,6 +273,11 @@ class DataQueryExecutor(BaseExecutor):
         if not q:
             return False
 
+        # 带“动作动词”的请求（保存/导出/发送/创建技能等）不是纯加工追问，
+        # 需要进入带工具的 ReAct 循环去真正执行动作，因此不走“无工具复用合成”分支。
+        if looks_like_context_action(user_question):
+            return False
+
         followup_keywords = [
             "可视化", "图表", "画图", "画个图", "柱状图", "折线图", "饼图", "分析一下", "总结一下",
             "解读一下", "基于上", "基于刚才", "根据上", "根据刚才", "上面的", "刚才的", "这个结果",
@@ -283,10 +297,15 @@ class DataQueryExecutor(BaseExecutor):
     async def _load_last_data_result_for_followup(self, user_question: str) -> Optional[Dict[str, Any]]:
         if not self.conversation_id or not self._is_last_result_followup(user_question):
             return None
+        return await self._load_last_data_result()
+
+    async def _load_last_data_result(self) -> Optional[Dict[str, Any]]:
+        """无条件加载本会话上一轮结构化查询结果（用于 K3 动作类请求注入上下文）。"""
+        if not self.conversation_id:
+            return None
         user_id = self._current_user_id()
         if not user_id:
             return None
-
         try:
             from app.services.ai.memory_service import memory_service
             return await memory_service.get_last_data_result(user_id, self.conversation_id)
@@ -395,6 +414,31 @@ class DataQueryExecutor(BaseExecutor):
             timestamp=datetime.fromtimestamp(start_synthesis),
         ))
 
+    async def _emit_direct_answer(self, final_text: str, start_thought: float) -> AsyncGenerator[Dict[str, Any], None]:
+        """K3 非新查数轮：模型已直接基于上下文作答，将其内容作为最终回答输出并记录 trace。"""
+        gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
+        yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(time.time() * 1000)}
+        yield {"content": final_text}
+        yield {
+            "type": "log",
+            "id": gen_log_id,
+            "title": "✨ 生成回复完成",
+            "status": "success",
+            "execution_time_ms": (time.time() - start_thought) * 1000,
+        }
+        self._increment_step()
+        self.trace_buffer.append(AgentExecutionStep(
+            step_number=self.step_counter,
+            event_type="synthesis",
+            agent_name=self.config.agent_name,
+            model=str(self.config.model_name),
+            temperature=float(self.config.temperature or 0),
+            tool_output={"content": final_text, "context_action_direct_answer": True},
+            raw_log=final_text,
+            execution_time_ms=(time.time() - start_thought) * 1000,
+            timestamp=datetime.fromtimestamp(start_thought),
+        ))
+
     async def execute(self, history: List[Dict[str, str]]) -> AsyncGenerator[Dict[str, Any], None]:
         TOOL_LABEL_MAP = {"get_dataset_schema": "检索数据集定义", "execute_sql_query": "执行 SQL 查询", "update_dashboard_context": "更新看板关联状态"}
         import json
@@ -404,6 +448,9 @@ class DataQueryExecutor(BaseExecutor):
         langchain_messages = self._convert_history(history)
         system_prompt = self.config.system_prompt
         self._current_user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+
+        # 本轮是否需要重新查数：对“已有上下文/上一轮结果”做动作（保存/导出/发送/记忆/建技能等）时不需要。
+        self._requires_fresh_data = not looks_like_context_action(self._current_user_question)
 
         if self._is_last_result_followup(self._current_user_question):
             last_result = await self._load_last_data_result_for_followup(self._current_user_question)
@@ -444,6 +491,18 @@ class DataQueryExecutor(BaseExecutor):
             configured_tools = list(configured_tools) + ["execute_sql_query"]
         tools = await ToolRegistry.get_tools(configured_tools)
         if not tools: tools = await ToolRegistry.get_tools(ToolRegistry.DEFAULT_TOOL_SET)
+        # 补全系统隐式工具（create_skills / 记忆 / 任务 / web 等），使本执行器在“非新查数”场景
+        # （如保存结果、创建技能、记住偏好）也能直接调用对应工具，而不必再被拖入查数流程。
+        try:
+            system_tools = ToolRegistry.get_system_implicit_tools()
+        except Exception as _ste:
+            system_tools = []
+            logger.warning(f"[DataExecutor] Failed to load system implicit tools: {_ste}")
+        if system_tools:
+            existing_names = {getattr(t, "name", None) for t in tools}
+            for st in system_tools:
+                if getattr(st, "name", None) not in existing_names:
+                    tools.append(st)
         tool_names = {getattr(t, "name", None) for t in tools}
         tool_names.discard(None)
         yield {
@@ -465,6 +524,8 @@ class DataQueryExecutor(BaseExecutor):
         self._sql_succeeded = False
         self._sql_after_schema_nudge_sent = False
         self._no_tool_call_streak = 0
+        self._non_data_tool_called = False
+        # 注：_requires_fresh_data 已在本轮入口按用户问题计算，此处不再重置覆盖。
         
         # [经验库] Few-Shot 检索与注入
         # 策略：将 Few-Shot 块插到 System Prompt【头部】，避免被 Lost-in-Middle 效应淹没
@@ -564,6 +625,18 @@ class DataQueryExecutor(BaseExecutor):
             langchain_messages.append(SystemMessage(content=DataQueryPrompts.SQL_PLAN_ENFORCEMENT))
             langchain_messages.append(SystemMessage(content=DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT))
             self._sql_plan_enforcement_added = True
+
+        # K3（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
+        # 让模型可以直接调用工具（保存/导出/记忆/创建技能等）或基于上下文作答，而非机械重查。
+        if not self._requires_fresh_data:
+            last_result = await self._load_last_data_result()
+            result_block = ""
+            if last_result:
+                result_json = json.dumps(last_result, ensure_ascii=False)
+                if len(result_json) > 20000:
+                    result_json = result_json[:20000] + "\n... [上一轮结果过长已截断]"
+                result_block = result_json
+            langchain_messages.append(SystemMessage(content=DataQueryPrompts.context_action_guide(result_block)))
 
         # 3. Model Setup
         # Use streaming for orchestration to allow potential turn-1 short-circuit
@@ -671,6 +744,23 @@ class DataQueryExecutor(BaseExecutor):
                     langchain_messages.append(response)
                     break
 
+                # 元操作收尾：本轮已成功执行非数据类工具（如 create_skills）且未做数据查询，
+                # 说明这是对已有上下文的封装/保存类动作，不应再被“先查库”护栏逼回查询流程。
+                if self._non_data_tool_called and not self._sql_attempted:
+                    langchain_messages.append(response)
+                    break
+
+                # K3（非新查数轮）且未查库：模型选择直接基于上下文作答而非调用工具。
+                # 不强制其去查 Schema/SQL，直接把本轮内容作为最终回答收尾。
+                if not self._requires_fresh_data and not self._sql_attempted:
+                    langchain_messages.append(response)
+                    final_text = (accumulated_content or "").strip()
+                    if final_text:
+                        async for ch in self._emit_direct_answer(final_text, start_thought):
+                            yield ch
+                        return
+                    break
+
                 self._no_tool_call_streak += 1
                 if self._no_tool_call_streak in (2, 4):
                     yield {
@@ -726,7 +816,8 @@ class DataQueryExecutor(BaseExecutor):
                     langchain_messages.append(SystemMessage(content=DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING))
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
-            if self._schema_fetched_ok and not self._schema_no_authorized and not self._sql_attempted:
+            # （K3 非新查数轮不强制：模型若已取 Schema 仅作参考，允许直接执行其它动作工具。）
+            if self._requires_fresh_data and self._schema_fetched_ok and not self._schema_no_authorized and not self._sql_attempted:
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:
                     langchain_messages.append(response)
@@ -783,6 +874,11 @@ class DataQueryExecutor(BaseExecutor):
                 tool_status, error_msg, is_sys_err = self._analyze_result(tool_output)
                 if is_sys_err: 
                     has_critical_error = True
+
+                # 记录是否调用了“非数据类工具”（如 create_skills 等元操作/外部动作），
+                # 用于放松“必须先查库”的护栏：本轮若是元操作则允许在未查库时收尾。
+                if tool_status == "success" and tool_call['name'] not in self.DATA_TOOL_NAMES:
+                    self._non_data_tool_called = True
 
                 # --- [优化] SQL 执行日志显示增强 ---
                 # 强制所有 execute_sql_query 都显示SQL语句，不管状态如何
@@ -945,8 +1041,9 @@ class DataQueryExecutor(BaseExecutor):
             # Should not happen in DataQueryExecutor, but keep safe.
             return
 
-        # Hard gate: never synthesize a final answer without executing SQL (unless no authorized datasets).
-        if not self._sql_attempted and not self._schema_no_authorized:
+        # Hard gate: never synthesize a final answer without executing SQL
+        # （例外：本轮非新查数(K3)、无授权数据集，或已完成的元操作/外部动作如 create_skills）。
+        if self._requires_fresh_data and not self._sql_attempted and not self._schema_no_authorized and not self._non_data_tool_called:
             yield {"type": "log", "id": f"gate_{uuid.uuid4().hex[:8]}", "title": "⚠️ 缺少 SQL 查询", "details": DataQueryPrompts.GATE_NO_SQL_LOG_DETAILS, "status": "error"}
             yield {"content": DataQueryPrompts.GATE_NO_SQL_CONTENT}
             return

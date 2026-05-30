@@ -3,7 +3,7 @@ import json
 import time
 from typing import List, Dict, Any, Optional
 from app.schemas.agent import AgentExecutionStep, ChatConfig
-from app.services.ai.intent_service import intent_service, IntentType, IntentResponse, looks_like_data_followup
+from app.services.ai.intent_service import intent_service, IntentType, IntentResponse, looks_like_data_followup, looks_like_meta_action
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.services.ai.executors.chat_executor import GeneralChatExecutor
@@ -43,6 +43,12 @@ class AgentDispatcher:
         #    非数据智能体一律走 GeneralChatExecutor，提前返回可省掉一次昂贵且注定被丢弃的意图识别 LLM 调用。
         can_do_data = "data_query" in (agent_config.capabilities or [])
         if not can_do_data:
+            return GeneralChatExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+
+        # 2.5 元操作短路：本轮是对已有对话/结果的“管理类操作”（如创建/保存技能），本身不需要查数。
+        #     直接走 GeneralChatExecutor（自带 create_skills 等系统隐式工具且无“先查库”护栏），
+        #     避免被 DataQueryExecutor 机械地拖入 查Schema -> 执行SQL 的冗余流程。
+        if looks_like_meta_action(user_query):
             return GeneralChatExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
 
         # 3. 廉价短路：本轮明显是对上一轮数据结果的追问（可视化/分析等），且确实存在
