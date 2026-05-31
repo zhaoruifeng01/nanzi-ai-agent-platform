@@ -303,6 +303,166 @@ async def test_data_executor_stops_react_loop_after_successful_sql():
 
 
 @pytest.mark.asyncio
+async def test_data_executor_executes_sql_after_single_plan_block():
+    """高风险查询首次缺 sql_plan 仅阻断一次；再次带 execute_sql_query 时应真正执行工具。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-plan-once", [], {"dry_run": False})
+
+    schema_call = {"name": "get_dataset_schema", "args": {"keywords": "负载"}, "id": "call_schema"}
+    sql_call = {
+        "name": "execute_sql_query",
+        "args": {
+            "sql": "select 1",
+            "data_source": "mysql_oa",
+            "dataset_name": "users",
+        },
+        "id": "call_sql",
+    }
+    schema_response = MagicMock(spec=AIMessage)
+    schema_response.content = ""
+    schema_response.tool_calls = [schema_call]
+
+    blocked_response = MagicMock(spec=AIMessage)
+    blocked_response.content = ""
+    blocked_response.tool_calls = [sql_call]
+
+    retry_response = MagicMock(spec=AIMessage)
+    retry_response.content = ""
+    retry_response.tool_calls = [sql_call]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield schema_response
+
+    async def gen_2(*args, **kwargs):
+        yield blocked_response
+
+    async def gen_3(*args, **kwargs):
+        yield retry_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2(), gen_3()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="10")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return schema_call, "schema yaml", 3.0
+            return sql_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "按机房分组统计负载率"}]):
+            events.append(chunk)
+
+    assert model_with_tools.astream.call_count == 3
+    assert executor._dispatch_tool_safe.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_data_executor_runs_pending_sql_after_empty_round():
+    """Schema 已就绪且上一轮 SQL 被拦截后，空转轮次应代为执行待处理 SQL。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-pending-sql", [], {"dry_run": False})
+
+    schema_call = {"name": "get_dataset_schema", "args": {"keywords": "延迟"}, "id": "call_schema"}
+    sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select 1", "data_source": "ds", "dataset_name": "t"},
+        "id": "call_sql",
+    }
+    schema_response = MagicMock(spec=AIMessage)
+    schema_response.content = ""
+    schema_response.tool_calls = [schema_call]
+
+    blocked_response = MagicMock(spec=AIMessage)
+    blocked_response.content = ""
+    blocked_response.tool_calls = [sql_call]
+
+    empty_round = MagicMock(spec=AIMessage)
+    empty_round.content = "让我想想"
+    empty_round.tool_calls = []
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield schema_response
+
+    async def gen_2(*args, **kwargs):
+        yield blocked_response
+
+    async def gen_3(*args, **kwargs):
+        yield empty_round
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2(), gen_3()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="10")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return schema_call, "schema yaml", 3.0
+            return sql_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "按机房分组统计负载率"}]):
+            events.append(chunk)
+
+    assert model_with_tools.astream.call_count == 3
+    assert executor._dispatch_tool_safe.await_count == 2
+    assert any(e.get("title") == "执行待处理 SQL" for e in events if e.get("type") == "log")
+
+
+@pytest.mark.asyncio
 async def test_data_executor_followup_without_last_result_does_not_query_schema():
     """可视化追问缺少上一轮结构化结果时，应提示用户先查询数据，而不是把追问词拿去检索 schema。"""
     mock_config = MagicMock()

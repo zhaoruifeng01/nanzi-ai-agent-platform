@@ -33,6 +33,9 @@ from app.services.ai.intent_service import (
 
 logger = logging.getLogger(__name__)
 
+# 数据查询 ReAct 轮次上限（与全局 agent_max_iterations 取较小值，避免长时间空转）
+DATA_QUERY_MAX_STEPS_CAP = 10
+
 class DataQueryExecutor(BaseExecutor):
     def __init__(self, config: ChatConfig, trace_id: str, trace_buffer: List[AgentExecutionStep], debug_options: Dict[str, Any] = None, user_info: Optional[Dict[str, Any]] = None, conversation_id: Optional[str] = None):
         super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
@@ -54,6 +57,7 @@ class DataQueryExecutor(BaseExecutor):
         self._skip_few_shot = False
         self._skill_ready = False
         self._needs_skill_prep = False
+        self._sql_plan_block_used = False
 
     # 数据查询类工具：调用这些以外的工具（如 create_skills）视为“元操作/外部动作”，
     # 不应再被“必须先查库”的护栏阻断。
@@ -84,10 +88,29 @@ class DataQueryExecutor(BaseExecutor):
         high_risk_keywords = [
             "率", "占比", "比例", "比率", "负载", "利用率", "pue", "成功率", "转化率", "人均", "单价",
             "同比", "环比", "趋势", "变化", "增长", "下降",
-            "top", "排名", "排行", "分组", "按", "维度", "group", "join",
-            "p95", "p90", "分位", "中位", "median", "percentile"
+            "top", "排名", "排行", "分组", "维度", "group", "join",
+            "p95", "p90", "分位", "中位", "median", "percentile",
         ]
-        return any(k in q for k in high_risk_keywords)
+        if any(k in q for k in high_risk_keywords):
+            return True
+        # 「按X分组/统计」才算高风险；单独的「按」过于宽泛，会误拦简单明细查询。
+        return re.search(r"按.{0,12}(组|类|类型|维度|机房|区域|部门|用户|状态)", q) is not None
+
+    def _pending_sql_tool_calls_from_history(self, messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        """找出历史中已声明但未落库执行的 execute_sql_query 调用（常见于计划护栏拦截后空转）。"""
+        executed_ids = {
+            m.tool_call_id for m in messages if isinstance(m, ToolMessage) and getattr(m, "tool_call_id", None)
+        }
+        for msg in reversed(messages):
+            if not isinstance(msg, AIMessage) or not getattr(msg, "tool_calls", None):
+                continue
+            pending = [
+                tc for tc in msg.tool_calls
+                if tc.get("name") == "execute_sql_query" and tc.get("id") not in executed_ids
+            ]
+            if pending:
+                return pending
+        return []
 
     def _try_parse_json_output(self, tool_output: Any) -> Any:
         """
@@ -447,6 +470,7 @@ class DataQueryExecutor(BaseExecutor):
         self._sql_after_schema_nudge_sent = False
         self._no_tool_call_streak = 0
         self._non_data_tool_called = False
+        self._sql_plan_block_used = False
         # 注：_requires_fresh_data / _skill_ready / _needs_skill_prep 在本轮入口或下方按最终 system_prompt 计算。
         
         # [经验库] Few-Shot 检索与注入（K1 / 技能执行等需要新 SQL 的轮次才检索）
@@ -596,8 +620,8 @@ class DataQueryExecutor(BaseExecutor):
 
         from app.services.config_service import ConfigService
         max_steps_str = await ConfigService.get("agent_max_iterations")
-        # Keep a small cap to avoid long "no tool call" stalls.
-        MAX_STEPS = int(max_steps_str) if max_steps_str else 6
+        raw_max = int(max_steps_str) if max_steps_str else 6
+        MAX_STEPS = min(raw_max, DATA_QUERY_MAX_STEPS_CAP)
         step = 0
         has_critical_error = False
 
@@ -694,64 +718,87 @@ class DataQueryExecutor(BaseExecutor):
                         return
                     break
 
-                self._no_tool_call_streak += 1
-                if self._no_tool_call_streak in (2, 4):
+                # Schema 已就绪但上一轮 SQL 工具调用被计划护栏拦截未执行：代为执行，避免空转。
+                pending_sql = self._pending_sql_tool_calls_from_history(langchain_messages)
+                if (
+                    self._requires_fresh_data
+                    and self._schema_fetched_ok
+                    and not self._schema_no_authorized
+                    and not self._sql_attempted
+                    and pending_sql
+                ):
                     yield {
                         "type": "log",
-                        "id": f"diag_{uuid.uuid4().hex[:8]}",
-                        "title": "🧭 调用工具诊断",
+                        "id": f"pending_sql_{uuid.uuid4().hex[:8]}",
+                        "title": "执行待处理 SQL",
                         "details": (
-                            f"检测到模型连续 {self._no_tool_call_streak} 次未产生工具调用（tool_calls 为空）。\n"
-                            "为确保数据准确性，系统将继续强制引导调用 get_dataset_schema / execute_sql_query。\n"
-                            "若仍无法触发，请检查：模型是否支持工具调用、输出是否包含 <function_calls>、以及 agent 是否配置了 data_query 能力。"
+                            "检测到 Schema 已就绪，但先前轮次的 execute_sql_query 尚未真正执行。"
+                            "系统将代为执行该 SQL，跳过一次空转决策。"
                         ),
                         "status": "success",
-                        "execution_time_ms": (time.time() - start_thought) * 1000,
+                        "execution_time_ms": 0,
                     }
-                # Keep backward-compatible procrastination nudge (Turn 1, chatty, no tools)
-                # Some unit tests and UI flows rely on this exact wording.
-                if step == 1 and len(accumulated_content or "") > 50:
-                    langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL))
-                    continue
-                # If required tools are not available, don't spin in enforcement loops.
-                # This happens in some unit tests (only schema tool is provided).
-                if self._schema_fetched_ok and "execute_sql_query" not in tool_names:
-                    langchain_messages.append(response)
-                    break
-                # 用户要求使用技能但尚未加载技能指令：优先引导 list/read_skill，而非直接逼查 Schema。
-                if self._needs_skill_prep and not self._skill_ready:
-                    langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_LOAD_SKILL_FIRST))
-                    continue
-                # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
-                # Always drive the model to tools (schema -> sql -> execute) across ALL steps.
-                if not self._schema_fetched_ok:
-                    must_msg = DataQueryPrompts.MUST_FETCH_SCHEMA
-                elif not self._schema_no_authorized and not self._sql_attempted:
-                    must_msg = DataQueryPrompts.MUST_EXECUTE_SQL
-                elif not self._schema_no_authorized and self._sql_attempted and not self._sql_succeeded:
-                    must_msg = DataQueryPrompts.MUST_FIX_SQL
+                    response = AIMessage(content="", tool_calls=pending_sql)
                 else:
-                    # Either no authorized datasets, or already executed successfully but model stopped calling tools.
-                    must_msg = DataQueryPrompts.CONTINUE_OR_SUMMARIZE
-                langchain_messages.append(response)
-                langchain_messages.append(SystemMessage(content=must_msg))
-                continue
-            else:
-                self._no_tool_call_streak = 0
+                    self._no_tool_call_streak += 1
+                    if self._no_tool_call_streak in (2, 4):
+                        yield {
+                            "type": "log",
+                            "id": f"diag_{uuid.uuid4().hex[:8]}",
+                            "title": "🧭 调用工具诊断",
+                            "details": (
+                                f"检测到模型连续 {self._no_tool_call_streak} 次未产生工具调用（tool_calls 为空）。\n"
+                                "为确保数据准确性，系统将继续强制引导调用 get_dataset_schema / execute_sql_query。\n"
+                                "若仍无法触发，请检查：模型是否支持工具调用、输出是否包含 <function_calls>、以及 agent 是否配置了 data_query 能力。"
+                            ),
+                            "status": "success",
+                            "execution_time_ms": (time.time() - start_thought) * 1000,
+                        }
+                    # Keep backward-compatible procrastination nudge (Turn 1, chatty, no tools)
+                    # Some unit tests and UI flows rely on this exact wording.
+                    if step == 1 and len(accumulated_content or "") > 50:
+                        langchain_messages.append(response)
+                        langchain_messages.append(SystemMessage(content=DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL))
+                        continue
+                    # If required tools are not available, don't spin in enforcement loops.
+                    # This happens in some unit tests (only schema tool is provided).
+                    if self._schema_fetched_ok and "execute_sql_query" not in tool_names:
+                        langchain_messages.append(response)
+                        break
+                    # 用户要求使用技能但尚未加载技能指令：优先引导 list/read_skill，而非直接逼查 Schema。
+                    if self._needs_skill_prep and not self._skill_ready:
+                        langchain_messages.append(response)
+                        langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_LOAD_SKILL_FIRST))
+                        continue
+                    # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
+                    if not self._schema_fetched_ok:
+                        must_msg = DataQueryPrompts.MUST_FETCH_SCHEMA
+                    elif not self._schema_no_authorized and not self._sql_attempted:
+                        must_msg = DataQueryPrompts.MUST_EXECUTE_SQL
+                    elif not self._schema_no_authorized and self._sql_attempted and not self._sql_succeeded:
+                        must_msg = DataQueryPrompts.MUST_FIX_SQL
+                    else:
+                        must_msg = DataQueryPrompts.CONTINUE_OR_SUMMARIZE
+                    langchain_messages.append(response)
+                    langchain_messages.append(SystemMessage(content=must_msg))
+                    continue
+
+            self._no_tool_call_streak = 0
 
             # --- [Plan Policy] Enforce plan only for high-risk queries; otherwise just nudge ---
+            plan_blocked = False
             if any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls) and not self._has_sql_plan(accumulated_content):
                 require_plan = self._should_require_sql_plan(self._current_user_question)
-                if require_plan:
-                    # Block once and require plan in <thought> to keep UI clean.
+                if require_plan and not self._sql_plan_block_used:
+                    # 仅阻断一次；若模型仍不补计划，下一轮直接执行 SQL，避免「有 tool_calls 却无查询完成」的空转。
+                    self._sql_plan_block_used = True
                     langchain_messages.append(response)
                     langchain_messages.append(SystemMessage(content=DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN))
-                    continue
-                else:
-                    langchain_messages.append(response)
+                    plan_blocked = True
+                elif not require_plan:
                     langchain_messages.append(SystemMessage(content=DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING))
+            if plan_blocked:
+                continue
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
             # （K3 非新查数轮不强制；技能尚未就绪时也不强制，应先 read_skill_instruction。）
