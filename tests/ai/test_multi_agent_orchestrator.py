@@ -48,7 +48,7 @@ async def test_execute_multi_agent_parallel():
         
         with patch('app.services.ai.agent_manager.AgentManagerService.get_active_agent_config', return_value=mock_secondary_config):
             # Mock Synthesis
-            async def mock_synthesis(config, query, outputs):
+            async def mock_synthesis(config, query, outputs, trace_buffer):
                 yield {"content": "Final Combined Answer"}
             
             with patch.object(AgentService, '_synthesize_multi_agent_results', side_effect=mock_synthesis):
@@ -101,7 +101,7 @@ async def test_multi_agent_error_handling():
             
             # We need to capture what's passed to synthesis
             captured_outputs = []
-            async def mock_synthesis(config, query, outputs):
+            async def mock_synthesis(config, query, outputs, trace_buffer):
                 nonlocal captured_outputs
                 captured_outputs = outputs
                 yield {"content": "Synthesis with error"}

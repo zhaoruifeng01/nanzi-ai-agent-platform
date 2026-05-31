@@ -314,6 +314,9 @@ class DataQueryExecutor(BaseExecutor):
             tool_output={"content": full_synthesis_content, "reused_last_data_result": True},
             raw_log=full_synthesis_content,
             execution_time_ms=(time.time() - start_synthesis) * 1000,
+            prompt_tokens=tokens["prompt_tokens"],
+            completion_tokens=tokens["completion_tokens"],
+            total_tokens=tokens["total_tokens"],
             timestamp=datetime.fromtimestamp(start_synthesis),
         ))
 

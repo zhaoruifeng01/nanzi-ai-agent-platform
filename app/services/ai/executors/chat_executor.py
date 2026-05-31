@@ -254,7 +254,7 @@ class GeneralChatExecutor(BaseExecutor):
                  
                  # Optimization: If we already streamed the answer in step 1, we are DONE.
                  if step == 1:
-                     # Record final answer as a trace step even in step 1 exit
+                     # 补充 synthesis 步骤供 Trace 展示；Token 已在上方 thought 步骤计入，此处勿重复
                      self._increment_step()
                      self.trace_buffer.append(AgentExecutionStep(
                          step_number=self.step_counter,
@@ -265,9 +265,9 @@ class GeneralChatExecutor(BaseExecutor):
                          tool_output={"content": accumulated_content},
                          raw_log=accumulated_content,
                          execution_time_ms=(time.time() - start_thought) * 1000,
-                         prompt_tokens=tokens["prompt_tokens"],
-                         completion_tokens=tokens["completion_tokens"],
-                         total_tokens=tokens["total_tokens"],
+                         prompt_tokens=0,
+                         completion_tokens=0,
+                         total_tokens=0,
                          timestamp=datetime.fromtimestamp(start_thought)
                      ))
                      return 

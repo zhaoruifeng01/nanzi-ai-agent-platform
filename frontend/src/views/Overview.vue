@@ -133,7 +133,10 @@
             </svg>
           </template>
           <template #subtext>
-            本期累计消耗
+            <div class="flex flex-col gap-0.5 leading-tight mt-0.5">
+              <span>输入 {{ formatCompactNumber(stats?.prompt_tokens || 0) }}</span>
+              <span>输出 {{ formatCompactNumber(stats?.completion_tokens || 0) }}</span>
+            </div>
           </template>
         </StatsCard>
 
@@ -252,7 +255,10 @@
             </svg>
           </template>
           <template #subtext>
-            本期累计消耗
+            <div class="flex flex-col gap-0.5 leading-tight mt-0.5">
+              <span>输入 {{ formatCompactNumber(stats?.prompt_tokens || 0) }}</span>
+              <span>输出 {{ formatCompactNumber(stats?.completion_tokens || 0) }}</span>
+            </div>
           </template>
         </StatsCard>
 

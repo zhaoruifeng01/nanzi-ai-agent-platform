@@ -41,53 +41,68 @@
     </div>
 
     <!-- Statistics Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between">
-        <div class="space-y-1">
-          <span class="text-xs text-gray-500 font-bold uppercase tracking-wider">算力 Token 总量</span>
-          <h3 class="text-2xl sm:text-3xl font-black text-gray-900">{{ formatCompactNumber(summaryData.total_tokens) }}</h3>
-          <p class="text-xs text-gray-400">大模型输入输出累计值</p>
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <!-- Token 主卡：总量 + 输入/输出两行 -->
+      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-start justify-between gap-3 sm:col-span-2 lg:col-span-2 xl:col-span-1">
+        <div class="min-w-0 flex-1 space-y-2">
+          <span class="text-sm font-medium text-gray-500">Token 消耗</span>
+          <h3 class="text-2xl sm:text-3xl font-black text-gray-900 tabular-nums leading-none">
+            {{ formatCompactNumber(summaryData.total_tokens) }}
+          </h3>
+          <div class="text-xs text-gray-500 space-y-1 leading-relaxed">
+            <p class="text-sky-700">
+              <span class="text-gray-400">输入</span>
+              {{ formatCompactNumber(summaryData.prompt_tokens) }}
+            </p>
+            <p class="text-rose-700">
+              <span class="text-gray-400">输出</span>
+              {{ formatCompactNumber(summaryData.completion_tokens) }}
+            </p>
+            <p v-if="summaryData.legacy_tokens > 0" class="text-amber-700/90 pt-0.5">
+              历史未拆分 {{ formatCompactNumber(summaryData.legacy_tokens) }}
+            </p>
+          </div>
         </div>
-        <div class="p-3.5 bg-blue-50/80 rounded-2xl text-blue-600">
-          <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between">
-        <div class="space-y-1">
-          <span class="text-xs text-gray-500 font-bold uppercase tracking-wider">对话交互频次</span>
-          <h3 class="text-2xl sm:text-3xl font-black text-gray-900">{{ formatNumber(summaryData.calls) }}</h3>
-          <p class="text-xs text-gray-400">大模型会话发起总次数</p>
-        </div>
-        <div class="p-3.5 bg-purple-50/80 rounded-2xl text-purple-600">
-          <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between">
-        <div class="space-y-1">
-          <span class="text-xs text-gray-500 font-bold uppercase tracking-wider">平均单次消耗</span>
-          <h3 class="text-2xl sm:text-3xl font-black text-gray-900">{{ formatCompactNumber(summaryData.avg_tokens) }}</h3>
-          <p class="text-xs text-gray-400">平均每次会话 Token 数</p>
-        </div>
-        <div class="p-3.5 bg-yellow-50/80 rounded-2xl text-yellow-600">
+        <div class="flex-shrink-0 p-3.5 bg-amber-50/80 rounded-2xl text-amber-600">
           <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
           </svg>
         </div>
       </div>
 
-      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between">
-        <div class="space-y-1">
-          <span class="text-xs text-gray-500 font-bold uppercase tracking-wider">当前活跃智能体</span>
-          <h3 class="text-2xl sm:text-3xl font-black text-gray-900">{{ agentData.length }}</h3>
-          <p class="text-xs text-gray-400">贡献 Token 消耗的智能体数</p>
+      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between gap-3">
+        <div class="min-w-0 flex-1 space-y-1">
+          <span class="text-sm font-medium text-gray-500">对话交互</span>
+          <h3 class="text-2xl sm:text-3xl font-black text-gray-900 tabular-nums leading-none">{{ formatNumber(summaryData.calls) }}</h3>
+          <p class="text-xs text-gray-400">会话发起次数</p>
         </div>
-        <div class="p-3.5 bg-green-50/80 rounded-2xl text-green-600">
+        <div class="flex-shrink-0 p-3.5 rounded-2xl bg-purple-50/80 text-purple-600">
+          <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between gap-3">
+        <div class="min-w-0 flex-1 space-y-1">
+          <span class="text-sm font-medium text-gray-500">平均单次</span>
+          <h3 class="text-2xl sm:text-3xl font-black text-gray-900 tabular-nums leading-none">{{ formatCompactNumber(summaryData.avg_tokens) }}</h3>
+          <p class="text-xs text-gray-400">Token / 会话</p>
+        </div>
+        <div class="flex-shrink-0 p-3.5 rounded-2xl bg-yellow-50/80 text-yellow-600">
+          <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center justify-between gap-3">
+        <div class="min-w-0 flex-1 space-y-1">
+          <span class="text-sm font-medium text-gray-500">活跃智能体</span>
+          <h3 class="text-2xl sm:text-3xl font-black text-gray-900 tabular-nums leading-none">{{ agentData.length }}</h3>
+          <p class="text-xs text-gray-400">有 Token 记录</p>
+        </div>
+        <div class="flex-shrink-0 p-3.5 rounded-2xl bg-green-50/80 text-green-600">
           <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
           </svg>
@@ -100,7 +115,7 @@
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-base sm:text-lg font-bold text-gray-900 flex items-center">
           <span class="w-1.5 h-1.5 rounded-full bg-primary mr-2"></span>
-          双 Y 轴趋势分析 (API 频次 vs Token 消耗)
+          趋势分析 · 输入/输出 Token 与交互频次
         </h2>
       </div>
       <div class="h-96 w-full relative flex items-center justify-center">
@@ -138,22 +153,26 @@
         <div class="overflow-x-auto">
           <table class="min-w-full divide-y divide-gray-100 text-sm">
             <thead>
-              <tr class="text-left text-xs font-bold text-gray-400 uppercase tracking-wider">
-                <th class="py-3 px-4">智能体名称</th>
-                <th class="py-3 px-4">交互次数</th>
-                <th class="py-3 px-4">总 Token 消耗</th>
-                <th class="py-3 px-4">平均单次消耗</th>
+              <tr class="text-left text-xs font-medium text-gray-500 whitespace-nowrap">
+                <th class="py-3 px-4">智能体</th>
+                <th class="py-3 px-4 text-right">交互</th>
+                <th class="py-3 px-4 text-right">输入</th>
+                <th class="py-3 px-4 text-right">输出</th>
+                <th class="py-3 px-4 text-right">合计</th>
+                <th class="py-3 px-4 text-right">均次</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-50 text-gray-700">
               <tr v-if="agentData.length === 0">
-                <td colspan="4" class="py-10 text-center text-gray-400">暂无明细数据</td>
+                <td colspan="6" class="py-10 text-center text-gray-400">暂无明细数据</td>
               </tr>
               <tr v-for="agent in agentData" :key="agent.agent_id" class="hover:bg-gray-50/50 transition-colors">
-                <td class="py-3 px-4 font-bold text-gray-900">{{ agent.name }}</td>
-                <td class="py-3 px-4">{{ formatNumber(agent.calls) }} 次</td>
-                <td class="py-3 px-4 font-semibold">{{ formatCompactNumber(agent.total_tokens) }}</td>
-                <td class="py-3 px-4 text-gray-500">{{ formatCompactNumber(Math.round(agent.total_tokens / Math.max(agent.calls, 1))) }}</td>
+                <td class="py-3 px-4 font-medium text-gray-900 max-w-[12rem] truncate" :title="agent.name">{{ agent.name }}</td>
+                <td class="py-3 px-4 text-right tabular-nums">{{ formatNumber(agent.calls) }}</td>
+                <td class="py-3 px-4 text-right tabular-nums text-sky-700">{{ formatCompactNumber(agent.prompt_tokens || 0) }}</td>
+                <td class="py-3 px-4 text-right tabular-nums text-rose-700">{{ formatCompactNumber(agent.completion_tokens || 0) }}</td>
+                <td class="py-3 px-4 text-right tabular-nums font-semibold">{{ formatCompactNumber(effectiveAgentTokens(agent)) }}</td>
+                <td class="py-3 px-4 text-right tabular-nums text-gray-500">{{ formatCompactNumber(Math.round(effectiveAgentTokens(agent) / Math.max(agent.calls, 1))) }}</td>
               </tr>
             </tbody>
           </table>
@@ -176,23 +195,27 @@
       <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-100 text-sm">
           <thead>
-            <tr class="text-left text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <th class="py-3 px-4">用户名 / 账号</th>
-              <th class="py-3 px-4">真实姓名</th>
-              <th class="py-3 px-4">API 调用次数</th>
-              <th class="py-3 px-4">总 Token 消耗</th>
-              <th class="py-3 px-4">系统算力占比</th>
+            <tr class="text-left text-xs font-medium text-gray-500 whitespace-nowrap">
+              <th class="py-3 px-4">账号</th>
+              <th class="py-3 px-4">姓名</th>
+              <th class="py-3 px-4 text-right">交互</th>
+              <th class="py-3 px-4 text-right">输入</th>
+              <th class="py-3 px-4 text-right">输出</th>
+              <th class="py-3 px-4 text-right">合计</th>
+              <th class="py-3 px-4">占比</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-50 text-gray-700">
             <tr v-if="userData.length === 0">
-              <td colspan="5" class="py-10 text-center text-gray-400">暂无用户审计账单</td>
+              <td colspan="7" class="py-10 text-center text-gray-400">暂无用户审计账单</td>
             </tr>
             <tr v-for="userItem in userData" :key="userItem.username" class="hover:bg-gray-50/50 transition-colors">
-              <td class="py-3.5 px-4 font-bold text-gray-900">{{ userItem.username }}</td>
+              <td class="py-3.5 px-4 font-medium text-gray-900">{{ userItem.username }}</td>
               <td class="py-3.5 px-4 text-gray-600">{{ userItem.real_name || '-' }}</td>
-              <td class="py-3.5 px-4">{{ formatNumber(userItem.calls) }} 次</td>
-              <td class="py-3.5 px-4 font-semibold text-gray-900">{{ formatCompactNumber(userItem.total_tokens) }}</td>
+              <td class="py-3.5 px-4 text-right tabular-nums">{{ formatNumber(userItem.calls) }}</td>
+              <td class="py-3.5 px-4 text-right tabular-nums text-sky-700">{{ formatCompactNumber(userItem.prompt_tokens || 0) }}</td>
+              <td class="py-3.5 px-4 text-right tabular-nums text-rose-700">{{ formatCompactNumber(userItem.completion_tokens || 0) }}</td>
+              <td class="py-3.5 px-4 text-right tabular-nums font-semibold text-gray-900">{{ formatCompactNumber(effectiveAgentTokens(userItem)) }}</td>
               <td class="py-3.5 px-4">
                 <div class="flex items-center gap-3 w-48">
                   <div class="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -247,22 +270,48 @@ const trendData = ref<any[]>([]);
 const agentData = ref<any[]>([]);
 const userData = ref<any[]>([]);
 
-// 头部核心卡片数据
+/** 优先用 input+output；无分项时回退 history.total_tokens */
+const effectiveAgentTokens = (row: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}) => {
+  const prompt = row.prompt_tokens || 0;
+  const completion = row.completion_tokens || 0;
+  const breakdown = prompt + completion;
+  if (breakdown > 0) return breakdown;
+  return row.total_tokens || 0;
+};
+
+// 头部汇总：与时段筛选一致，优先从 agents 接口聚合
 const summaryData = computed(() => {
-  let total_tokens = 0;
+  let prompt_tokens = 0;
+  let completion_tokens = 0;
+  let raw_total = 0;
   let calls = 0;
-  
-  if (trendData.value && trendData.value.length > 0) {
-    total_tokens = trendData.value.reduce((acc, curr) => acc + (curr.total_tokens || 0), 0);
-    calls = trendData.value.reduce((acc, curr) => acc + (curr.calls || 0), 0);
+
+  const rows = agentData.value?.length ? agentData.value : trendData.value;
+  if (rows?.length) {
+    for (const row of rows) {
+      prompt_tokens += row.prompt_tokens || 0;
+      completion_tokens += row.completion_tokens || 0;
+      raw_total += row.total_tokens || 0;
+      calls += row.calls || 0;
+    }
   }
-  
+
+  const breakdown_total = prompt_tokens + completion_tokens;
+  const legacy_tokens = Math.max(0, raw_total - breakdown_total);
+  const total_tokens = breakdown_total > 0 ? breakdown_total : raw_total;
   const avg_tokens = calls > 0 ? Math.round(total_tokens / calls) : 0;
-  
+
   return {
+    prompt_tokens,
+    completion_tokens,
     total_tokens,
+    legacy_tokens,
     calls,
-    avg_tokens
+    avg_tokens,
   };
 });
 
@@ -327,7 +376,8 @@ const trendChartOption = computed(() => {
   if (!trendData.value || trendData.value.length === 0) return {};
 
   const dates = trendData.value.map(item => item.date);
-  const tokens = trendData.value.map(item => item.total_tokens);
+  const promptTokens = trendData.value.map(item => item.prompt_tokens || 0);
+  const completionTokens = trendData.value.map(item => item.completion_tokens || 0);
   const calls = trendData.value.map(item => item.calls);
 
   return {
@@ -340,7 +390,7 @@ const trendChartOption = computed(() => {
       padding: [10, 14]
     },
     legend: {
-      data: ["Token 消耗量", "API 交互次数"],
+      data: ["输入 Token", "输出 Token", "API 交互次数"],
       bottom: 0,
       icon: "circle"
     },
@@ -376,22 +426,24 @@ const trendChartOption = computed(() => {
     ],
     series: [
       {
-        name: "Token 消耗量",
+        name: "输入 Token",
         type: "line",
+        stack: "tokens",
         smooth: true,
         showSymbol: false,
-        data: tokens,
-        itemStyle: { color: "#4f46e5" },
-        areaStyle: {
-          color: {
-            type: "linear",
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: "rgba(79, 70, 229, 0.2)" },
-              { offset: 1, color: "rgba(79, 70, 229, 0)" }
-            ]
-          }
-        }
+        data: promptTokens,
+        itemStyle: { color: "#0ea5e9" },
+        areaStyle: { color: "rgba(14, 165, 233, 0.25)" }
+      },
+      {
+        name: "输出 Token",
+        type: "line",
+        stack: "tokens",
+        smooth: true,
+        showSymbol: false,
+        data: completionTokens,
+        itemStyle: { color: "#f43f5e" },
+        areaStyle: { color: "rgba(244, 63, 94, 0.25)" }
       },
       {
         name: "API 交互次数",
@@ -424,14 +476,14 @@ const agentChartOption = computed(() => {
   if (agentData.value.length <= 5) {
     displayData = agentData.value.map(item => ({
       name: item.name,
-      value: item.total_tokens
+      value: effectiveAgentTokens(item)
     }));
   } else {
     displayData = agentData.value.slice(0, 4).map(item => ({
       name: item.name,
-      value: item.total_tokens
+      value: effectiveAgentTokens(item)
     }));
-    const otherSum = agentData.value.slice(4).reduce((acc, curr) => acc + curr.total_tokens, 0);
+    const otherSum = agentData.value.slice(4).reduce((acc, curr) => acc + effectiveAgentTokens(curr), 0);
     displayData.push({
       name: "其他",
       value: otherSum

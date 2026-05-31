@@ -6,6 +6,41 @@ from app.models.audit import AgentExecutionTrace
 
 logger = logging.getLogger(__name__)
 
+# 仅这些步骤类型对应真实的 LLM API 调用；tool_call 等不计入 Token
+_LLM_TOKEN_STEP_EVENTS = frozenset({"thought", "synthesis"})
+
+
+def aggregate_tokens_from_trace_buffer(trace_buffer: List[AgentExecutionStep]) -> tuple[int, int, int]:
+    """
+    从 trace 步骤汇总会话级 Token。
+    - 优先累加有分项的 prompt/completion
+    - 仅有 total_tokens、无分项的步骤计入总量（无法拆分 input/output）
+    - total 始终以 prompt+completion 为准，保证看板三项一致
+    """
+    if not trace_buffer:
+        return 0, 0, 0
+
+    prompt_sum = 0
+    completion_sum = 0
+    orphan_total = 0
+
+    for step in trace_buffer:
+        if getattr(step, "event_type", None) not in _LLM_TOKEN_STEP_EVENTS:
+            continue
+        p = int(getattr(step, "prompt_tokens", 0) or 0)
+        c = int(getattr(step, "completion_tokens", 0) or 0)
+        t = int(getattr(step, "total_tokens", 0) or 0)
+        if p > 0 or c > 0:
+            prompt_sum += p
+            completion_sum += c
+        elif t > 0:
+            orphan_total += t
+
+    if prompt_sum > 0 or completion_sum > 0:
+        return prompt_sum, completion_sum, prompt_sum + completion_sum + orphan_total
+    return 0, 0, orphan_total
+
+
 class AuditManager:
     """
     Handles trace logging and auditing for agent executions.
@@ -58,7 +93,9 @@ class AuditManager:
             except Exception as ex:
                 logger.warning(f"Failed to resolve model ID for auditing: {ex}")
 
-            total_tokens_sum = sum(getattr(step, "total_tokens", 0) or 0 for step in trace_buffer) if trace_buffer else 0
+            prompt_tokens_sum, completion_tokens_sum, total_tokens_sum = (
+                aggregate_tokens_from_trace_buffer(trace_buffer) if trace_buffer else (0, 0, 0)
+            )
 
             await AuditManager.save_history(
                 trace_id=trace_id,
@@ -72,6 +109,8 @@ class AuditManager:
                 model_id=model_id_snapshot,
                 model_config_id=model_config_id,
                 conversation_id=conversation_id,
+                prompt_tokens=prompt_tokens_sum,
+                completion_tokens=completion_tokens_sum,
                 total_tokens=total_tokens_sum
             )
 
@@ -124,6 +163,8 @@ class AuditManager:
         model_id: str = None,
         model_config_id: str = None,
         conversation_id: str = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
         total_tokens: int = 0
     ):
         """
@@ -146,6 +187,8 @@ class AuditManager:
                     agent_version=agent_version,
                     model_id=model_id,
                     model_config_id=model_config_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                     total_tokens=total_tokens
                 )
                 session.add(history_entry)

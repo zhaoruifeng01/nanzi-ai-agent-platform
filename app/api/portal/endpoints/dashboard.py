@@ -74,11 +74,14 @@ async def get_admin_stats(
     error_rate = (error_count / total_calls * 100) if total_calls > 0 else 0
 
     # 3.5 Token Stats
-    stmt_tokens = select(func.sum(AgentExecutionHistory.total_tokens)).where(AgentExecutionHistory.created_at >= start_time)
+    stmt_tokens = select(
+        func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
+    ).where(AgentExecutionHistory.created_at >= start_time)
     if not admin_flag:
         stmt_tokens = stmt_tokens.where(AgentExecutionHistory.username == user_name)
-    tokens_res = await db.execute(stmt_tokens)
-    total_tokens = tokens_res.scalar() or 0
+    tokens_row = (await db.execute(stmt_tokens)).one()
     
     result = {
         "api_calls": {
@@ -90,7 +93,9 @@ async def get_admin_stats(
         "avg_response_time": round(avg_time, 2),
         "success_rate": round(success_rate, 2),
         "error_rate": round(error_rate, 2),
-        "total_tokens": int(total_tokens)
+        "prompt_tokens": int(tokens_row.prompt_tokens or 0),
+        "completion_tokens": int(tokens_row.completion_tokens or 0),
+        "total_tokens": int(tokens_row.total_tokens or 0),
     }
     
     if admin_flag:
@@ -141,12 +146,15 @@ async def get_user_stats(
     success_rate = (success_count / total_calls * 100) if total_calls > 0 else 0
     
     # User Token Stats
-    stmt_tokens = select(func.sum(AgentExecutionHistory.total_tokens)).where(
+    stmt_tokens = select(
+        func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
+    ).where(
         AgentExecutionHistory.created_at >= start_time,
         AgentExecutionHistory.username == user_name
     )
-    tokens_res = await db.execute(stmt_tokens)
-    total_tokens = tokens_res.scalar() or 0
+    tokens_row = (await db.execute(stmt_tokens)).one()
 
     return {
         "api_key_status": api_key_status,
@@ -158,7 +166,9 @@ async def get_user_stats(
         "avg_response_time": round(avg_time, 2),
         "success_rate": round(success_rate, 2),
         "last_call_time": last_call.isoformat() if last_call else None,
-        "total_tokens": int(total_tokens)
+        "prompt_tokens": int(tokens_row.prompt_tokens or 0),
+        "completion_tokens": int(tokens_row.completion_tokens or 0),
+        "total_tokens": int(tokens_row.total_tokens or 0),
     }
 
 @router.get("/api-trends")
@@ -522,7 +532,9 @@ async def get_token_stats_trends(
     stmt = select(
         func.date(AgentExecutionHistory.created_at).label("date"),
         func.count().label("calls"),
-        func.sum(AgentExecutionHistory.total_tokens).label("total_tokens")
+        func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
     ).where(AgentExecutionHistory.created_at >= start_date)
     
     if not admin_flag:
@@ -536,18 +548,23 @@ async def get_token_stats_trends(
     for r in rows:
         results_map[str(r.date)] = {
             "calls": r.calls or 0,
-            "total_tokens": int(r.total_tokens or 0)
+            "prompt_tokens": int(r.prompt_tokens or 0),
+            "completion_tokens": int(r.completion_tokens or 0),
+            "total_tokens": int(r.total_tokens or 0),
         }
         
     trends = []
+    empty_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     for i in range(days):
         d = start_date + timedelta(days=i)
         d_str = d.strftime('%Y-%m-%d')
-        stats = results_map.get(d_str, {"calls": 0, "total_tokens": 0})
+        stats = results_map.get(d_str, empty_stats)
         trends.append({
             "date": d_str,
             "calls": stats["calls"],
-            "total_tokens": stats["total_tokens"]
+            "prompt_tokens": stats["prompt_tokens"],
+            "completion_tokens": stats["completion_tokens"],
+            "total_tokens": stats["total_tokens"],
         })
         
     return trends
@@ -572,7 +589,9 @@ async def get_token_stats_agents(
         AgentExecutionHistory.agent_id,
         AIAgent.display_name,
         func.count().label("calls"),
-        func.sum(AgentExecutionHistory.total_tokens).label("total_tokens")
+        func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
     ).outerjoin(AIAgent, AgentExecutionHistory.agent_id == AIAgent.id).where(
         AgentExecutionHistory.created_at >= start_time
     )
@@ -589,7 +608,9 @@ async def get_token_stats_agents(
             "agent_id": r.agent_id,
             "name": r.display_name or r.agent_id,
             "calls": r.calls or 0,
-            "total_tokens": int(r.total_tokens or 0)
+            "prompt_tokens": int(r.prompt_tokens or 0),
+            "completion_tokens": int(r.completion_tokens or 0),
+            "total_tokens": int(r.total_tokens or 0),
         })
     return results
 
@@ -612,7 +633,9 @@ async def get_token_stats_users(
     stmt = select(
         AgentExecutionHistory.username,
         func.count().label("calls"),
-        func.sum(AgentExecutionHistory.total_tokens).label("total_tokens")
+        func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
     ).where(AgentExecutionHistory.created_at >= start_time)
     
     if not admin_flag:
@@ -635,7 +658,9 @@ async def get_token_stats_users(
             "username": r.username,
             "real_name": real_names.get(r.username) or r.username,
             "calls": r.calls or 0,
-            "total_tokens": int(r.total_tokens or 0)
+            "prompt_tokens": int(r.prompt_tokens or 0),
+            "completion_tokens": int(r.completion_tokens or 0),
+            "total_tokens": int(r.total_tokens or 0),
         })
         
     total_all = sum(x["total_tokens"] for x in results)

@@ -1,7 +1,9 @@
 import json
 import logging
+import time
 import uuid
 import asyncio
+from datetime import datetime
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from app.schemas.agent import AgentExecutionStep, ChatConfig
@@ -12,6 +14,7 @@ from app.services.ai.context_manager import AgentContextManager
 from app.services.ai.dispatcher import AgentDispatcher
 from app.services.ai.memory_service import memory_service
 from app.services.ai.agent_prompts import AgentServicePrompts
+from app.services.ai.executors.common import extract_tokens_from_message
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.core.orm import AsyncSessionLocal
 
@@ -767,14 +770,17 @@ class AgentService:
             "status": "success"
         }
         
-        async for chunk in self._synthesize_multi_agent_results(primary_config, user_query, agent_outputs):
+        async for chunk in self._synthesize_multi_agent_results(
+            primary_config, user_query, agent_outputs, trace_buffer
+        ):
             yield chunk
 
     async def _synthesize_multi_agent_results(
         self,
         config: ChatConfig,
         user_query: str,
-        agent_outputs: List[Dict[str, str]]
+        agent_outputs: List[Dict[str, str]],
+        trace_buffer: List[AgentExecutionStep],
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Synthesizes multiple agent outputs into a unified response.
@@ -794,10 +800,39 @@ class AgentService:
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_content)
         ]
-        
+
+        start_synthesis = time.time()
+        full_content = ""
+        accumulated_msg = None
         async for chunk in llm.astream(lc_messages):
+            if accumulated_msg is None:
+                accumulated_msg = chunk
+            else:
+                accumulated_msg += chunk
             if chunk.content:
+                full_content += chunk.content
                 yield {"content": chunk.content}
+
+        tokens = extract_tokens_from_message(accumulated_msg)
+        step_number = max((s.step_number for s in trace_buffer), default=0) + 1
+        s_model = getattr(llm, "model_name", config.synthesis_model_name or config.model_name)
+        s_temp = config.synthesis_temperature or config.temperature
+        trace_buffer.append(
+            AgentExecutionStep(
+                step_number=step_number,
+                event_type="synthesis",
+                agent_name=config.agent_name,
+                model=str(s_model),
+                temperature=float(s_temp or 0),
+                tool_output={"content": full_content, "multi_agent_synthesis": True},
+                raw_log=full_content,
+                execution_time_ms=(time.time() - start_synthesis) * 1000,
+                prompt_tokens=tokens["prompt_tokens"],
+                completion_tokens=tokens["completion_tokens"],
+                total_tokens=tokens["total_tokens"],
+                timestamp=datetime.fromtimestamp(start_synthesis),
+            )
+        )
 
     def __init__(self):
         pass
