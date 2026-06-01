@@ -6,6 +6,7 @@ import subprocess
 import psutil
 import json
 import re
+import fnmatch
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
@@ -147,10 +148,10 @@ def read_skill_instruction(skill_id: str) -> str:
         return f"错误：读取技能失败，原因: {str(e)}"
 
 @tool
-def read_local_file(path: str, offset: int = 0, limit: int = 262144, tail: bool = False) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 262144, tail: bool = False) -> str:
     """
-    以分页、截断、倒序（Tail）的方式安全读取本地文件。
-    限制单次读取的最大字节数以防止大模型 Token 暴涨，只允许读取 data 目录下的安全沙箱文件。
+    读取本地安全沙箱文件。用户要求查看、打开、读取、检查文件内容、查看日志文件、tail 日志或分析已知文件路径时应触发本工具。
+    以分页、截断、倒序（Tail）的方式读取，限制单次读取的最大字节数以防止大模型 Token 暴涨，只允许读取 data 目录下的安全沙箱文件。
     
     Args:
         path: 目标文件路径 (如 data/uploads/logs.txt)。
@@ -182,9 +183,10 @@ def read_local_file(path: str, offset: int = 0, limit: int = 262144, tail: bool 
         return f"读取文件失败: {str(e)}"
 
 @tool
-def write_local_file(path: str, content: str) -> str:
+def write_file(path: str, content: str) -> str:
     """
-    直接在安全沙箱 data 目录下写入或覆盖指定文件，若父级目录不存在将自动创建。
+    写入或覆盖本地安全沙箱文件。用户要求保存内容、生成文件、修改文件、写入配置或把结果落盘到 data/skills 等安全目录时应触发本工具。
+    只允许写入安全沙箱 data 目录或已配置的 skills 目录，若父级目录不存在将自动创建。
     
     Args:
         path: 物理写入目标路径 (如 data/skills/my_skill.py)。
@@ -205,10 +207,101 @@ def write_local_file(path: str, content: str) -> str:
     except Exception as e:
         return f"写入文件失败: {str(e)}"
 
+
 @tool
-async def execute_system_command(command: str) -> str:
+def search_text(
+    pattern: str,
+    path: str = "data",
+    file_glob: str = None,
+    case_sensitive: bool = False,
+    context_lines: int = 2,
+    max_results: int = 100,
+) -> str:
     """
-    在系统物理环境或本地沙盒中执行指定的 shell 命令，强制施加默认 30 秒的超时限制与标准输出的长度截断。
+    在安全目录内搜索文本，等价于安全、受控的 grep/ripgrep。
+    用户要求搜索、查找、grep、定位文本、查日志关键字、查代码引用、查配置项、找报错堆栈、找包含某字符串的文件时，应优先触发本工具。
+    只允许搜索 data 目录或已配置的 skills 目录，返回结果会按数量和上下文行数截断以避免上下文过大。
+
+    Args:
+        pattern: 要搜索的文本或正则表达式。
+        path: 搜索起点路径，必须在安全目录内，默认 data。
+        file_glob: 可选文件名通配符过滤，如 *.log、*.txt、*.md。
+        case_sensitive: 是否大小写敏感，默认 False。
+        context_lines: 每条命中前后返回的上下文行数，默认 2。
+        max_results: 最多返回的命中数量，默认 100。
+    """
+    try:
+        if not pattern:
+            return "错误：pattern 不能为空。"
+
+        abs_path = validate_safe_path(path)
+        if not os.path.exists(abs_path):
+            return f"错误：路径 {path} 不存在。"
+
+        context_lines = max(0, min(int(context_lines), 20))
+        max_results = max(1, min(int(max_results), 500))
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error:
+            regex = re.compile(re.escape(pattern), flags)
+
+        candidate_files = []
+        if os.path.isfile(abs_path):
+            candidate_files = [abs_path]
+        else:
+            for root, _, files in os.walk(abs_path):
+                for filename in files:
+                    if file_glob and not fnmatch.fnmatch(filename, file_glob):
+                        continue
+                    candidate_files.append(os.path.join(root, filename))
+
+        matches = []
+        scanned_files = 0
+        for file_path in sorted(candidate_files):
+            if len(matches) >= max_results:
+                break
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                scanned_files += 1
+            except (OSError, UnicodeError):
+                continue
+
+            for idx, line in enumerate(lines):
+                if not regex.search(line):
+                    continue
+                start = max(0, idx - context_lines)
+                end = min(len(lines), idx + context_lines + 1)
+                rel_path = os.path.relpath(file_path, os.getcwd())
+                snippet = []
+                for line_idx in range(start, end):
+                    marker = ">" if line_idx == idx else " "
+                    snippet.append(f"{marker} {line_idx + 1}: {lines[line_idx].rstrip()}")
+                matches.append(f"{rel_path}:{idx + 1}\n" + "\n".join(snippet))
+                if len(matches) >= max_results:
+                    break
+
+        if not matches:
+            return f"未找到匹配内容。扫描文件数: {scanned_files}。"
+
+        truncated = "，结果已截断" if len(matches) >= max_results else ""
+        return (
+            f"搜索完成。扫描文件数: {scanned_files}，命中数: {len(matches)}{truncated}。\n\n"
+            + "\n\n".join(matches)
+        )
+    except Exception as e:
+        return f"搜索文本失败: {str(e)}"
+
+
+@tool
+async def exec_command(command: str) -> str:
+    """
+    执行 shell 命令以获取真实系统状态或完成明确的系统操作。
+    用户询问系统负载、CPU、内存、磁盘、进程、端口、网络连通性、服务状态、日志 tail、当前目录文件或要求执行命令时，应优先触发本工具后再回答。
+    查看负载建议使用非交互命令，例如 uptime、top -b -n 1、ps aux --sort=-%cpu | head、df -h、free -h、ss -tulnp。
+    本工具强制施加默认 30 秒超时限制与标准输出长度截断。
     
     Args:
         command: 要执行的 Shell 命令。
@@ -256,52 +349,95 @@ async def execute_system_command(command: str) -> str:
     except Exception as e:
         return f"命令执行异常: {str(e)}"
 
+def _format_process_list() -> str:
+    current_pid = os.getpid()
+    parent_pids = []
+    try:
+        p = psutil.Process(current_pid)
+        while p.parent():
+            parent_pids.append(p.parent().pid)
+            p = p.parent()
+    except:
+        pass
+
+    protected_pids = set([current_pid, 1] + parent_pids)
+    processes = []
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_info']):
+            try:
+                info = proc.info
+                pid_val = info['pid']
+                is_protected = pid_val in protected_pids
+                processes.append({
+                    "pid": pid_val,
+                    "name": info['name'],
+                    "username": info['username'],
+                    "cpu": f"{proc.cpu_percent()}%",
+                    "memory": f"{round(info['memory_info'].rss / (1024 * 1024), 2)} MB",
+                    "status": "核心受保护" if is_protected else "可控"
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except (PermissionError, psutil.AccessDenied) as e:
+        current_proc = psutil.Process(current_pid)
+        info = current_proc.as_dict(attrs=['pid', 'name', 'username', 'memory_info'])
+        processes.append({
+            "pid": info['pid'],
+            "name": info['name'],
+            "username": info.get('username') or "unknown",
+            "cpu": "unknown",
+            "memory": f"{round(info['memory_info'].rss / (1024 * 1024), 2)} MB",
+            "status": f"核心受保护；全量进程受限: {str(e)}"
+        })
+
+    lines = [f"{'PID':<8} {'进程名':<25} {'CPU占用':<10} {'物理内存':<12} {'状态':<10}"]
+    lines.append("-" * 70)
+    for p in sorted(processes, key=lambda x: x['pid']):
+        lines.append(f"{p['pid']:<8} {p['name']:<25} {p['cpu']:<10} {p['memory']:<12} {p['status']:<10}")
+    return "\n".join(lines)
+
+
+def _protected_process_ids() -> set[int]:
+    current_pid = os.getpid()
+    parent_pids = []
+    try:
+        p = psutil.Process(current_pid)
+        while p.parent():
+            parent_pids.append(p.parent().pid)
+            p = p.parent()
+    except:
+        pass
+    return set([current_pid, 1] + parent_pids)
+
+
 @tool
-def manage_system_process(action: str, pid: int = None) -> str:
+def list_process() -> str:
     """
-    管理和查看当前系统的运行进程，防止误杀核心 Uvicorn/FastAPI 主进程以及开发守护进程。
+    列出当前系统进程及 CPU、内存占用。用户询问正在运行的进程、进程列表、哪个进程占资源、服务是否在跑时应触发本工具。
+    如果用户还要求查看整体系统负载、磁盘、端口或执行 ps/top/grep 等组合命令，应使用 exec_command。
+    """
+    try:
+        return _format_process_list()
+    except Exception as e:
+        return f"进程列表读取异常: {str(e)}"
+
+
+@tool
+def manage_process(action: str, pid: int = None) -> str:
+    """
+    管理系统进程。用户要求查看进程列表或终止/杀掉指定 PID 时应触发本工具；只查看列表时优先使用 list_process。
+    防止误杀核心 Uvicorn/FastAPI 主进程以及开发守护进程。
     
     Args:
         action: 只能是 "list" (列出进程) 或 "kill" (终止进程)。
         pid: 当 action="kill" 时，必须提供指定的目标 PID。
     """
     try:
-        current_pid = os.getpid()
-        parent_pids = []
-        try:
-            p = psutil.Process(current_pid)
-            while p.parent():
-                parent_pids.append(p.parent().pid)
-                p = p.parent()
-        except:
-            pass
-        
-        protected_pids = set([current_pid, 1] + parent_pids)
+        protected_pids = _protected_process_ids()
 
         action = action.lower()
         if action == "list":
-            processes = []
-            for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_info']):
-                try:
-                    info = proc.info
-                    pid_val = info['pid']
-                    is_protected = pid_val in protected_pids
-                    processes.append({
-                        "pid": pid_val,
-                        "name": info['name'],
-                        "username": info['username'],
-                        "cpu": f"{proc.cpu_percent()}%",
-                        "memory": f"{round(info['memory_info'].rss / (1024 * 1024), 2)} MB",
-                        "status": "核心受保护" if is_protected else "可控"
-                    })
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            
-            lines = [f"{'PID':<8} {'进程名':<25} {'CPU占用':<10} {'物理内存':<12} {'状态':<10}"]
-            lines.append("-" * 70)
-            for p in sorted(processes, key=lambda x: x['pid']):
-                lines.append(f"{p['pid']:<8} {p['name']:<25} {p['cpu']:<10} {p['memory']:<12} {p['status']:<10}")
-            return "\n".join(lines)
+            return _format_process_list()
             
         elif action == "kill":
             if pid is None:

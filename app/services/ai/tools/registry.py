@@ -15,7 +15,7 @@ from app.services.ai.tools.notification_tools import send_dingtalk_message, send
 # Import Jira Tools
 from app.services.ai.tools.jira_tools import JiraSearchTool, JiraCreateIssueTool, JiraGetProjectsTool
 from app.services.ai.tools.system_executive_tools import (
-    read_local_file, write_local_file, execute_system_command, manage_system_process,
+    read_file, write_file, search_text, exec_command, manage_process, list_process,
     create_skills, list_available_skills, read_skill_instruction
 )
 from app.services.ai.tools.advanced_auxiliary_tools import (
@@ -69,10 +69,12 @@ class ToolRegistry:
         "jira_create_issue": _jira_create,
         "jira_get_projects": _jira_get_projects,
         # Register System Executive Tools
-        "read_local_file": read_local_file,
-        "write_local_file": write_local_file,
-        "execute_system_command": execute_system_command,
-        "manage_system_process": manage_system_process,
+        "read_file": read_file,
+        "write_file": write_file,
+        "search_text": search_text,
+        "exec_command": exec_command,
+        "manage_process": manage_process,
+        "list_process": list_process,
         "create_skills": create_skills,
         "list_available_skills": list_available_skills,
         "read_skill_instruction": read_skill_instruction,
@@ -241,8 +243,4 @@ class ToolRegistry:
             create_skills,
             list_available_skills,
             read_skill_instruction,
-            system_http_request,
-            fetch_static_web_url,
-            web_renderer_and_snapshot,
-            web_search_baidu,
         ]

@@ -47,3 +47,27 @@ async def test_summarize_returns_structured_memory_fields():
     assert "key_facts" in prompt
     assert "decisions" in prompt
     assert "open_items" in prompt
+
+
+@pytest.mark.asyncio
+async def test_summarize_retries_on_transient_errors_then_succeeds():
+    llm = AsyncMock()
+    llm.ainvoke = AsyncMock(
+        side_effect=[
+            ConnectionError("connection error"),
+            TimeoutError("timeout"),
+            FakeResponse(),
+        ]
+    )
+
+    with patch(
+        "app.services.ai.conversation_summarizer.get_llm_async",
+        new_callable=AsyncMock,
+        return_value=llm,
+    ):
+        result = await ConversationSummarizer.summarize(
+            [{"role": "user", "content": "请总结一下"}]
+        )
+
+    assert result["title"] == "记忆设计"
+    assert llm.ainvoke.await_count == 3

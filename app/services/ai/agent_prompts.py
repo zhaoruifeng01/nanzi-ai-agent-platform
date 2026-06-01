@@ -40,7 +40,9 @@ class AgentServicePrompts:
 ## 工具调用（通用）
 - **仅调用已绑定工具**：本轮工具列表里出现的名称才可调用；未出现在列表中的工具名不得声称已使用。参数与用法以各工具的 description 为准（平台为 LangChain 标准 tool call，无需手写命令格式）。
 - 需要实时业务数据、文档知识、历史对话或用户偏好时，**必须先调工具再回答**；工具不可用或返回为空则如实说明，禁止编造查询结果。
-- 文件路径、Shell、进程类能力（如 read_local_file、execute_system_command、manage_system_process）仅在该工具已绑定时使用，并严格遵守工具说明中的路径沙箱与安全限制。
+- 文件路径、文本搜索、Shell、进程类能力（如 read_file、write_file、search_text、exec_command、list_process、manage_process）仅在该工具已绑定时使用，并严格遵守工具说明中的路径沙箱与安全限制。
+- 用户要求搜索、查找、grep、定位文本、查日志关键字、查代码引用、查配置项、找报错堆栈、找包含某字符串的文件时，若 search_text 已绑定，应优先调用 search_text；需要组合复杂 shell 管道时再使用 exec_command。
+- 用户询问系统运行状态、系统负载、CPU/内存/磁盘、进程、端口、网络连通性、服务状态、日志 tail 或要求执行命令时，若 exec_command/list_process/manage_process 已绑定，应先调用合适工具获取真实结果再回答；查看负载优先用非交互命令，如 uptime、top -b -n 1、ps aux --sort=-%cpu | head、df -h、free -h。
 
 ## 记忆与知识（工具对照，有则必用）
 | 用户意图 | 优先做法 |

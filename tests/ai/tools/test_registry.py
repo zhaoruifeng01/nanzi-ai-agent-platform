@@ -5,6 +5,8 @@ from app.services.ai.tools.registry import ToolRegistry
 from app.models.tool import SysApiTool
 from app.models.mcp import McpToolCache
 
+pytestmark = pytest.mark.no_infrastructure
+
 @pytest.fixture(autouse=True)
 def clear_registry_cache():
     """每个测试前清理缓存，确保测试隔离"""
@@ -108,3 +110,17 @@ def test_dynamic_register():
     mock_tool = MagicMock()
     ToolRegistry.register("custom_tool", mock_tool)
     assert ToolRegistry._registry["custom_tool"] == mock_tool
+
+
+def test_system_executive_tool_names_are_current():
+    assert "read_file" in ToolRegistry._registry
+    assert "write_file" in ToolRegistry._registry
+    assert "exec_command" in ToolRegistry._registry
+    assert "manage_process" in ToolRegistry._registry
+    assert "list_process" in ToolRegistry._registry
+    assert "search_text" in ToolRegistry._registry
+
+    assert "read_local_file" not in ToolRegistry._registry
+    assert "write_local_file" not in ToolRegistry._registry
+    assert "execute_system_command" not in ToolRegistry._registry
+    assert "manage_system_process" not in ToolRegistry._registry

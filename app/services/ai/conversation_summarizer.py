@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+import asyncio
 from typing import Any, Dict, List
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -27,6 +28,77 @@ DAILY_SYSTEM_PROMPT = (
 
 
 class ConversationSummarizer:
+    @staticmethod
+    def _is_retryable_llm_error(err: Exception) -> bool:
+        """
+        Best-effort classifier for transient network/proxy/provider errors.
+        We keep this local to avoid hard dependency on optional provider packages.
+        """
+        if isinstance(err, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+            return True
+        # httpx / httpcore (optional)
+        try:
+            import httpx  # type: ignore
+
+            if isinstance(err, (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+                return True
+        except Exception:
+            pass
+        try:
+            import httpcore  # type: ignore
+
+            if isinstance(err, (httpcore.ConnectError, httpcore.ReadTimeout, httpcore.WriteTimeout, httpcore.PoolTimeout)):
+                return True
+        except Exception:
+            pass
+        # openai (optional)
+        try:
+            import openai  # type: ignore
+
+            if isinstance(err, (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError)):
+                return True
+        except Exception:
+            pass
+
+        msg = str(err).lower()
+        retry_markers = (
+            "connection error",
+            "connect error",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "temporary failure",
+            "proxy",
+            "502",
+            "503",
+            "504",
+            "rate limit",
+        )
+        return any(m in msg for m in retry_markers)
+
+    @staticmethod
+    async def _ainvoke_with_retry(llm: Any, messages: List[Any], *, max_retries: int = 3) -> Any:
+        last_err: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                return await llm.ainvoke(messages)
+            except Exception as e:
+                last_err = e
+                if attempt >= max_retries - 1 or not ConversationSummarizer._is_retryable_llm_error(e):
+                    raise
+                delay = min(8.0, 1.0 * (2**attempt))
+                logger.warning(
+                    "[ConversationSummarizer] LLM call failed, will retry in %.1fs (attempt %s/%s): %s",
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                    e,
+                )
+                await asyncio.sleep(delay)
+        if last_err:
+            raise last_err
+        raise RuntimeError("Unexpected retry loop termination")
+
     @staticmethod
     def _as_list(value: Any) -> List[str]:
         if value is None:
@@ -86,11 +158,13 @@ class ConversationSummarizer:
                 {"summary": transcript[:500]}, transcript[:500]
             )
 
-        resp = await llm.ainvoke(
+        resp = await ConversationSummarizer._ainvoke_with_retry(
+            llm,
             [
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=f"请为以下对话生成摘要：\n\n{transcript}"),
-            ]
+            ],
+            max_retries=3,
         )
         raw = resp.content if hasattr(resp, "content") else str(resp)
         try:
@@ -135,11 +209,13 @@ class ConversationSummarizer:
                 {"summary": transcript[:500]}, transcript[:500]
             )
 
-        resp = await llm.ainvoke(
+        resp = await ConversationSummarizer._ainvoke_with_retry(
+            llm,
             [
                 SystemMessage(content=DAILY_SYSTEM_PROMPT),
                 HumanMessage(content=f"请汇总以下同一天的会话摘要：\n\n{transcript}"),
-            ]
+            ],
+            max_retries=3,
         )
         raw = resp.content if hasattr(resp, "content") else str(resp)
         try:

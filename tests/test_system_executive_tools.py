@@ -2,12 +2,14 @@ import os
 import pytest
 import asyncio
 from app.services.ai.tools.system_executive_tools import (
-    validate_safe_path, read_local_file, write_local_file,
-    execute_system_command, manage_system_process
+    validate_safe_path, read_file, write_file,
+    exec_command, manage_process, list_process, search_text
 )
 from app.services.ai.tools.advanced_auxiliary_tools import (
     sqlite_scratchpad, directory_tree_navigator, code_syntax_linter
 )
+
+pytestmark = pytest.mark.no_infrastructure
 
 def test_safe_path_validation():
     # 验证合法路径正常返回
@@ -18,21 +20,21 @@ def test_safe_path_validation():
     with pytest.raises(ValueError, match="安全拦截：路径越界"):
         validate_safe_path("data/uploads/../../../etc/passwd")
 
-def test_read_write_local_file():
+def test_read_write_file():
     test_file = "data/uploads/test_junit.txt"
     test_content = "Hello Yunshu Agent Executive Tools!\nLine 2\nLine 3"
     
     # 写入测试
-    res_write = write_local_file.invoke({"path": test_file, "content": test_content})
+    res_write = write_file.invoke({"path": test_file, "content": test_content})
     assert "物理写入成功" in res_write
 
     # 分页读取测试
-    res_read = read_local_file.invoke({"path": test_file, "offset": 0, "limit": 10})
+    res_read = read_file.invoke({"path": test_file, "offset": 0, "limit": 10})
     assert "[分页读取成功" in res_read
     assert "Hello Yuns" in res_read
 
     # Tail 读取测试
-    res_tail = read_local_file.invoke({"path": test_file, "tail": True, "limit": 20})
+    res_tail = read_file.invoke({"path": test_file, "tail": True, "limit": 20})
     assert "[Tail 读取成功" in res_tail
     
     # 清理
@@ -40,30 +42,74 @@ def test_read_write_local_file():
         os.remove(test_file)
 
 @pytest.mark.asyncio
-async def test_execute_system_command():
+async def test_exec_command():
     # 测试常规命令
-    res = await execute_system_command.ainvoke({"command": "echo 'Yunshu'"})
+    res = await exec_command.ainvoke({"command": "echo 'Yunshu'"})
     assert "Yunshu" in res
     assert "ExitCode=0" in res
 
     # 测试超时拦截
-    res_timeout = await execute_system_command.ainvoke({"command": "sleep 40"})
+    res_timeout = await exec_command.ainvoke({"command": "sleep 40"})
     assert "已强制终止命令进程" in res_timeout
 
     # 测试高危命令拦截
-    res_forbidden = await execute_system_command.ainvoke({"command": "rm -rf /"})
+    res_forbidden = await exec_command.ainvoke({"command": "rm -rf /"})
     assert "安全拦截：该命令包含高危操作" in res_forbidden
 
-def test_manage_system_process():
+def test_manage_process_and_list_process():
     # 测试列出进程
-    res_list = manage_system_process.invoke({"action": "list"})
+    res_list = manage_process.invoke({"action": "list"})
     assert "PID" in res_list
     assert "进程名" in res_list
 
+    res_list_direct = list_process.invoke({})
+    assert "PID" in res_list_direct
+    assert "进程名" in res_list_direct
+
     # 测试核心主进程误杀拦截
     current_pid = os.getpid()
-    res_kill = manage_system_process.invoke({"action": "kill", "pid": current_pid})
+    res_kill = manage_process.invoke({"action": "kill", "pid": current_pid})
     assert "受到强制保护，禁止终止" in res_kill
+
+def test_search_text_finds_matches_with_context_and_limits():
+    test_dir = "data/uploads/search_text_test"
+    os.makedirs(test_dir, exist_ok=True)
+    first_file = os.path.join(test_dir, "app.log")
+    second_file = os.path.join(test_dir, "notes.txt")
+    with open(first_file, "w", encoding="utf-8") as f:
+        f.write("line before\nERROR database timeout\nline after\n")
+    with open(second_file, "w", encoding="utf-8") as f:
+        f.write("nothing here\nerror lower case\n")
+
+    try:
+        res = search_text.invoke({
+            "pattern": "ERROR",
+            "path": test_dir,
+            "file_glob": "*.log",
+            "case_sensitive": False,
+            "context_lines": 1,
+            "max_results": 5,
+        })
+
+        assert "搜索完成" in res
+        assert "app.log:2" in res
+        assert "ERROR database timeout" in res
+        assert "line before" in res
+        assert "notes.txt" not in res
+
+        no_match = search_text.invoke({
+            "pattern": "ERROR",
+            "path": test_dir,
+            "case_sensitive": True,
+            "file_glob": "*.txt",
+        })
+        assert "未找到匹配内容" in no_match
+    finally:
+        for filename in (first_file, second_file):
+            if os.path.exists(filename):
+                os.remove(filename)
+        if os.path.exists(test_dir):
+            os.rmdir(test_dir)
 
 def test_sqlite_scratchpad():
     session_id = "test_sess_99"
@@ -114,7 +160,8 @@ async def test_fetch_static_web_url_flow():
     mock_client = AsyncMock()
     mock_client.get.return_value = mock_response
     
-    with patch("httpx.AsyncClient") as mock_class:
+    with patch("app.services.ai.tools.system_tools.validate_url", return_value=True), \
+         patch("httpx.AsyncClient") as mock_class:
         mock_class.return_value.__aenter__.return_value = mock_client
         res = await fetch_static_web_url.ainvoke({"url": "https://example.com/news"})
         
@@ -167,5 +214,3 @@ def test_create_skills_tool(tmp_path):
             "skill_md_content": content
         })
         assert "非法技能 ID 格式" in res_bad_id
-
-
