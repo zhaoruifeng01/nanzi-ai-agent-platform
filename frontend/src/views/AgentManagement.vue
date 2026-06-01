@@ -297,22 +297,32 @@ const availableTools = [
     isSystem: true,
   },
   {
-    name: "read_local_file",
+    name: "read_file",
     description: "安全本地文件分页/Tail读取，有效防止大文件 Token 撑破",
     isSystem: true,
   },
   {
-    name: "write_local_file",
+    name: "write_file",
     description: "本地文件物理写入与覆盖，若父级目录缺失将自动补全",
     isSystem: true,
   },
   {
-    name: "execute_system_command",
+    name: "search_text",
+    description: "安全文本搜索 / grep，支持日志关键字、代码引用、配置项与报错堆栈定位",
+    isSystem: true,
+  },
+  {
+    name: "exec_command",
     description: "系统 shell 命令执行，强制 30 秒超时拦截防挂死",
     isSystem: true,
   },
   {
-    name: "manage_system_process",
+    name: "list_process",
+    description: "列出当前系统进程及 CPU、内存占用",
+    isSystem: true,
+  },
+  {
+    name: "manage_process",
     description: "系统进程遍历监控与控制，内置 Web 核心主 PID 安全防护",
     isSystem: true,
   },
@@ -356,7 +366,7 @@ const fetchTools = async () => {
   try {
     const res = await toolApi.list();
     dynamicTools.value = res.data;
-    
+
     // Fetch MCP tools
     try {
       const mcpRes = await axios.get('/api/portal/tools/mcp');
@@ -399,33 +409,42 @@ const groupedTools = computed(() => {
 
   allAvailableTools.value.forEach(tool => {
     const name = tool.name.toLowerCase();
-    
+
     if (name.includes('sql') || name.includes('dataset') || name.includes('bi_') || name.includes('olap')) {
       groups.chatbi.tools.push(tool);
     } else if (name.includes('knowledge') || name.includes('rag') || name.includes('kb_') || name.includes('document')) {
       groups.knowledge.tools.push(tool);
     } else if (
-      name.includes('local_file') || 
-      name.includes('system_command') || 
-      name.includes('system_process') || 
-      name.includes('http_request') || 
-      name.includes('scratchpad') || 
-      name.includes('navigator') || 
-      name.includes('web_renderer') || 
+      name.includes('local_file') ||
+      name.includes('system_command') ||
+      name.includes('system_process') ||
+      name.includes('search_text') ||
+      name.includes('exec_command') ||
+      name.includes('list_process') ||
+      name.includes('manage_process') ||
+      name.includes('http_request') ||
+      name.includes('static_web') ||
+      name.includes('web_search') ||
+      name.includes('scratchpad') ||
+      name.includes('navigator') ||
+      name.includes('web_renderer') ||
       name.includes('linter') ||
+      name.startsWith('search_') ||
       name.startsWith('read_') ||
       name.startsWith('write_') ||
+      name.startsWith('exec_') ||
+      name.startsWith('list_') ||
       name.startsWith('execute_') ||
       name.startsWith('manage_')
     ) {
       groups.system.tools.push(tool);
     } else if (
-      name.includes('dingtalk') || 
-      name.includes('email') || 
-      name.includes('jira') || 
-      name.includes('feishu') || 
-      name.includes('wechat') || 
-      name.includes('message') || 
+      name.includes('dingtalk') ||
+      name.includes('email') ||
+      name.includes('jira') ||
+      name.includes('feishu') ||
+      name.includes('wechat') ||
+      name.includes('message') ||
       name.includes('mail')
     ) {
       groups.office.tools.push(tool);
@@ -522,8 +541,8 @@ const openAgentModal = (agent?: AIAgent) => {
         safety_check_output_strategy: agent.engine_config.safety_check_output_strategy || "append",
       };
     } else {
-       engineConfigUI.value = { 
-           app_id: "", 
+       engineConfigUI.value = {
+           app_id: "",
            dataset_ids: "",
            ragflow_similarity_threshold: "",
            ragflow_vector_weight: "",
@@ -552,8 +571,8 @@ const openAgentModal = (agent?: AIAgent) => {
       engine_type: "LOCAL",
       engine_config: null,
     };
-    engineConfigUI.value = { 
-        app_id: "", 
+    engineConfigUI.value = {
+        app_id: "",
         dataset_ids: "",
         ragflow_similarity_threshold: "",
         ragflow_vector_weight: "",
@@ -617,7 +636,7 @@ const saveAgent = async () => {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    
+
     // Always attach RAG params if datasets are present or if params are set
     // Or just save them if customized? Yes, LOCAL engine agent can still use KB tool with custom params.
     agentForm.value.engine_config = {
@@ -726,10 +745,10 @@ const toggleAgentStatus = (agent: AIAgent) => {
     showToast("无权修改此智能体状态", "warning");
     return;
   }
-  
+
   const action = agent.is_enabled ? '禁用' : '启用';
   const type = agent.is_enabled ? 'danger' : 'primary';
-  
+
   confirmState.value = {
     show: true,
     title: `确认${action}智能体`,
@@ -741,7 +760,7 @@ const toggleAgentStatus = (agent: AIAgent) => {
           ...agent,
           is_enabled: !agent.is_enabled,
         });
-        showToast(agent.is_enabled ? "已禁用" : "已启用", "success"); 
+        showToast(agent.is_enabled ? "已禁用" : "已启用", "success");
         fetchAgents();
         confirmState.value.show = false;
       } catch (e: any) {
@@ -798,10 +817,10 @@ const saveVersion = async () => {
 const openToolRuntimeConfig = (toolName: string) => {
   currentConfiguringTool.value = toolName;
   // Find existing config in versionForm.tools if it's an object
-  const existing = versionForm.value.tools?.find(t => 
+  const existing = versionForm.value.tools?.find(t =>
     (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
   );
-  
+
   if (existing && typeof existing === 'object') {
     currentToolConfig.value = { ...(existing as any) };
   } else {
@@ -812,10 +831,10 @@ const openToolRuntimeConfig = (toolName: string) => {
 
 const openDingTalkConfig = (toolName: string) => {
   currentConfiguringTool.value = toolName;
-  const existing = versionForm.value.tools?.find(t => 
+  const existing = versionForm.value.tools?.find(t =>
     (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
   );
-  
+
   if (existing && typeof existing === 'object') {
     currentToolConfig.value = { ...(existing as any) };
   } else {
@@ -826,10 +845,10 @@ const openDingTalkConfig = (toolName: string) => {
 
 const openEmailConfig = (toolName: string) => {
   currentConfiguringTool.value = toolName;
-  const existing = versionForm.value.tools?.find(t => 
+  const existing = versionForm.value.tools?.find(t =>
     (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
   );
-  
+
   if (existing && typeof existing === 'object') {
     currentToolConfig.value = { ...(existing as any) };
   } else {
@@ -840,10 +859,10 @@ const openEmailConfig = (toolName: string) => {
 
 const handleToolConfigSave = (newConfig: any) => {
   const tools = [...(versionForm.value.tools || [])];
-  const idx = tools.findIndex(t => 
+  const idx = tools.findIndex(t =>
     (typeof t === 'string' ? t === newConfig.name : (t as any).name === newConfig.name)
   );
-  
+
   if (idx > -1) {
     tools[idx] = newConfig;
     versionForm.value.tools = tools;
@@ -854,10 +873,10 @@ const handleToolConfigSave = (newConfig: any) => {
 const toggleTool = (toolName: string) => {
   if (!canEditVersion.value) return;
   const tools = [...(versionForm.value.tools || [])];
-  const index = tools.findIndex(t => 
+  const index = tools.findIndex(t =>
     (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
   );
-  
+
   if (index > -1) {
     tools.splice(index, 1);
   } else {
@@ -867,13 +886,13 @@ const toggleTool = (toolName: string) => {
 };
 
 const isToolSelected = (toolName: string) => {
-  return !!versionForm.value.tools?.find(t => 
+  return !!versionForm.value.tools?.find(t =>
     (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
   );
 };
 
 const getToolCustomConfig = (toolName: string) => {
-  const found = versionForm.value.tools?.find(t => 
+  const found = versionForm.value.tools?.find(t =>
     (typeof t !== 'string' && (t as any).name === toolName)
   );
   if (found && typeof found === 'object') {
@@ -886,7 +905,7 @@ const getToolCustomConfig = (toolName: string) => {
 };
 
 const canEditVersion = computed(() => {
-  return selectedAgent.value?.is_editable !== false && 
+  return selectedAgent.value?.is_editable !== false &&
          (!versionForm.value.id || versionForm.value.status === 'DRAFT');
 });
 
@@ -1083,7 +1102,7 @@ const formatDate = (dateStr: string) => {
 
     <!-- Collapsible Help Section -->
     <div class="bg-blue-50/50 border border-blue-100 rounded-xl overflow-hidden transition-all duration-300">
-      <button 
+      <button
         @click="showHelp = !showHelp"
         class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-blue-800 hover:bg-blue-100/50 transition-colors"
       >
@@ -1093,17 +1112,17 @@ const formatDate = (dateStr: string) => {
           </svg>
           💡 智能体调度与托管说明
         </div>
-        <svg 
+        <svg
           class="w-4 h-4 text-blue-500 transition-transform duration-200"
           :class="showHelp ? 'rotate-180' : ''"
-          fill="none" 
-          viewBox="0 0 24 24" 
+          fill="none"
+          viewBox="0 0 24 24"
           stroke="currentColor"
         >
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
-      
+
       <div v-show="showHelp" class="px-4 pb-4 text-sm text-blue-700/80 space-y-2 border-t border-blue-100/50 pt-3">
         <div class="flex items-start">
           <span class="mr-2 mt-0.5 text-blue-500 font-bold">1.</span>
@@ -1304,16 +1323,16 @@ const formatDate = (dateStr: string) => {
             >
 
             <!-- Toggle Switch -->
-            <button 
-              class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2" 
+            <button
+              class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
               :class="agent.is_enabled ? 'bg-green-500' : 'bg-gray-200'"
               @click.stop="toggleAgentStatus(agent)"
               title="切换启用状态"
               v-if="agent.is_editable !== false"
             >
               <span class="sr-only">Toggle Status</span>
-              <span 
-                aria-hidden="true" 
+              <span
+                aria-hidden="true"
                 class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
                 :class="agent.is_enabled ? 'translate-x-4' : 'translate-x-0'"
               ></span>
@@ -1339,7 +1358,7 @@ const formatDate = (dateStr: string) => {
 
         <!-- Description (Comment Style) -->
         <div class="px-5 pb-3 flex-1 flex flex-col justify-center">
-          <div 
+          <div
             class="p-2.5 rounded-lg border border-gray-100 bg-gray-50/80 font-mono text-[11px] leading-relaxed relative group/desc min-h-[64px] flex flex-col justify-center transition-all shadow-sm"
           >
             <div class="absolute top-0 left-0 w-1 h-full transition-colors bg-gray-300 group-hover:bg-primary/50"></div>
@@ -1505,8 +1524,8 @@ const formatDate = (dateStr: string) => {
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
-              <tr 
-                v-for="agent in filteredAgents" 
+              <tr
+                v-for="agent in filteredAgents"
                 :key="agent.id"
                 class="hover:bg-blue-50/30 transition-colors group"
                 :class="!agent.is_enabled ? 'opacity-70 grayscale-[0.6] bg-gray-50/30' : ''"
@@ -1572,9 +1591,9 @@ const formatDate = (dateStr: string) => {
                       </svg>
                     </button>
                     <!-- Version Management Icon Button -->
-                    <button 
-                      v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'" 
-                      @click.stop="openDrawer(agent)" 
+                    <button
+                      v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
+                      @click.stop="openDrawer(agent)"
                       class="p-1.5 text-primary hover:bg-primary/5 rounded-md transition-all shadow-sm border border-transparent hover:border-primary/20"
                       title="版本管理"
                     >
@@ -1582,11 +1601,11 @@ const formatDate = (dateStr: string) => {
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                       </svg>
                     </button>
-                    <button 
-                      v-has-perm="'element:agent:delete'" 
+                    <button
+                      v-has-perm="'element:agent:delete'"
                       v-if="!agent.is_system && agent.is_editable !== false"
-                      @click.stop="handleDeleteAgent(agent)" 
-                      class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" 
+                      @click.stop="handleDeleteAgent(agent)"
+                      class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100"
                       title="删除"
                     >
                       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1661,10 +1680,10 @@ const formatDate = (dateStr: string) => {
           <label class="block text-xs font-black text-gray-500 uppercase tracking-widest mb-3"
             >执行引擎 (Execution Engine)</label
           >
-          
+
           <div class="grid grid-cols-3 gap-3">
             <!-- Local LLM Card -->
-            <div 
+            <div
               @click="agentForm.engine_type = 'LOCAL'"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'LOCAL' ? 'bg-blue-50 border-blue-500 shadow-sm' : 'bg-white border-gray-100 hover:border-blue-200'"
@@ -1678,7 +1697,7 @@ const formatDate = (dateStr: string) => {
             </div>
 
             <!-- RAGFlow Card -->
-            <div 
+            <div
               @click="agentForm.engine_type = 'RAGFLOW'"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'RAGFLOW' ? 'bg-indigo-50 border-indigo-500 shadow-sm' : 'bg-white border-gray-100 hover:border-indigo-200'"
@@ -1692,7 +1711,7 @@ const formatDate = (dateStr: string) => {
             </div>
 
             <!-- OpenClaw Card -->
-            <div 
+            <div
               @click="agentForm.engine_type = 'OPENCLAW'"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'OPENCLAW' ? 'bg-orange-50 border-orange-500 shadow-sm' : 'bg-white border-gray-100 hover:border-orange-200'"
@@ -1756,7 +1775,7 @@ const formatDate = (dateStr: string) => {
                     <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
                   </label>
                 </div>
-                
+
                 <div v-if="engineConfigUI.safety_check_enabled" class="animate-fade-in space-y-4 pt-2">
                   <!-- Input Audit Section -->
                   <div class="p-2.5 bg-white/50 border border-orange-100 rounded-lg">
@@ -1765,12 +1784,12 @@ const formatDate = (dateStr: string) => {
                         <span class="mr-1">📥</span> 输入审计 (Input Audit)
                       </label>
                       <div class="flex items-center bg-orange-100/50 p-0.5 rounded text-[9px] border border-orange-200">
-                        <button 
+                        <button
                           @click="engineConfigUI.safety_check_input_strategy = 'append'"
                           class="px-2 py-0.5 rounded transition-all"
                           :class="engineConfigUI.safety_check_input_strategy === 'append' ? 'bg-orange-500 text-white shadow-sm' : 'text-orange-600 hover:bg-orange-200/50'"
                         >追加</button>
-                        <button 
+                        <button
                           @click="engineConfigUI.safety_check_input_strategy = 'override'"
                           class="px-2 py-0.5 rounded transition-all"
                           :class="engineConfigUI.safety_check_input_strategy === 'override' ? 'bg-orange-500 text-white shadow-sm' : 'text-orange-600 hover:bg-orange-200/50'"
@@ -1784,7 +1803,7 @@ const formatDate = (dateStr: string) => {
                         placeholder="输入业务特有的审计规则（留空则仅执行系统默认审计）..."
                         class="w-full px-2 py-1.5 text-[11px] border border-orange-50 rounded bg-white focus:ring-1 focus:ring-orange-400 outline-none resize-none"
                       ></textarea>
-                      <button 
+                      <button
                         @click="openSafetyModal('input')"
                         class="absolute top-1 right-1 text-orange-300 hover:text-orange-500 transition-colors"
                         title="查看输入默认提示词"
@@ -1802,12 +1821,12 @@ const formatDate = (dateStr: string) => {
                         <span class="mr-1">📤</span> 输出审计 (Output Audit)
                       </label>
                       <div class="flex items-center bg-orange-100/50 p-0.5 rounded text-[9px] border border-orange-200">
-                        <button 
+                        <button
                           @click="engineConfigUI.safety_check_output_strategy = 'append'"
                           class="px-2 py-0.5 rounded transition-all"
                           :class="engineConfigUI.safety_check_output_strategy === 'append' ? 'bg-orange-500 text-white shadow-sm' : 'text-orange-600 hover:bg-orange-200/50'"
                         >追加</button>
-                        <button 
+                        <button
                           @click="engineConfigUI.safety_check_output_strategy = 'override'"
                           class="px-2 py-0.5 rounded transition-all"
                           :class="engineConfigUI.safety_check_output_strategy === 'override' ? 'bg-orange-500 text-white shadow-sm' : 'text-orange-600 hover:bg-orange-200/50'"
@@ -1821,7 +1840,7 @@ const formatDate = (dateStr: string) => {
                         placeholder="输入业务特有的审计规则（留空则仅执行系统默认审计）..."
                         class="w-full px-2 py-1.5 text-[11px] border border-orange-50 rounded bg-white focus:ring-1 focus:ring-orange-400 outline-none resize-none"
                       ></textarea>
-                      <button 
+                      <button
                         @click="openSafetyModal('output')"
                         class="absolute top-1 right-1 text-orange-300 hover:text-orange-500 transition-colors"
                         title="查看输出默认提示词"
@@ -1909,23 +1928,23 @@ const formatDate = (dateStr: string) => {
                      <span class="text-gray-400 font-normal">Default: System</span>
                   </label>
                   <div class="flex items-center space-x-2">
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="1" 
-                        step="0.05" 
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
                         :value="engineConfigUI.ragflow_similarity_threshold || 0"
                         @input="(e) => engineConfigUI.ragflow_similarity_threshold = (e.target as HTMLInputElement).value"
-                        class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" 
+                        class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
                       />
-                      <input 
-                        type="number" 
+                      <input
+                        type="number"
                         v-model="engineConfigUI.ragflow_similarity_threshold"
                         placeholder="Sys"
-                        min="0" 
-                        max="1" 
-                        step="0.05" 
-                        class="w-16 px-1 py-1 text-xs border border-gray-300 rounded text-center focus:ring-1 focus:ring-primary outline-none" 
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        class="w-16 px-1 py-1 text-xs border border-gray-300 rounded text-center focus:ring-1 focus:ring-primary outline-none"
                       />
                   </div>
                </div>
@@ -1935,23 +1954,23 @@ const formatDate = (dateStr: string) => {
                      <span class="text-gray-400 font-normal">Default: System</span>
                   </label>
                   <div class="flex items-center space-x-2">
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="1" 
-                        step="0.05" 
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
                         :value="engineConfigUI.ragflow_vector_weight || 0"
                         @input="(e) => engineConfigUI.ragflow_vector_weight = (e.target as HTMLInputElement).value"
-                         class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" 
+                         class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
                       />
-                      <input 
-                        type="number" 
+                      <input
+                        type="number"
                         v-model="engineConfigUI.ragflow_vector_weight"
                         placeholder="Sys"
-                        min="0" 
-                        max="1" 
-                        step="0.05" 
-                        class="w-16 px-1 py-1 text-xs border border-gray-300 rounded text-center focus:ring-1 focus:ring-primary outline-none" 
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        class="w-16 px-1 py-1 text-xs border border-gray-300 rounded text-center focus:ring-1 focus:ring-primary outline-none"
                       />
                   </div>
                </div>
@@ -2072,7 +2091,7 @@ const formatDate = (dateStr: string) => {
             </svg>
             模型策略配置
           </h4>
-          
+
           <!-- Orchestrator Section -->
           <div class="bg-blue-50/30 p-3 rounded-lg border border-blue-100">
             <label class="block text-sm font-bold text-blue-900 mb-1"
@@ -2142,7 +2161,7 @@ const formatDate = (dateStr: string) => {
                 </option>
               </optgroup>
             </select>
-            
+
             <div v-if="versionForm.synthesis_model_name" class="mt-3 animate-fade-in">
               <div class="flex justify-between items-center mb-1">
                 <label class="block text-[11px] font-medium text-gray-600"
@@ -2169,12 +2188,12 @@ const formatDate = (dateStr: string) => {
             <div class="flex justify-between items-center mb-2">
               <label class="block text-sm font-medium text-gray-700">🛠️ 工具能力集 (Tools Capability)</label>
               <div class="flex bg-gray-100 p-0.5 rounded-md text-[10px]">
-                <button 
+                <button
                   @click="toolTab = 'static'"
                   class="px-2 py-1 rounded transition-all"
                   :class="toolTab === 'static' ? 'bg-white shadow-sm text-primary' : 'text-gray-400'"
                 >系统工具 ({{ allAvailableTools.length }})</button>
-                <button 
+                <button
                   @click="toolTab = 'mcp'"
                   class="px-2 py-1 rounded transition-all"
                   :class="toolTab === 'mcp' ? 'bg-white shadow-sm text-primary' : 'text-gray-400'"
@@ -2198,7 +2217,7 @@ const formatDate = (dateStr: string) => {
                     v-for="tool in group.tools"
                     :key="tool.name"
                     @click="toggleTool(tool.name)"
-                    class="flex items-start p-2.5 rounded-lg border transition-all select-none duration-150 transform hover:scale-[1.01]"
+                    class="flex items-start p-2.5 rounded-lg border transition-all select-none duration-150"
                     :class="[
                       isToolSelected(tool.name)
                         ? 'border-primary bg-blue-50/70 shadow-sm'
@@ -2241,19 +2260,19 @@ const formatDate = (dateStr: string) => {
                           class="text-[9px] bg-gray-100 text-gray-500 px-1 rounded border border-gray-200 font-sans font-normal"
                           >系统</span
                         >
-                        <span 
+                        <span
                           v-if="getToolCustomConfig(tool.name)"
                           class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"
                           title="已应用自定义配置"
                         ></span>
                       </div>
-                      
+
                       <div class="text-[10px] text-gray-400 mt-1 leading-snug line-clamp-2" :title="tool.description">
                         {{ tool.description }}
                       </div>
-                      
+
                       <!-- Runtime Context Preview -->
-                      <div 
+                      <div
                         v-if="getToolCustomConfig(tool.name)"
                         class="text-[9px] text-primary/70 mt-1 font-mono itallic whitespace-nowrap overflow-hidden text-ellipsis"
                       >
@@ -2328,7 +2347,7 @@ const formatDate = (dateStr: string) => {
                   </span>
                   <div class="h-px bg-gray-200 flex-1"></div>
                 </div>
-                
+
                 <div class="grid grid-cols-1 gap-2">
                   <div
                     v-for="tool in tools"
@@ -2381,7 +2400,7 @@ const formatDate = (dateStr: string) => {
               placeholder="你是一个..."
               height="800px"
             />
-            
+
             <p class="text-[11px] text-gray-400 mt-2 flex items-center">
               <svg class="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               提示：系统提示词决定了智能体的人格、输出风格以及对工具调用的理解能力。
@@ -2737,7 +2756,7 @@ const formatDate = (dateStr: string) => {
             <h5 class="text-sm font-bold text-orange-800 flex items-center">
               <span class="mr-2">📥</span> 输入审计提示词 (Input Audit)
             </h5>
-            <button 
+            <button
               @click="copyText(DEFAULT_SAFETY_PROMPTS.input, '输入审计提示词')"
               class="text-xs text-orange-600 hover:text-orange-800 font-medium flex items-center"
             >
@@ -2756,7 +2775,7 @@ const formatDate = (dateStr: string) => {
             <h5 class="text-sm font-bold text-orange-800 flex items-center">
               <span class="mr-2">📤</span> 输出审计提示词 (Output Audit)
             </h5>
-            <button 
+            <button
               @click="copyText(DEFAULT_SAFETY_PROMPTS.output, '输出审计提示词')"
               class="text-xs text-orange-600 hover:text-orange-800 font-medium flex items-center"
             >

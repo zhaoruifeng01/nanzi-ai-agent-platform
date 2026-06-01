@@ -257,6 +257,46 @@ def convert_history_to_messages(history: List[Dict[str, str]]) -> List[BaseMessa
     return messages
 
 
+def _system_content_text(message: SystemMessage) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    return str(content).strip()
+
+
+def normalize_messages_for_llm(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """Ensure provider-compatible ordering: all system instructions live at index 0."""
+    system_parts: List[str] = []
+    non_system_messages: List[BaseMessage] = []
+    saw_system = False
+
+    for message in messages:
+        if isinstance(message, SystemMessage):
+            saw_system = True
+            content = _system_content_text(message)
+            if content:
+                system_parts.append(content)
+        else:
+            non_system_messages.append(message)
+
+    if not system_parts:
+        if saw_system:
+            return [SystemMessage(content="")] + non_system_messages
+        return list(non_system_messages)
+
+    merged_system = SystemMessage(content="\n\n".join(system_parts))
+    return [merged_system] + non_system_messages
+
+
+def append_system_instruction(messages: List[BaseMessage], content: str) -> None:
+    """Append a runtime instruction without creating a mid-conversation SystemMessage."""
+    instruction = (content or "").strip()
+    if not instruction:
+        return
+    messages.append(SystemMessage(content=instruction))
+    messages[:] = normalize_messages_for_llm(messages)
+
+
 def parse_xml_tool_calls(content: str) -> List[Dict[str, Any]]:
     """解析模型输出的 <function_calls> XML 工具调用块。"""
     tool_calls: List[Dict[str, Any]] = []

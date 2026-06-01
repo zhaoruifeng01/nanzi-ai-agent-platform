@@ -19,8 +19,10 @@ from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.common import (
+    append_system_instruction,
     convert_history_to_messages,
     extract_tokens_from_message,
+    normalize_messages_for_llm,
     parse_xml_tool_calls,
     tools_include_named,
     MODEL_STREAM_MAX_RETRIES,
@@ -92,6 +94,7 @@ class GeneralChatExecutor(BaseExecutor):
             system_content = f"{GeneralChatPrompts.KNOWLEDGE_TURN_SYSTEM_HINT}\n\n{system_content}"
         langchain_messages = [SystemMessage(content=system_content)]
         langchain_messages.extend(convert_history_to_messages(history))
+        langchain_messages = normalize_messages_for_llm(langchain_messages)
 
         # 3. Execution Mode Selection
         if not tools:
@@ -109,7 +112,7 @@ class GeneralChatExecutor(BaseExecutor):
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
                 try:
-                    async for chunk in llm.astream(langchain_messages):
+                    async for chunk in llm.astream(normalize_messages_for_llm(langchain_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -216,7 +219,7 @@ class GeneralChatExecutor(BaseExecutor):
                 accumulated_msg = None
                 has_tool_call_indicator = False
                 try:
-                    async for chunk in model_with_tools.astream(langchain_messages):
+                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(langchain_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -289,7 +292,7 @@ class GeneralChatExecutor(BaseExecutor):
                          "status": "warning",
                      }
                      langchain_messages.append(response)
-                     langchain_messages.append(SystemMessage(content=GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG))
+                     append_system_instruction(langchain_messages, GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG)
                      knowledge_search_pending = False
                      continue
 
@@ -302,7 +305,7 @@ class GeneralChatExecutor(BaseExecutor):
                          "status": "warning",
                      }
                      langchain_messages.append(response)
-                     langchain_messages.append(SystemMessage(content=MEMORY_SEARCH_CORRECTION_MSG))
+                     append_system_instruction(langchain_messages, MEMORY_SEARCH_CORRECTION_MSG)
                      recall_query_pending = False
                      continue
                  
@@ -410,7 +413,7 @@ class GeneralChatExecutor(BaseExecutor):
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
                 try:
-                    async for chunk in final_llm.astream(synthesis_messages):
+                    async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:

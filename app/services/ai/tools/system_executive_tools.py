@@ -87,6 +87,61 @@ def _parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> dict:
     return meta
 
 
+def _is_forbidden_shell_command(command: str) -> str | None:
+    """
+    Best-effort high-risk command blocker.
+    Returns a human-readable reason string if forbidden, otherwise None.
+    """
+    cmd = (command or "").strip()
+    if not cmd:
+        return None
+
+    # Normalize whitespace for more stable matching.
+    normalized = re.sub(r"\s+", " ", cmd).strip().lower()
+
+    # NOTE: We intentionally keep this conservative (block obvious destructive classes).
+    patterns: list[tuple[str, str]] = [
+        # Root filesystem destructive deletes
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+/\s*($|[;&|])", "禁止删除根目录 /"),
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+/\*\s*($|[;&|])", "禁止删除根目录下所有内容 /*"),
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+/(\.\.\s*/)+\s*($|[;&|])", "禁止路径穿越删除"),
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+~\s*($|[;&|])", "禁止删除用户主目录 ~"),
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+\$home\b", "禁止删除 HOME 目录"),
+        (r"(^|[;&|]\s*)rm(\s+[-\w,=]+)*\s+\$\(pwd\)\b", "禁止删除当前工作目录"),
+
+        # Disk / filesystem destructive operations
+        (r"\bmkfs(\.\w+)?\b", "禁止格式化文件系统 mkfs"),
+        (r"\b(mount|umount)\b\s+/(dev|proc|sys|boot|etc)\b", "禁止对关键系统挂载点执行 mount/umount"),
+        (r"\b(fdisk|sfdisk|cfdisk|parted|gdisk)\b", "禁止磁盘分区操作"),
+        (r"\b(pvcreate|vgcreate|lvcreate|lvremove|vgremove|pvremove)\b", "禁止 LVM 破坏性操作"),
+        (r"\b(zpool\s+destroy|zfs\s+destroy)\b", "禁止 ZFS 销毁操作"),
+
+        # Raw disk writes / wipes
+        (r"\bdd\b.*\bof=/dev/", "禁止 dd 写入块设备"),
+        (r"\bdd\b.*\bif=/dev/(zero|random|urandom)\b", "禁止 dd 读取随机设备进行写盘"),
+        (r"\bwipefs\b", "禁止 wipefs 擦除文件系统签名"),
+        (r"\b(shred|blkdiscard)\b", "禁止 shred/blkdiscard 擦盘"),
+
+        # System power / critical service disruption
+        (r"\b(shutdown|reboot|poweroff|halt|init\s+[06])\b", "禁止关机/重启/停机"),
+
+        # Kill critical processes (common footguns)
+        # Allow normal process management (kill/pkill/killall), but protect PID 1 and a few core daemons
+        (r"\bkill(\s+-\S+)*\s+1\b", "禁止对 PID 1 执行 kill"),
+        (r"\bkillall\b\s+-9\s+(systemd|init|sshd|dockerd)\b", "禁止 killall -9 强杀关键系统进程"),
+        (r"\bpkill\b\s+-9\b.*\b(systemd|init|sshd|dockerd)\b", "禁止 pkill -9 强杀关键系统进程"),
+
+        # Fork bomb
+        (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", "禁止 fork bomb"),
+    ]
+
+    for pat, reason in patterns:
+        if re.search(pat, normalized, flags=re.IGNORECASE):
+            return reason
+
+    return None
+
+
 @tool
 def list_available_skills() -> str:
     """
@@ -307,10 +362,9 @@ async def exec_command(command: str) -> str:
         command: 要执行的 Shell 命令。
     """
     try:
-        # 高危命令简单拦截
-        forbidden_keywords = ["rm -rf /", "mkfs", "dd if=", "shutdown", "reboot"]
-        if any(kw in command for kw in forbidden_keywords):
-            return f"安全拦截：该命令包含高危操作，被禁止执行。"
+        forbidden_reason = _is_forbidden_shell_command(command)
+        if forbidden_reason:
+            return f"安全拦截：{forbidden_reason}。该命令被禁止执行。"
 
         proc = await asyncio.create_subprocess_shell(
             command,

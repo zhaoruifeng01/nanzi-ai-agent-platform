@@ -20,8 +20,10 @@ from app.services.ai.config import AgentConfigProvider
 
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.common import (
+    append_system_instruction,
     convert_history_to_messages,
     extract_tokens_from_message,
+    normalize_messages_for_llm,
     parse_xml_tool_calls,
     MODEL_STREAM_MAX_RETRIES,
     build_stream_retry_log,
@@ -307,7 +309,7 @@ class DataQueryExecutor(BaseExecutor):
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
                 try:
-                    async for chunk in final_llm.astream(synthesis_messages):
+                    async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -594,12 +596,13 @@ class DataQueryExecutor(BaseExecutor):
                 "execution_time_ms": (time.time() - dataset_menu_start) * 1000,
             }
         langchain_messages.insert(0, SystemMessage(content=system_prompt))
+        langchain_messages = normalize_messages_for_llm(langchain_messages)
 
         # --- [Accuracy Upgrade] Force Plan -> SQL workflow (generic) ---
         # We add a strict instruction once per executor instance to reduce grain/join errors.
         if not self._sql_plan_enforcement_added:
-            langchain_messages.append(SystemMessage(content=DataQueryPrompts.SQL_PLAN_ENFORCEMENT))
-            langchain_messages.append(SystemMessage(content=DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT))
+            append_system_instruction(langchain_messages, DataQueryPrompts.SQL_PLAN_ENFORCEMENT)
+            append_system_instruction(langchain_messages, DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT)
             self._sql_plan_enforcement_added = True
 
         # 技能：摘要已注入 [Active Skills Loaded] 时，全文须 read_skill_instruction 后才算就绪。
@@ -609,7 +612,7 @@ class DataQueryExecutor(BaseExecutor):
             self._current_user_question
         )
         if self._skill_matched and not self._skill_ready:
-            langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_READ_MATCHED_SKILLS))
+            append_system_instruction(langchain_messages, DataQueryPrompts.MUST_READ_MATCHED_SKILLS)
 
         # K3（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
         # 让模型可以直接调用工具（保存/导出/记忆/创建技能等）或基于上下文作答，而非机械重查。
@@ -621,7 +624,7 @@ class DataQueryExecutor(BaseExecutor):
                 if len(result_json) > 20000:
                     result_json = result_json[:20000] + "\n... [上一轮结果过长已截断]"
                 result_block = result_json
-            langchain_messages.append(SystemMessage(content=DataQueryPrompts.context_action_guide(result_block)))
+            append_system_instruction(langchain_messages, DataQueryPrompts.context_action_guide(result_block))
 
         # 3. Model Setup
         # Use streaming for orchestration to allow potential turn-1 short-circuit
@@ -679,7 +682,7 @@ class DataQueryExecutor(BaseExecutor):
                 accumulated_msg = None
                 has_tool_call_indicator = False
                 try:
-                    async for chunk in model_with_tools.astream(langchain_messages):
+                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(langchain_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -809,7 +812,7 @@ class DataQueryExecutor(BaseExecutor):
                     # Some unit tests and UI flows rely on this exact wording.
                     if step == 1 and len(accumulated_content or "") > 50:
                         langchain_messages.append(response)
-                        langchain_messages.append(SystemMessage(content=DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL))
+                        append_system_instruction(langchain_messages, DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL)
                         continue
                     # If required tools are not available, don't spin in enforcement loops.
                     # This happens in some unit tests (only schema tool is provided).
@@ -819,7 +822,7 @@ class DataQueryExecutor(BaseExecutor):
                     # 用户要求使用技能但尚未加载技能指令：优先引导 list/read_skill，而非直接逼查 Schema。
                     if self._needs_skill_prep and not self._skill_ready:
                         langchain_messages.append(response)
-                        langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_LOAD_SKILL_FIRST))
+                        append_system_instruction(langchain_messages, DataQueryPrompts.MUST_LOAD_SKILL_FIRST)
                         continue
                     # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
                     if not self._schema_fetched_ok:
@@ -831,7 +834,7 @@ class DataQueryExecutor(BaseExecutor):
                     else:
                         must_msg = DataQueryPrompts.CONTINUE_OR_SUMMARIZE
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=must_msg))
+                    append_system_instruction(langchain_messages, must_msg)
                     continue
 
             self._no_tool_call_streak = 0
@@ -844,10 +847,10 @@ class DataQueryExecutor(BaseExecutor):
                     # 仅阻断一次；若模型仍不补计划，下一轮直接执行 SQL，避免「有 tool_calls 却无查询完成」的空转。
                     self._sql_plan_block_used = True
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN))
+                    append_system_instruction(langchain_messages, DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN)
                     plan_blocked = True
                 elif not require_plan:
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING))
+                    append_system_instruction(langchain_messages, DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING)
             if plan_blocked:
                 continue
 
@@ -863,7 +866,7 @@ class DataQueryExecutor(BaseExecutor):
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:
                     langchain_messages.append(response)
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA))
+                    append_system_instruction(langchain_messages, DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA)
                     continue
 
             # Process Tool Calls
@@ -957,7 +960,7 @@ class DataQueryExecutor(BaseExecutor):
                         if anomaly_reason:
                             self._ratio_anomaly_feedback_sent = True
                             needs_followup_after_sql = True
-                            langchain_messages.append(SystemMessage(content=DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason)))
+                            append_system_instruction(langchain_messages, DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason))
 
                 # --- [新增] 针对元数据检索日志的精简与增强逻辑 ---
                 if tool_call['name'] == "get_dataset_schema":
@@ -973,7 +976,7 @@ class DataQueryExecutor(BaseExecutor):
                         # After schema is fetched, force an explicit, tool-call-only nudge once.
                         if (not self._schema_no_authorized) and (not self._sql_attempted) and (not self._sql_after_schema_nudge_sent):
                             self._sql_after_schema_nudge_sent = True
-                            langchain_messages.append(SystemMessage(content=DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA))
+                            append_system_instruction(langchain_messages, DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA)
                     keywords = tool_call['args'].get('keywords', '未指定')
                     # 在日志详情顶部增加检索词
                     header = f"🔍 [检索关键词]: {keywords}\n" + "-"*30 + "\n"
@@ -1045,7 +1048,7 @@ class DataQueryExecutor(BaseExecutor):
                     yield {"type": "context_update", "data": tool_call["args"]}
                 langchain_messages.append(ToolMessage(content=str(feedback), tool_call_id=tool_call["id"]))
                 if tool_status == "success" and tool_call["name"] == "read_skill_instruction":
-                    langchain_messages.append(SystemMessage(content=DataQueryPrompts.SKILL_EXECUTION_GUIDE))
+                    append_system_instruction(langchain_messages, DataQueryPrompts.SKILL_EXECUTION_GUIDE)
 
                 # 元数据服务不可用：硬终止，直接给出明确失败结论，绝不进入 execute_sql_query 臆造查询。
                 if self._metadata_unavailable:
@@ -1064,7 +1067,7 @@ class DataQueryExecutor(BaseExecutor):
                 # 让模型在看完实时 Schema 数据后马上重新聚焦到参考案例的 SQL 逻辑
                 if (tool_call["name"] == "get_dataset_schema" and tool_status == "success"
                         and _few_shot_reminder and not _schema_reminder_injected):
-                    langchain_messages.append(SystemMessage(content=_few_shot_reminder))
+                    append_system_instruction(langchain_messages, _few_shot_reminder)
                     _schema_reminder_injected = True
                     logger.info(f"[FewShot] Injected schema-reminder SystemMessage after get_dataset_schema")
 
@@ -1137,7 +1140,7 @@ class DataQueryExecutor(BaseExecutor):
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
                 try:
-                    async for chunk in final_llm.astream(synthesis_messages):
+                    async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:

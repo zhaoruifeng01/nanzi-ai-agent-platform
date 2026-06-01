@@ -54,7 +54,34 @@ async def test_exec_command():
 
     # 测试高危命令拦截
     res_forbidden = await exec_command.ainvoke({"command": "rm -rf /"})
-    assert "安全拦截：该命令包含高危操作" in res_forbidden
+    assert "安全拦截" in res_forbidden
+    assert "禁止删除根目录" in res_forbidden
+
+    res_forbidden2 = await exec_command.ainvoke({"command": "rm /"})
+    assert "安全拦截" in res_forbidden2
+
+    res_forbidden3 = await exec_command.ainvoke({"command": "rm -rf /*"})
+    assert "安全拦截" in res_forbidden3
+    assert "/*" in res_forbidden3
+
+    res_forbidden4 = await exec_command.ainvoke({"command": "shutdown -h now"})
+    assert "安全拦截" in res_forbidden4
+
+    # kill 类命令默认放开，只保护 PID 1 / 少数关键进程强杀
+    res_ok_kill = await exec_command.ainvoke({"command": "kill -0 12345"})
+    assert "ExitCode=" in res_ok_kill
+
+    res_ok_killall = await exec_command.ainvoke({"command": "killall -0 python"})
+    assert "ExitCode=" in res_ok_killall
+
+    res_forbidden5 = await exec_command.ainvoke({"command": "kill -9 1"})
+    assert "安全拦截" in res_forbidden5
+
+    res_forbidden5b = await exec_command.ainvoke({"command": "kill 1"})
+    assert "安全拦截" in res_forbidden5b
+
+    res_forbidden6 = await exec_command.ainvoke({"command": ":(){ :|:& };:"})
+    assert "安全拦截" in res_forbidden6
 
 def test_manage_process_and_list_process():
     # 测试列出进程

@@ -2,8 +2,15 @@ import base64
 import os
 
 import pytest
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.services.ai.executors.common import convert_history_to_messages
+from app.services.ai.executors.common import (
+    append_system_instruction,
+    convert_history_to_messages,
+    normalize_messages_for_llm,
+)
+
+pytestmark = pytest.mark.no_infrastructure
 
 
 @pytest.fixture
@@ -137,3 +144,33 @@ def test_historical_image_not_resubmitted_as_multimodal(sample_png, tmp_path, mo
     assert messages[0].content == "describe image"
     assert isinstance(messages[2].content, str)
     assert messages[2].content == "just a follow up question"
+
+
+def test_normalize_messages_for_llm_merges_system_messages_at_beginning():
+    messages = [
+        SystemMessage(content="primary system"),
+        HumanMessage(content="hello"),
+        SystemMessage(content="runtime context"),
+        HumanMessage(content="follow up"),
+    ]
+
+    normalized = normalize_messages_for_llm(messages)
+
+    assert isinstance(normalized[0], SystemMessage)
+    assert "primary system" in normalized[0].content
+    assert "runtime context" in normalized[0].content
+    assert [type(m) for m in normalized[1:]] == [HumanMessage, HumanMessage]
+
+
+def test_append_system_instruction_merges_into_first_system_message():
+    messages = [
+        SystemMessage(content="primary system"),
+        HumanMessage(content="hello"),
+    ]
+
+    append_system_instruction(messages, "must use search")
+
+    assert len(messages) == 2
+    assert isinstance(messages[0], SystemMessage)
+    assert "primary system" in messages[0].content
+    assert "must use search" in messages[0].content
