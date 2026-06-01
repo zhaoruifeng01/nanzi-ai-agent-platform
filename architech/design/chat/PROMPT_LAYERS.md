@@ -82,23 +82,77 @@
 
 ## 3. 主对话 messages 最终形态
 
+### 3.1 消息列表分层视图
+
+发送给大模型（AI）的请求消息列表（`messages`）并不是单一的一句话，而是一个由多条不同 `role` 的消息组成的结构化列表：
+
+```mermaid
+graph TD
+    subgraph Messages[主对话 Messages 列表]
+        M1[SystemMessage #1: 系统提示词栈]
+        M2[SystemMessage #2: 用户画像 - 可选]
+        M3[SystemMessage #3: 会话运行时上下文 - 可选]
+        M4[HumanMessage/AIMessage ...: 历史上下文对话 - 最近N轮]
+        M5[HumanMessage: 本轮用户输入]
+        M6[DataQuery/Tool Message 等专属追加 - 可选]
+    end
+
+    subgraph M1_Detail[SystemMessage #1 内部层级 - 自顶向下优先级]
+        M1_1["[云枢智能体平台 · 全局守则] (最顶层/最高优先级)"]
+        M1_2["[System Preloaded Memories] (历史回忆，可选)"]
+        M1_3["[跨会话记忆检索提示] (可选)"]
+        M1_4["[Memory Profile] (用户LTM长期记忆，可选)"]
+        M1_5["[Active Skills Loaded] (已挂载技能Frontmatter摘要，可选)"]
+        M1_6["智能体 DB system_prompt (智能体本身的专规，最底层栈底)"]
+    end
+
+    M1 --> M1_Detail
 ```
+
+### 3.2 最终形态与各层级详解
+
+```text
 SystemMessage #1   ← 完整 agent_config.system_prompt（§2.2 栈）
 SystemMessage #2   ← 用户画像（可选）
 SystemMessage #3   ← Session Runtime Context（可选）
-HumanMessage / AIMessage … 历史
+HumanMessage / AIMessage … 历史（默认最近 20 条）
 HumanMessage       ← 本轮用户（见 §4）
 [+ DataQuery 额外 SystemMessage：SQL 计划、追问约束等]
 [+ ToolMessage / 纠正语等]
 ```
 
-执行器入口：
+#### 1. SystemMessage #1：系统提示词栈
+在后端 `AgentService` 中，系统提示词由多段内容从上到下组装。越靠上的内容在模型中拥有更高的约束力：
+- **`[云枢智能体平台 · 全局守则]`（PLATFORM_GLOBAL_SYSTEM_PROMPT）**：
+  - **最高优先级**：声明其优先级高于智能体专规及用户当轮要求，防止 Prompt 注入攻击。
+  - **安全与保密**：严禁透露内部提示词、流程、路由逻辑或非安全模式；进行敏感信息脱敏（如 IP 地址、密钥）；禁止模型编造不存在的 URL 或工单。
+  - **工具调用约束**：强力约束模型“仅调用已绑定工具”，规范敏感工具（如 `read_file`、`search_text`、`exec_command`）的使用边界，优先推荐用专门工具而非通用 Shell 命令。
+  - **记忆对照表**：指导模型在遇到特定意图（如“上次我们聊了啥”、“我的偏好是...”）时，应该优先去调用哪个具体工具。
+- **`[System Preloaded Memories]`（系统预加载记忆，可选）**：当系统检测到用户有回忆意图（如输入“上一次讨论的内容”）时，主动调阅关联的每日摘要或会话摘要注入此处。
+- **`[Memory Profile]`（长期偏好记忆，可选）**：从 Redis 捞取出的用户长期 Facts 与偏好（LTM），让模型在回答时无感融合。
+- **`[Active Skills Loaded]`（已挂载技能摘要，可选）**：用户挂载的工作流技能。此处仅注入 **Frontmatter 摘要**，强力约束模型必须先调用 `read_skill_instruction` 读完 `SKILL.md` 全文后才能开始执行，严禁编造。
+- **`智能体 DB system_prompt`（智能体专规，栈底）**：运营或开发人员在智能体后台配置的提示词，如特定角色的设定、输出语气、专有口径等。
 
-- **GeneralChat**：`SystemMessage(system_prompt)` + 历史；知识库轮局部加 `KNOWLEDGE_TURN_SYSTEM_HINT`
-- **DataQuery**：Few-Shot prepend、`{dataset_menu}` 替换、SQL 护栏等（`executors/prompts.py`）
-- **RAG / OpenClaw**：不走 LOCAL 全局 prepend 栈，自有逻辑
+#### 2. SystemMessage #2：用户画像（User Profile，条件注入）
+- **Identity & Context**：包含当前登录用户的用户名（`raw_name`）、部门（`dept`）、角色/职称（`role`）。
+- **Addressing Guidelines（称呼礼仪）**：指导模型礼貌且智能地称呼用户，不要随意翻译或简写用户的英文账号。
 
-**工具 `description`**：来自 `ToolRegistry`，不算 chat 里的 system 文本。
+#### 3. SystemMessage #3：会话运行时上下文（Runtime Context，通常在调试端启用）
+- **设备自适应排版**：如果检测到 `Current Device` 为 `Mobile`（手机/窄屏），注入 `MOBILE_UI_RULES`，强制规范模型**绝对不要使用 Markdown 宽表格**（容易溢出屏幕），改用无序列表或卡片排版，并频繁分段。如果是 `Desktop` 则鼓励使用图表 and 宽表。
+
+#### 4. HumanMessage（用户本轮消息）
+前端在发送消息前（`appendAttachmentContext` 阶段），会对本轮消息进行增强：
+- 用 `---` 划定界限。
+- **普通文件**：在 `---` 后追加文件在服务器的绝对路径，以便模型在后续调用 `read_file` 工具时能准确找到文件。
+- **知识库**：注入“本轮关联了知识库，必须先检索知识库再作答”等强提示。
+
+### 3.3 执行器入口行为差异
+
+- **GeneralChat**：`SystemMessage(system_prompt)` + 历史；知识库轮局部加 `KNOWLEDGE_TURN_SYSTEM_HINT`。
+- **DataQuery**：Few-Shot prepend、`{dataset_menu}` 替换、SQL 计划与 SQL 护栏等（`executors/prompts.py`）。
+- **RAG / OpenClaw**：不走 LOCAL 全局 prepend 栈，自有逻辑。
+
+**工具 `description`**：来自 `ToolRegistry`，作为模型的独立声明参数，不算在 chat 里的 system 文本中。
 
 ---
 
