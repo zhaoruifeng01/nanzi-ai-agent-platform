@@ -375,6 +375,14 @@ class GeneralChatExecutor(BaseExecutor):
             # Check if we have data to synthesize
             tool_msgs = [m for m in langchain_messages if isinstance(m, ToolMessage)]
             if not tool_msgs:
+                # 🌟 兜底保障：若没有任何 ToolMessage，说明整个交互期间模型未能成功执行任何工具。
+                # 此时，我们必须尝试提取大模型在 ReAct 循环中生成的最后一个 AIMessage 回答并输出给用户，
+                # 避免整个会话因没有 ToolMessage 而被静默吞掉返回。若无回答，则给出一个友好的平台级报错提示。
+                last_ai_msg = next((m for m in reversed(langchain_messages) if isinstance(m, AIMessage) and m.content), None)
+                if last_ai_msg and last_ai_msg.content:
+                    yield {"content": last_ai_msg.content}
+                else:
+                    yield {"content": "⚠️ 流程守护强力拦截成功，但系统未能成功执行或未挂载对应的 `search_knowledge_base` 知识库检索工具，大模型也未能给出有效的兜底纯文本回答。请联系系统管理员检查当前智能体的知识库配置或工具底座连接状态。"}
                 return
 
             start_synthesis = time.time()
