@@ -17,6 +17,14 @@ from __future__ import annotations
 class SharedPrompts:
     """多个执行器复用的提示词片段。"""
 
+    MARKDOWN_OUTPUT_FORMAT = (
+        "【Markdown 输出规范】\n"
+        "如需输出表格，必须使用标准 Markdown 表格：表头、分隔行、每一条数据行必须各占独立一行；"
+        "分隔行每列至少使用三个连字符（例如 `| ID | 名称 |\\n| --- | --- |`）。"
+        "禁止把整张表压成一行，禁止使用 `||` 连接单元格。"
+        "若数据行较多或移动端阅读不友好，请优先使用分组列表/要点列表，只展示关键字段与摘要。"
+    )
+
     # 非图片附件信息块的标题（紧跟在用户消息后）
     NON_IMAGE_ATTACHMENT_HEADER = "\n\n【用户随附上传了非图片附件信息】："
 
@@ -33,6 +41,21 @@ class DataQueryPrompts:
 
     # 复用上一轮结果时，用于替换 system_prompt 中的 {dataset_menu} 占位符
     REUSE_DATASET_MENU_PLACEHOLDER = "本轮复用上一轮结构化查询结果，不重新检索数据集。"
+
+    # DataQueryExecutor 的最小全局底线：只约束查数流程，不承载业务口径。
+    GLOBAL_GUARDRAILS = (
+        "[DataExecutor Global Guardrails]\n"
+        "你处于数据查询执行器中。以下是本执行器的流程底线，优先于智能体业务描述，但不得覆盖具体业务口径、指标定义或字段解释。\n"
+        "1. 新查数问题必须先调用 get_dataset_schema 获取可用数据集、表、字段、指标定义。\n"
+        "2. 未获取 Schema 前，禁止直接编写或执行 SQL。\n"
+        "3. 拿到 Schema 后，如需回答数据结果，必须调用 execute_sql_query。\n"
+        "4. 未执行 SQL、SQL 失败或工具返回错误时，禁止编造查询结论。\n"
+        "5. 工具不可用、无权限、无数据集或查询失败时，必须如实说明。\n"
+        "6. 用户只是要求基于上一轮结果做解释、可视化、保存、导出时，可复用上一轮结构化结果，不强制重新查数。\n"
+        "7. 长期记忆中的业务别名、组织别名、地点别名可用于用户意图归一化；"
+        "若记忆指出“用户称呼 A = 数据标准名 B”，生成 SQL 的筛选值应优先使用 B，并在回答中说明已按标准名 B 查询。"
+        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。"
+    )
 
     # 追问复用合成失败兜底
     FOLLOWUP_SYNTHESIS_FALLBACK = "⚠️ 抱歉，基于上一轮结果生成分析时发生异常，请稍后重试。"
@@ -70,18 +93,19 @@ class DataQueryPrompts:
     # 未拿到 Schema 时强制先检索 Schema
     MUST_FETCH_SCHEMA = "你处于数据查询模式，禁止在未查数前给出回答。请先调用 get_dataset_schema(keywords) 获取 Schema。"
 
-    # 用户要求使用技能但尚未加载技能指令时，优先读取技能而非直接查 Schema
+    # 用户要求使用技能但尚未加载技能指令时，提醒模型读取技能；不得阻断 DataExecutor 查数主线
     MUST_LOAD_SKILL_FIRST = (
         "用户明确要求使用某个技能，或 System Prompt 中已有 [Active Skills Loaded] 摘要块。"
-        "请先对目标 skill_id 调用 read_skill_instruction 读取完整 SKILL.md；"
+        "如果当前模型能够稳定调用技能工具，可先对目标 skill_id 调用 read_skill_instruction 读取完整 SKILL.md；"
         "若尚不知 skill_id，可先 list_available_skills 再 read_skill_instruction。"
-        "在 read_skill_instruction 成功返回前，禁止跳过技能直接调用 get_dataset_schema。"
+        "但 DataExecutor 的核心流程始终是 get_dataset_schema -> execute_sql_query；"
+        "技能、案例和记忆只作为提升查数准确率的辅助信息，不得阻断元数据检索或 SQL 查询。"
     )
 
     MUST_READ_MATCHED_SKILLS = (
         "【技能已匹配（仅摘要）】[Active Skills Loaded] 中不含 SKILL.md 全文。"
-        "执行任何技能 workflow 前，必须对块内每个 skill_id 调用 read_skill_instruction。"
-        "未获得工具返回前，禁止编造技能步骤或直接进入查数。"
+        "若本轮需要执行技能 workflow，建议先对块内 skill_id 调用 read_skill_instruction。"
+        "但在 ChatBI/DataExecutor 查数场景中，技能是辅助上下文，不得优先级高于 get_dataset_schema -> execute_sql_query 主流程。"
     )
 
     # 技能已注入/已读取后，优先遵循技能流程再进入查数
@@ -230,7 +254,8 @@ class DataQueryPrompts:
             "【上一轮结构化查询结果】\n"
             f"{result_json}\n\n"
             "请只基于上一轮结构化查询结果完成分析或可视化，不要声称已重新查询数据库。\n"
-            "如果适合可视化，请输出 markdown 结论并附带 ```chart JSON``` 图表配置。"
+            "如果适合可视化，请输出 markdown 结论并附带 ```chart JSON``` 图表配置。\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
         )
 
     @staticmethod
@@ -240,7 +265,8 @@ class DataQueryPrompts:
             f"【当前追问】：{user_question}\n\n"
             f"{execution_review}\n\n"
             "请结合上述【执行过程回顾】和查询结果，为用户提供连贯且专业的最终回答。\n"
-            "注：如果执行过程主要是执行了一个外部动作（如发送消息、启动/暂停任务等），请直接简洁地告知执行结果即可，无需赘述。"
+            "注：如果执行过程主要是执行了一个外部动作（如发送消息、启动/暂停任务等），请直接简洁地告知执行结果即可，无需赘述。\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
         )
 
 
@@ -268,7 +294,8 @@ class GeneralChatPrompts:
             f"【当前追问】：{user_question}\n\n"
             f"{execution_review}\n\n"
             "请结合上述【执行过程回顾】和最新结果，为用户提供准确、连贯的最终回答。\n"
-            "注：如果执行过程主要是执行了一个外部动作（如发送钉钉消息、创建任务等），请直接简洁地告知执行结果即可，无需重复发送的具体内容或进行冗长的总结。"
+            "注：如果执行过程主要是执行了一个外部动作（如发送钉钉消息、创建任务等），请直接简洁地告知执行结果即可，无需重复发送的具体内容或进行冗长的总结。\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
         )
 
 

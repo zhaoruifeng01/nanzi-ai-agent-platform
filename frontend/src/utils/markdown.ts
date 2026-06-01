@@ -104,13 +104,14 @@ const normalizePipeTables = (content: string) => {
         .map((cell) => cell.trim())
         .filter(Boolean);
 
-      const firstSeparator = cells.findIndex((cell) => /^:?-{3,}:?$/.test(cell));
+      const isSeparatorCell = (cell: string) => /^:?-{2,}:?$/.test(cell);
+      const firstSeparator = cells.findIndex((cell) => isSeparatorCell(cell));
       if (firstSeparator <= 0) return line;
 
       const columnCount = firstSeparator;
       const separatorCount = cells
         .slice(firstSeparator, firstSeparator + columnCount)
-        .filter((cell) => /^:?-{3,}:?$/.test(cell)).length;
+        .filter((cell) => isSeparatorCell(cell)).length;
       const bodyCells = cells.slice(firstSeparator + columnCount);
       if (separatorCount !== columnCount || bodyCells.length === 0 || bodyCells.length % columnCount !== 0) {
         return line;

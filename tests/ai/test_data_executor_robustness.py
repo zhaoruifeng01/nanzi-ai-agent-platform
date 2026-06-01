@@ -2,6 +2,7 @@ import pytest
 import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 from app.services.ai.executors.data_executor import DataQueryExecutor
+from app.services.ai.executors.prompts import DataQueryPrompts, GeneralChatPrompts
 from langchain_core.messages import AIMessage, SystemMessage
 
 @pytest.fixture(scope="function", autouse=True)
@@ -105,6 +106,305 @@ async def test_data_executor_react_nudge():
             for chunk in events
         )
         print("\n✅ DataQueryExecutor Nudge Logic Verified with astream.")
+
+
+def test_synthesis_prompts_require_valid_markdown_tables():
+    """最终合成提示应明确要求标准 Markdown 表格，避免模型把整张表压成一行。"""
+    data_message = DataQueryPrompts.synthesis_user_message("查询用户", "执行 SQL 返回 2 行")
+    followup_message = DataQueryPrompts.followup_synthesis_user_message("分析一下", '{"rows": []}')
+    chat_message = GeneralChatPrompts.synthesis_user_message("整理结果", "工具返回表格数据")
+
+    for message in (data_message, followup_message, chat_message):
+        assert "Markdown 输出规范" in message
+        assert "表头、分隔行、每一条数据行必须各占独立一行" in message
+        assert "禁止把整张表压成一行" in message
+        assert "禁止使用 `||`" in message
+
+
+@pytest.mark.asyncio
+async def test_data_executor_auto_fetches_schema_when_model_returns_no_tool_call():
+    """新查数轮首轮模型不调用工具时，执行器应兜底发起 get_dataset_schema，避免空转熔断。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-auto-schema", [], {"dry_run": False})
+
+    empty_response = MagicMock(spec=AIMessage)
+    empty_response.content = "我先看看有哪些数据可以用。"
+    empty_response.tool_calls = []
+
+    sql_response = MagicMock(spec=AIMessage)
+    sql_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    sql_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {"sql": "select 1", "data_source": "ds", "dataset_name": "users"},
+        "id": "call_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield empty_response
+
+    async def gen_2(*args, **kwargs):
+        yield sql_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    schema_tool = MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])
+    schema_tool.name = "get_dataset_schema"
+    sql_tool = MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])
+    sql_tool.name = "execute_sql_query"
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: users")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[schema_tool, sql_tool])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return tool_call, "schema yaml", 3.0
+            return tool_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查询用户列表"}]):
+            events.append(chunk)
+
+    first_tool_call = executor._dispatch_tool_safe.await_args_list[0].args[0]
+    assert first_tool_call["name"] == "get_dataset_schema"
+    assert first_tool_call["args"]["keywords"] == "查询用户列表"
+    assert any(e.get("title") == "兜底检索数据集定义" for e in events if e.get("type") == "log")
+    assert not any(e.get("title") == "🧭 触发空转熔断保护" for e in events if e.get("type") == "log")
+
+
+@pytest.mark.asyncio
+async def test_data_executor_adds_schema_tool_when_agent_config_omits_it():
+    """DataExecutor 即使配置漏选 get_dataset_schema，也应补齐核心查数工具并触发 schema 兜底。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-missing-schema-tool", [], {"dry_run": False})
+
+    empty_response = MagicMock(spec=AIMessage)
+    empty_response.content = "我先分析一下用户需求。"
+    empty_response.tool_calls = []
+
+    sql_response = MagicMock(spec=AIMessage)
+    sql_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    sql_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {"sql": "select 1", "data_source": "ds", "dataset_name": "users"},
+        "id": "call_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield empty_response
+
+    async def gen_2(*args, **kwargs):
+        yield sql_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    schema_tool = MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])
+    schema_tool.name = "get_dataset_schema"
+    sql_tool = MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])
+    sql_tool.name = "execute_sql_query"
+
+    async def get_tools_side_effect(names):
+        assert "get_dataset_schema" in names
+        assert "execute_sql_query" in names
+        return [schema_tool, sql_tool]
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: users")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(side_effect=get_tools_side_effect)), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return tool_call, "schema yaml", 3.0
+            return tool_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查一下用户列表数据呢"}]):
+            events.append(chunk)
+
+    first_tool_call = executor._dispatch_tool_safe.await_args_list[0].args[0]
+    assert first_tool_call["name"] == "get_dataset_schema"
+    assert any(e.get("title") == "兜底检索数据集定义" for e in events if e.get("type") == "log")
+    assert not any(e.get("title") == "🧭 触发空转熔断保护" for e in events if e.get("type") == "log")
+
+
+@pytest.mark.asyncio
+async def test_data_executor_skill_context_does_not_block_schema_fallback():
+    """技能摘要是辅助上下文；ChatBI 新查数轮空转时仍应优先兜底查 Schema。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = (
+        "[Active Skills Loaded]\n"
+        "=== 已匹配技能: 用户列表查询 (ID: user-list-query) ===\n"
+        "- 完整指令: 未预载；执行前必须调用 read_skill_instruction\n\n"
+        "You are a Data Analysis Assistant. {dataset_menu}"
+    )
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query", "read_skill_instruction"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-skill-auxiliary", [], {"dry_run": False})
+
+    empty_response = MagicMock(spec=AIMessage)
+    empty_response.content = "我先看一下应该怎么查。"
+    empty_response.tool_calls = []
+
+    sql_response = MagicMock(spec=AIMessage)
+    sql_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    sql_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {"sql": "select 1", "data_source": "ds", "dataset_name": "users"},
+        "id": "call_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield empty_response
+
+    async def gen_2(*args, **kwargs):
+        yield sql_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "完成"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    schema_tool = MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])
+    schema_tool.name = "get_dataset_schema"
+    sql_tool = MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])
+    sql_tool.name = "execute_sql_query"
+    read_skill_tool = MagicMock(name="read_skill_instruction", spec=["name", "ainvoke"])
+    read_skill_tool.name = "read_skill_instruction"
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: users")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[schema_tool, sql_tool, read_skill_tool])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        async def dispatch_side_effect(tool_call, tools):
+            if tool_call["name"] == "get_dataset_schema":
+                return tool_call, "schema yaml", 3.0
+            return tool_call, [{"ok": 1}], 5.0
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=dispatch_side_effect)
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查一下用户列表数据呢"}]):
+            events.append(chunk)
+
+    first_tool_call = executor._dispatch_tool_safe.await_args_list[0].args[0]
+    assert first_tool_call["name"] == "get_dataset_schema"
+    assert any(e.get("title") == "兜底检索数据集定义" for e in events if e.get("type") == "log")
+    assert not any(e.get("title") == "🧭 触发空转熔断保护" for e in events if e.get("type") == "log")
+
+
+@pytest.mark.asyncio
+async def test_data_executor_injects_global_guardrails_before_db_prompt():
+    """DataExecutor 应注入自己的流程底线，但保留 DB 智能体 prompt 作为业务主干。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "DB ChatBI prompt. Use {dataset_menu}."
+    mock_config.tools = ["get_dataset_schema", "execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-guardrails", [], {"dry_run": False})
+
+    schema_response = MagicMock(spec=AIMessage)
+    schema_response.content = ""
+    schema_response.tool_calls = [{"name": "get_dataset_schema", "args": {"keywords": "用户"}, "id": "call_schema"}]
+
+    model_with_tools = MagicMock()
+    captured = {}
+
+    async def gen_1(messages):
+        captured["messages"] = messages
+        yield schema_response
+
+    model_with_tools.astream.side_effect = gen_1
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock()), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: users")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="get_dataset_schema", spec=["name", "ainvoke"])])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="1")):
+
+        executor._dispatch_tool_safe = AsyncMock(return_value=(schema_response.tool_calls[0], "schema yaml", 3.0))
+        async for _ in executor.execute([{"role": "user", "content": "查询用户"}]):
+            pass
+
+    system_content = captured["messages"][0].content
+    assert "[DataExecutor Global Guardrails]" in system_content
+    assert system_content.index("[DataExecutor Global Guardrails]") < system_content.index("DB ChatBI prompt")
+    assert "必须先调用 get_dataset_schema" in system_content
+    assert "长期记忆中的业务别名" in system_content
+    assert "DB ChatBI prompt" in system_content
 
 
 @pytest.mark.asyncio

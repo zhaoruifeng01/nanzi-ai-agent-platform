@@ -457,10 +457,11 @@ class DataQueryExecutor(BaseExecutor):
             "status": "pending",
             "started_at": int(prep_tools_start * 1000),
         }
-        configured_tools = self.config.tools or ["get_dataset_schema", "execute_sql_query", "update_dashboard_context"]
-        # Hard requirement: DataQueryExecutor must be able to execute SQL.
-        if "execute_sql_query" not in configured_tools:
-            configured_tools = list(configured_tools) + ["execute_sql_query"]
+        configured_tools = list(self.config.tools or ["get_dataset_schema", "execute_sql_query", "update_dashboard_context"])
+        # Hard requirement: DataQueryExecutor must be able to fetch Schema and execute SQL.
+        for required_tool in ("get_dataset_schema", "execute_sql_query"):
+            if required_tool not in configured_tools:
+                configured_tools.append(required_tool)
         tools = await ToolRegistry.get_tools(configured_tools)
         if not tools: tools = await ToolRegistry.get_tools(ToolRegistry.DEFAULT_TOOL_SET)
         # 补全系统隐式工具（create_skills / 记忆 / 任务 / web 等），使本执行器在“非新查数”场景
@@ -595,6 +596,7 @@ class DataQueryExecutor(BaseExecutor):
                 "status": "success",
                 "execution_time_ms": (time.time() - dataset_menu_start) * 1000,
             }
+        system_prompt = f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n{system_prompt}"
         langchain_messages.insert(0, SystemMessage(content=system_prompt))
         langchain_messages = normalize_messages_for_llm(langchain_messages)
 
@@ -772,14 +774,41 @@ class DataQueryExecutor(BaseExecutor):
                         return
                     break
 
-                # Schema 已就绪但上一轮 SQL 工具调用被计划护栏拦截未执行：代为执行，避免空转。
-                pending_sql = self._pending_sql_tool_calls_from_history(langchain_messages)
+                # 新查数轮必须先拿 Schema。若模型首轮没有产生工具调用，执行器直接兜底发起
+                # get_dataset_schema，避免模型空转几轮后熔断，或下一轮直接跳到 execute_sql_query。
                 if (
+                    self._requires_fresh_data
+                    and not self._schema_fetched_ok
+                    and "get_dataset_schema" in tool_names
+                ):
+                    schema_keywords = (self._current_user_question or "").strip()
+                    response = AIMessage(
+                        content="",
+                        tool_calls=[{
+                            "name": "get_dataset_schema",
+                            "args": {"keywords": schema_keywords},
+                            "id": f"auto_schema_{uuid.uuid4().hex[:8]}",
+                        }],
+                    )
+                    yield {
+                        "type": "log",
+                        "id": f"auto_schema_{uuid.uuid4().hex[:8]}",
+                        "title": "兜底检索数据集定义",
+                        "details": (
+                            "模型本轮未产生工具调用；数据查询流程已自动发起 "
+                            f"get_dataset_schema(keywords={schema_keywords!r})，确保先获取数据集定义。"
+                        ),
+                        "status": "warning",
+                        "execution_time_ms": 0,
+                    }
+
+                # Schema 已就绪但上一轮 SQL 工具调用被计划护栏拦截未执行：代为执行，避免空转。
+                elif (
                     self._requires_fresh_data
                     and self._schema_fetched_ok
                     and not self._schema_no_authorized
                     and not self._sql_attempted
-                    and pending_sql
+                    and (pending_sql := self._pending_sql_tool_calls_from_history(langchain_messages))
                 ):
                     yield {
                         "type": "log",
@@ -834,8 +863,8 @@ class DataQueryExecutor(BaseExecutor):
                     if self._schema_fetched_ok and "execute_sql_query" not in tool_names:
                         langchain_messages.append(response)
                         break
-                    # 用户要求使用技能但尚未加载技能指令：优先引导 list/read_skill，而非直接逼查 Schema。
-                    if self._needs_skill_prep and not self._skill_ready:
+                    # 技能只作为辅助增强；非新查数轮可优先引导技能，ChatBI 新查数轮不能因此阻断 Schema/SQL 主流程。
+                    if self._needs_skill_prep and not self._skill_ready and not self._requires_fresh_data:
                         langchain_messages.append(response)
                         append_system_instruction(langchain_messages, DataQueryPrompts.MUST_LOAD_SKILL_FIRST)
                         continue
@@ -870,10 +899,9 @@ class DataQueryExecutor(BaseExecutor):
                 continue
 
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
-            # （K3 非新查数轮不强制；技能尚未就绪时也不强制，应先 read_skill_instruction。）
+            # （K3 非新查数轮不强制；技能/案例/记忆仅作辅助，不能阻断 ChatBI 查数主流程。）
             if (
                 self._requires_fresh_data
-                and (self._skill_ready or not self._needs_skill_prep)
                 and self._schema_fetched_ok
                 and not self._schema_no_authorized
                 and not self._sql_attempted
