@@ -129,3 +129,20 @@ def test_classify_turn_from_intent_k2_upgrade_via_query_keywords():
     assert res_k1.turn_type == TurnType.K1_NEW_QUERY
     assert res_k1.requires_fresh_data is True
 
+
+def test_classify_turn_heuristic_formatting_correction_to_k2():
+    # 验证在快通道中，排版/渲染纠错命令且有缓存数据时，能直接、超高性能地短路识别为 K2
+    query = "你输出的 markdown 不符合规范，渲染失败呢"
+    
+    # 情况 A：有上一轮数据缓存 → 直接短路命中 K2
+    res_k2 = classify_turn_heuristic(query, can_do_data=True, has_last_data_result=True)
+    assert res_k2 is not None
+    assert res_k2.turn_type == TurnType.K2_REUSE_RESULT
+    assert res_k2.requires_fresh_data is False
+    assert res_k2.skip_intent_llm is True
+
+    # 情况 B：无缓存 → 规则不短路，返回 None 交给大模型进行深层语义兜底/分析
+    res_none = classify_turn_heuristic(query, can_do_data=True, has_last_data_result=False)
+    assert res_none is None
+
+
