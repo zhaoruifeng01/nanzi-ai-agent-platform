@@ -6,6 +6,7 @@ import asyncio
 import re
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
+from enum import Enum
 
 from langchain_core.messages import (
     HumanMessage, 
@@ -42,6 +43,15 @@ logger = logging.getLogger(__name__)
 # 数据查询 ReAct 轮次上限（与全局 agent_max_iterations 取较小值，避免长时间空转）
 DATA_QUERY_MAX_STEPS_CAP = 10
 
+
+class DataQueryStage(str, Enum):
+    CONTEXT_ACTION = "CONTEXT_ACTION"
+    NEED_SCHEMA = "NEED_SCHEMA"
+    NEED_SQL = "NEED_SQL"
+    FIX_SQL = "FIX_SQL"
+    READY_TO_SYNTHESIZE = "READY_TO_SYNTHESIZE"
+
+
 class DataQueryExecutor(BaseExecutor):
     def __init__(self, config: ChatConfig, trace_id: str, trace_buffer: List[AgentExecutionStep], debug_options: Dict[str, Any] = None, user_info: Optional[Dict[str, Any]] = None, conversation_id: Optional[str] = None):
         super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
@@ -73,6 +83,20 @@ class DataQueryExecutor(BaseExecutor):
 
     def _active_skills_in_system_prompt(self, system_prompt: str) -> bool:
         return "[Active Skills Loaded]" in (system_prompt or "")
+
+    def _current_data_stage(self) -> DataQueryStage:
+        """Return the primary ChatBI state; auxiliary context must not override this stage."""
+        if not self._requires_fresh_data:
+            return DataQueryStage.CONTEXT_ACTION
+        if not self._schema_fetched_ok:
+            return DataQueryStage.NEED_SCHEMA
+        if self._schema_no_authorized:
+            return DataQueryStage.READY_TO_SYNTHESIZE
+        if not self._sql_attempted:
+            return DataQueryStage.NEED_SQL
+        if not self._sql_succeeded:
+            return DataQueryStage.FIX_SQL
+        return DataQueryStage.READY_TO_SYNTHESIZE
 
     def _increment_step(self):
         self.step_counter += 1
@@ -727,10 +751,15 @@ class DataQueryExecutor(BaseExecutor):
                 response.tool_calls = parse_xml_tool_calls(accumulated_content)
 
             thought_elapsed_ms = (time.time() - start_thought) * 1000
+            current_stage = self._current_data_stage()
             self.trace_buffer.append(AgentExecutionStep(
                 step_number=self.step_counter, event_type="thought", agent_name=self.config.agent_name,
                 model=str(self.config.model_name), temperature=float(self.config.temperature or 0),
-                tool_output={"content": accumulated_content, "tool_calls": [tc['name'] for tc in response.tool_calls]},
+                tool_output={
+                    "content": accumulated_content,
+                    "tool_calls": [tc['name'] for tc in response.tool_calls],
+                    "data_stage": current_stage.value,
+                },
                 raw_log=accumulated_content, execution_time_ms=thought_elapsed_ms,
                 prompt_tokens=tokens["prompt_tokens"],
                 completion_tokens=tokens["completion_tokens"],
@@ -743,6 +772,7 @@ class DataQueryExecutor(BaseExecutor):
                 "title": f"模型决策完成: 第 {step} 轮",
                 "details": (
                     "本轮模型已完成内部决策。"
+                    f"\n当前阶段: {current_stage.value}"
                     f"\n工具调用: {', '.join(tc['name'] for tc in response.tool_calls) if response.tool_calls else '无'}"
                 ),
                 "status": "success",
@@ -777,8 +807,7 @@ class DataQueryExecutor(BaseExecutor):
                 # 新查数轮必须先拿 Schema。若模型首轮没有产生工具调用，执行器直接兜底发起
                 # get_dataset_schema，避免模型空转几轮后熔断，或下一轮直接跳到 execute_sql_query。
                 if (
-                    self._requires_fresh_data
-                    and not self._schema_fetched_ok
+                    current_stage == DataQueryStage.NEED_SCHEMA
                     and "get_dataset_schema" in tool_names
                 ):
                     schema_keywords = (self._current_user_question or "").strip()
@@ -795,6 +824,7 @@ class DataQueryExecutor(BaseExecutor):
                         "id": f"auto_schema_{uuid.uuid4().hex[:8]}",
                         "title": "兜底检索数据集定义",
                         "details": (
+                            f"当前阶段: {current_stage.value}\n"
                             "模型本轮未产生工具调用；数据查询流程已自动发起 "
                             f"get_dataset_schema(keywords={schema_keywords!r})，确保先获取数据集定义。"
                         ),
@@ -804,10 +834,7 @@ class DataQueryExecutor(BaseExecutor):
 
                 # Schema 已就绪但上一轮 SQL 工具调用被计划护栏拦截未执行：代为执行，避免空转。
                 elif (
-                    self._requires_fresh_data
-                    and self._schema_fetched_ok
-                    and not self._schema_no_authorized
-                    and not self._sql_attempted
+                    current_stage == DataQueryStage.NEED_SQL
                     and (pending_sql := self._pending_sql_tool_calls_from_history(langchain_messages))
                 ):
                     yield {
@@ -815,6 +842,7 @@ class DataQueryExecutor(BaseExecutor):
                         "id": f"pending_sql_{uuid.uuid4().hex[:8]}",
                         "title": "执行待处理 SQL",
                         "details": (
+                            f"当前阶段: {current_stage.value}\n"
                             "检测到 Schema 已就绪，但先前轮次的 execute_sql_query 尚未真正执行。"
                             "系统将代为执行该 SQL，跳过一次空转决策。"
                         ),
@@ -830,6 +858,7 @@ class DataQueryExecutor(BaseExecutor):
                             "id": f"streak_melt_{uuid.uuid4().hex[:8]}",
                             "title": "🧭 触发空转熔断保护",
                             "details": (
+                                f"当前阶段: {current_stage.value}\n"
                                 f"检测到大模型已连续 {self._no_tool_call_streak} 轮决策未产生工具调用，触发空转熔断保护以规避 Token 爆炸与长连接挂起异常。\n"
                                 "系统将强行终止决策循环并转入整合输出阶段。若回答未达到预期，请检查当前智能体的模型选型、系统提示词或绑定的数据集配置。"
                             ),
@@ -845,6 +874,7 @@ class DataQueryExecutor(BaseExecutor):
                             "id": f"diag_{uuid.uuid4().hex[:8]}",
                             "title": "🧭 调用工具诊断",
                             "details": (
+                                f"当前阶段: {current_stage.value}\n"
                                 f"检测到模型连续 {self._no_tool_call_streak} 次未产生工具调用（tool_calls 为空）。\n"
                                 "为确保数据准确性，系统将继续强制引导调用 get_dataset_schema / execute_sql_query。\n"
                                 "若仍无法触发，请检查：模型是否支持工具调用、输出是否包含 <function_calls>、以及 agent 是否配置了 data_query 能力。"
@@ -901,10 +931,7 @@ class DataQueryExecutor(BaseExecutor):
             # Hard rule: after schema is fetched, you must execute SQL before doing anything else.
             # （K3 非新查数轮不强制；技能/案例/记忆仅作辅助，不能阻断 ChatBI 查数主流程。）
             if (
-                self._requires_fresh_data
-                and self._schema_fetched_ok
-                and not self._schema_no_authorized
-                and not self._sql_attempted
+                self._current_data_stage() == DataQueryStage.NEED_SQL
             ):
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:

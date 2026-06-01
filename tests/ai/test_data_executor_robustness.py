@@ -193,6 +193,12 @@ async def test_data_executor_auto_fetches_schema_when_model_returns_no_tool_call
     first_tool_call = executor._dispatch_tool_safe.await_args_list[0].args[0]
     assert first_tool_call["name"] == "get_dataset_schema"
     assert first_tool_call["args"]["keywords"] == "查询用户列表"
+    thought_logs = [e for e in events if e.get("title") == "模型决策完成: 第 1 轮"]
+    assert thought_logs
+    assert "当前阶段: NEED_SCHEMA" in thought_logs[0].get("details", "")
+    second_thought_logs = [e for e in events if e.get("title") == "模型决策完成: 第 2 轮"]
+    assert second_thought_logs
+    assert "当前阶段: NEED_SQL" in second_thought_logs[0].get("details", "")
     assert any(e.get("title") == "兜底检索数据集定义" for e in events if e.get("type") == "log")
     assert not any(e.get("title") == "🧭 触发空转熔断保护" for e in events if e.get("type") == "log")
 
