@@ -103,4 +103,6 @@
 | ChatBI 结果格式纠错极速短路拦截 (ChatBI Result Formatting Short-circuit) | `intent_service.py`, `tests/ai/test_turn_classifier.py` | **排版纠错与渲染捞回**：在 `_FOLLOWUP_KEYWORDS` 中补充了格式、规范、排版、渲染、不符合、重新输出等排版与渲染纠错特征词，实现在 Redis 缓存中存在上轮数据时，将用户的格式纠错类指令在快通道中直接高精度、0 延迟地短路识别为“复用上一轮结果”，免受大模型误判为 GENERAL 的困扰。 | ✅ 通过 | 2026-06-01 |
 | General 路由通用 hint 弱提示注入 (General Route Hints) | `agent_service.py`, `dispatcher.py`, `chat_executor.py`, `tests/ai/executors/test_chat_executor.py` | **路由标签消费边界**：验证 `turn_labels / relation_to_previous / user_action_type` 会透传至 GeneralChatExecutor 并注入为弱 system hint，辅助 LLM 理解追问/动作/话题关系；ChatBI/DataQueryExecutor 不使用该 hint 决定内部查数类别。 | ✅ 通过 | 2026-06-02 |
 | ChatBI 偏好记忆改写优化 (ChatBI LTM Alias Rewrite) | `tests/test_chatbi_ltm_rewrite.py`, `app/services/ai/executors/data_executor.py` | **长时记忆正则提取与别名改写**：验证在系统提示词中包含 `[Memory Profile]` 块时，改写器能够通过正则表达式精准提取用户偏好并强行触发 LLM 改写，将同义词与俗称（如“临港”）标准化（如“书院”），且不额外混入与改写无关的专属专规（`[Agent Rules]`）等背景噪音。 | ✅ 通过 | 2026-06-02 |
+| 长期记忆清除工具 (Long-Term Memory Delete Tool) | `app/services/ai/tools/memory_ltm_tools.py`, `app/services/ai/tools/registry.py` | **长期记忆清除工具与注册**：验证 `delete_user_preference` 能够按单个偏好 Key 精准清除 Redis HASH 中对应偏好，并在工具注册器以及系统隐式工具中正确注册发布。 | ✅ 已完成 | 2026-06-02 |
+
 

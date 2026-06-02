@@ -673,7 +673,7 @@ onMounted(() => {
                 </div>
 
                 <!-- Section Grid (Mobile Friendly) -->
-                <div class="grid grid-cols-1 gap-4">
+                <div v-if="userInfo.role !== 'admin'" class="grid grid-cols-1 gap-4">
                     <!-- Agents -->
                     <div class="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm">
                         <div class="bg-gray-50 px-4 py-2.5 border-b border-gray-200 flex items-center justify-between">

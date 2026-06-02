@@ -23,7 +23,7 @@ from app.services.ai.tools.advanced_auxiliary_tools import (
     fetch_static_web_url, web_search_baidu
 )
 from app.services.ai.tools.memory_ltm_tools import (
-    update_user_preference, fetch_user_long_term_memory
+    update_user_preference, fetch_user_long_term_memory, delete_user_preference
 )
 from app.services.ai.tools.memory_search_tool import memory_search
 from app.models.tool import SysApiTool
@@ -88,6 +88,7 @@ class ToolRegistry:
         # Register Memory LTM Tools
         "update_user_preference": update_user_preference,
         "fetch_user_long_term_memory": fetch_user_long_term_memory,
+        "delete_user_preference": delete_user_preference,
         "memory_search": memory_search,
     }
 
@@ -239,6 +240,7 @@ class ToolRegistry:
         return SYSTEM_IMPLICIT_TOOLS + [
             update_user_preference,
             fetch_user_long_term_memory,
+            delete_user_preference,
             memory_search,
             create_skills,
             list_available_skills,
