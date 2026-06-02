@@ -96,6 +96,43 @@ async def test_simple_chat_no_tools(chat_config):
         
         assert "".join(results) == "Hello World"
 
+
+@pytest.mark.asyncio
+async def test_general_chat_injects_route_hints_as_weak_system_hint(chat_config):
+    """General 可参考路由标签，但标签不作为硬分支。"""
+    chat_config.tools = []
+    captured = {}
+
+    class CaptureLLM:
+        async def astream(self, messages):
+            captured["messages"] = messages
+            yield AIMessage(content="ok")
+
+    executor = GeneralChatExecutor(
+        config=chat_config,
+        trace_id="test-route-hints",
+        trace_buffer=[],
+        route_hints={
+            "turn_labels": ["continuation_followup", "same_topic"],
+            "relation_to_previous": "followup",
+            "user_action_type": "transform_context",
+        },
+    )
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=CaptureLLM())), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]):
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "继续"}]):
+            events.append(chunk)
+
+    system_content = captured["messages"][0].content
+    assert "路由层通用理解（仅供参考）" in system_content
+    assert "continuation_followup, same_topic" in system_content
+    assert "relation_to_previous: followup" in system_content
+    assert "user_action_type: transform_context" in system_content
+    assert "不要机械服从" in system_content
+    assert any(chunk.get("content") == "ok" for chunk in events)
+
 @pytest.mark.asyncio
 async def test_standard_tool_call(chat_config, mock_tool):
     """测试标准的 ReAct 工具调用流程 (Think -> Act -> Observe -> Final Answer)"""

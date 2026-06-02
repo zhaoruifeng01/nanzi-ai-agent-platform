@@ -28,7 +28,7 @@ sequenceDiagram
     AS->>CM: resolve_agent_config
     CM->>RT: 无指定 agent 时智能路由
     AS->>AS: 智能体权限 / 注入技能&LTM
-    AS->>DP: dispatch
+    AS->>DP: dispatch + route_hints
     DP->>EX: Chat / Data / RAG / OpenClaw
     EX->>LLM: 流式调用 + 工具循环
     LLM-->>EX: token / log / citation
@@ -113,6 +113,11 @@ sequenceDiagram
 | `citation` | 知识库引用来源 |
 | `meta` | 智能体显示名等 |
 | `[DONE]` | 流结束 |
+
+路由层通用 hint 只表达“这轮像不像追问 / 上下文动作 / 切换话题”等跨智能体理解，不表达 ChatBI 内部的“新查数 / 复用结果 / 上下文动作 / 技能执行”。后端会把这些 hint 透传给 executor：
+
+- General 会把 hint 作为弱 system prompt 参考，让 LLM 结合完整上下文自行判断如何回答。
+- ChatBI 不用这组 hint 决定查数流程，进入 `DataQueryExecutor` 后会再做 ChatBI 请求类别分析。
 
 ---
 

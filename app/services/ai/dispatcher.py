@@ -32,16 +32,17 @@ class AgentDispatcher:
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         shared_turn: Optional[SharedTurn] = None,
+        route_hints: Optional[Dict[str, Any]] = None,
     ) -> BaseExecutor:
         """
         Determines and returns the correct Executor instance.
         shared_turn: 多智能体/会话级已算好的分类，避免重复意图 LLM。
         """
-        
+
         # 1. External Engine Check
         if agent_config.engine_type == 'RAGFLOW':
             return RAGExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
-        
+
         if agent_config.engine_type == 'OPENCLAW':
             return OpenClawExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
 
@@ -81,7 +82,13 @@ class AgentDispatcher:
         )
 
         executor = GeneralChatExecutor(
-            agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id
+            agent_config,
+            trace_id,
+            trace_buffer,
+            debug_options,
+            user_info,
+            conversation_id,
+            route_hints=route_hints,
         )
 
         attach_turn_classification(

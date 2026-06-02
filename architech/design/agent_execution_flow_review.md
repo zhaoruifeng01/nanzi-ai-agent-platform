@@ -1,6 +1,6 @@
 # 智能体执行流程架构评审
 
-> 文档日期：2026-05-30（评审记录）；2026-06-01 更新 ChatBI 请求类别拆分
+> 文档日期：2026-05-30（评审记录）；2026-06-01 更新 ChatBI 请求类别拆分；2026-06-02 更新路由通用 hint 消费边界
 > 范围：EmbedChat -> AgentService -> Dispatcher -> Executors（Data / GeneralChat / RAG / OpenClaw）
 > 关联改动：`turn_classifier.py` 通用化、`data_query_turn_classifier.py`、Dispatcher 只做执行器选择、DataQueryExecutor 内部请求类别分析
 
@@ -47,6 +47,7 @@ flowchart TB
 
 - `TurnClassification` 是通用会话请求分类，只表达 `DATA_QUERY_REQUEST / CONTEXT_ACTION / SKILL_EXECUTION / META_ACTION / GENERAL / KNOWLEDGE` 等跨执行器概念。
 - `shared_turn` 只给非 ChatBI 执行器复用通用分类，避免重复意图调用；ChatBI 不再消费 `shared_turn` 决定查数流程。
+- 路由层输出的 `turn_labels / relation_to_previous / user_action_type` 是通用 hint，可被 executor 参考；当前 General 只把它注入为弱提示词，不做硬分支。
 - ChatBI 专用请求类别由 `DataQueryTurnClassifier` 在 `DataQueryExecutor` 内部执行，结果为「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」。
 
 ---
@@ -109,7 +110,7 @@ Dispatcher 当前只负责选择执行器：
 | `engine_type=RAGFLOW` | RAGExecutor |
 | `engine_type=OPENCLAW` | OpenClawExecutor |
 | 具备 `data_query` 能力 | DataQueryExecutor（ChatBI 内部再分析请求类别） |
-| 无 `data_query` 能力 | GeneralChatExecutor（复用 `shared_turn` 通用分类） |
+| 无 `data_query` 能力 | GeneralChatExecutor（复用 `shared_turn` 通用分类，并参考路由通用 hint） |
 
 AgentService 统一输出「轮次分类」日志；ChatBI 场景外层显示「ChatBI 请求类别分析」，DataQueryExecutor 再输出「ChatBI 请求类别分析结果」。
 
@@ -148,6 +149,7 @@ AgentService 统一输出「轮次分类」日志；ChatBI 场景外层显示「
 - 系统隐式工具（create_skills、memory_search、任务等）是元操作、上下文动作、技能的正确归宿。
 - KNOWLEDGE 请求在 Step 1 强制 `search_knowledge_base`，避免未检索直接回答。
 - 非 ChatBI 执行器可以复用 `shared_turn`，但它只包含通用分类，不包含 ChatBI 请求类别。
+- `turn_labels / relation_to_previous / user_action_type` 会作为“路由层通用理解”注入 system prompt。该 hint 只帮助 LLM 理解上下文连续性，不覆盖用户当前问题，也不替代 General 自己的 ReAct/工具判断。
 
 ---
 

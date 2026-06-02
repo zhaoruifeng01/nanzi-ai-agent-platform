@@ -45,12 +45,14 @@ class GeneralChatExecutor(BaseExecutor):
         debug_options: Dict[str, Any] = None,
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        route_hints: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
         self.intent_info = None
         self.intent_elapsed_ms = 0.0
         self.turn_classification = None
         self._requires_knowledge_search = False
+        self.route_hints = route_hints or {}
 
     async def execute(
         self,
@@ -90,6 +92,9 @@ class GeneralChatExecutor(BaseExecutor):
 
         # 2. Build Messages
         system_content = self.config.system_prompt or ""
+        route_hint = GeneralChatPrompts.route_hints(self.route_hints)
+        if route_hint:
+            system_content = f"{route_hint}\n\n{system_content}"
         if self._requires_knowledge_search:
             system_content = f"{GeneralChatPrompts.KNOWLEDGE_TURN_SYSTEM_HINT}\n\n{system_content}"
         langchain_messages = [SystemMessage(content=system_content)]

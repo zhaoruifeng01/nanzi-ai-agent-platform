@@ -48,7 +48,11 @@ graph TD
     - `relation_to_previous`：与上一轮关系，如 `new_topic`、`followup`、`topic_switch`、`standalone`、`unknown`。
     - `user_action_type`：通用动作类型，如 `ask_business_data_or_task`、`ask_knowledge`、`transform_context`、`save_or_export_context`、`manage_agent_or_skill`、`chat`、`unknown`。
 
-这些通用标签只作为后续 executor 的参考 hint。是否采用、如何采用，由各智能体 executor 自己决定；ChatBI 仍会在 `DataQueryExecutor` 内部执行自己的请求类别分析。
+这些通用标签只作为后续 executor 的参考 hint。是否采用、如何采用，由各智能体 executor 自己决定：
+
+- `GeneralChatExecutor` 会把标签注入为弱 system hint，帮助 LLM 理解本轮是否追问、是否上下文动作、是否话题切换；但不基于标签写死业务分支，最终仍由完整对话和模型判断。
+- `DataQueryExecutor` 不消费这些通用标签来决定 ChatBI 查数流程。ChatBI 仍会在执行器内部执行自己的 `DataQueryTurnClassifier` 请求类别分析。
+- Knowledge / General / 其他未来 executor 可以各自定义内部分类体系，不与 ChatBI 的请求类别耦合。
 
 ### 2.3 兜底机制 (Fallback Strategy)
 - 当路由系统无法做出明确决策，或后端服务出现异常时，请求将统一分发至 **`general-chat` (通用对话助手)**。

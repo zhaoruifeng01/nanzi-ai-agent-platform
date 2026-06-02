@@ -152,6 +152,7 @@ class AgentService:
                 yield {"content": AgentServicePrompts.NO_AGENT_CONFIG}
                 return
 
+            route_hints = None
             # Emit Routing Logic (New Debug Feature)
             if route_details:
                 logger.info(f"[Router] Routing decision found: {route_details}")
@@ -162,6 +163,11 @@ class AgentService:
                 r_turn_labels = getattr(route_details, "turn_labels", []) or []
                 r_relation = getattr(route_details, "relation_to_previous", "unknown")
                 r_action_type = getattr(route_details, "user_action_type", "unknown")
+                route_hints = {
+                    "turn_labels": r_turn_labels,
+                    "relation_to_previous": r_relation,
+                    "user_action_type": r_action_type,
+                }
                 
                 # 1. Real-time SSE Event
                 yield {
@@ -577,6 +583,7 @@ class AgentService:
                     api_key,
                     conversation_id,
                     session_turn,
+                    route_hints,
                 ):
                     if "content" in chunk:
                         full_response_content += chunk["content"]
@@ -594,11 +601,12 @@ class AgentService:
                     user_info,
                     conversation_id,
                     shared_turn=session_turn,
+                    route_hints=route_hints,
                 )
                 
                 yield {
                     "type": "log",
-                    "title": "轮次分类",
+                    "title": "ChatBI 用户请求类别意图识别分析",
                     "details": f"{turn_display_label}。{turn_classification.reasoning}",
                     "status": "success",
                     "category": "intent",
@@ -738,6 +746,7 @@ class AgentService:
         api_key: Optional[str],
         conversation_id: Optional[str] = None,
         session_turn=None,
+        route_hints: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Executes primary and secondary agents in parallel and yields combined results.
@@ -748,7 +757,7 @@ class AgentService:
             tc, _, tc_elapsed = session_turn
             yield {
                 "type": "log",
-                "title": "轮次分类",
+                "title": "ChatBI 用户请求类别意图识别分析",
                 "details": f"{turn_type_label(tc.turn_type)}。{tc.reasoning}",
                 "status": "success",
                 "category": "intent",
@@ -778,6 +787,7 @@ class AgentService:
                 user_info,
                 conversation_id,
                 shared_turn=session_turn,
+                route_hints=route_hints,
             )
             executors.append(exec)
 

@@ -288,6 +288,26 @@ class GeneralChatPrompts:
     )
 
     @staticmethod
+    def route_hints(route_hints: dict | None) -> str:
+        """路由层通用理解，仅给 General LLM 作为弱参考，不驱动硬分支。"""
+        if not route_hints:
+            return ""
+        labels = route_hints.get("turn_labels") or []
+        relation = route_hints.get("relation_to_previous") or "unknown"
+        action_type = route_hints.get("user_action_type") or "unknown"
+        if not labels and relation == "unknown" and action_type == "unknown":
+            return ""
+        labels_text = ", ".join(str(label) for label in labels) if labels else "无"
+        return (
+            "【路由层通用理解（仅供参考）】\n"
+            f"- turn_labels: {labels_text}\n"
+            f"- relation_to_previous: {relation}\n"
+            f"- user_action_type: {action_type}\n"
+            "以上只是路由层基于上下文得到的 hint。请结合完整对话自行判断，"
+            "不要机械服从；若 hint 与用户当前问题冲突，以用户问题和对话上下文为准。"
+        )
+
+    @staticmethod
     def synthesis_user_message(user_question: str, execution_review: str) -> str:
         """通用对话 ReAct 后最终合成阶段的用户消息。"""
         return (
