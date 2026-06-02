@@ -12,6 +12,12 @@ import { finalizeConversation } from "@/utils/conversationFinalize";
 import { createSseLineParser } from "@/utils/chartRenderer";
 import { useToast } from "../composables/useToast";
 
+import ChatInput from "@/components/embed/ChatInput.vue";
+import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
+import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
+import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
+import { isImageAttachment } from "@/utils/attachmentImages";
+
 const route = useRoute();
 const { showToast } = useToast();
 
@@ -140,6 +146,49 @@ const aggregatedHistoryList = computed(() => {
       turn_count: count
     };
   }).filter(Boolean);
+});
+
+const groupedHistoryList = computed(() => {
+  const aggregated = aggregatedHistoryList.value;
+  if (!aggregated.length) return [];
+
+  const groupsMap: Record<string, { title: string; items: any[]; order: number }> = {
+    today: { title: "今天", items: [], order: 1 },
+    yesterday: { title: "昨天", items: [], order: 2 },
+    threeDays: { title: "3天前", items: [], order: 3 },
+    sevenDays: { title: "7天前", items: [], order: 4 },
+    older: { title: "更早", items: [], order: 5 },
+  };
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+
+  aggregated.forEach(item => {
+    if (!item.created_at) {
+      groupsMap.older.items.push(item);
+      return;
+    }
+    const itemTime = new Date(item.created_at).getTime();
+    const diffMs = startOfToday - itemTime;
+
+    if (itemTime >= startOfToday) {
+      groupsMap.today.items.push(item);
+    } else if (diffMs < oneDayMs) {
+      groupsMap.yesterday.items.push(item);
+    } else if (diffMs < 3 * oneDayMs) {
+      groupsMap.threeDays.items.push(item);
+    } else if (diffMs < 7 * oneDayMs) {
+      groupsMap.sevenDays.items.push(item);
+    } else {
+      groupsMap.older.items.push(item);
+    }
+  });
+
+  return Object.keys(groupsMap)
+    .map(key => ({ id: key, ...groupsMap[key] }))
+    .filter(g => g.items.length > 0)
+    .sort((a, b) => a.order - b.order);
 });
 
 const formatDate = (dateStr: string) => { 
@@ -313,7 +362,6 @@ watch(
 // Agents State for Dropdown
 const agents = ref<any[]>([]);
 const debugMode = ref<"auto" | "specific">("auto");
-const showShortcuts = ref(true);
 const slashCommands = ref<any[]>([]); // Dynamic commands
 
 const fetchAgents = async () => {
@@ -434,6 +482,7 @@ const loadSessionHistory = async (id: string) => {
           isHistory: true, // Mark as history
           feedback: m.feedback,
           agentName: m.agent_name || undefined,
+          agentDisplayName: m.agent_display_name || undefined,
         })
       );
       if (historyMsg.length > 0) {
@@ -470,6 +519,15 @@ const loadSessionHistory = async (id: string) => {
     console.warn("Failed to load session history", e);
     loadGreeting();
   }
+};
+
+const getAgentDisplayName = (msg: Message) => {
+  if (msg.agentDisplayName) return msg.agentDisplayName;
+  if (msg.agentName) {
+    const found = agents.value.find((a: any) => a.name === msg.agentName);
+    return found ? found.display_name : msg.agentName;
+  }
+  return '';
 };
 
 const currentUser = ref<any>(null);
@@ -622,10 +680,26 @@ interface LogEntry {
 
 // ... inside script ...
 
+interface SkillMeta {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+interface ChatFile {
+  type?: string;
+  url: string;
+  filename: string;
+  size: number;
+  ext: string;
+  skillMeta?: SkillMeta;
+}
+
 interface Message {
   id: number;
   role: "user" | "agent" | "system";
   content: string;
+  files?: ChatFile[];
   rawContent?: string; // Store original markdown for copying
   logs?: LogEntry[];
   isThinking?: boolean;
@@ -657,6 +731,7 @@ const debugConfig = reactive({
   dryRun: false, // SQL Review Mode
   returnRawPrompt: true, // Always verify context
   enableMultiAgent: true, // Multi-agent collaboration
+  showShortcuts: true, // Show slash commands
   systemPromptOverride: "", // Prompt Engineering
   injectedContext: [] as { key: string; value: string }[], // Manual Context Injection
 });
@@ -969,6 +1044,286 @@ const regenerate = async (agentMsg: Message) => {
   await sendMessage();
 };
 
+const chatInputRef = ref<any>(null);
+const showKnowledgeBaseSelector = ref(false);
+const showFileBrowserModal = ref(false);
+const showSkillSelector = ref(false);
+const skillSelectorSearchQuery = ref("");
+const allSkillsList = ref<any[]>([]);
+const isLoadingSkillsList = ref(false);
+
+const windowWidth = ref(window.innerWidth);
+const handleResize = () => {
+  windowWidth.value = window.innerWidth;
+};
+onMounted(() => {
+  window.addEventListener('resize', handleResize);
+});
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize);
+});
+
+const filteredSkillsForSelector = computed(() => {
+  const query = skillSelectorSearchQuery.value.trim().toLowerCase();
+  if (!query) return allSkillsList.value;
+  return allSkillsList.value.filter(s => 
+    s.name?.toLowerCase().includes(query) || 
+    s.id?.toLowerCase().includes(query) ||
+    s.description?.toLowerCase().includes(query) ||
+    s.path?.toLowerCase().includes(query)
+  );
+});
+
+const getSelectedKnowledgeBaseIds = () => {
+  const attached = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "knowledge_base");
+  return attached?.url ? String(attached.url).split(",").filter(Boolean) : [];
+};
+
+/** 知识库问答专家（与路由 agent_name=knowledge-base 对齐） */
+const resolveKnowledgeExpertAgent = () => {
+  return agents.value.find((a) => {
+    const name = String(a?.name || "").toLowerCase();
+    const label = String(a?.display_name || "");
+    return (
+      name === "knowledge-base" ||
+      name.includes("knowledge") ||
+      label.includes("知识库")
+    );
+  });
+};
+
+/** 用户问题与附件/知识库系统说明的分隔（展示为横线，模型侧为 Markdown 分隔） */
+const USER_MESSAGE_CONTEXT_DIVIDER = "\n\n---\n\n";
+
+const splitUserMessageContent = (text: string) => {
+  const raw = text || "";
+  const idx = raw.indexOf(USER_MESSAGE_CONTEXT_DIVIDER);
+  if (idx === -1) {
+    return { hasContext: false, userPart: raw, contextPart: "" };
+  }
+  return {
+    hasContext: true,
+    userPart: raw.slice(0, idx).trim(),
+    contextPart: raw.slice(idx + USER_MESSAGE_CONTEXT_DIVIDER.length).trim(),
+  };
+};
+
+const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
+  const expert = resolveKnowledgeExpertAgent();
+  const expertHint = expert
+    ? `本次为知识库查询，须优先由知识库专家「${expert.display_name || expert.name}」处理（agent_name: ${expert.name}，agent_id: ${expert.id}）；自动路由时必须选择该专家，不得分发给 ChatBI、运维或其他专家。`
+    : `本次为知识库查询，须优先选择知识库专家（agent_name: knowledge-base）；自动路由时不得分发给 ChatBI、运维或其他专家。`;
+
+  return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
+};
+
+const handleSelectKnowledgeBase = async (val: string | string[]) => {
+  const ids = (Array.isArray(val) ? val : [val]).map((id) => String(id).trim()).filter(Boolean);
+  if (!chatInputRef.value) {
+    showKnowledgeBaseSelector.value = false;
+    return;
+  }
+
+  const files = chatInputRef.value.uploadedFiles || [];
+  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "knowledge_base");
+
+  if (ids.length > 0) {
+    const kbExpert = resolveKnowledgeExpertAgent();
+    if (kbExpert) {
+      debugMode.value = 'specific';
+      agentParams.agent_id = kbExpert.id;
+    }
+
+    chatInputRef.value.uploadedFiles.push({
+      type: "knowledge_base",
+      url: ids.join(","),
+      filename: `已选择 ${ids.length} 个知识库`,
+      size: 0,
+      ext: "knowledge_base",
+    });
+  }
+
+  showKnowledgeBaseSelector.value = false;
+};
+
+const handleSelectLocalFs = (payload: { type: 'local_file' | 'local_dir'; path: string; name: string; size: number; ext: string }) => {
+  if (!chatInputRef.value) return;
+  const files = chatInputRef.value.uploadedFiles || [];
+  const exists = files.some((f: any) => f.type === payload.type && f.url === payload.path);
+  if (!exists) {
+    chatInputRef.value.uploadedFiles.push({
+      type: payload.type,
+      url: payload.path,
+      filename: payload.name,
+      size: payload.size,
+      ext: payload.ext
+    });
+  }
+};
+
+const isImageFile = isImageAttachment;
+
+const formatBytes = (bytes: number) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
+const getServerAttachmentPath = (file: ChatFile) => {
+  if (file.type === "skill") {
+    return `/app/data/skills/${file.url}/SKILL.md`;
+  }
+  if (file.type === "local_file" || file.type === "local_dir") {
+    return file.url;
+  }
+  const fileName = file.url.split("/").filter(Boolean).pop() || file.filename;
+  return `/app/data/uploads/${fileName}`;
+};
+
+const buildImageAttachmentHint = (file: ChatFile, path: string) => {
+  if (file.type === "local_file") {
+    return `用户本轮已从服务器挂载图片：${file.filename}，该图片已作为视觉多模态输入随消息一并发送（源路径：${path}）。`;
+  }
+  return `用户本轮已上传图片：${file.filename}，该图片已作为视觉多模态输入随消息一并发送（托管路径：${path}）。`;
+};
+
+const buildSkillAttachmentHint = (file: ChatFile, path: string) => {
+  const skillName = file.filename.replace(" (技能)", "");
+  const meta = file.skillMeta;
+  const metaParts: string[] = [];
+  if (meta?.name) metaParts.push(`name: ${meta.name}`);
+  if (meta?.description) metaParts.push(`description: ${meta.description}`);
+  const metaText = metaParts.length > 0 ? metaParts.join(", ") : "";
+  let hint = `用户本轮已调用生态技能工作流：${skillName}，对应的物理描述文件绝对路径是：${path}。`;
+  if (metaText) {
+    hint += `\nskills meta 为：${metaText}`;
+  }
+  return hint;
+};
+
+const appendAttachmentContext = (content: string, files: ChatFile[]) => {
+  if (files.length === 0) return content;
+
+  const contextLines = files.map((file) => {
+    if (file.type === "knowledge_base") {
+      const datasetLine = `用户本轮已选择知识库，dataset_id：${file.url}。你必须在本轮回复前调用 search_knowledge_base 工具检索后再作答，不得跳过。dataset_ids 请传纯 ID 或单引号列表，例如 ['${file.url}']；禁止使用双引号 JSON 如 ["${file.url}"]。`;
+      return buildKnowledgeBaseAttachmentHint(datasetLine);
+    }
+    const path = getServerAttachmentPath(file);
+    if (file.type === "skill") {
+      return buildSkillAttachmentHint(file, path);
+    }
+    if (isImageAttachment(file)) {
+      return buildImageAttachmentHint(file, path);
+    }
+    if (file.type === "local_file") {
+      return `用户本轮已挂载服务器本地文件：${file.filename}，其真实的绝对路径是：${path}。你可以直接通过系统级执行工具访问或读取此绝对路径的资料以解答用户的问题。`;
+    }
+    if (file.type === "local_dir") {
+      return `用户本轮已挂载服务器本地目录：${file.filename}，其真实的绝对路径是：${path}。你可以直接通过系统级执行工具访问、遍历或检索此绝对路径目录下的资料以解答用户的问题。`;
+    }
+    return `用户本轮已上传文件附件：${file.filename}，其安全托管后的服务器绝对路径是：${path}。`;
+  });
+
+  const contextBlock = contextLines.filter(Boolean).join("\n\n");
+  const userPart = (content || "").trim();
+  if (!contextBlock) return userPart;
+  if (!userPart) return `${USER_MESSAGE_CONTEXT_DIVIDER}${contextBlock}`;
+  return `${userPart}${USER_MESSAGE_CONTEXT_DIVIDER}${contextBlock}`;
+};
+
+const resolveReqContent = (msg: Message) => {
+  let reqContent = msg.content || "";
+  if (msg.role === "user" && msg.files && msg.files.length > 0) {
+    if (!reqContent.includes(USER_MESSAGE_CONTEXT_DIVIDER)) {
+      reqContent = appendAttachmentContext(msg.content, msg.files);
+    }
+  }
+  return reqContent;
+};
+
+const openSkillSelector = async () => {
+  showSkillSelector.value = true;
+  skillSelectorSearchQuery.value = "";
+  allSkillsList.value = [];
+  isLoadingSkillsList.value = true;
+  try {
+    const res = await axios.get("/api/portal/skills");
+    if (res.data && res.data.status === "success") {
+      allSkillsList.value = res.data.data || [];
+    }
+  } catch (err) {
+    console.error("加载技能列表失败:", err);
+  } finally {
+    isLoadingSkillsList.value = false;
+  }
+};
+
+const handleSelectSkill = (skill: any) => {
+  if (chatInputRef.value) {
+    const exists = chatInputRef.value.uploadedFiles.some((f: any) => f.type === 'skill' && f.url === skill.id);
+    if (exists) {
+      alert("该技能已挂载，请勿重复挂载");
+      showSkillSelector.value = false;
+      return;
+    }
+    chatInputRef.value.uploadedFiles.push({
+      type: "skill",
+      url: skill.id,
+      filename: `${skill.name} (技能)`,
+      size: 0,
+      ext: "skill",
+      skillMeta: {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description || "",
+      },
+    });
+  }
+  showSkillSelector.value = false;
+};
+
+const handleSwitchMode = (agent: any) => {
+  debugMode.value = 'specific';
+  agentParams.agent_id = agent.id;
+};
+
+const openImagePreview = (url: string) => {
+  window.open(url, "_blank");
+};
+
+const handleReorderCommands = async (reorderData: any[]) => {
+  try {
+    await axios.post("/api/portal/slash-commands/reorder", { items: reorderData });
+    await fetchSlashCommands();
+  } catch (e) {
+    console.error("Failed to reorder commands", e);
+  }
+};
+
+const debugPageContainer = ref<HTMLElement | null>(null);
+const isFullScreen = ref(false);
+
+const toggleFullScreen = () => {
+  isFullScreen.value = !isFullScreen.value;
+};
+
+const handleEscKey = (e: KeyboardEvent) => {
+  if (e.key === "Escape" && isFullScreen.value) {
+    isFullScreen.value = false;
+  }
+};
+
+onMounted(() => {
+  window.addEventListener("keydown", handleEscKey);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleEscKey);
+});
+
 const userInput = ref("");
 const isProcessing = ref(false);
 const inputTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -1091,20 +1446,26 @@ const stopGeneration = () => {
 };
 
 const sendMessage = async () => {
+  const files = chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [];
   const content = userInput.value.trim();
-  if (!content || isProcessing.value) return;
+  if (!content && files.length === 0) return;
+  if (isProcessing.value) return;
 
   // 1. Add User Message
   messages.value.push({
     id: Date.now(),
     role: "user",
     content: content,
+    files: files,
   });
   
   // Force scroll for user message
   nextTick(() => scrollToBottom(true));
 
   userInput.value = "";
+  if (chatInputRef.value) {
+    chatInputRef.value.uploadedFiles = [];
+  }
   isProcessing.value = true;
 
   // 2. Add Agent Placeholder
@@ -1183,12 +1544,30 @@ const sendMessage = async () => {
         "X-API-Key": localStorage.getItem("api_key") || "",
       },
       body: JSON.stringify({
-        messages: messages.value
-          .filter((m) => !m.isThinking && m.content)
-          .map((m) => ({
-            role: m.role === "agent" ? "assistant" : m.role,
-            content: m.content,
-          })),
+        messages: (() => {
+          const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files?.length));
+          const lastUserIdx = sendable.reduce(
+            (last, m, i) => (m.role === "user" ? i : last),
+            -1
+          );
+          return sendable.map((m, idx) => {
+            const role = m.role === "agent" ? "assistant" : m.role;
+            if (m.role === "user" && idx !== lastUserIdx) {
+              return {
+                role,
+                content: splitUserMessageContent(m.content || "").userPart,
+              };
+            }
+            const msgObj: any = {
+              role,
+              content: m.role === "user" ? resolveReqContent(m) : (m.content || ""),
+            };
+            if (m.role === "user" && m.files?.length) {
+              msgObj.files = m.files;
+            }
+            return msgObj;
+          });
+        })(),
         stream: true,
         enable_multi_agent: debugConfig.enableMultiAgent,
         debug_options: debugOptions,
@@ -1396,7 +1775,7 @@ const sendMessage = async () => {
   } finally {
     isProcessing.value = false;
     nextTick(() => {
-      if (inputTextarea.value) inputTextarea.value.focus();
+      if (chatInputRef.value) chatInputRef.value.focus();
     });
   }
 };
@@ -1480,7 +1859,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-full flex bg-gray-100 overflow-hidden">
+  <div 
+    ref="debugPageContainer" 
+    class="h-full flex bg-gray-100 overflow-hidden"
+    :class="{ 'fixed inset-0 z-[99] w-screen h-screen': isFullScreen }"
+  >
     <!-- Trace Log Viewer Component -->
     <TraceLogViewer
       :visible="showFullLogViewer"
@@ -1589,7 +1972,7 @@ onUnmounted(() => {
       v-model:visible="showHistorySidebar"
       v-model="historyKeyword"
       :loading="loadingHistory"
-      :history-list="aggregatedHistoryList"
+      :history-list="groupedHistoryList"
       :active-trace-id="activeTraceId"
       @fetch-history="fetchHistory"
       @load-chat="openSessionPreview" 
@@ -1656,6 +2039,41 @@ onUnmounted(() => {
           >
         </div>
         <div class="flex items-center space-x-4">
+          <!-- 1. 全屏 -->
+          <button
+            @click="toggleFullScreen"
+            class="flex items-center transition-all"
+            :class="isFullScreen 
+              ? 'bg-primary/10 text-primary border border-primary/20 p-1.5 rounded-lg hover:bg-primary/20' 
+              : 'text-gray-500 hover:text-blue-600 p-1.5 rounded-lg hover:bg-gray-50'"
+            :title="isFullScreen ? '退出全屏' : '全屏调试'"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                v-if="!isFullScreen"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4M20 4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"
+              />
+              <path
+                v-else
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 14h6v6m0-6l-6 6m16-6h-6v6m0-6l6 6M4 10h6V4m0 6L4 4m16 6h-6V4m0 6l6-6"
+              />
+            </svg>
+          </button>
+
+          <div class="h-4 w-px bg-gray-200"></div>
+
+          <!-- 2. 清空 -->
           <button
             @click="clearHistory"
             class="text-gray-500 hover:text-red-600 transition-colors flex items-center space-x-1"
@@ -1674,9 +2092,11 @@ onUnmounted(() => {
                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
               />
             </svg>
-            <span class="text-xs font-medium">清空</span>
           </button>
+
           <div class="h-4 w-px bg-gray-200"></div>
+
+          <!-- 3. 运行逻辑 -->
           <button
             @click="showLogicFlowModal = true"
             class="text-gray-500 hover:text-blue-600 transition-colors flex items-center space-x-1"
@@ -1703,10 +2123,26 @@ onUnmounted(() => {
             </svg>
             <span class="text-xs font-medium">运行逻辑</span>
           </button>
+
           <div class="h-4 w-px bg-gray-200"></div>
+
+          <!-- 4. 导出 Markdown -->
+          <button
+            @click="exportChat"
+            class="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 transition-colors flex items-center space-x-1"
+            title="导出对话 (Markdown)"
+          >
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+          </button>
+
+          <div class="h-4 w-px bg-gray-200"></div>
+
+          <!-- 5. 调试配置 (齿轮) 放最后 -->
           <button
             @click="showConfigPanel = !showConfigPanel"
-            class="p-1.5 rounded-md transition-colors"
+            class="p-1.5 rounded-md transition-colors flex items-center space-x-1"
             :class="
               showConfigPanel
                 ? 'bg-primary/10 text-primary'
@@ -1732,18 +2168,6 @@ onUnmounted(() => {
                 stroke-width="2"
                 d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
               />
-            </svg>
-          </button>
-          
-          <div class="h-4 w-px bg-gray-200"></div>
-          
-          <button
-            @click="exportChat"
-            class="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 transition-colors"
-            title="导出对话 (Markdown)"
-          >
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
             </svg>
           </button>
         </div>
@@ -1864,7 +2288,47 @@ onUnmounted(() => {
               <div
                 class="bg-primary text-white px-5 py-3.5 rounded-2xl rounded-tr-none shadow-sm text-sm leading-relaxed text-left relative"
               >
-                 <MessageRenderer :content="msg.content" />
+                <template v-for="parts in [splitUserMessageContent(msg.content)]" :key="'user-parts'">
+                  <template v-if="parts.hasContext">
+                    <MessageRenderer v-if="parts.userPart" :content="parts.userPart" />
+                    <div v-if="parts.userPart" class="my-2.5 border-t border-white/30" role="separator" />
+                    <div class="whitespace-pre-wrap text-[11px] text-white/90 leading-relaxed opacity-95">
+                      {{ parts.contextPart }}
+                    </div>
+                  </template>
+                  <MessageRenderer v-else :content="msg.content" />
+                </template>
+                
+                <!-- Attached Files In Bubble -->
+                <div v-if="msg.files && msg.files.length > 0" class="mt-2 space-y-2 border-t border-white/20 pt-2">
+                    <div v-for="(file, fIdx) in msg.files" :key="fIdx" class="flex items-center bg-white/10 rounded-lg p-1.5 max-w-xs select-none">
+                        <!-- Image Thumb -->
+                        <AttachmentImageThumb
+                          v-if="isImageFile(file)"
+                          :file="file"
+                          clickable
+                          class="mr-2 border-white/10"
+                          @click="openImagePreview"
+                        />
+                        <!-- Skill Icon -->
+                        <div v-else-if="file.type === 'skill'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2 font-mono">
+                            ⚙️
+                        </div>
+                        <!-- Knowledge Base Icon -->
+                        <div v-else-if="file.type === 'knowledge_base'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            📚
+                        </div>
+                        <!-- File Icon -->
+                        <div v-else class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            📄
+                        </div>
+                        <div class="flex-1 min-w-0 flex flex-col">
+                            <span v-if="file.type === 'skill' || file.type === 'knowledge_base'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
+                            <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            <span class="text-[9px] text-white/70 font-mono">{{ file.type === 'skill' ? '生态技能' : file.type === 'knowledge_base' ? '知识库' : formatBytes(file.size) }}</span>
+                        </div>
+                    </div>
+                </div>
               </div>
               <!-- User Actions -->
               <div
@@ -1939,7 +2403,7 @@ onUnmounted(() => {
             </div>
             <div class="flex-1 space-y-2 min-w-0">
               <!-- Actions (Unified Toolbar) -->
-              <div v-if="!msg.isGreeting && !msg.isHistory" class="flex flex-wrap items-center gap-2 mb-2">
+              <div v-if="!msg.isGreeting" class="flex flex-wrap items-center gap-2 mb-2">
                 <!-- Agent Badge (Smart Routing State) -->
                 <div
                   class="flex items-center space-x-1 px-2 py-1 text-xs font-medium rounded-md select-none transition-all duration-300 border"
@@ -1960,7 +2424,7 @@ onUnmounted(() => {
                       d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"
                     />
                   </svg>
-                  <span>{{ msg.agentDisplayName ? `${msg.agentDisplayName} · 正在服务` : (msg.agentName || '智能调度中...') }}</span>
+                  <span>{{ getAgentDisplayName(msg) ? `${getAgentDisplayName(msg)} · 正在服务` : (msg.agentName || '智能调度中...') }}</span>
                 </div>
 
                 <!-- Full Logs -->
@@ -2394,153 +2858,31 @@ onUnmounted(() => {
       </div>
 
       <!-- Input Area -->
-      <div class="flex-shrink-0 p-4 bg-white border-t border-gray-200">
-        <!-- Preset Questions (Collapsible) -->
-        <div class="max-w-4xl mx-auto mb-2">
-          <!-- Header / Toggle -->
-          <div class="flex items-center justify-between mb-2">
-            <div
-              @click="showShortcuts = !showShortcuts"
-              class="flex items-center space-x-1 cursor-pointer group select-none"
-            >
-              <span
-                class="text-xs font-bold text-gray-500 group-hover:text-primary transition-colors"
-                >⚡️ 快捷指令</span
-              >
-              <svg
-                class="w-3 h-3 text-gray-400 group-hover:text-primary transition-all duration-300"
-                :class="{ 'rotate-180': !showShortcuts }"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </div>
-          </div>
-
-          <!-- Buttons Grid -->
-          <transition
-            enter-active-class="transition-all duration-300 ease-out"
-            enter-from-class="opacity-0 -translate-y-2 max-h-0"
-            enter-to-class="opacity-100 translate-y-0 max-h-[100px]"
-            leave-active-class="transition-all duration-200 ease-in"
-            leave-from-class="opacity-100 translate-y-0 max-h-[100px]"
-            leave-to-class="opacity-0 -translate-y-2 max-h-0"
-          >
-            <div
-              v-show="showShortcuts"
-              class="flex flex-wrap gap-2 overflow-hidden pb-1"
-            >
-              <button
-                v-for="q in slashCommands"
-                :key="q.id"
-                @click="
-                  userInput = q.command;
-                  sendMessage();
-                "
-                :disabled="isProcessing"
-                class="px-3 py-1.5 text-xs font-medium border rounded-full transition-all duration-200 disabled:opacity-50 flex items-center space-x-1"
-                :class="[
-                   currentUser && q.created_by === currentUser.user_name 
-                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100' 
-                    : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-primary/5 hover:border-primary/30 hover:text-primary'
-                ]"
-              >
-                <span>{{ q.label }}</span>
-                <span v-if="currentUser && q.created_by === currentUser.user_name" class="ml-1 w-1.5 h-1.5 rounded-full bg-blue-400"></span>
-              </button>
-
-              <!-- Add Command Button (Small) -->
-              <button
-                @click="openCommandManager"
-                class="px-2 py-1.5 text-xs text-gray-400 border border-dashed border-gray-300 rounded-full hover:border-primary hover:text-primary transition-colors"
-                title="管理快捷指令"
-              >
-                +
-              </button>
-            </div>
-          </transition>
-        </div>
-
-        <div
-          class="relative max-w-4xl mx-auto ring-1 ring-gray-200 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-primary transition-all"
-        >
-          <MentionList
-            ref="mentionListRef"
-            :visible="showMentionList"
-            :keyword="mentionKeyword"
-            :agents="agents"
-            :position="mentionPosition"
-            @select="handleMentionSelect"
-            @close="showMentionList = false"
-          />
-          <textarea
-            ref="inputTextarea"
+      <div class="flex-shrink-0 px-4 py-2 bg-white border-t border-gray-200 relative z-20 debug-chat-input-wrapper">
+        <div class="max-w-4xl mx-auto">
+          <ChatInput
+            ref="chatInputRef"
             v-model="userInput"
-            @keydown="handleKeydown"
-            @input="handleInput"
-            placeholder="输入你的指令..."
-            class="w-full py-3 pl-10 pr-12 bg-transparent border-none resize-none focus:ring-0 focus:outline-none text-gray-700 custom-scrollbar"
-            rows="1"
-            style="height: auto; min-height: 52px"
-          ></textarea>
-          
-          <!-- Multimodal Upload Placeholder -->
-          <button
-            class="absolute bottom-2.5 left-2 p-1.5 text-gray-400 hover:text-primary transition-colors hover:bg-gray-100 rounded-lg flex items-center justify-center"
-            title="上传图片 (即将上线)"
-            @click="handleImageUpload"
+            :is-processing="isProcessing"
+            :show-shortcuts="debugConfig.showShortcuts"
+            :slash-commands="slashCommands"
+            :allowed-agents="agents"
+            :current-user="currentUser"
+            :window-width="windowWidth"
+            @send="sendMessage"
+            @stop="stopGeneration"
+            @toggle-shortcuts="debugConfig.showShortcuts = !debugConfig.showShortcuts"
+            @open-command-manager="openCommandManager"
+            @upload-image="handleImageUpload"
+            @edit-command="editCommand"
+            @delete-command="confirmDeleteCommand"
+            @switch-mode="handleSwitchMode"
+            @reorder-commands="handleReorderCommands"
+            @select-skill="openSkillSelector"
+            @select-knowledge-base="showKnowledgeBaseSelector = true"
+            @select-local-fs="showFileBrowserModal = true"
           >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-          </button>
-          <div class="absolute bottom-2 right-2 flex items-center space-x-2">
-            <!-- Stop Button -->
-            <button
-              v-if="isProcessing"
-              @click="stopGeneration"
-              class="p-1.5 rounded-lg transition-colors flex items-center justify-center bg-red-100 text-red-600 hover:bg-red-200"
-              title="停止生成"
-            >
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-
-            <!-- Send Button -->
-            <button
-              v-else
-              @click="sendMessage"
-              :disabled="!userInput.trim()"
-              class="p-1.5 rounded-lg transition-colors flex items-center justify-center"
-              :class="
-                userInput.trim()
-                  ? 'bg-primary text-white hover:bg-primary-dark shadow-sm'
-                  : 'bg-gray-100 text-gray-400'
-              "
-            >
-              <svg
-                class="w-5 h-5 transform rotate-90"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                />
-              </svg>
-            </button>
-          </div>
+          </ChatInput>
         </div>
       </div>
     </div>
@@ -3214,6 +3556,108 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <RagFlowResourceSelector
+    v-model="showKnowledgeBaseSelector"
+    type="dataset"
+    :initial-selected="getSelectedKnowledgeBaseIds()"
+    @select="handleSelectKnowledgeBase"
+  />
+
+  <FileBrowserModal
+    v-if="showFileBrowserModal"
+    :show="showFileBrowserModal"
+    @close="showFileBrowserModal = false"
+    @select="handleSelectLocalFs"
+  />
+
+  <!-- 技能工作流选择弹窗 (Skill Selector Modal) -->
+  <div
+    v-if="showSkillSelector"
+    class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
+    @click.self="showSkillSelector = false"
+  >
+    <div 
+      class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[75vh] flex flex-col overflow-hidden"
+    >
+      <!-- Header -->
+      <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0">
+        <div class="flex items-center space-x-2">
+          <span class="text-lg">⚙️</span>
+          <h3 class="text-base font-bold text-gray-800 dark:text-gray-100">选择技能工作流</h3>
+        </div>
+        <button @click="showSkillSelector = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <!-- Search Bar -->
+      <div class="p-3 border-b border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
+        <div class="relative">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input 
+            v-model="skillSelectorSearchQuery"
+            type="text" 
+            placeholder="搜索技能名称、标识或目录..." 
+            class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
+          />
+        </div>
+      </div>
+
+      <!-- Skills List -->
+      <div class="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar bg-gray-50/30 dark:bg-gray-900/30">
+        <!-- Loading State -->
+        <div v-if="isLoadingSkillsList" class="flex flex-col items-center justify-center py-10 opacity-50">
+          <div class="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+          <span class="text-[10px] font-bold text-gray-400 mt-2 uppercase tracking-widest">加载中...</span>
+        </div>
+
+        <!-- Empty State -->
+        <div v-else-if="filteredSkillsForSelector.length === 0" class="text-center py-12">
+          <span class="text-2xl opacity-40">⚙️</span>
+          <p class="text-xs text-gray-400 mt-2 font-bold">未发现可用的智能体技能</p>
+          <p class="text-[10px] text-gray-400/70 mt-1">您可以前往系统控制台“技能管理”页面创建</p>
+        </div>
+
+        <!-- Skill Cards -->
+        <div 
+          v-for="skill in filteredSkillsForSelector" 
+          :key="skill.id"
+          @click="handleSelectSkill(skill)"
+          class="group p-3 bg-white dark:bg-gray-800 border border-gray-150 dark:border-gray-700/60 rounded-xl cursor-pointer hover:border-primary/40 hover:shadow-md active:scale-[0.98] transition-all flex items-start space-x-3"
+        >
+          <div class="w-8 h-8 rounded-lg bg-primary/10 dark:bg-primary/20 flex items-center justify-center text-primary text-sm flex-shrink-0 group-hover:scale-105 transition-transform font-mono">
+            ⚙️
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-gray-800 dark:text-gray-100 group-hover:text-primary transition-colors truncate pr-2">{{ skill.name }}</span>
+              <span class="text-[9px] font-mono text-gray-400 shrink-0 select-all uppercase">ID: {{ skill.id }}</span>
+            </div>
+            <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{{ skill.description || '暂无描述信息' }}</p>
+            <div
+              v-if="skill.path"
+              class="mt-1.5 flex items-center gap-1 text-[9px] font-mono text-gray-400 dark:text-gray-500 min-w-0"
+              :title="skill.path"
+            >
+              <svg class="w-3 h-3 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              <span class="truncate">{{ skill.path }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 text-center flex-shrink-0">
+        <span class="text-[9px] text-gray-400 font-bold uppercase tracking-widest">点击技能即可自动挂载至输入框</span>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -3413,5 +3857,22 @@ onUnmounted(() => {
 :deep(.markdown-body .code-copy-btn.copied) {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2310b981'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
   border-color: #10b981;
+}
+
+/* 强行隐藏 ChatInput 内部的 Powered by 标识 */
+.debug-chat-input-wrapper :deep(.mt-1.text-center) {
+  display: none !important;
+}
+
+/* 强行剥离 ChatInput 外部的多余边框和背景 */
+.debug-chat-input-wrapper :deep(.flex-shrink-0.border-t) {
+  border-top-width: 0px !important;
+  background-color: transparent !important;
+}
+
+/* 强行压缩 ChatInput 内部的内边距，减少占位空间 */
+.debug-chat-input-wrapper :deep(.p-3.pb-2) {
+  padding: 0px !important;
+  padding-bottom: 2px !important;
 }
 </style>

@@ -7,6 +7,7 @@ interface DebugConfig {
   dryRun: boolean;
   returnRawPrompt: boolean;
   enableMultiAgent: boolean;
+  showShortcuts: boolean;
   systemPromptOverride: string;
   injectedContext: { key: string; value: string }[];
 }
@@ -149,6 +150,17 @@ const removeContextItem = (index: number) => {
             />
             <span class="text-sm font-medium text-gray-700"
               >启用多智能体协同</span
+            >
+          </label>
+
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              v-model="config.showShortcuts"
+              class="rounded text-primary focus:ring-primary border-gray-300"
+            />
+            <span class="text-sm font-medium text-gray-700"
+              >显示快捷指令栏</span
             >
           </label>
         </div>
