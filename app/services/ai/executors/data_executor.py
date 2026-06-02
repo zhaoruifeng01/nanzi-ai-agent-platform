@@ -62,6 +62,9 @@ class DataQueryExecutor(BaseExecutor):
         self.intent_info = None
         self._sql_plan_enforcement_added = False
         self._ratio_anomaly_feedback_sent = False
+        self._empty_result_feedback_sent = False
+        self._empty_result_recheck_pending = False
+        self._empty_result_final_sql_pending = False
         self._schema_fetched_ok = False
         self._schema_no_authorized = False
         self._metadata_unavailable = False
@@ -85,6 +88,7 @@ class DataQueryExecutor(BaseExecutor):
     # 不应再被“必须先查库”的护栏阻断。
     DATA_TOOL_NAMES = {"get_dataset_schema", "execute_sql_query", "update_dashboard_context"}
     SKILL_TOOL_NAMES = {"list_available_skills", "read_skill_instruction"}
+    RESULT_ROW_CONTAINER_KEYS = {"items", "rows", "data", "list", "result", "records"}
 
     def _active_skills_in_system_prompt(self, system_prompt: str) -> bool:
         return "[Active Skills Loaded]" in (system_prompt or "")
@@ -233,6 +237,46 @@ class DataQueryExecutor(BaseExecutor):
         if not checks:
             return None
         return "；".join(checks[:2])
+
+    def _extract_result_row_lists(self, parsed: Any, depth: int = 0) -> List[list]:
+        """Extract likely row containers from common SQL API response shapes."""
+        if depth > 4:
+            return []
+        if isinstance(parsed, list):
+            return [parsed]
+        if not isinstance(parsed, dict):
+            return []
+
+        row_lists: List[list] = []
+        for key, value in parsed.items():
+            if str(key) not in self.RESULT_ROW_CONTAINER_KEYS:
+                continue
+            if isinstance(value, list):
+                row_lists.append(value)
+            elif isinstance(value, dict):
+                row_lists.extend(self._extract_result_row_lists(value, depth + 1))
+        return row_lists
+
+    def _has_non_empty_result_rows(self, parsed: Any) -> bool:
+        return any(len(rows) > 0 for rows in self._extract_result_row_lists(parsed))
+
+    def _detect_empty_result(self, parsed: Any) -> Optional[str]:
+        """
+        Detect successful-but-empty SQL payloads.
+
+        This is not a tool failure: it means the execution pipeline worked, but
+        the result may not be sufficient to answer the user's question.
+        """
+        row_lists = self._extract_result_row_lists(parsed)
+        if row_lists and not any(len(rows) > 0 for rows in row_lists):
+            return "SQL 返回的行容器为空，未命中任何数据行"
+
+        if isinstance(parsed, dict):
+            total_like_keys = ("total", "count", "total_count")
+            if any(parsed.get(k) == 0 for k in total_like_keys) and row_lists:
+                return "SQL 返回 total/count=0，且未命中任何数据行"
+
+        return None
 
     def _is_no_authorized_schema(self, tool_output: Any) -> bool:
         s = str(tool_output or "")
@@ -660,6 +704,9 @@ class DataQueryExecutor(BaseExecutor):
         # Reset per-execution state to avoid leaking across multiple execute() calls
         # (unit tests may reuse the same executor instance).
         self._ratio_anomaly_feedback_sent = False
+        self._empty_result_feedback_sent = False
+        self._empty_result_recheck_pending = False
+        self._empty_result_final_sql_pending = False
         self._schema_fetched_ok = False
         self._schema_no_authorized = False
         self._metadata_unavailable = False
@@ -929,6 +976,16 @@ class DataQueryExecutor(BaseExecutor):
             if not response.tool_calls:
                 # If SQL has already succeeded, don't prolong the loop on empty tool calls.
                 # Break to final synthesis to reduce latency.
+                if self._sql_succeeded and self._empty_result_recheck_pending:
+                    langchain_messages.append(response)
+                    append_system_instruction(langchain_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RECHECK)
+                    continue
+
+                if self._sql_succeeded and self._empty_result_final_sql_pending:
+                    langchain_messages.append(response)
+                    append_system_instruction(langchain_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RUN_FINAL_SQL)
+                    continue
+
                 if self._sql_succeeded:
                     langchain_messages.append(response)
                     break
@@ -1148,6 +1205,12 @@ class DataQueryExecutor(BaseExecutor):
                 # 强制所有 execute_sql_query 都显示SQL语句，不管状态如何
                 if tool_call['name'] == "execute_sql_query":
                     self._sql_attempted = True
+                    was_empty_recheck_pending = self._empty_result_recheck_pending
+                    if was_empty_recheck_pending:
+                        self._empty_result_recheck_pending = False
+                    was_empty_final_sql_pending = self._empty_result_final_sql_pending
+                    if was_empty_final_sql_pending:
+                        self._empty_result_final_sql_pending = False
                     executed_sql = tool_call['args'].get('sql', '未知 SQL')
                     # 显示 SQL 和 结果摘要
                     results_preview = ""
@@ -1177,6 +1240,56 @@ class DataQueryExecutor(BaseExecutor):
                             self._ratio_anomaly_feedback_sent = True
                             needs_followup_after_sql = True
                             append_system_instruction(langchain_messages, DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason))
+
+                    if (
+                        tool_status == "success"
+                        and not self._empty_result_feedback_sent
+                        and not was_empty_recheck_pending
+                        and not was_empty_final_sql_pending
+                    ):
+                        empty_reason = self._detect_empty_result(parsed_tool_output)
+                        if empty_reason:
+                            self._empty_result_feedback_sent = True
+                            self._empty_result_recheck_pending = True
+                            needs_followup_after_sql = True
+                            yield {
+                                "type": "log",
+                                "id": f"empty_recheck_{uuid.uuid4().hex[:8]}",
+                                "title": "触发空结果复核",
+                                "details": (
+                                    f"{empty_reason}。SQL 执行成功但未返回数据，"
+                                    "系统将要求模型先用诊断 SQL 验证筛选值、子查询和 JOIN 条件。"
+                                ),
+                                "status": "warning",
+                                "execution_time_ms": 0,
+                            }
+                            append_system_instruction(
+                                langchain_messages,
+                                DataQueryPrompts.empty_result_recheck(empty_reason, executed_sql),
+                            )
+
+                    if (
+                        tool_status == "success"
+                        and was_empty_recheck_pending
+                        and self._has_non_empty_result_rows(parsed_tool_output)
+                    ):
+                        self._empty_result_final_sql_pending = True
+                        needs_followup_after_sql = True
+                        yield {
+                            "type": "log",
+                            "id": f"empty_final_sql_{uuid.uuid4().hex[:8]}",
+                            "title": "空结果诊断返回候选",
+                            "details": (
+                                "诊断 SQL 已返回候选数据或定位信息，系统将要求模型基于诊断证据"
+                                "修正并执行最终 SQL，而不是直接总结诊断结果。"
+                            ),
+                            "status": "warning",
+                            "execution_time_ms": 0,
+                        }
+                        append_system_instruction(
+                            langchain_messages,
+                            DataQueryPrompts.empty_result_final_sql_required(executed_sql),
+                        )
 
                 # --- [新增] 针对元数据检索日志的精简与增强逻辑 ---
                 if tool_call['name'] == "get_dataset_schema":

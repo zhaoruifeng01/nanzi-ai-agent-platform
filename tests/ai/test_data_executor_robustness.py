@@ -842,6 +842,270 @@ async def test_data_executor_stops_react_loop_after_successful_sql():
 
 
 @pytest.mark.asyncio
+async def test_data_executor_rechecks_empty_sql_result_before_fast_path():
+    """SQL 执行成功但结果为空时，应继续一轮复核而不是直接进入 fast path 汇总。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-empty-result-recheck", [], {"dry_run": False})
+
+    sql_call = {
+        "name": "execute_sql_query",
+        "args": {
+            "sql": "select room_name from rooms where shipName like '%书院%'",
+            "data_source": "mysql_oa",
+            "dataset_name": "rooms",
+        },
+        "id": "call_sql",
+    }
+    acting_response = MagicMock(spec=AIMessage)
+    acting_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    acting_response.tool_calls = [sql_call]
+
+    recheck_response = MagicMock(spec=AIMessage)
+    recheck_response.content = "<thought><sql_plan>{}</sql_plan>我会先复核过滤条件和各子查询是否有数据。</thought>"
+    recheck_response.tool_calls = [{
+        "name": "execute_sql_query",
+        "args": {
+            "sql": "select shipName, count(*) as cnt from rooms group by shipName limit 50",
+            "data_source": "mysql_oa",
+            "dataset_name": "rooms",
+        },
+        "id": "call_recheck_sql",
+    }]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield acting_response
+
+    async def gen_2(*args, **kwargs):
+        yield recheck_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "已复核空结果。"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+    empty_result = {
+        "columns": [{"name": "room_name", "type": "253"}],
+        "items": [],
+    }
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", AsyncMock(return_value=[])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=[
+            (sql_call, empty_result, 12.0),
+            (recheck_response.tool_calls[0], [], 8.0),
+        ])
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "查询书院机房负载率"}]):
+            events.append(chunk)
+
+    assert model_with_tools.astream.call_count == 2
+    assert executor._dispatch_tool_safe.await_count == 2
+    assert any("空结果" in chunk.get("title", "") for chunk in events if chunk.get("type") == "log")
+
+
+@pytest.mark.asyncio
+async def test_data_executor_requires_diagnostic_sql_when_empty_recheck_model_is_chatty():
+    """空结果复核阶段模型若不调 SQL，不应汇总，应继续强制直到发生诊断 SQL。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-empty-chatty-recheck", [], {"dry_run": False})
+
+    first_sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select * from rooms where shipName like '%书院%'", "data_source": "mysql_oa", "dataset_name": "rooms"},
+        "id": "call_sql",
+    }
+    diagnostic_sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select shipName, count(*) cnt from rooms group by shipName limit 50", "data_source": "mysql_oa", "dataset_name": "rooms"},
+        "id": "call_diag_sql",
+    }
+
+    first_response = MagicMock(spec=AIMessage)
+    first_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    first_response.tool_calls = [first_sql_call]
+    chatty_response = MagicMock(spec=AIMessage)
+    chatty_response.content = "我会先分析一下为什么为空。"
+    chatty_response.tool_calls = []
+    diagnostic_response = MagicMock(spec=AIMessage)
+    diagnostic_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    diagnostic_response.tool_calls = [diagnostic_sql_call]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield first_response
+
+    async def gen_2(*args, **kwargs):
+        yield chatty_response
+
+    async def gen_3(*args, **kwargs):
+        yield diagnostic_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2(), gen_3()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "已完成诊断。"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", AsyncMock(return_value=[])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=[
+            (first_sql_call, {"columns": [{"name": "room_name"}], "items": []}, 7.0),
+            (diagnostic_sql_call, [], 5.0),
+        ])
+        async for _ in executor.execute([{"role": "user", "content": "查询书院机房"}]):
+            pass
+
+    assert model_with_tools.astream.call_count == 3
+    assert executor._dispatch_tool_safe.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_data_executor_requires_final_sql_after_non_empty_empty_result_diagnostic():
+    """空结果诊断 SQL 若返回候选证据，应再执行修正后的最终 SQL 后才汇总。"""
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = "You are a Data Analysis Assistant. {dataset_menu}"
+    mock_config.tools = ["execute_sql_query"]
+    mock_config.model_name = "test-model"
+    mock_config.temperature = 0.0
+    mock_config.synthesis_model_name = None
+    mock_config.synthesis_temperature = None
+    mock_config.capabilities = ["data_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-empty-final-required", [], {"dry_run": False})
+
+    first_sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select * from rooms where shipName like '%书院%'", "data_source": "mysql_oa", "dataset_name": "rooms"},
+        "id": "call_sql",
+    }
+    diagnostic_sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select shipName, count(*) cnt from rooms group by shipName limit 50", "data_source": "mysql_oa", "dataset_name": "rooms"},
+        "id": "call_diag_sql",
+    }
+    final_sql_call = {
+        "name": "execute_sql_query",
+        "args": {"sql": "select * from rooms where shipName like '%书苑%'", "data_source": "mysql_oa", "dataset_name": "rooms"},
+        "id": "call_final_sql",
+    }
+
+    first_response = MagicMock(spec=AIMessage)
+    first_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    first_response.tool_calls = [first_sql_call]
+    diagnostic_response = MagicMock(spec=AIMessage)
+    diagnostic_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    diagnostic_response.tool_calls = [diagnostic_sql_call]
+    final_sql_response = MagicMock(spec=AIMessage)
+    final_sql_response.content = "<thought><sql_plan>{}</sql_plan></thought>"
+    final_sql_response.tool_calls = [final_sql_call]
+
+    model_with_tools = MagicMock()
+
+    async def gen_1(*args, **kwargs):
+        yield first_response
+
+    async def gen_2(*args, **kwargs):
+        yield diagnostic_response
+
+    async def gen_3(*args, **kwargs):
+        yield final_sql_response
+
+    model_with_tools.astream.side_effect = [gen_1(), gen_2(), gen_3()]
+    bound_model = MagicMock()
+    bound_model.bind_tools.return_value = model_with_tools
+
+    final_answer = MagicMock(spec=AIMessage)
+    final_answer.content = "已按修正后的条件查到数据。"
+    llm_syn = MagicMock()
+
+    async def mock_astream_syn(*args, **kwargs):
+        yield final_answer
+
+    llm_syn.astream.side_effect = mock_astream_syn
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=bound_model)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=llm_syn)), \
+         patch("app.services.ai.config.AgentConfigProvider.get_dataset_menu", AsyncMock(return_value="Dataset: Test")), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(return_value=[MagicMock(name="execute_sql_query", spec=["name", "ainvoke"])])), \
+         patch("app.services.chatbi_example_service.ExampleService.search_examples", AsyncMock(return_value=[])), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="6")):
+
+        executor._dispatch_tool_safe = AsyncMock(side_effect=[
+            (first_sql_call, {"columns": [{"name": "room_name"}], "items": []}, 7.0),
+            (diagnostic_sql_call, [{"shipName": "上海书苑", "cnt": 12}], 5.0),
+            (final_sql_call, [{"room_name": "A机房"}], 9.0),
+        ])
+        async for _ in executor.execute([{"role": "user", "content": "查询书院机房"}]):
+            pass
+
+    assert model_with_tools.astream.call_count == 3
+    assert executor._dispatch_tool_safe.await_count == 3
+
+
+def test_data_executor_detects_empty_items_payload():
+    mock_config = MagicMock()
+    mock_config.agent_name = "ChatBI"
+    mock_config.system_prompt = ""
+    mock_config.tools = ["execute_sql_query"]
+
+    executor = DataQueryExecutor(mock_config, "trace-empty-detect", [])
+
+    assert executor._detect_empty_result({"columns": [{"name": "x"}], "items": []})
+    assert executor._detect_empty_result({"rows": []})
+    assert executor._detect_empty_result([])
+    assert executor._detect_empty_result({"total": 0, "list": []})
+    assert executor._detect_empty_result({"data": {"rows": []}})
+    assert executor._detect_empty_result({"result": []})
+    assert executor._detect_empty_result({"items": [{"x": 1}]}) is None
+
+
+@pytest.mark.asyncio
 async def test_data_executor_executes_sql_after_single_plan_block():
     """高风险查询首次缺 sql_plan 仅阻断一次；再次带 execute_sql_query 时应真正执行工具。"""
     mock_config = MagicMock()

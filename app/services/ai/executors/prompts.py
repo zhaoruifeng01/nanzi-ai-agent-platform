@@ -121,6 +121,18 @@ class DataQueryPrompts:
     # SQL 执行失败需修正
     MUST_FIX_SQL = "你已尝试执行 SQL 但未成功。禁止直接回答。请根据错误信息修正 SQL 并再次调用 execute_sql_query。"
 
+    # SQL 执行成功但无数据时的复核要求
+    EMPTY_RESULT_MUST_RECHECK = (
+        "你刚才执行的 SQL 成功返回，但结果为空。禁止直接进入总结。"
+        "请立即调用 execute_sql_query 执行诊断 SQL，优先验证文本筛选值是否真实存在、"
+        "各 CTE/子查询是否有数据、JOIN 是否把数据过滤没了，以及 WHERE 条件是否过严。"
+    )
+
+    EMPTY_RESULT_MUST_RUN_FINAL_SQL = (
+        "空结果诊断 SQL 已返回候选数据或定位信息。禁止直接总结诊断结果。"
+        "请基于诊断证据修正原查询条件、JOIN 或主表选择，并立即调用 execute_sql_query 执行修正后的最终 SQL。"
+    )
+
     # 兜底：无授权数据集 / 已成功但停止调用工具
     CONTINUE_OR_SUMMARIZE = "你处于数据查询模式。若仍需数据支撑，请继续调用工具获取数据；否则仅在已执行查询成功且结果充分时再进入总结。"
 
@@ -220,6 +232,46 @@ class DataQueryPrompts:
         return (
             f"【结果异常复核触发】检测到比率/占比类结果可能异常：{anomaly_reason}。\n"
             + cls._RATIO_ANOMALY_RECHECK_BODY
+        )
+
+    @classmethod
+    def empty_result_recheck(cls, empty_reason: str, executed_sql: str = "") -> str:
+        """空结果复核提示：要求先用诊断 SQL 验证筛选值/CTE/JOIN，再修正最终 SQL。"""
+        sql_block = ""
+        if executed_sql:
+            sql_preview = executed_sql.strip()
+            if len(sql_preview) > 3000:
+                sql_preview = sql_preview[:3000] + "\n... [SQL 已截断]"
+            sql_block = f"\n\n【本次空结果 SQL】\n```sql\n{sql_preview}\n```"
+        return (
+            f"【空结果复核触发】{empty_reason}。\n"
+            "本次 SQL 执行链路成功，但返回结果为空，这不等同于已经回答了用户问题。"
+            "请不要直接给最终结论，必须先用 SQL 证据复核为什么没有数据。"
+            + sql_block
+            + "\n\n复核要求：\n"
+            "1) 若 SQL 中存在文本筛选（LIKE / = / IN），先查询该字段的候选值或相近值，验证用户口语条件是否对应真实数据值。\n"
+            "2) 若 SQL 使用 CTE、子查询或多表 JOIN，优先执行分段计数诊断 SQL，定位是哪一段变为空。\n"
+            "3) 若发现筛选值、JOIN 主表或条件过严导致空结果，请基于诊断结果重新执行 1 次修正后的最终 SQL。\n"
+            "4) 若复核后仍为空，才允许在最终回答中说明：SQL 已执行成功，但按复核后的条件仍未返回匹配数据。"
+        )
+
+    @classmethod
+    def empty_result_final_sql_required(cls, diagnostic_sql: str = "") -> str:
+        """诊断 SQL 返回候选证据后，要求执行修正后的最终 SQL。"""
+        sql_block = ""
+        if diagnostic_sql:
+            sql_preview = diagnostic_sql.strip()
+            if len(sql_preview) > 2000:
+                sql_preview = sql_preview[:2000] + "\n... [SQL 已截断]"
+            sql_block = f"\n\n【刚执行的诊断 SQL】\n```sql\n{sql_preview}\n```"
+        return (
+            "【空结果复核进入最终修正阶段】诊断 SQL 已返回候选数据或定位信息，说明原 SQL 的筛选值、JOIN、主表或条件很可能需要调整。"
+            + sql_block
+            + "\n\n要求：\n"
+            "1) 禁止只总结诊断 SQL 的结果。\n"
+            "2) 必须基于诊断证据修正原查询条件、JOIN 或主表选择。\n"
+            "3) 立即调用 execute_sql_query 执行修正后的最终 SQL。\n"
+            "4) 只有修正后的最终 SQL 执行后，才允许进入最终回答。"
         )
 
     # 上下文动作引导：本轮是对“已有对话/上一轮结果”做保存/导出/发送/记忆/创建技能等动作，
