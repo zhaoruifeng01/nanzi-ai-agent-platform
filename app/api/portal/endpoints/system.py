@@ -198,6 +198,149 @@ async def flush_redis_keys(
         
     except Exception as e:
         logging.error(f"Failed to flush redis keys: {e}")
+# --- Redis Browser Endpoints ---
+
+class RedisKeyListItem(BaseModel):
+    name: str
+    type: str
+
+class RedisKeyListResponse(BaseModel):
+    count: int
+    keys: List[RedisKeyListItem]
+
+@router.get("/redis/keys-list", response_model=RedisKeyListResponse)
+async def list_redis_keys(
+    pattern: str = "*",
+    user: Dict = Depends(require_permission("element", "element:system:config_save"))
+):
+    """
+    List Redis keys matching a pattern, along with their data type.
+    """
+    try:
+        if not settings.REDIS_ENABLE:
+            raise HTTPException(status_code=400, detail="Redis is disabled")
+            
+        r = await redis.get_redis()
+        if not r:
+            await redis.init_redis()
+            r = await redis.get_redis()
+            
+        if not r:
+            raise HTTPException(status_code=500, detail="Redis client not available")
+
+        # Use SCAN to scan matched keys safely
+        keys = []
+        cursor = '0'
+        
+        # Limit to 5000 keys maximum to prevent OOM
+        while len(keys) < 5000:
+            cursor, batch = await r.scan(cursor=cursor, match=pattern, count=1000)
+            keys.extend(batch)
+            if cursor == 0 or int(cursor) == 0:
+                break
+                
+        # Fetch types
+        results = []
+        for key in keys[:5000]:
+            k_type = await r.type(key)
+            results.append(RedisKeyListItem(name=key, type=k_type))
+            
+        return RedisKeyListResponse(count=len(results), keys=results)
+        
+    except Exception as e:
+        logging.error(f"Failed to list redis keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class RedisKeyDetailResponse(BaseModel):
+    name: str
+    type: str
+    ttl: int
+    value: Any
+
+@router.get("/redis/key-detail", response_model=RedisKeyDetailResponse)
+async def get_redis_key_detail(
+    key: str,
+    user: Dict = Depends(require_permission("element", "element:system:config_save"))
+):
+    """
+    Get detailed value and metadata of a specific Redis key.
+    """
+    try:
+        if not settings.REDIS_ENABLE:
+            raise HTTPException(status_code=400, detail="Redis is disabled")
+            
+        r = await redis.get_redis()
+        if not r:
+            await redis.init_redis()
+            r = await redis.get_redis()
+            
+        if not r:
+            raise HTTPException(status_code=500, detail="Redis client not available")
+
+        # Verify key exists
+        exists = await r.exists(key)
+        if not exists:
+            raise HTTPException(status_code=404, detail="Key not found")
+
+        # Get type & ttl
+        k_type = await r.type(key)
+        ttl = await r.ttl(key)
+
+        # Retrieve value based on type
+        value = None
+        if k_type == "string":
+            value = await r.get(key)
+        elif k_type == "hash":
+            value = await r.hgetall(key)
+        elif k_type == "list":
+            value = await r.lrange(key, 0, -1)
+        elif k_type == "set":
+            value = list(await r.smembers(key))
+        elif k_type == "zset":
+            zset_data = await r.zrange(key, 0, -1, withscores=True)
+            # Format as [{"member": m, "score": s}]
+            value = [{"member": m, "score": s} for m, s in zset_data]
+        else:
+            value = f"(Unsupported type: {k_type})"
+
+        return RedisKeyDetailResponse(name=key, type=k_type, ttl=ttl, value=value)
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"Failed to get redis key detail for {key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/redis/key")
+async def delete_redis_key(
+    key: str,
+    user: Dict = Depends(require_permission("element", "element:system:config_save"))
+):
+    """
+    Delete a specific key from Redis.
+    """
+    try:
+        if not settings.REDIS_ENABLE:
+            raise HTTPException(status_code=400, detail="Redis is disabled")
+            
+        r = await redis.get_redis()
+        if not r:
+            await redis.init_redis()
+            r = await redis.get_redis()
+            
+        if not r:
+            raise HTTPException(status_code=500, detail="Redis client not available")
+
+        deleted = await r.delete(key)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Key not found or already deleted")
+
+        return {"status": "success", "message": f"Key '{key}' deleted successfully."}
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"Failed to delete redis key {key}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- New Configuration Endpoints ---

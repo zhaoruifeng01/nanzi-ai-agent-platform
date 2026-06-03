@@ -31,6 +31,7 @@ const { hasPermission, userInfo } = useUser()
 const canSave = hasPermission('element:system:config_save')
 
 const activeTab = ref<'diagnostics' | 'configs' | 'models' | 'tools' | 'mcp' | 'logs'>('configs')
+const diagSubTab = ref<'console' | 'redis'>('console')
 
 // --- Diagnostics Logic ---
 const logs = ref<string[]>([])
@@ -72,6 +73,7 @@ const appendLog = (msg: string) => {
 }
 
 const testConnection = async (component: string) => {
+  diagSubTab.value = 'console'
   loading.value[component] = true
   results.value[component] = null
   appendLog(`>>> 开始测试 ${component} 连接...`)
@@ -109,6 +111,7 @@ const testConnection = async (component: string) => {
 }
 
 const scanRedisKeys = async () => {
+  diagSubTab.value = 'console'
   loading.value['redis_scan'] = true
   appendLog('>>> 开始扫描 Redis Keys...')
   try {
@@ -136,6 +139,7 @@ const scanRedisKeys = async () => {
 }
 
 const testRedisVectorSearch = async (force = true) => {
+  diagSubTab.value = 'console'
   loading.value.redis_vector = true
   results.value.redis_vector = null
   appendLog('>>> 开始检测 Redis 向量搜索能力...')
@@ -514,6 +518,84 @@ const triggerCleanup = async () => {
   }
 }
 
+// --- Redis Browser Logic ---
+const redisPattern = ref('*')
+const redisKeys = ref<{ name: string; type: string }[]>([])
+const redisKeysLoading = ref(false)
+const selectedRedisKey = ref<string | null>(null)
+const redisKeyDetail = ref<{ name: string; type: string; ttl: number; value: any } | null>(null)
+const redisDetailLoading = ref(false)
+const showDeleteKeyConfirm = ref(false)
+const pendingDeleteKey = ref<string | null>(null)
+
+const fetchRedisKeys = async () => {
+  redisKeysLoading.value = true
+  redisKeys.value = []
+  redisKeyDetail.value = null
+  selectedRedisKey.value = null
+  try {
+    const res = await axios.get('/api/portal/system/redis/keys-list', {
+      params: { pattern: redisPattern.value || '*' }
+    })
+    redisKeys.value = res.data.keys || []
+  } catch (e: any) {
+    showToast(`获取 Redis Keys 失败: ${e.response?.data?.detail || e.message}`, 'error')
+  } finally {
+    redisKeysLoading.value = false
+  }
+}
+
+const fetchRedisKeyDetail = async (key: string) => {
+  selectedRedisKey.value = key
+  redisDetailLoading.value = true
+  redisKeyDetail.value = null
+  try {
+    const res = await axios.get('/api/portal/system/redis/key-detail', { params: { key } })
+    redisKeyDetail.value = res.data
+  } catch (e: any) {
+    showToast(`获取键详情失败: ${e.response?.data?.detail || e.message}`, 'error')
+  } finally {
+    redisDetailLoading.value = false
+  }
+}
+
+const formatRedisValue = (value: any): string => {
+  if (value === null || value === undefined) return '(null)'
+  if (typeof value === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2)
+    } catch {
+      return value
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const confirmDeleteKey = (key: string) => {
+  pendingDeleteKey.value = key
+  showDeleteKeyConfirm.value = true
+}
+
+const executeDeleteKey = async () => {
+  if (!pendingDeleteKey.value) return
+  showDeleteKeyConfirm.value = false
+  try {
+    await axios.delete('/api/portal/system/redis/key', { params: { key: pendingDeleteKey.value } })
+    showToast(`已删除键: ${pendingDeleteKey.value}`, 'success')
+    redisKeyDetail.value = null
+    selectedRedisKey.value = null
+    await fetchRedisKeys()
+  } catch (e: any) {
+    showToast(`删除失败: ${e.response?.data?.detail || e.message}`, 'error')
+  } finally {
+    pendingDeleteKey.value = null
+  }
+}
+
 onMounted(() => {
   fetchConfigs()
   fetchModelsForConfigs()
@@ -597,7 +679,7 @@ onMounted(() => {
           <McpServerRegistry />
       </div>
 
-       <!-- LOGS TAB -->
+        <!-- LOGS TAB -->
        <div v-else-if="activeTab === 'logs' && userInfo?.role === 'admin'" class="space-y-6 h-full overflow-y-auto pb-12 custom-scrollbar">
          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
            <!-- Left: Config -->
@@ -807,19 +889,138 @@ onMounted(() => {
             </button>
           </div>
         </div>
-        <!-- Right Column: Console Output -->
-        <div class="bg-gray-900 rounded-lg shadow overflow-hidden flex flex-col h-[500px]">
-          <div class="bg-gray-800 px-4 py-2 flex justify-between items-center border-b border-gray-700">
-            <div class="flex items-center space-x-2 text-gray-300 font-mono text-xs">
-              <CommandLineIcon class="h-4 w-4" />
-              <span>诊断控制台</span>
+        <!-- Right Column: Console Output / Redis Browser -->
+        <div class="bg-white rounded-lg shadow flex flex-col h-[600px] border border-gray-100 overflow-hidden">
+          <div class="bg-gray-50 px-4 py-2.5 flex justify-between items-center border-b border-gray-200 flex-shrink-0">
+            <div class="flex space-x-2">
+              <button 
+                @click="diagSubTab = 'console'"
+                class="px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center"
+                :class="diagSubTab === 'console' ? 'bg-white shadow text-primary border border-gray-100' : 'text-gray-500 hover:text-gray-700'"
+              >
+                <CommandLineIcon class="w-3.5 h-3.5 mr-1.5" />
+                诊断控制台
+              </button>
+              <button 
+                @click="diagSubTab = 'redis'"
+                class="px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center"
+                :class="diagSubTab === 'redis' ? 'bg-white shadow text-primary border border-gray-100' : 'text-gray-500 hover:text-gray-700'"
+              >
+                <CircleStackIcon class="w-3.5 h-3.5 mr-1.5" />
+                Redis浏览器
+              </button>
             </div>
-            <button @click="clearLogs" class="text-xs text-gray-400 hover:text-white">清空</button>
+            <button v-if="diagSubTab === 'console'" @click="clearLogs" class="text-xs text-gray-400 hover:text-gray-600">清空</button>
           </div>
-          <div class="flex-1 p-4 overflow-y-auto font-mono text-sm space-y-1 custom-scrollbar">
+          
+          <!-- Tab: Console -->
+          <div v-if="diagSubTab === 'console'" class="flex-1 bg-gray-950 p-4 overflow-y-auto font-mono text-sm space-y-1 custom-scrollbar text-green-400">
             <div v-if="logs.length === 0" class="text-gray-500 italic">等待执行测试...</div>
             <div v-else v-for="(log, index) in logs" :key="index" class="text-green-400 break-all">
               <span class="text-gray-500 mr-2">></span>{{ log }}
+            </div>
+          </div>
+
+          <!-- Tab: Redis Browser -->
+          <div v-else-if="diagSubTab === 'redis'" class="flex-1 flex space-x-4 overflow-hidden p-4 bg-gray-50">
+            <!-- Left Column: Keys list -->
+            <div class="w-2/5 bg-white border border-gray-200 rounded-lg p-3 flex flex-col h-full overflow-hidden">
+              <div class="mb-3 flex items-center space-x-2 flex-shrink-0">
+                <input
+                  type="text"
+                  v-model="redisPattern"
+                  placeholder="匹配模式 (例如 * 或 yunshu:*)"
+                  @keyup.enter="fetchRedisKeys"
+                  class="flex-1 min-w-0 shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-50 p-2 border"
+                />
+                <button
+                  @click="fetchRedisKeys"
+                  :disabled="redisKeysLoading"
+                  class="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-primary hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  <span v-if="redisKeysLoading" class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-1"></span>
+                  搜索
+                </button>
+              </div>
+              
+              <div class="flex-1 overflow-y-auto min-h-0 custom-scrollbar border border-gray-100 rounded-md">
+                <div v-if="redisKeys.length === 0 && !redisKeysLoading" class="p-6 text-center text-gray-400 italic text-sm">
+                  无匹配的 Redis Keys
+                </div>
+                <div v-else-if="redisKeysLoading" class="p-12 text-center text-gray-400 flex flex-col items-center">
+                  <span class="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full mb-2"></span>
+                  正在扫描键名...
+                </div>
+                <div v-else class="divide-y divide-gray-100">
+                  <div
+                    v-for="key in redisKeys"
+                    :key="key.name"
+                    @click="fetchRedisKeyDetail(key.name)"
+                    class="px-2.5 py-2 hover:bg-gray-50 cursor-pointer flex items-center justify-between transition-colors duration-150"
+                    :class="selectedRedisKey === key.name ? 'bg-indigo-50/70 hover:bg-indigo-50' : ''"
+                  >
+                    <span class="text-xs font-mono break-all text-gray-700 font-medium select-all" :class="selectedRedisKey === key.name ? 'text-primary font-bold' : ''">
+                      {{ key.name }}
+                    </span>
+                    <span class="ml-2 shrink-0 px-2 py-0.5 rounded text-[10px] font-bold uppercase" :class="
+                      key.type === 'string' ? 'bg-green-50 text-green-700 border border-green-100' :
+                      key.type === 'hash' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
+                      key.type === 'list' ? 'bg-yellow-50 text-yellow-700 border border-yellow-100' :
+                      'bg-gray-50 text-gray-600 border border-gray-100'
+                    ">
+                      {{ key.type }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div class="mt-2 text-[10px] text-gray-400 font-mono text-right flex-shrink-0">
+                显示最多 5000 条结果
+              </div>
+            </div>
+
+            <!-- Right Column: Key detail -->
+            <div class="flex-1 bg-white border border-gray-200 rounded-lg p-4 flex flex-col h-full overflow-hidden">
+              <div v-if="redisDetailLoading" class="flex-1 flex flex-col items-center justify-center">
+                <span class="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full mb-2"></span>
+                <p class="text-gray-400 text-xs">正在加载详情...</p>
+              </div>
+              <div v-else-if="redisKeyDetail" class="flex flex-col h-full min-h-0">
+                <!-- Header detail info -->
+                <div class="border-b border-gray-100 pb-3 mb-3 flex items-start justify-between flex-shrink-0">
+                  <div class="space-y-1 min-w-0 pr-2">
+                    <div class="flex items-center space-x-2">
+                      <h3 class="text-sm font-bold text-gray-900 break-all font-mono select-all">
+                        {{ redisKeyDetail.name }}
+                      </h3>
+                    </div>
+                    <div class="flex items-center space-x-2 text-[10px]">
+                      <span class="px-1.5 py-0.5 rounded-full font-bold uppercase bg-indigo-50 text-indigo-700 border border-indigo-100">
+                        {{ redisKeyDetail.type }}
+                      </span>
+                      <span class="font-mono text-gray-500">
+                        TTL: {{ redisKeyDetail.ttl === -1 ? '永不过期 (-1)' : redisKeyDetail.ttl === -2 ? '已过期 (-2)' : `${redisKeyDetail.ttl} 秒` }}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <button
+                    @click="confirmDeleteKey(redisKeyDetail.name)"
+                    title="删除此键"
+                    class="inline-flex items-center p-1.5 border border-red-200 rounded-md text-red-700 bg-red-50 hover:bg-red-100 transition-colors shadow-sm"
+                  >
+                    <TrashIcon class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <!-- Value area -->
+                <div class="flex-1 min-h-0 overflow-y-auto bg-gray-950 rounded-lg p-3 font-mono text-[11px] text-green-400 custom-scrollbar border border-gray-950">
+                  <pre class="whitespace-pre-wrap break-all select-text selection:bg-indigo-500/30">{{ formatRedisValue(redisKeyDetail.value) }}</pre>
+                </div>
+              </div>
+              <div v-else class="flex-1 flex flex-col items-center justify-center text-gray-400">
+                <CircleStackIcon class="h-10 w-10 text-gray-200 mb-2" />
+                <p class="text-xs">请从左侧列表选择一个 Key 查看详细内容</p>
+              </div>
             </div>
           </div>
         </div>
@@ -1156,6 +1357,16 @@ onMounted(() => {
       type="danger"
       @confirm="triggerCleanup"
       @cancel="showCleanupConfirm = false"
+    />
+    <ConfirmModal
+      v-if="showDeleteKeyConfirm"
+      title="确认删除此 Redis Key？"
+      :message="`即将物理删除键 「${pendingDeleteKey}」，此操作不可恢复，是否继续？`"
+      confirm-text="确认删除"
+      cancel-text="取消"
+      type="danger"
+      @confirm="executeDeleteKey"
+      @cancel="showDeleteKeyConfirm = false"
     />
   </div>
 </template>
