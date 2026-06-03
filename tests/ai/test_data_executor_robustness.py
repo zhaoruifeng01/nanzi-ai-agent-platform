@@ -990,13 +990,16 @@ async def test_data_executor_filters_internal_markup_from_streamed_synthesis_out
     leaked_chunk_2.content = (
         "_name\":\"meta\"}</sql_plan></thought>"
         "<function_calls><invoke name=\"execute_sql_query\"></invoke></function_calls>"
-        "\n用户状态分布已汇总。"
+        "用户状态"
     )
+    leaked_chunk_3 = MagicMock(spec=AIMessage)
+    leaked_chunk_3.content = "分布已汇总。"
     llm_syn = MagicMock()
 
     async def mock_astream_syn(*args, **kwargs):
         yield leaked_chunk_1
         yield leaked_chunk_2
+        yield leaked_chunk_3
 
     llm_syn.astream.side_effect = mock_astream_syn
 
@@ -1012,7 +1015,9 @@ async def test_data_executor_filters_internal_markup_from_streamed_synthesis_out
             events.append(chunk)
 
     streamed_content = "".join(chunk.get("content", "") for chunk in events)
+    content_chunks = [chunk.get("content", "") for chunk in events if chunk.get("content")]
     assert "用户状态分布已汇总。" in streamed_content
+    assert content_chunks == ["用户状态", "分布已汇总。"]
     assert "<sql_plan" not in streamed_content
     assert "</sql_plan>" not in streamed_content
     assert "<thought" not in streamed_content

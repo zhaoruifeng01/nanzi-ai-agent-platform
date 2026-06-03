@@ -48,6 +48,71 @@ logger = logging.getLogger(__name__)
 DATA_QUERY_MAX_STEPS_CAP = 10
 
 
+class _InternalMarkupStreamFilter:
+    """Stateful filter for ChatBI internal XML that may be split across chunks."""
+
+    TAG_NAMES = ("thought", "think", "function_calls", "sql_plan")
+    OPEN_RE = re.compile(r"<(thought|think|function_calls|sql_plan)\b[^>]*>", re.IGNORECASE)
+    POSSIBLE_TAG_PREFIXES = tuple(
+        prefix
+        for tag in TAG_NAMES
+        for prefix in (f"<{tag}", f"</{tag}")
+    )
+
+    def __init__(self):
+        self._buffer = ""
+        self._suppressing_tag: Optional[str] = None
+
+    def feed(self, text: str, final: bool = False) -> str:
+        if text:
+            self._buffer += str(text)
+
+        visible_parts: List[str] = []
+        while self._buffer:
+            if self._suppressing_tag:
+                close_re = re.compile(rf"</{re.escape(self._suppressing_tag)}\s*>", re.IGNORECASE)
+                close_match = close_re.search(self._buffer)
+                if not close_match:
+                    if final:
+                        self._buffer = ""
+                    else:
+                        keep_len = len(self._suppressing_tag) + 4
+                        self._buffer = self._buffer[-keep_len:]
+                    break
+
+                self._buffer = self._buffer[close_match.end():]
+                self._suppressing_tag = None
+                continue
+
+            open_match = self.OPEN_RE.search(self._buffer)
+            if not open_match:
+                safe_len = len(self._buffer) if final else self._safe_emit_len(self._buffer)
+                if safe_len:
+                    visible_parts.append(self._buffer[:safe_len])
+                    self._buffer = self._buffer[safe_len:]
+                break
+
+            if open_match.start() > 0:
+                visible_parts.append(self._buffer[:open_match.start()])
+            self._suppressing_tag = open_match.group(1).lower()
+            self._buffer = self._buffer[open_match.end():]
+
+        return "".join(visible_parts)
+
+    def finish(self) -> str:
+        return self.feed("", final=True)
+
+    def _safe_emit_len(self, text: str) -> int:
+        last_lt = text.rfind("<")
+        if last_lt < 0:
+            return len(text)
+
+        tail = text[last_lt:].lower()
+        if any(prefix.startswith(tail) or tail.startswith(prefix) for prefix in self.POSSIBLE_TAG_PREFIXES):
+            return last_lt
+        return len(text)
+
+
 class DataQueryStage(str, Enum):
     CONTEXT_ACTION = "CONTEXT_ACTION"
     NEED_SCHEMA = "NEED_SCHEMA"
@@ -527,10 +592,12 @@ class DataQueryExecutor(BaseExecutor):
         generation_start = None
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         accumulated_msg = None
+        stream_filter = _InternalMarkupStreamFilter()
         try:
             stream_succeeded = False
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
+                stream_filter = _InternalMarkupStreamFilter()
                 try:
                     async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
                         if accumulated_msg is None:
@@ -542,7 +609,10 @@ class DataQueryExecutor(BaseExecutor):
                                 generation_start = time.time()
                                 yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
                             content_emitted = True
-                            full_synthesis_content += chunk.content
+                            visible_content = stream_filter.feed(chunk.content)
+                            if visible_content:
+                                full_synthesis_content += visible_content
+                                yield {"content": visible_content}
                     stream_succeeded = True
                     break
                 except Exception as syn_err:
@@ -560,9 +630,10 @@ class DataQueryExecutor(BaseExecutor):
                         continue
                     raise
             if stream_succeeded and generation_start:
-                full_synthesis_content = self._strip_internal_markup(full_synthesis_content)
-                if full_synthesis_content:
-                    yield {"content": full_synthesis_content}
+                visible_tail = stream_filter.finish()
+                if visible_tail:
+                    full_synthesis_content += visible_tail
+                    yield {"content": visible_tail}
                 yield {
                     "type": "log",
                     "id": gen_log_id,
@@ -1577,10 +1648,12 @@ class DataQueryExecutor(BaseExecutor):
         generation_start = None
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
         accumulated_msg = None
+        stream_filter = _InternalMarkupStreamFilter()
         try:
             stream_succeeded = False
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
+                stream_filter = _InternalMarkupStreamFilter()
                 try:
                     async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
                         if accumulated_msg is None:
@@ -1600,7 +1673,10 @@ class DataQueryExecutor(BaseExecutor):
                                  }
                                  yield {"type": "log", "id": gen_log_id, "title": "✨ 开始生成回复", "status": "pending", "started_at": int(generation_start * 1000)}
                             content_emitted = True
-                            full_synthesis_content += chunk.content
+                            visible_content = stream_filter.feed(chunk.content)
+                            if visible_content:
+                                full_synthesis_content += visible_content
+                                yield {"content": visible_content}
                     stream_succeeded = True
                     break
                 except Exception as syn_err:
@@ -1618,9 +1694,10 @@ class DataQueryExecutor(BaseExecutor):
                         continue
                     raise
             if stream_succeeded and generation_start:
-                full_synthesis_content = self._strip_internal_markup(full_synthesis_content)
-                if full_synthesis_content:
-                    yield {"content": full_synthesis_content}
+                visible_tail = stream_filter.finish()
+                if visible_tail:
+                    full_synthesis_content += visible_tail
+                    yield {"content": visible_tail}
                 yield {
                     "type": "log",
                     "id": gen_log_id,
