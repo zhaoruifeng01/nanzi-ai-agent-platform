@@ -496,18 +496,22 @@ const agentChartOption = computed(() => {
       formatter: "{b}: {c} ({d}%)"
     },
     legend: {
+      type: "scroll",
       orient: "horizontal",
       bottom: "0%",
       left: "center",
       icon: "circle",
-      textStyle: { color: "#4b5563", fontSize: 11 }
+      textStyle: { color: "#4b5563", fontSize: 11 },
+      pageButtonPosition: "end",
+      pageIconSize: 10,
+      pageTextStyle: { fontSize: 10 }
     },
     series: [
       {
         name: "Token 消耗占比",
         type: "pie",
-        radius: ["40%", "70%"],
-        roseType: "radius",
+        center: ["50%", "40%"],
+        radius: ["35%", "58%"],
         itemStyle: {
           borderRadius: 8,
           borderColor: "#fff",
