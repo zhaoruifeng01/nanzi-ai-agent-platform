@@ -488,10 +488,18 @@ async def get_trace_logs(
         raise HTTPException(status_code=403, detail="Permission denied")
 
     # 2. Fetch Trace Steps
+    trace_stmt = select(AgentExecutionTrace).where(AgentExecutionTrace.trace_id == trace_id)
+    if history_item and history_item.created_at:
+        from datetime import timedelta
+        start_bound = history_item.created_at - timedelta(days=1)
+        end_bound = history_item.created_at + timedelta(days=1)
+        trace_stmt = trace_stmt.where(
+            AgentExecutionTrace.created_at >= start_bound,
+            AgentExecutionTrace.created_at <= end_bound
+        )
+
     result = await db.execute(
-        select(AgentExecutionTrace)
-        .where(AgentExecutionTrace.trace_id == trace_id)
-        .order_by(AgentExecutionTrace.step_number)
+        trace_stmt.order_by(AgentExecutionTrace.step_number)
     )
     rows = result.scalars().all()
     

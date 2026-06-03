@@ -51,7 +51,12 @@ async def export_logs(
     target_user = user_name if admin_flag else user["user_name"]
     stmt = select(AccessLog).order_by(desc(AccessLog.created_at)).limit(10000)
     if target_user: stmt = stmt.where(AccessLog.user_name == target_user)
-    if start_time: stmt = stmt.where(AccessLog.created_at >= start_time)
+    if start_time: 
+        stmt = stmt.where(AccessLog.created_at >= start_time)
+    else:
+        from datetime import timedelta
+        default_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
+        stmt = stmt.where(AccessLog.created_at >= default_start)
     if end_time: stmt = stmt.where(AccessLog.created_at <= end_time)
     if method: stmt = stmt.where(AccessLog.method == method)
     if status_code: stmt = stmt.where(AccessLog.status_code == status_code)
@@ -99,7 +104,12 @@ async def get_audit_logs(
     target_user = user_name if admin_flag else user["user_name"]
     query = select(AccessLog)
     if target_user: query = query.where(AccessLog.user_name == target_user)
-    if start_time: query = query.where(AccessLog.created_at >= start_time)
+    if start_time:
+        query = query.where(AccessLog.created_at >= start_time)
+    else:
+        from datetime import timedelta
+        default_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
+        query = query.where(AccessLog.created_at >= default_start)
     if end_time: query = query.where(AccessLog.created_at <= end_time)
     if method: query = query.where(AccessLog.method == method)
     if status_code: query = query.where(AccessLog.status_code == status_code)
@@ -115,7 +125,12 @@ async def get_audit_logs(
     if include_stats:
         stats_query = select(func.count().label("total"), func.sum(case(((AccessLog.status_code >= 200) & (AccessLog.status_code < 300), 1), else_=0)).label("success"), func.sum(case((AccessLog.status_code >= 400, 1), else_=0)).label("error"), func.avg(AccessLog.process_time_ms).label("avg_time"))
         if target_user: stats_query = stats_query.where(AccessLog.user_name == target_user)
-        if start_time: stats_query = stats_query.where(AccessLog.created_at >= start_time)
+        if start_time:
+            stats_query = stats_query.where(AccessLog.created_at >= start_time)
+        else:
+            from datetime import timedelta
+            default_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
+            stats_query = stats_query.where(AccessLog.created_at >= default_start)
         if end_time: stats_query = stats_query.where(AccessLog.created_at <= end_time)
         if method: stats_query = stats_query.where(AccessLog.method == method)
         if status_code: stats_query = stats_query.where(AccessLog.status_code == status_code)
@@ -136,8 +151,23 @@ async def get_audit_logs(
     return result
 
 @router.get("/logs/{log_id}")
-async def get_log_detail(log_id: int, user: dict = Depends(require_api_key), db: AsyncSession = Depends(get_db_session)):
+async def get_log_detail(
+    log_id: int, 
+    created_at: Optional[str] = Query(None, description="日志产生的大致或精确时间"),
+    user: dict = Depends(require_api_key), 
+    db: AsyncSession = Depends(get_db_session)
+):
     stmt = select(AccessLog).where(AccessLog.id == log_id)
+    if created_at:
+        from datetime import datetime, timedelta
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            stmt = stmt.where(
+                AccessLog.created_at >= dt - timedelta(seconds=2),
+                AccessLog.created_at <= dt + timedelta(seconds=2)
+            )
+        except ValueError:
+            stmt = stmt.where(AccessLog.created_at == created_at)
     if not is_admin(user): stmt = stmt.where(AccessLog.user_name == user["user_name"])
     row = (await db.execute(stmt)).scalar_one_or_none()
     if not row: raise HTTPException(status_code=404, detail="Log not found")
