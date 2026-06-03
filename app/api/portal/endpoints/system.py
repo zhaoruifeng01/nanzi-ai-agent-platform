@@ -291,7 +291,24 @@ async def get_redis_key_detail(
         if k_type == "string":
             value = await r.get(key)
         elif k_type == "hash":
-            value = await r.hgetall(key)
+            # 使用 binary 客户端读取，防止含 embedding 等二进制字段时 UnicodeDecodeError
+            r_binary = await redis.get_redis_binary()
+            raw_hash = await r_binary.hgetall(key)
+            value = {}
+            for field_bytes, val_bytes in raw_hash.items():
+                # 字段名解码
+                try:
+                    field_str = field_bytes.decode("utf-8") if isinstance(field_bytes, bytes) else field_bytes
+                except Exception:
+                    field_str = f"<binary-key: {len(field_bytes)} bytes>"
+                # 字段值解码
+                if isinstance(val_bytes, bytes):
+                    try:
+                        value[field_str] = val_bytes.decode("utf-8")
+                    except Exception:
+                        value[field_str] = f"<binary: {len(val_bytes)} bytes>"
+                else:
+                    value[field_str] = val_bytes
         elif k_type == "list":
             value = await r.lrange(key, 0, -1)
         elif k_type == "set":
