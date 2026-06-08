@@ -255,7 +255,11 @@ def legacy_tools_to_openai_schemas(tools: list[Any]) -> list[dict[str, Any]]:
         if args_schema is not None and hasattr(args_schema, "model_json_schema"):
             parameters = args_schema.model_json_schema()
         else:
-            parameters = getattr(tool, "input_schema", None) or {"type": "object", "properties": {}}
+            parameters = (
+                getattr(tool, "input_schema", None)
+                or getattr(tool, "parameters_schema", None)
+                or {"type": "object", "properties": {}}
+            )
         schemas.append(
             {
                 "type": "function",

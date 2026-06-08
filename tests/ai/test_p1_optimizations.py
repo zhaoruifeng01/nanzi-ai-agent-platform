@@ -54,6 +54,8 @@ async def test_knowledge_turn_forces_search_before_answer(chat_config):
     mock_tool = AsyncMock()
     mock_tool.name = "search_knowledge_base"
     mock_tool.ainvoke.return_value = "检索结果"
+    from app.services.ai.runtime.agentscope.tools import runtime_tool_spec_from_legacy_tool
+    runtime_tool = runtime_tool_spec_from_legacy_tool(mock_tool, source_type="static")
 
     direct_answer = AIMessage(content="这是编造的流程")
     tool_call_msg = AIMessage(
@@ -81,7 +83,7 @@ async def test_knowledge_turn_forces_search_before_answer(chat_config):
     mock_llm.astream = astream_side_effect
 
     with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock, return_value=mock_llm), \
-         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock, return_value=[mock_tool]), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", new_callable=AsyncMock, return_value=[runtime_tool]), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock, return_value="5"), \
          patch("app.services.memory_config_service.MemoryConfigService.get_bool", new_callable=AsyncMock, return_value=False):

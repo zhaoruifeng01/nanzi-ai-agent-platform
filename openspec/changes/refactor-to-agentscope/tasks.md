@@ -24,7 +24,7 @@
 - [ ] 3.5 迁移 `generic_api.py` 通用 API 工具到 runtime tool spec。
 - [ ] 3.6 迁移 `mcp_factory.py` MCP 工具到 runtime tool spec。
 - [x] 3.7 实现 AgentScope Toolkit 包装器，将 runtime tool spec 注册为 AgentScope Tool。
-- [ ] 3.8 在工具包装器中注入权限检查、审计 trace、耗时、错误、citation、context_update。（已完成权限、耗时、错误审计基础；citation/context_update 仍待接入）
+- [ ] 3.8 在工具包装器中注入权限检查、审计 trace、耗时、错误、citation、context_update。（已完成权限、耗时、错误审计基础；General 工具执行已走 RuntimeToolSpec；citation/context_update 仍待接入）
 - [ ] 3.9 为静态工具、类工具、通用 API 工具、MCP 工具分别写调用测试。
 
 ## 4. 模型调用迁移
@@ -38,7 +38,7 @@
 
 - [x] 5.1 新建 `GeneralAgentRunner`，承接通用对话 runner 边界。
 - [ ] 5.2 保留无工具直接回答路径。
-- [ ] 5.3 保留有工具 ReAct 路径、XML tool call 兜底兼容、工具结果总结。
+- [x] 5.3 保留有工具 ReAct 路径、XML tool call 兜底兼容、工具结果总结。
 - [ ] 5.4 保留知识库 citation、记忆检索强制调用、工具失败用户可读提示。
 - [x] 5.5 将 `chat_executor.py` 改为调用 `GeneralAgentRunner`。
 - [x] 5.6 迁移 `tests/ai/executors/test_chat_executor.py` 到 AgentScope/runtime 测试桩。

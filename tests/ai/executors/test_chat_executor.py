@@ -224,6 +224,54 @@ async def test_standard_tool_call(chat_config, mock_tool):
         # Verify Tool Execution
         mock_tool.ainvoke.assert_called_once_with({"query": "foo"})
 
+
+@pytest.mark.asyncio
+async def test_general_runner_executes_runtime_tool_specs(chat_config):
+    """General 工具链应通过 RuntimeToolSpec 执行，而不是直接消费 legacy tool。"""
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    executor = GeneralChatExecutor(config=chat_config, trace_id="test-runtime-tool", trace_buffer=[])
+    invocations = []
+
+    async def runtime_tool(query: str):
+        invocations.append({"query": query})
+        return "Runtime Tool Result"
+
+    runtime_spec = RuntimeToolSpec(
+        name="test_tool",
+        description="Runtime test tool",
+        parameters_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=runtime_tool,
+    )
+
+    msg_call_tool = AIMessage(
+        content="",
+        tool_calls=[{"name": "test_tool", "args": {"query": "runtime"}, "id": "call_runtime"}],
+    )
+    msg_after_tool = AIMessage(content="I have the runtime data now.")
+    msg_final_synthesis = AIMessage(content="Here is the result: Runtime Tool Result")
+    mock_llm = MockLLM([msg_call_tool, msg_after_tool, msg_final_synthesis])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=mock_llm)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])) as mock_get_runtime_tools, \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(side_effect=AssertionError("legacy tools should not be loaded"))), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Do runtime tool"}]):
+            events.append(chunk)
+
+    mock_get_runtime_tools.assert_awaited_once_with(chat_config.tools)
+    assert invocations == [{"query": "runtime"}]
+    assert any(e.get("title", "").startswith("工具完成: test_tool") for e in events)
+    assert "Here is the result: Runtime Tool Result" in "".join(
+        e["content"] for e in events if "content" in e and "type" not in e
+    )
+
 @pytest.mark.asyncio
 async def test_xml_tool_call_parsing(chat_config, mock_tool):
     """测试 XML 格式的工具调用解析 (XML -> Tool Call)"""

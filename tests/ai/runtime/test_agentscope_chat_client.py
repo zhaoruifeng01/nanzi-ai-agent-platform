@@ -41,6 +41,29 @@ def test_runtime_messages_convert_to_agentscope_msgs():
     assert messages[-1].get_text_content() == "Tool result from tool: tool result"
 
 
+def test_runtime_tool_spec_converts_to_openai_tool_schema():
+    from app.services.ai.runtime.agentscope.chat import legacy_tools_to_openai_schemas
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    spec = RuntimeToolSpec(
+        name="runtime_lookup",
+        description="Lookup runtime data",
+        parameters_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=lambda query: query,
+    )
+
+    schema = legacy_tools_to_openai_schemas([spec])[0]
+
+    assert schema["type"] == "function"
+    assert schema["function"]["name"] == "runtime_lookup"
+    assert schema["function"]["parameters"]["required"] == ["query"]
+
+
 @pytest.mark.asyncio
 async def test_chat_client_extracts_non_streaming_text():
     from agentscope.message import TextBlock

@@ -31,6 +31,7 @@ from app.services.ai.executors.common import (
     is_retryable_stream_error,
 )
 from app.services.ai.executors.prompts import GeneralChatPrompts
+from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
 from app.services.ai.turn_classifier import TurnType
 
 logger = logging.getLogger(__name__)
@@ -73,11 +74,19 @@ class GeneralAgentRunner(BaseExecutor):
         configured_tools = self.config.tools or []
         tools = []
         if configured_tools:
-            tools = await ToolRegistry.get_tools(configured_tools)
+            tools = await ToolRegistry.get_runtime_tools(configured_tools)
+            if not tools:
+                tools = await ToolRegistry.get_tools(configured_tools)
 
         system_tools = ToolRegistry.get_system_implicit_tools()
         if system_tools:
-            tools.extend(system_tools)
+            if tools and all(isinstance(t, RuntimeToolSpec) for t in tools):
+                tools.extend(
+                    runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                    for tool in system_tools
+                )
+            else:
+                tools.extend(system_tools)
 
         if self._requires_knowledge_search or (
             getattr(self, "turn_classification", None)
@@ -86,7 +95,11 @@ class GeneralAgentRunner(BaseExecutor):
             self._requires_knowledge_search = True
 
         if self._requires_knowledge_search and not tools_include_named(tools, "search_knowledge_base"):
-            kb_tool = await ToolRegistry.get_tool("search_knowledge_base")
+            kb_tool = await ToolRegistry.get_runtime_tool("search_knowledge_base")
+            if not kb_tool:
+                kb_tool = await ToolRegistry.get_tool("search_knowledge_base")
+                if kb_tool and tools and all(isinstance(t, RuntimeToolSpec) for t in tools):
+                    kb_tool = runtime_tool_spec_from_legacy_tool(kb_tool, source_type="static")
             if kb_tool:
                 tools.append(kb_tool)
 
@@ -488,7 +501,10 @@ class GeneralAgentRunner(BaseExecutor):
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    tool_output = await target_tool.ainvoke(tool_args)
+                    if isinstance(target_tool, RuntimeToolSpec):
+                        tool_output = await target_tool.invoke(tool_args)
+                    else:
+                        tool_output = await target_tool.ainvoke(tool_args)
                     break
                 except (ConnectionError, TimeoutError) as e:
                     if attempt < max_retries - 1: await asyncio.sleep(2 ** attempt)
