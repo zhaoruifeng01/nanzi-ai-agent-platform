@@ -684,6 +684,69 @@
                   </div>
                 </transition>
               </div>
+              <!-- Tool Permission Confirmation -->
+              <div
+                v-if="msg.pendingPermission"
+                class="mt-3 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50/80 dark:bg-amber-900/20 p-3 text-xs"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    </svg>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-bold text-amber-900 dark:text-amber-100 truncate">
+                        {{ msg.pendingPermission.title || '工具调用确认' }}
+                      </div>
+                      <span
+                        class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase"
+                        :class="{
+                          'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300': msg.pendingPermission.status === 'pending',
+                          'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300': msg.pendingPermission.status === 'approved',
+                          'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': msg.pendingPermission.status === 'rejected',
+                          'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300': msg.pendingPermission.status === 'error' || msg.pendingPermission.status === 'expired'
+                        }"
+                      >
+                        {{ formatPermissionStatus(msg.pendingPermission.status) }}
+                      </span>
+                    </div>
+                    <div class="mt-1 text-amber-800/80 dark:text-amber-200/80 break-words">
+                      {{ msg.pendingPermission.details }}
+                    </div>
+                    <div
+                      v-if="msg.pendingPermission.tool_call?.name"
+                      class="mt-2 rounded-md bg-white/70 dark:bg-gray-950/30 border border-amber-100 dark:border-amber-900/40 p-2 font-mono text-[10px] text-gray-600 dark:text-gray-300 overflow-x-auto"
+                    >
+                      <span>{{ msg.pendingPermission.tool_call.name }}</span>
+                      <span v-if="msg.pendingPermission.tool_call.args"> {{ JSON.stringify(msg.pendingPermission.tool_call.args) }}</span>
+                    </div>
+                    <div v-if="msg.pendingPermission.status === 'pending'" class="mt-3 flex items-center gap-2">
+                      <button
+                        @click="confirmPendingPermission(msg, true)"
+                        :disabled="msg.pendingPermission.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="m5 13 4 4L19 7" />
+                        </svg>
+                        允许
+                      </button>
+                      <button
+                        @click="confirmPendingPermission(msg, false)"
+                        :disabled="msg.pendingPermission.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-bold text-gray-700 border border-gray-200 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700 dark:hover:bg-gray-700"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <!-- Main Content -->
               <div v-if="msg.content" class="relative group/content mt-2">
                 <!-- Floating Copy Button (Moved here to avoid overlap) -->
@@ -1941,6 +2004,7 @@ import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
+import { createSseLineParser } from "@/utils/chartRenderer";
 import { modelApi, type AIModel } from "@/api/model";
 import {
   filterLogsForTurn,
@@ -1999,6 +2063,22 @@ interface Message {
   feedback?: "up" | "down" | null;
   timestamp?: string;
   isTimeLabel?: boolean;
+  pendingPermission?: PendingToolPermission;
+}
+
+interface PendingToolPermission {
+  permission_request_id: string;
+  reply_id?: string;
+  id?: string;
+  title: string;
+  details: string;
+  tool_call?: {
+    id?: string;
+    name?: string;
+    args?: Record<string, unknown>;
+  };
+  status: "pending" | "approved" | "rejected" | "expired" | "error";
+  isSubmitting?: boolean;
 }
 // Helper: Check Role
 const checkRole = (msg: Message, role: string): boolean => {
@@ -3872,6 +3952,207 @@ const handleQuickQuestion = (content: string) => {
   userInput.value = content;
   sendMessage();
 };
+
+const formatPermissionStatus = (status: PendingToolPermission["status"]) => {
+  const labels: Record<PendingToolPermission["status"], string> = {
+    pending: "待确认",
+    approved: "已允许",
+    rejected: "已拒绝",
+    expired: "已过期",
+    error: "异常",
+  };
+  return labels[status] || status;
+};
+
+const addEmbedLogFromStream = (msg: Message, data: any) => {
+  if (!msg.logs) msg.logs = [];
+  const logId = data.id || Date.now() + Math.random();
+  const existingIdx = msg.logs.findIndex((l) => l.id === logId);
+  const title = data.title || "";
+  let category: LogEntry["category"] = data.category || "default";
+  if (category === "default") {
+    if (title.includes("路由")) category = "router";
+    else if (title.includes("SQL") || title.includes("sql") || title.includes("数据")) category = "sql";
+    else if (title.includes("知识") || title.includes("检索") || title.includes("引用") || title.includes("来源") || title.includes("分析")) category = "knowledge";
+    else if (title.includes("工具") || title.includes("调用")) category = "tool";
+    else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
+    else if (title.includes("权限") || title.includes("permission") || title.includes("确认")) category = "permission";
+  }
+  if (existingIdx > -1) {
+    const currentLog = msg.logs[existingIdx];
+    if (!currentLog) return;
+    msg.logs[existingIdx] = {
+      ...currentLog,
+      title: data.title || currentLog.title,
+      details: data.details ?? currentLog.details,
+      status: (data.status as any) || currentLog.status || "success",
+      category: category !== "default" ? category : currentLog.category,
+      execution_time_ms: data.execution_time_ms ?? currentLog.execution_time_ms,
+      elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
+      started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
+    };
+    return;
+  }
+  msg.logs.push({
+    id: logId,
+    title: data.title || "Log Info",
+    details: data.details || "",
+    status: (data.status as any) || "success",
+    isExpanded: false,
+    category,
+    execution_time_ms: data.execution_time_ms ?? null,
+    elapsed_time_ms: data.elapsed_time_ms ?? null,
+    started_at: data.status === "pending" ? Date.now() : (data.started_at ?? null),
+  });
+};
+
+const applyPermissionStreamEvent = (msg: Message, data: any) => {
+  if (data.trace_id) msg.trace_id = data.trace_id;
+  if (data.data?.trace_id) msg.trace_id = data.data.trace_id;
+
+  if (data.type === "log") {
+    addEmbedLogFromStream(msg, data);
+  } else if (data.type === "citation" && Array.isArray(data.data)) {
+    const newCitations = [...(msg.citations || [])];
+    data.data.forEach((newRef: any) => {
+      const exists = newCitations.some(c => c.chunk_id === newRef.chunk_id || (c.content === newRef.content && c.doc_name === newRef.doc_name));
+      if (!exists) newCitations.push(newRef);
+    });
+    msg.citations = newCitations;
+  } else if (data.type === "router_log") {
+    const thoughtText = data.thought || "No reasoning provided.";
+    const agentName = data.selected_agent || "Unknown";
+    const conf = data.confidence !== undefined ? `(置信度: ${data.confidence})` : "";
+    addEmbedLogFromStream(msg, {
+      id: "router_" + Date.now(),
+      title: "智能路由决策",
+      details: `思考过程:\n${thoughtText}\n\n最终选择: ${agentName} ${conf}`,
+      status: "success",
+      isRouter: true,
+      category: "router",
+      execution_time_ms: data.execution_time_ms ?? null,
+    });
+  } else if (data.type === "meta") {
+    if (data.agent_name) msg.agentName = data.agent_name;
+    if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+    if (data.turn_type) msg.turnType = data.turn_type;
+    if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
+    if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
+  } else if (data.type === "permission_result") {
+    if (msg.pendingPermission) {
+      msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
+    }
+    addEmbedLogFromStream(msg, {
+      id: `permission_${data.permission_request_id}`,
+      title: data.status === "rejected" ? "已拒绝工具调用" : "已允许工具调用",
+      details: `确认请求: ${data.permission_request_id}`,
+      status: "success",
+      category: "permission",
+    });
+  } else if (data.type === "error") {
+    if (msg.pendingPermission) msg.pendingPermission.status = "error";
+    msg.isThinking = false;
+    msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
+  } else if (data.content) {
+    const content = data.content || "";
+    const isRealContent = !content.includes("<function_calls") && !content.includes("<think");
+    if (isRealContent) {
+      if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
+      msg.content += content;
+      if (msg.isThinking) msg.isThinking = false;
+      resetStallTimer();
+    }
+  }
+};
+
+const handlePermissionRequired = (msg: Message, data: any) => {
+  msg.pendingPermission = {
+    permission_request_id: data.permission_request_id,
+    reply_id: data.reply_id,
+    id: data.id,
+    title: data.title || "工具调用确认",
+    details: data.details || "",
+    tool_call: data.tool_call,
+    status: "pending",
+  };
+  msg.isThinking = false;
+  if (thoughtTimer) {
+    clearInterval(thoughtTimer);
+    thoughtTimer = null;
+  }
+  addEmbedLogFromStream(msg, {
+    id: `permission_${data.permission_request_id}`,
+    title: data.title || "工具调用需要确认",
+    details: data.details || "",
+    status: "pending",
+    category: "permission",
+  });
+};
+
+const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
+  const pending = msg.pendingPermission;
+  if (!pending || pending.status !== "pending") return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  if (confirmed) {
+    msg.isThinking = true;
+    msg.thoughtStartTime = Date.now();
+    msg.thoughtDuration = "0.0";
+    msg.thinkingText = "正在继续执行...";
+    resetStallTimer();
+  }
+
+  try {
+    const response = await fetch(`/api/v1/chat/permissions/${pending.permission_request_id}/confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(embedAuthHeaders() || {}),
+      },
+      body: JSON.stringify({ confirmed }),
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(response.statusText);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No body");
+    const decoder = new TextDecoder();
+    const parser = createSseLineParser();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const dataLines = parser.feed(decoder.decode(value, { stream: true }));
+      for (const dataStr of dataLines) {
+        if (dataStr === "[DONE]") continue;
+        applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+      }
+      scrollToBottom();
+    }
+    for (const dataStr of parser.flush()) {
+      if (dataStr !== "[DONE]") applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+    }
+  } catch (error: any) {
+    pending.status = "error";
+    msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = false;
+    msg.isThinking = false;
+    clearStallTimer();
+    showStalledPrompt.value = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach((l) => {
+        if (l.status === "pending" && l.category !== "permission") l.status = "success";
+      });
+    }
+    scrollToBottom();
+    nextTick(() => chatInputRef.value?.focus());
+  }
+};
+
 const sendMessage = async () => {
   const content = userInput.value.trim();
   const files = chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [];
@@ -4094,6 +4375,8 @@ const sendMessage = async () => {
                 execution_time_ms: data.execution_time_ms ?? null,
               });
             }
+          } else if (data.type === "permission_required") {
+            handlePermissionRequired(agentMsg.value, data);
           }
           else if (data.type === "meta") {
             if (data.agent_name) {
@@ -4180,7 +4463,7 @@ const sendMessage = async () => {
     // Final cleanup: stop any remaining log spinners
     if (agentMsg.value.logs) {
       agentMsg.value.logs.forEach((l) => {
-        if (l.status === "pending") l.status = "success";
+        if (l.status === "pending" && l.category !== "permission") l.status = "success";
       });
     }
     scrollToBottom();

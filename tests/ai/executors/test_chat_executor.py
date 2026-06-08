@@ -67,6 +67,8 @@ def chat_config():
 def mock_tool():
     tool = AsyncMock()
     tool.name = "test_tool"
+    tool.description = "Test tool"
+    tool.args_schema = None
     tool.ainvoke.return_value = "Tool Result"
     return tool
 
@@ -175,67 +177,42 @@ async def test_general_chat_injects_route_hints_as_weak_system_hint(chat_config)
 
 @pytest.mark.asyncio
 async def test_standard_tool_call(chat_config, mock_tool):
-    """测试标准的 ReAct 工具调用流程 (Think -> Act -> Observe -> Final Answer)"""
+    """系统隐式 legacy 工具应转 RuntimeToolSpec，不再触发手写 ReAct。"""
+    chat_config.tools = []
     executor = GeneralChatExecutor(config=chat_config, trace_id="test-trace-2", trace_buffer=[])
-    
-    # Sequence:
-    # 1. LLM decides to call tool
-    # 2. LLM receives tool output and gives final answer
-    
-    msg_call_tool = AIMessage(
-        content="", 
-        tool_calls=[{"name": "test_tool", "args": {"query": "foo"}, "id": "call_1"}]
-    )
-    msg_after_tool = AIMessage(content="I have the data now.")
-    msg_final_synthesis = AIMessage(content="Here is the result: Tool Result")
-    
-    mock_llm = MockLLM([msg_call_tool, msg_after_tool, msg_final_synthesis])
-    
-    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock) as mock_get_llm, \
-         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock) as mock_get_tools, \
-         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config_get:
-         
-        mock_get_llm.return_value = mock_llm
-        mock_get_tools.return_value = [mock_tool]
-        mock_config_get.return_value = "5" # Max steps
-        
-        history = [{"role": "user", "content": "Do something"}]
-        
+
+    class NoNativeModelHandle:
+        native_model = None
+
+        def bind_tools(self, tools):
+            raise AssertionError("legacy bind_tools fallback should not run")
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=NoNativeModelHandle())), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(side_effect=AssertionError("legacy tools should not be loaded"))), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[mock_tool]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
         events = []
-        async for chunk in executor.execute(history):
+        async for chunk in executor.execute([{"role": "user", "content": "Do something"}]):
             events.append(chunk)
-            
-        # Verify Tool Call Log
-        tool_logs = [e for e in events if e.get("type") == "log" and "synthesis" not in e.get("id", "")]
-        assert len(tool_logs) >= 2 # Call start + Call finish
-        assert tool_logs[0]["title"] == "调用工具: test_tool"
-        assert tool_logs[1]["title"].startswith("工具完成: test_tool")
-        
-        # Verify Synthesis Logs
-        syn_logs = [e for e in events if e.get("type") == "log" and ("synthesis_react" in e.get("id", "") or "gen_start" in e.get("id", ""))]
-        assert len(syn_logs) == 2
-        assert any("汇总工具结果" in l["title"] for l in syn_logs)
-        assert any("开始生成回复" in l["title"] for l in syn_logs)
-        
-        # Verify Final Content
-        content_chunks = [e["content"] for e in events if "content" in e and "type" not in e]
-        # Note: msg_call_tool has empty content, msg_final has content
-        assert "Here is the result: Tool Result" in "".join(content_chunks)
-        
-        # Verify Tool Execution
-        mock_tool.ainvoke.assert_called_once_with({"query": "foo"})
+
+    mock_tool.ainvoke.assert_not_called()
+    assert events == [
+        {
+            "type": "error",
+            "status": "error",
+            "content": "当前模型适配器未提供 AgentScope native_model，无法执行 AgentScope 原生工具链。",
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_general_runner_executes_runtime_tool_specs(chat_config):
-    """General 工具链应通过 RuntimeToolSpec 执行，而不是直接消费 legacy tool。"""
+async def test_general_runner_runtime_tool_specs_do_not_fallback_to_legacy_tools(chat_config):
+    """RuntimeToolSpec 工具链缺 native_model 时应显式失败，不再回落 legacy 工具执行。"""
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 
     executor = GeneralChatExecutor(config=chat_config, trace_id="test-runtime-tool", trace_buffer=[])
-    invocations = []
 
     async def runtime_tool(query: str):
-        invocations.append({"query": query})
         return "Runtime Tool Result"
 
     runtime_spec = RuntimeToolSpec(
@@ -251,15 +228,13 @@ async def test_general_runner_executes_runtime_tool_specs(chat_config):
         permission_scope="read",
     )
 
-    msg_call_tool = AIMessage(
-        content="",
-        tool_calls=[{"name": "test_tool", "args": {"query": "runtime"}, "id": "call_runtime"}],
-    )
-    msg_after_tool = AIMessage(content="I have the runtime data now.")
-    msg_final_synthesis = AIMessage(content="Here is the result: Runtime Tool Result")
-    mock_llm = MockLLM([msg_call_tool, msg_after_tool, msg_final_synthesis])
+    class NoNativeModelHandle:
+        native_model = None
 
-    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=mock_llm)), \
+        def bind_tools(self, tools):
+            raise AssertionError("legacy bind_tools fallback should not run")
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=NoNativeModelHandle())), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])) as mock_get_runtime_tools, \
          patch("app.services.ai.tools.registry.ToolRegistry.get_tools", AsyncMock(side_effect=AssertionError("legacy tools should not be loaded"))), \
          patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
@@ -268,11 +243,13 @@ async def test_general_runner_executes_runtime_tool_specs(chat_config):
             events.append(chunk)
 
     mock_get_runtime_tools.assert_awaited_once_with(chat_config.tools)
-    assert invocations == [{"query": "runtime"}]
-    assert any(e.get("title", "").startswith("工具完成: test_tool") for e in events)
-    assert "Here is the result: Runtime Tool Result" in "".join(
-        e["content"] for e in events if "content" in e and "type" not in e
-    )
+    assert events == [
+        {
+            "type": "error",
+            "status": "error",
+            "content": "当前模型适配器未提供 AgentScope native_model，无法执行 AgentScope 原生工具链。",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -283,8 +260,8 @@ async def test_general_runner_uses_agentscope_native_agent_for_runtime_tools(cha
     from agentscope.model import ChatModelBase, ChatResponse
 
     from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.executors.prompts import GeneralChatPrompts
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
-    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
 
     class FakeCredential(CredentialBase):
         @classmethod
@@ -344,8 +321,7 @@ async def test_general_runner_uses_agentscope_native_agent_for_runtime_tools(cha
     with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
          patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
-         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")), \
-         patch.object(GeneralAgentRunner, "_execute_single_tool_safe", side_effect=AssertionError("manual tool execution should not run")):
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
         events = []
         async for chunk in executor.execute([{"role": "user", "content": "Use native"}]):
             events.append(chunk)
@@ -365,6 +341,7 @@ async def test_general_runner_emits_permission_required_for_agentscope_ask_tool(
     from agentscope.model import ChatModelBase, ChatResponse
 
     from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 
     class FakeCredential(CredentialBase):
@@ -430,90 +407,454 @@ async def test_general_runner_emits_permission_required_for_agentscope_ask_tool(
             events.append(chunk)
 
     permission_events = [event for event in events if event.get("type") == "permission_required"]
-    assert permission_events == [
-        {
-            "type": "permission_required",
-            "status": "pending",
-            "id": "call_requires_confirm",
-            "title": "需要确认工具调用: send_message",
-            "details": '参数: {"message": "hello"}',
-            "tool_call": {
-                "id": "call_requires_confirm",
-                "name": "send_message",
-                "args": {"message": "hello"},
-            },
-        }
-    ]
+    assert len(permission_events) == 1
+    assert permission_events[0]["type"] == "permission_required"
+    assert permission_events[0]["status"] == "pending"
+    assert permission_events[0]["id"] == "call_requires_confirm"
+    assert permission_events[0]["permission_request_id"].startswith("perm_")
+    assert permission_events[0]["reply_id"]
+    assert permission_events[0]["title"] == "需要确认工具调用: send_message"
+    assert permission_events[0]["details"] == '参数: {"message": "hello"}'
+    assert permission_events[0]["tool_call"] == {
+        "id": "call_requires_confirm",
+        "name": "send_message",
+        "args": {"message": "hello"},
+    }
     assert invoked is False
 
 
 @pytest.mark.asyncio
-async def test_xml_tool_call_parsing(chat_config, mock_tool):
-    """测试 XML 格式的工具调用解析 (XML -> Tool Call)"""
-    executor = GeneralChatExecutor(config=chat_config, trace_id="test-trace-3", trace_buffer=[])
-    
-    xml_content = """
-    Thinking...
-    <function_calls>
-    <invoke name="test_tool">
-    <parameter name="query">xml_query</parameter>
-    </invoke>
-    </function_calls>
-    """
-    
-    msg_xml_call = AIMessage(content=xml_content)
-    msg_final = AIMessage(content="Final Answer")
-    
-    mock_llm = MockLLM([msg_xml_call, msg_final])
-    
-    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock) as mock_get_llm, \
-         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock) as mock_get_tools, \
-         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config_get:
-         
-        mock_get_llm.return_value = mock_llm
-        mock_get_tools.return_value = [mock_tool]
-        mock_config_get.return_value = "5"
-        
-        history = [{"role": "user", "content": "Use XML"}]
-        
+async def test_general_runner_resumes_agentscope_ask_tool_after_confirmation(chat_config):
+    """用户确认后，应基于同一个 AgentScope Agent 继续执行工具并生成回答。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runtime.agentscope.confirmations import (
+        pending_agentscope_confirmations,
+    )
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    pending_agentscope_confirmations.clear()
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            if not any(msg.has_content_blocks("tool_result") for msg in messages):
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_requires_confirm",
+                            name="send_message",
+                            input='{"message": "hello"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            tool_result = next(
+                block
+                for msg in messages
+                for block in msg.get_content_blocks("tool_result")
+            )
+            return ChatResponse(
+                content=[TextBlock(text=f"confirmed final: {tool_result.output[0].text}")],
+                is_last=True,
+            )
+
+    invocations = []
+
+    async def send_message(message: str):
+        invocations.append(message)
+        return f"sent:{message}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="send_message",
+        description="Send a message",
+        parameters_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+        source_type="static",
+        callable=send_message,
+        permission_scope="ask",
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+    executor = GeneralChatExecutor(config=chat_config, trace_id="test-native-resume", trace_buffer=[])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
         events = []
-        async for chunk in executor.execute(history):
+        async for chunk in executor.execute([{"role": "user", "content": "Send it"}]):
             events.append(chunk)
-            
-        # Verify Tool Execution with parsed args
-        mock_tool.ainvoke.assert_called_once_with({"query": "xml_query"})
+
+    permission_event = next(event for event in events if event.get("type") == "permission_required")
+    pending = pending_agentscope_confirmations.pop(permission_event["permission_request_id"])
+    assert pending is not None
+    assert invocations == []
+
+    resume_events = []
+    async for chunk in pending.runner.resume_agentscope_native_confirmation(pending, confirmed=True):
+        resume_events.append(chunk)
+
+    assert invocations == ["hello"]
+    assert "confirmed final: sent:hello" in "".join(
+        e["content"] for e in resume_events if "content" in e and "type" not in e
+    )
+
+
+@pytest.mark.asyncio
+async def test_general_runner_knowledge_guard_uses_agentscope_native_agent(chat_config):
+    """知识库强制检索轮次也应走 AgentScope 原生 Agent，不再回落手写 ReAct。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            if not any(msg.has_content_blocks("tool_result") for msg in messages):
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_kb",
+                            name="search_knowledge_base",
+                            input='{"query": "知识库问题"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            return ChatResponse(content=[TextBlock(text="knowledge final")], is_last=True)
+
+    async def search_knowledge_base(query: str, dataset_ids: str | None = None):
+        return f"kb:{query}:{dataset_ids or ''}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="search_knowledge_base",
+        description="Search knowledge base",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "dataset_ids": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=search_knowledge_base,
+        permission_scope="read",
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+    runner = GeneralAgentRunner(config=chat_config, trace_id="test-native-kb", trace_buffer=[])
+    runner._requires_knowledge_search = True
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in runner.execute([{"role": "user", "content": "知识库问题"}]):
+            events.append(chunk)
+
+    assert any(e.get("title", "").startswith("调用工具: search_knowledge_base") for e in events)
+    assert "knowledge final" in "".join(
+        e["content"] for e in events if "content" in e and "type" not in e
+    )
+
+
+@pytest.mark.asyncio
+async def test_general_runner_memory_guard_uses_agentscope_native_agent(chat_config):
+    """跨会话记忆召回轮次也应走 AgentScope 原生 Agent，不再回落手写 ReAct。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            if not any(msg.has_content_blocks("tool_result") for msg in messages):
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_memory",
+                            name="memory_search",
+                            input='{"query": "今天聊了什么", "scope": "summary"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            return ChatResponse(content=[TextBlock(text="memory final")], is_last=True)
+
+    async def memory_search(query: str, scope: str = "summary", conversation_id: str | None = None):
+        return f"memory:{scope}:{query}:{conversation_id or ''}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="memory_search",
+        description="Search cross-session memory",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "scope": {"type": "string"},
+                "conversation_id": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+        source_type="system",
+        callable=memory_search,
+        permission_scope="read",
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+    runner = GeneralAgentRunner(config=chat_config, trace_id="test-native-memory", trace_buffer=[])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.memory_config_service.MemoryConfigService.get_bool", AsyncMock(return_value=True)), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in runner.execute([{"role": "user", "content": "今天聊了什么"}]):
+            events.append(chunk)
+
+    assert any(e.get("title", "").startswith("调用工具: memory_search") for e in events)
+    assert "memory final" in "".join(
+        e["content"] for e in events if "content" in e and "type" not in e
+    )
+
+
+@pytest.mark.asyncio
+async def test_general_runner_runtime_tools_require_agentscope_native_model(chat_config):
+    """RuntimeToolSpec 工具链缺少 native_model 时应显式报错，而不是静默回落手写 ReAct。"""
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    async def test_tool(query: str):
+        return f"tool:{query}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="test_tool",
+        description="Test runtime tool",
+        parameters_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=test_tool,
+        permission_scope="read",
+    )
+
+    class NoNativeModelHandle:
+        native_model = None
+
+        def bind_tools(self, tools):
+            raise AssertionError("LangChain bind_tools fallback should not run")
+
+    runner = GeneralAgentRunner(config=chat_config, trace_id="test-native-required", trace_buffer=[])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=NoNativeModelHandle())), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in runner.execute([{"role": "user", "content": "Use tool"}]):
+            events.append(chunk)
+
+    assert events == [
+        {
+            "type": "error",
+            "status": "error",
+            "content": "当前模型适配器未提供 AgentScope native_model，无法执行 AgentScope 原生工具链。",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_service_resume_permission_returns_error_for_missing_request():
+    """确认请求不存在时，service 应返回明确错误事件而不是空 SSE。"""
+    from app.services.ai.agent_service import AgentService
+    from app.services.ai.runtime.agentscope.confirmations import (
+        pending_agentscope_confirmations,
+    )
+
+    pending_agentscope_confirmations.clear()
+    events = []
+    async for chunk in AgentService().resume_agentscope_permission_stream(
+        permission_request_id="perm_missing",
+        confirmed=True,
+        user_info={"user_id": "u1"},
+    ):
+        events.append(chunk)
+
+    assert events == [
+        {
+            "type": "error",
+            "status": "error",
+            "content": "工具确认请求不存在或已过期，请重新发起本轮对话。",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_xml_tool_call_parsing(chat_config, mock_tool):
+    """旧手写 ReAct 的 XML function_calls 解析已移除，不再执行 legacy tool。"""
+    executor = GeneralChatExecutor(config=chat_config, trace_id="test-trace-3", trace_buffer=[])
+
+    class NoNativeModelHandle:
+        native_model = None
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=NoNativeModelHandle())), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[mock_tool]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Use XML"}]):
+            events.append(chunk)
+
+    mock_tool.ainvoke.assert_not_called()
+    assert events == [
+        {
+            "type": "error",
+            "status": "error",
+            "content": "当前模型适配器未提供 AgentScope native_model，无法执行 AgentScope 原生工具链。",
+        }
+    ]
 
 @pytest.mark.asyncio
 async def test_max_steps_limit(chat_config, mock_tool):
-    """测试最大执行步数限制"""
+    """最大执行步数由 AgentScope ReActConfig(max_iters) 控制。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.executors.prompts import GeneralChatPrompts
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
     executor = GeneralChatExecutor(config=chat_config, trace_id="test-trace-5", trace_buffer=[])
-    
-    # LLM keeps calling tool forever
-    msg_loop = AIMessage(
-        content="Looping...", 
-        tool_calls=[{"name": "test_tool", "args": {}, "id": "loop_call"}]
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id=f"loop_call_{len(messages)}",
+                        name="test_tool",
+                        input='{"query": "loop"}',
+                    )
+                ],
+                is_last=True,
+            )
+
+    async def runtime_tool(query: str):
+        return f"loop:{query}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="test_tool",
+        description="Runtime test tool",
+        parameters_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        source_type="static",
+        callable=runtime_tool,
+        permission_scope="read",
     )
-    
-    # Create an infinite generator of tool calls
-    mock_llm = MockLLM([msg_loop] * 10) 
-    
-    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", new_callable=AsyncMock) as mock_get_llm, \
-         patch("app.services.ai.tools.registry.ToolRegistry.get_tools", new_callable=AsyncMock) as mock_get_tools, \
-         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config_get:
-         
-        mock_get_llm.return_value = mock_llm
-        mock_get_tools.return_value = [mock_tool]
-        mock_config_get.return_value = "3" # Low limit for test
-        
-        history = [{"role": "user", "content": "Loop"}]
-        
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="3")):
         events = []
-        async for chunk in executor.execute(history):
+        async for chunk in executor.execute([{"role": "user", "content": "Loop"}]):
             events.append(chunk)
-            
-        # Check final system message
-        last_msg = events[-1]
-        assert "[系统提示] 达到最大执行步骤" in last_msg.get("content", "")
+
+    assert any(GeneralChatPrompts.MAX_STEPS_REACHED in event.get("content", "") for event in events)
 
 
 @pytest.mark.asyncio

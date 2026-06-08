@@ -3,27 +3,22 @@ import uuid
 import json
 import logging
 import asyncio
-import re
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
 
 from app.services.ai.runtime.agentscope.compat import (
-    AIMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
-    ToolMessage,
 )
 from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.common import (
-    append_system_instruction,
     convert_history_to_messages,
     extract_tokens_from_message,
     normalize_messages_for_llm,
-    parse_xml_tool_calls,
     tools_include_named,
     MODEL_STREAM_MAX_RETRIES,
     build_stream_retry_log,
@@ -77,18 +72,13 @@ class GeneralAgentRunner(BaseExecutor):
         tools = []
         if configured_tools:
             tools = await ToolRegistry.get_runtime_tools(configured_tools)
-            if not tools:
-                tools = await ToolRegistry.get_tools(configured_tools)
 
         system_tools = ToolRegistry.get_system_implicit_tools()
         if system_tools:
-            if tools and all(isinstance(t, RuntimeToolSpec) for t in tools):
-                tools.extend(
-                    runtime_tool_spec_from_legacy_tool(tool, source_type="system")
-                    for tool in system_tools
-                )
-            else:
-                tools.extend(system_tools)
+            tools.extend(
+                runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                for tool in system_tools
+            )
 
         if self._requires_knowledge_search or (
             getattr(self, "turn_classification", None)
@@ -98,10 +88,6 @@ class GeneralAgentRunner(BaseExecutor):
 
         if self._requires_knowledge_search and not tools_include_named(tools, "search_knowledge_base"):
             kb_tool = await ToolRegistry.get_runtime_tool("search_knowledge_base")
-            if not kb_tool:
-                kb_tool = await ToolRegistry.get_tool("search_knowledge_base")
-                if kb_tool and tools and all(isinstance(t, RuntimeToolSpec) for t in tools):
-                    kb_tool = runtime_tool_spec_from_legacy_tool(kb_tool, source_type="static")
             if kb_tool:
                 tools.append(kb_tool)
 
@@ -187,10 +173,6 @@ class GeneralAgentRunner(BaseExecutor):
         from app.services.config_service import ConfigService
         max_steps_str = await ConfigService.get("agent_max_iterations")
         MAX_STEPS = int(max_steps_str) if max_steps_str else 5
-        step = 0
-
-        model_with_tools = await AgentConfigProvider.get_configured_llm(streaming=True, config=self.config)
-        model_with_tools = model_with_tools.bind_tools(tools)
 
         from app.services.ai.memory_recall_policy import (
             MEMORY_SEARCH_CORRECTION_MSG,
@@ -218,10 +200,20 @@ class GeneralAgentRunner(BaseExecutor):
             and tools_include_named(tools, "search_knowledge_base")
         )
 
+        native_system_content = system_content
+        if knowledge_search_pending:
+            native_system_content = (
+                f"{GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG}\n\n"
+                f"{native_system_content}"
+            )
+        if recall_query_pending:
+            native_system_content = (
+                f"{MEMORY_SEARCH_CORRECTION_MSG}\n\n"
+                f"{native_system_content}"
+            )
+
         if (
-            not recall_query_pending
-            and not knowledge_search_pending
-            and tools
+            tools
             and all(isinstance(t, RuntimeToolSpec) for t in tools)
         ):
             native_model_handle = await AgentConfigProvider.get_configured_llm(streaming=True, config=self.config)
@@ -230,288 +222,24 @@ class GeneralAgentRunner(BaseExecutor):
                 async for chunk in self._execute_with_agentscope_native_agent(
                     native_model=native_model,
                     tools=tools,
-                    system_content=system_content,
+                    system_content=native_system_content,
                     runtime_messages=runtime_messages,
                     max_steps=MAX_STEPS,
                 ):
                     yield chunk
                 return
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前模型适配器未提供 AgentScope native_model，无法执行 AgentScope 原生工具链。",
+            }
+            return
 
-        while step < MAX_STEPS:
-            step += 1
-            self._increment_step()
-            
-            # 3.1 Think
-            start_thought = time.time()
-            accumulated_content = ""
-            accumulated_msg = None
-            has_tool_call_indicator = False
-            force_memory_recall = recall_query_pending and step == 1
-            force_knowledge_search = knowledge_search_pending and step == 1
-            
-            yield {"type": "thinking", "status": "continuing"}
-            
-            user_content_emitted = False
-            stream_succeeded = False
-            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
-                accumulated_content = ""
-                accumulated_msg = None
-                has_tool_call_indicator = False
-                try:
-                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(runtime_messages)):
-                        if accumulated_msg is None:
-                            accumulated_msg = chunk
-                        else:
-                            accumulated_msg += chunk
-
-                        if chunk.content:
-                            if "<function_calls" in (accumulated_content + chunk.content):
-                                has_tool_call_indicator = True
-
-                            # If it's a direct answer in Step 1, stream it (skip when recall query needs memory_search first)
-                            if not has_tool_call_indicator and step == 1 and not force_memory_recall and not force_knowledge_search:
-                                user_content_emitted = True
-                                yield {"content": chunk.content}
-
-                            accumulated_content += chunk.content
-                    stream_succeeded = True
-                    break
-                except Exception as stream_err:
-                    logger.error(
-                        f"[GeneralAgentRunner] ReAct stream failed at step {step} "
-                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
-                    )
-                    if (
-                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
-                        and not user_content_emitted
-                        and is_retryable_stream_error(stream_err)
-                    ):
-                        yield build_stream_retry_log(stream_err, stream_attempt)
-                        await asyncio.sleep(2 ** stream_attempt)
-                        continue
-                    yield build_stream_error_log(stream_err)
-                    return
-
-            if not stream_succeeded:
-                return
-
-            response = accumulated_msg
-            tokens = extract_tokens_from_message(response)
-            
-            # --- [SPECIAL LOGIC: XML Tool Call Parsing] ---
-            current_tool_calls = getattr(response, "tool_calls", [])
-            if not current_tool_calls and accumulated_content and "<function_calls>" in accumulated_content:
-                parsed_calls = parse_xml_tool_calls(accumulated_content)
-                if parsed_calls:
-                    current_tool_calls = parsed_calls
-
-            # Trace Thought
-            self.trace_buffer.append(AgentExecutionStep(
-                step_number=self.step_counter,
-                event_type="thought",
-                agent_name=self.config.agent_name,
-                model=self.config.model_name,
-                temperature=self.config.temperature,
-                tool_output={"content": accumulated_content, "tool_calls": [tc['name'] for tc in current_tool_calls]},
-                raw_log=accumulated_content,
-                execution_time_ms=(time.time() - start_thought) * 1000,
-                prompt_tokens=tokens["prompt_tokens"],
-                completion_tokens=tokens["completion_tokens"],
-                total_tokens=tokens["total_tokens"],
-                timestamp=datetime.fromtimestamp(start_thought)
-            ))
-
-            if not current_tool_calls:
-                 if force_knowledge_search:
-                     yield {
-                         "type": "log",
-                         "id": f"knowledge_search_intercept_{step}",
-                         "title": "流程守护: 强制知识库检索",
-                         "details": "本轮为知识库问答，须先调用 search_knowledge_base。",
-                         "status": "warning",
-                     }
-                     runtime_messages.append(response)
-                     append_system_instruction(runtime_messages, GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG)
-                     knowledge_search_pending = False
-                     continue
-
-                 if force_memory_recall:
-                     yield {
-                         "type": "log",
-                         "id": f"memory_recall_intercept_{step}",
-                         "title": "流程守护: 强制跨会话记忆检索",
-                         "details": "用户询问历史对话，须先调用 memory_search。",
-                         "status": "warning",
-                     }
-                     runtime_messages.append(response)
-                     append_system_instruction(runtime_messages, MEMORY_SEARCH_CORRECTION_MSG)
-                     recall_query_pending = False
-                     continue
-                 
-                 # Optimization: If we already streamed the answer in step 1, we are DONE.
-                 if step == 1:
-                     # 补充 synthesis 步骤供 Trace 展示；Token 已在上方 thought 步骤计入，此处勿重复
-                     self._increment_step()
-                     self.trace_buffer.append(AgentExecutionStep(
-                         step_number=self.step_counter,
-                         event_type="synthesis",
-                         agent_name=self.config.agent_name,
-                         model=self.config.model_name,
-                         temperature=self.config.temperature,
-                         tool_output={"content": accumulated_content},
-                         raw_log=accumulated_content,
-                         execution_time_ms=(time.time() - start_thought) * 1000,
-                         prompt_tokens=0,
-                         completion_tokens=0,
-                         total_tokens=0,
-                         timestamp=datetime.fromtimestamp(start_thought)
-                     ))
-                     return 
-                 
-                 # Break to enter Final Synthesis
-                 break 
-            
-            # 3.2 Act (Process Tool Calls - Parallel)
-            runtime_messages.append(response)
-            
-            pending_tasks = []
-            for i, tool_call in enumerate(current_tool_calls):
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
-                if tool_name == "search_knowledge_base":
-                    knowledge_search_pending = False
-                if not tool_call.get("id"): tool_call["id"] = f"call_{uuid.uuid4().hex[:8]}"
-                
-                yield {"type": "log", "id": tool_call['id'], "title": f"调用工具: {tool_name}", "details": f"参数: {json.dumps(tool_args, ensure_ascii=False)}", "status": "pending"}
-                pending_tasks.append(self._execute_single_tool_safe(tool_call, tools, i))
-            
-            # Parallel execution with heartbeat
-            tool_results = []
-            if pending_tasks:
-                execution_task = asyncio.ensure_future(asyncio.gather(*pending_tasks))
-                waited_seconds = 0
-                while not execution_task.done():
-                    done, _ = await asyncio.wait([execution_task], timeout=1.5)
-                    if execution_task in done: break
-                    waited_seconds += 1.5
-                    for tc in current_tool_calls:
-                        yield {"type": "log", "id": tc['id'], "title": f"正在处理: {tc['name']} ({waited_seconds:.1f}s)", "status": "pending"}
-                
-                results = execution_task.result()
-                for result in results:
-                    tool_results.append(result)
-                    if result.get("log"): yield result["log"]
-                    if result.get("citation"): yield result["citation"]
-                    if result.get("trace"): self.trace_buffer.append(result["trace"])
-            
-            tool_results.sort(key=lambda x: x["index"])
-            for res in tool_results:
-                if res.get("message"): runtime_messages.append(res["message"])
-                self._increment_step()
-
-        # --- Final Synthesis (After ReAct Loop) ---
-        if step < MAX_STEPS:
-            # Check if we have data to synthesize
-            tool_msgs = [m for m in runtime_messages if isinstance(m, ToolMessage)]
-            if not tool_msgs:
-                # 🌟 兜底保障：若没有任何 ToolMessage，说明整个交互期间模型未能成功执行任何工具。
-                # 此时，我们必须尝试提取大模型在 ReAct 循环中生成的最后一个 AIMessage 回答并输出给用户，
-                # 避免整个会话因没有 ToolMessage 而被静默吞掉返回。若无回答，则给出一个友好的平台级报错提示。
-                last_ai_msg = next((m for m in reversed(runtime_messages) if isinstance(m, AIMessage) and m.content), None)
-                if last_ai_msg and last_ai_msg.content:
-                    yield {"content": last_ai_msg.content}
-                else:
-                    yield {"content": "⚠️ 流程守护强力拦截成功，但系统未能成功执行或未挂载对应的 `search_knowledge_base` 知识库检索工具，大模型也未能给出有效的兜底纯文本回答。请联系系统管理员检查当前智能体的知识库配置或工具底座连接状态。"}
-                return
-
-            start_synthesis = time.time()
-            yield {"type": "log", "id": f"synthesis_react_{uuid.uuid4().hex[:8]}", "title": "📝 汇总工具结果", "details": "已获取所需数据，正在组织语言...", "status": "success"}
-            yield {"type": "thinking", "status": "continuing"}
-            
-            # --- [STRATEGY B+: Context-Aware Synthesis] ---
-            synthesis_messages = []
-            
-            # 1. Add System Message
-            synthesis_messages.append(runtime_messages[0])
-            
-            # 2. Add Clean History (User/Assistant pairs only, no ReAct noise)
-            # We skip the very last human message as it will be merged with data below
-            for msg in runtime_messages[1:-1]:
-                if isinstance(msg, HumanMessage):
-                    synthesis_messages.append(msg)
-                elif isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
-                    # Only keep final answers from previous turns
-                    synthesis_messages.append(msg)
-            
-            # 3. Add Current Turn (Problem + Data)
-            user_question = next((m.content for m in reversed(runtime_messages) if isinstance(m, HumanMessage)), "无原始问题")
-            
-            # [IMPROVED] Use structured trace instead of just raw tool outputs
-            execution_review = self._format_trace_for_synthesis(self.trace_buffer)
-
-            synthesis_messages.append(HumanMessage(content=GeneralChatPrompts.synthesis_user_message(user_question, execution_review)))
-            
-            final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
-            
-            content_emitted = False
-            full_synthesis_content = ""
-            accumulated_msg = None
-            stream_succeeded = False
-            for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
-                accumulated_msg = None
-                try:
-                    async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
-                        if accumulated_msg is None:
-                            accumulated_msg = chunk
-                        else:
-                            accumulated_msg += chunk
-                        if chunk.content:
-                            if not content_emitted:
-                                yield {"type": "log", "id": f"gen_start_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
-                            content_emitted = True
-                            full_synthesis_content += chunk.content
-                            yield {"content": chunk.content}
-                    stream_succeeded = True
-                    break
-                except Exception as stream_err:
-                    logger.error(
-                        f"[GeneralAgentRunner] Synthesis stream failed "
-                        f"(attempt {stream_attempt + 1}/{MODEL_STREAM_MAX_RETRIES}): {stream_err}"
-                    )
-                    if (
-                        stream_attempt < MODEL_STREAM_MAX_RETRIES - 1
-                        and not content_emitted
-                        and is_retryable_stream_error(stream_err)
-                    ):
-                        yield build_stream_retry_log(stream_err, stream_attempt)
-                        await asyncio.sleep(2 ** stream_attempt)
-                        continue
-                    yield build_stream_error_log(stream_err, title="⚠️ 总结生成失败")
-                    return
-            if not stream_succeeded:
-                return
-
-            tokens = extract_tokens_from_message(accumulated_msg)
-
-            # Trace Synthesis
-            self._increment_step()
-            self.trace_buffer.append(AgentExecutionStep(
-                step_number=self.step_counter,
-                event_type="synthesis",
-                agent_name=self.config.agent_name,
-                model=getattr(final_llm, "model_name", self.config.synthesis_model_name or self.config.model_name),
-                temperature=self.config.synthesis_temperature or self.config.temperature,
-                tool_output={"content": full_synthesis_content},
-                raw_log=full_synthesis_content,
-                execution_time_ms=(time.time() - start_synthesis) * 1000,
-                prompt_tokens=tokens["prompt_tokens"],
-                completion_tokens=tokens["completion_tokens"],
-                total_tokens=tokens["total_tokens"],
-                timestamp=datetime.fromtimestamp(start_synthesis)
-            ))
-
-        if step >= MAX_STEPS:
-             yield {"content": GeneralChatPrompts.MAX_STEPS_REACHED}
+        yield {
+            "type": "error",
+            "status": "error",
+            "content": "GeneralChat 工具链必须使用 AgentScope RuntimeToolSpec；旧 ReAct fallback 已移除。",
+        }
 
     async def _execute_with_agentscope_native_agent(
         self,
@@ -532,24 +260,60 @@ class GeneralAgentRunner(BaseExecutor):
             react_config=ReActConfig(max_iters=max_steps),
         )
         inputs = to_agentscope_messages(compat_to_runtime_messages(runtime_messages[1:]))
-        tool_names: Dict[str, str] = {}
-        tool_args_text: Dict[str, str] = {}
-        tool_outputs: Dict[str, str] = {}
-        tool_started_at: Dict[str, float] = {}
-        content_emitted = False
-        used_tools = False
-        synthesis_log_emitted = False
-        full_content = ""
-        start_synthesis = time.time()
+        state = self._new_agentscope_native_stream_state()
+        state["user_query"] = next(
+            (
+                str(getattr(message, "content", ""))
+                for message in reversed(runtime_messages)
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        async for chunk in self._stream_agentscope_native_events(
+            event_stream=agent.reply_stream(inputs),
+            agent=agent,
+            tools=tools,
+            native_model=native_model,
+            state=state,
+        ):
+            yield chunk
 
-        async for event in agent.reply_stream(inputs):
+    def _new_agentscope_native_stream_state(self) -> Dict[str, Any]:
+        return {
+            "tool_names": {},
+            "tool_args_text": {},
+            "tool_outputs": {},
+            "tool_started_at": {},
+            "content_emitted": False,
+            "used_tools": False,
+            "synthesis_log_emitted": False,
+            "full_content": "",
+            "start_synthesis": time.time(),
+            "synthesis_recorded": False,
+        }
+
+    async def _stream_agentscope_native_events(
+        self,
+        *,
+        event_stream: Any,
+        agent: Any,
+        tools: List[RuntimeToolSpec],
+        native_model: Any,
+        state: Dict[str, Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        tool_names: Dict[str, str] = state["tool_names"]
+        tool_args_text: Dict[str, str] = state["tool_args_text"]
+        tool_outputs: Dict[str, str] = state["tool_outputs"]
+        tool_started_at: Dict[str, float] = state["tool_started_at"]
+
+        async for event in event_stream:
             event_type = str(getattr(event, "type", ""))
             if event_type == "THINKING_BLOCK_DELTA":
                 yield {"type": "thinking", "status": "continuing"}
                 continue
 
             if event_type == "TOOL_CALL_START":
-                used_tools = True
+                state["used_tools"] = True
                 tool_id = getattr(event, "tool_call_id", "")
                 tool_name = getattr(event, "tool_call_name", "")
                 tool_names[tool_id] = tool_name
@@ -601,6 +365,10 @@ class GeneralAgentRunner(BaseExecutor):
                 continue
 
             if event_type == "REQUIRE_USER_CONFIRM":
+                from app.services.ai.runtime.agentscope.confirmations import (
+                    pending_agentscope_confirmations,
+                )
+
                 for tool_call in getattr(event, "tool_calls", []) or []:
                     tool_id = getattr(tool_call, "id", "") or f"call_{uuid.uuid4().hex[:8]}"
                     tool_name = getattr(tool_call, "name", "")
@@ -611,10 +379,24 @@ class GeneralAgentRunner(BaseExecutor):
                         tool_args = {"input": raw_args}
                     if not isinstance(tool_args, dict):
                         tool_args = {"input": tool_args}
+                    pending = pending_agentscope_confirmations.register(
+                        agent=agent,
+                        runner=self,
+                        tools=tools,
+                        native_model=native_model,
+                        tool_call=tool_call,
+                        reply_id=str(getattr(event, "reply_id", "")),
+                        trace_id=self.trace_id,
+                        user_id=(self.user_info or {}).get("user_id") or (self.user_info or {}).get("id"),
+                        state=state,
+                    )
                     yield {
                         "type": "permission_required",
                         "status": "pending",
                         "id": tool_id,
+                        "permission_request_id": pending.request_id,
+                        "reply_id": pending.reply_id,
+                        "expires_in_seconds": 600,
                         "title": f"需要确认工具调用: {tool_name}",
                         "details": f"参数: {json.dumps(tool_args, ensure_ascii=False)}",
                         "tool_call": {
@@ -626,8 +408,8 @@ class GeneralAgentRunner(BaseExecutor):
                 return
 
             if event_type == "TEXT_BLOCK_DELTA":
-                if used_tools and not synthesis_log_emitted:
-                    synthesis_log_emitted = True
+                if state["used_tools"] and not state["synthesis_log_emitted"]:
+                    state["synthesis_log_emitted"] = True
                     yield {
                         "type": "log",
                         "id": f"synthesis_native_{uuid.uuid4().hex[:8]}",
@@ -636,8 +418,8 @@ class GeneralAgentRunner(BaseExecutor):
                         "status": "success",
                     }
                     yield {"type": "thinking", "status": "continuing"}
-                if not content_emitted:
-                    content_emitted = True
+                if not state["content_emitted"]:
+                    state["content_emitted"] = True
                     yield {
                         "type": "log",
                         "id": f"gen_start_{uuid.uuid4().hex[:8]}",
@@ -645,7 +427,7 @@ class GeneralAgentRunner(BaseExecutor):
                         "status": "success",
                     }
                 delta = str(getattr(event, "delta", ""))
-                full_content += delta
+                state["full_content"] += delta
                 yield {"content": delta}
                 continue
 
@@ -653,7 +435,8 @@ class GeneralAgentRunner(BaseExecutor):
                 yield {"content": GeneralChatPrompts.MAX_STEPS_REACHED}
                 return
 
-        if full_content:
+        if state["full_content"] and not state["synthesis_recorded"]:
+            state["synthesis_recorded"] = True
             self._increment_step()
             self.trace_buffer.append(AgentExecutionStep(
                 step_number=self.step_counter,
@@ -661,46 +444,37 @@ class GeneralAgentRunner(BaseExecutor):
                 agent_name=self.config.agent_name,
                 model=getattr(native_model, "model", self.config.model_name),
                 temperature=self.config.synthesis_temperature or self.config.temperature,
-                tool_output={"content": full_content},
-                raw_log=full_content,
-                execution_time_ms=(time.time() - start_synthesis) * 1000,
-                timestamp=datetime.fromtimestamp(start_synthesis),
+                tool_output={"content": state["full_content"]},
+                raw_log=state["full_content"],
+                execution_time_ms=(time.time() - state["start_synthesis"]) * 1000,
+                timestamp=datetime.fromtimestamp(state["start_synthesis"]),
             ))
 
-    async def _execute_single_tool_safe(self, tool_call: Dict, tools: List[Any], index: int) -> Dict[str, Any]:
-        tool_name = tool_call["name"]; tool_args = tool_call["args"]; tool_id = tool_call["id"]
-        start_tool = time.time(); tool_output = f"[TOOL_ERROR] Unknown tool: {tool_name}"
-        
-        target_tool = next((t for t in tools if t.name == tool_name), None)
-        if target_tool:
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    if isinstance(target_tool, RuntimeToolSpec):
-                        tool_output = await target_tool.invoke(tool_args)
-                    else:
-                        tool_output = await target_tool.ainvoke(tool_args)
-                    break
-                except (ConnectionError, TimeoutError) as e:
-                    if attempt < max_retries - 1: await asyncio.sleep(2 ** attempt)
-                    else: tool_output = f"Error executing {tool_name} after retries: {str(e)}"
-                except Exception as e:
-                    tool_output = f"Error executing {tool_name}: {str(e)}"; break
-        
-        duration_tool = (time.time() - start_tool) * 1000
-        result = self._build_tool_observation(
-            tool_id=tool_id,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            tool_output=tool_output,
-            duration_tool=duration_tool,
-            target_tool=target_tool,
-            tool_index=index,
+    async def resume_agentscope_native_confirmation(
+        self,
+        pending: Any,
+        *,
+        confirmed: bool,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from agentscope.event import ConfirmResult, UserConfirmResultEvent
+
+        event = UserConfirmResultEvent(
+            reply_id=pending.reply_id,
+            confirm_results=[
+                ConfirmResult(
+                    confirmed=confirmed,
+                    tool_call=pending.tool_call,
+                )
+            ],
         )
-        return {
-            **result,
-            "message": ToolMessage(content=result["final_tool_message_content"], tool_call_id=tool_id),
-        }
+        async for chunk in self._stream_agentscope_native_events(
+            event_stream=pending.agent.reply_stream(event),
+            agent=pending.agent,
+            tools=pending.tools,
+            native_model=pending.native_model,
+            state=pending.state,
+        ):
+            yield chunk
 
     def _build_tool_observation(
         self,
@@ -779,44 +553,3 @@ class GeneralAgentRunner(BaseExecutor):
             "log": log_event,
             "citation": citation_event
         }
-
-    def _format_trace_for_synthesis(self, traces: List[AgentExecutionStep]) -> str:
-        """
-        Formats the execution trace into a readable summary for the synthesis model.
-        """
-        lines = ["【执行过程回顾】"]
-        
-        # Filter only relevant steps (thoughts and tool calls) from the current session
-        # We assume traces are ordered.
-        
-        current_step_num = -1
-        
-        for trace in traces:
-            # Skip router or init steps if any
-            if trace.event_type not in ["thought", "tool_call"]:
-                continue
-            
-            if trace.step_number != current_step_num:
-                lines.append(f"\nStep {trace.step_number}:")
-                current_step_num = trace.step_number
-            
-            if trace.event_type == "thought":
-                # Extract a summary of thought if possible, or just raw
-                thought_content = trace.raw_log or ""
-                # Try to clean up XML tags if present
-                thought_content = re.sub(r'<function_calls>.*?</function_calls>', '', thought_content, flags=re.DOTALL)
-                thought_content = thought_content.strip()
-                if thought_content:
-                    lines.append(f"  [思考] {thought_content}")
-            
-            elif trace.event_type == "tool_call":
-                status_icon = "✅" if trace.status == "success" else "❌"
-                output_str = str(trace.tool_output)
-                # Truncate very long outputs for context window
-                if len(output_str) > 2000:
-                    output_str = output_str[:2000] + "... (truncated)"
-                
-                lines.append(f"  [操作] {trace.tool_name}({json.dumps(trace.tool_input, ensure_ascii=False)})")
-                lines.append(f"  [结果] {status_icon} {output_str}")
-
-        return "\n".join(lines)

@@ -34,16 +34,6 @@ READ_ONLY_TOOL_NAMES = {
     "web_search_baidu",
 }
 
-DANGEROUS_TOOL_NAMES = {
-    "execute_sql_query",
-    "system_http_request",
-    "write_file",
-    "exec_command",
-    "manage_process",
-    "create_skills",
-}
-
-
 @dataclass(frozen=True)
 class RuntimeToolAuditEvent:
     tool_name: str
@@ -66,6 +56,7 @@ class RuntimeToolSpec:
     permission_scope: RuntimePermissionScope = "ask"
     timeout_seconds: float | None = None
     audit_callback: Callable[[RuntimeToolAuditEvent], Any] | None = None
+    native_tool: Any | None = None
 
     @property
     def is_read_only(self) -> bool:
@@ -216,7 +207,11 @@ def _preview_result(result: Any, max_length: int = 500) -> str:
 
 def build_toolkit(tool_specs: list[RuntimeToolSpec]):
     toolkit_cls = _load_agentscope_toolkit()
-    return toolkit_cls(tools=[AgentScopeRuntimeTool(spec) for spec in tool_specs])
+    tools = [
+        spec.native_tool if spec.native_tool is not None else AgentScopeRuntimeTool(spec)
+        for spec in tool_specs
+    ]
+    return toolkit_cls(tools=tools)
 
 
 def _schema_from_legacy_tool(tool: Any) -> dict[str, Any]:
@@ -261,14 +256,54 @@ def runtime_tool_spec_from_legacy_tool(
     )
 
 
+def runtime_tool_spec_from_native_agentscope_tool(
+    tool: Any,
+    *,
+    source_type: ToolSourceType = "system",
+    permission_scope: RuntimePermissionScope | None = None,
+) -> RuntimeToolSpec:
+    async def _invoke(**kwargs: Any) -> Any:
+        result = tool(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        if inspect.isasyncgen(result):
+            parts = []
+            async for chunk in result:
+                parts.append(_tool_chunk_to_text(chunk))
+            return "".join(parts)
+        return _tool_chunk_to_text(result)
+
+    resolved_scope = permission_scope or ("read" if getattr(tool, "is_read_only", False) else "ask")
+    return RuntimeToolSpec(
+        name=getattr(tool, "name"),
+        description=getattr(tool, "description", ""),
+        parameters_schema=getattr(tool, "input_schema", {"type": "object", "properties": {}}),
+        source_type=source_type,
+        callable=_invoke,
+        permission_scope=resolved_scope,
+        native_tool=tool,
+    )
+
+
+def _tool_chunk_to_text(result: Any) -> str:
+    content = getattr(result, "content", None)
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if text is not None:
+                parts.append(str(text))
+        if parts:
+            return "".join(parts)
+    return str(result)
+
+
 def infer_runtime_permission_scope(
     tool_name: str,
     source_type: ToolSourceType,
 ) -> RuntimePermissionScope:
     if tool_name in READ_ONLY_TOOL_NAMES:
         return "read"
-    if tool_name in DANGEROUS_TOOL_NAMES:
-        return "dangerous"
     if source_type in {"generic_api", "mcp"}:
         return "ask"
     return "ask"

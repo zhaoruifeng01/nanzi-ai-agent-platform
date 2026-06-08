@@ -62,6 +62,10 @@ class ChatCompletionResponse(BaseModel):
     trace_id: Optional[str] = None
 
 
+class ToolPermissionConfirmRequest(BaseModel):
+    confirmed: bool = Field(..., description="是否允许执行该工具调用")
+
+
 from app.schemas.response import StandardResponse
 
 class GreetingResponse(BaseModel):
@@ -235,6 +239,28 @@ async def create_chat_completion(
             enable_multi_agent=completion_request.enable_multi_agent
         )
         return StandardResponse(data=result)
+
+
+@router.post(
+    "/permissions/{permission_request_id}/confirm",
+    summary="确认或拒绝待执行工具调用",
+    description="确认 AgentScope ASK 工具调用后继续原 Agent 运行，流式返回后续 SSE。",
+)
+async def confirm_tool_permission(
+    permission_request_id: str,
+    confirm_request: ToolPermissionConfirmRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    async def sse_generator() -> AsyncGenerator[str, None]:
+        async for chunk in agent_service.resume_agentscope_permission_stream(
+            permission_request_id=permission_request_id,
+            confirmed=confirm_request.confirmed,
+            user_info=user_info,
+        ):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 @router.get("/history", 
     response_model=StandardResponse[AgentExecutionHistoryListResponse],

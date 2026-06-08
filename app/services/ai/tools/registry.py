@@ -33,6 +33,29 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
+
+AGENTSCOPE_BUILTIN_TOOL_ALIASES: Dict[str, str] = {
+    "exec_command": "Bash",
+    "bash": "Bash",
+    "Bash": "Bash",
+    "read_file": "Read",
+    "read": "Read",
+    "Read": "Read",
+    "write_file": "Write",
+    "write": "Write",
+    "Write": "Write",
+    "edit_file": "Edit",
+    "edit": "Edit",
+    "Edit": "Edit",
+    "search_text": "Grep",
+    "grep": "Grep",
+    "Grep": "Grep",
+    "glob_files": "Glob",
+    "glob": "Glob",
+    "Glob": "Glob",
+}
+
+
 class ToolRegistry:
     """
     Registry for managing available tools for agents.
@@ -153,7 +176,14 @@ class ToolRegistry:
         method remains available until all executors stop consuming legacy tool
         tool objects.
         """
-        from app.services.ai.runtime.agentscope.tools import runtime_tool_spec_from_legacy_tool
+        from app.services.ai.runtime.agentscope.tools import (
+            runtime_tool_spec_from_legacy_tool,
+            runtime_tool_spec_from_native_agentscope_tool,
+        )
+
+        native_tool = cls._create_agentscope_builtin_tool(name)
+        if native_tool is not None:
+            return runtime_tool_spec_from_native_agentscope_tool(native_tool, source_type="system")
 
         tool = await cls.get_tool(name)
         if not tool:
@@ -206,6 +236,7 @@ class ToolRegistry:
         Supports the same config item shapes as get_tools().
         """
         runtime_tools = []
+        seen_tool_names = set()
         for item in tool_configs:
             if isinstance(item, str):
                 name = item
@@ -220,9 +251,27 @@ class ToolRegistry:
                 continue
 
             spec = await cls.get_runtime_tool(name)
-            if spec:
+            if spec and spec.name not in seen_tool_names:
                 runtime_tools.append(spec)
+                seen_tool_names.add(spec.name)
         return runtime_tools
+
+    @classmethod
+    def _create_agentscope_builtin_tool(cls, configured_name: str) -> Optional[Any]:
+        builtin_name = AGENTSCOPE_BUILTIN_TOOL_ALIASES.get(configured_name)
+        if not builtin_name:
+            return None
+        from agentscope.tool import Bash, Edit, Glob, Grep, Read, Write
+
+        builtin_classes = {
+            "Bash": Bash,
+            "Read": Read,
+            "Write": Write,
+            "Edit": Edit,
+            "Glob": Glob,
+            "Grep": Grep,
+        }
+        return builtin_classes[builtin_name]()
 
     @classmethod
     async def _configure_tool_runtime(cls, tool: Any, config: Any) -> Any:

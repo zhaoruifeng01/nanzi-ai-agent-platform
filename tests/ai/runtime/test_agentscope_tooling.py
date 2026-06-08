@@ -184,6 +184,38 @@ def test_build_toolkit_returns_agent_scope_toolkit_when_available(monkeypatch):
     assert [tool.name for tool in toolkit.tools] == ["noop"]
 
 
+def test_build_toolkit_passes_native_agentscope_tools_through(monkeypatch):
+    from agentscope.tool import Bash
+
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, build_toolkit
+
+    class FakeToolkit:
+        def __init__(self, tools):
+            self.tools = tools
+
+    monkeypatch.setattr(
+        "app.services.ai.runtime.agentscope.tools._load_agentscope_toolkit",
+        lambda: FakeToolkit,
+    )
+
+    native_tool = Bash()
+    toolkit = build_toolkit(
+        [
+            RuntimeToolSpec(
+                name="Bash",
+                description=native_tool.description,
+                parameters_schema=native_tool.input_schema,
+                source_type="system",
+                callable=lambda: "unused",
+                native_tool=native_tool,
+            )
+        ]
+    )
+
+    assert toolkit.tools == [native_tool]
+    assert toolkit.tools[0].name == "Bash"
+
+
 @pytest.mark.asyncio
 async def test_build_toolkit_integrates_with_real_agentscope_toolkit():
     pytest.importorskip("agentscope.tool")

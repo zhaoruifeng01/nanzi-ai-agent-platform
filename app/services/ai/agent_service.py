@@ -618,6 +618,8 @@ class AgentService:
                 async for chunk in executor.execute(messages):
                     if "content" in chunk:
                         full_response_content += chunk["content"]
+                    if chunk.get("type") == "permission_required":
+                        execution_status = "awaiting_permission"
                     yield chunk
 
             # 聚合本轮消耗的 Token 并 yield meta 给前端，同时传给 add_message
@@ -668,11 +670,12 @@ class AgentService:
             duration = (end_time - start_time) * 1000
             
             # 6. Async Audit Logging & History
-            asyncio.create_task(AuditManager.log_transaction(
-                 trace_id, agent_config, user_query, full_response_content,
-                 user_info, execution_status, duration, trace_buffer,
-                 conversation_id=conversation_id
-            ))
+            if execution_status != "awaiting_permission":
+                asyncio.create_task(AuditManager.log_transaction(
+                     trace_id, agent_config, user_query, full_response_content,
+                     user_info, execution_status, duration, trace_buffer,
+                     conversation_id=conversation_id
+                ))
 
             if (
                 conversation_id
@@ -732,6 +735,118 @@ class AgentService:
             "trace_id": trace_id,
             "agent_name": agent_name_resp
         }
+
+    async def resume_agentscope_permission_stream(
+        self,
+        *,
+        permission_request_id: str,
+        confirmed: bool,
+        user_info: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.ai.runtime.agentscope.confirmations import (
+            pending_agentscope_confirmations,
+        )
+
+        pending = pending_agentscope_confirmations.pop(permission_request_id)
+        if not pending:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "工具确认请求不存在或已过期，请重新发起本轮对话。",
+            }
+            return
+
+        current_user_id = None
+        if user_info:
+            current_user_id = user_info.get("user_id") or user_info.get("id")
+        if pending.user_id and current_user_id and str(current_user_id) != str(pending.user_id):
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前用户无权确认该工具调用。",
+            }
+            return
+
+        yield {
+            "type": "permission_result",
+            "status": "success" if confirmed else "rejected",
+            "permission_request_id": permission_request_id,
+            "tool_call_id": getattr(pending.tool_call, "id", None),
+        }
+
+        full_response_content = ""
+        execution_status = "success" if confirmed else "rejected"
+        start_time = asyncio.get_running_loop().time()
+        async for chunk in pending.runner.resume_agentscope_native_confirmation(
+            pending,
+            confirmed=confirmed,
+        ):
+            if "content" in chunk:
+                full_response_content += chunk["content"]
+            yield chunk
+
+        p_tokens, c_tokens, t_tokens = 0, 0, 0
+        try:
+            from app.services.ai.audit import aggregate_tokens_from_trace_buffer
+            trace_buffer = pending.runner.trace_buffer
+            p_tokens, c_tokens, t_tokens = aggregate_tokens_from_trace_buffer(trace_buffer) if trace_buffer else (0, 0, 0)
+        except Exception as agg_err:
+            trace_buffer = pending.runner.trace_buffer
+            logger.warning(f"Failed to aggregate tokens after permission resume: {agg_err}")
+
+        if p_tokens or c_tokens:
+            yield {
+                "type": "meta",
+                "prompt_tokens": p_tokens,
+                "completion_tokens": c_tokens,
+                "total_tokens": t_tokens,
+            }
+
+        agent_config = pending.runner.config
+        conversation_id = pending.runner.conversation_id
+        trace_buffer = pending.runner.trace_buffer
+        user_query = pending.state.get("user_query") or ""
+
+        if conversation_id and full_response_content:
+            u_id = user_info.get("user_id") if user_info else pending.user_id
+            handled_by = getattr(agent_config, "agent_name", None) if agent_config else None
+            asyncio.create_task(memory_service.add_message(
+                u_id,
+                conversation_id,
+                "assistant",
+                full_response_content,
+                trace_id=pending.trace_id,
+                agent_name=handled_by,
+                prompt_tokens=p_tokens,
+                completion_tokens=c_tokens,
+            ))
+
+        duration = (asyncio.get_running_loop().time() - start_time) * 1000
+        asyncio.create_task(AuditManager.log_transaction(
+            pending.trace_id,
+            agent_config,
+            user_query,
+            full_response_content,
+            user_info,
+            execution_status,
+            duration,
+            trace_buffer,
+            conversation_id=conversation_id,
+        ))
+
+        if (
+            conversation_id
+            and execution_status == "success"
+            and full_response_content
+            and user_info
+            and user_info.get("user_id")
+        ):
+            from app.services.ai.session_summary_service import SessionSummaryService
+            asyncio.create_task(
+                SessionSummaryService.merge_session_summary(
+                    str(user_info.get("user_id")), conversation_id, full_response_content
+                )
+            )
 
     async def _execute_multi_agent(
         self,

@@ -719,6 +719,22 @@ interface Message {
   isGreeting?: boolean; // Is this the initial greeting message?
   isHistory?: boolean; // Is this a history separator or message?
   feedback?: "up" | "down" | null;
+  pendingPermission?: PendingToolPermission;
+}
+
+interface PendingToolPermission {
+  permission_request_id: string;
+  reply_id?: string;
+  id?: string;
+  title: string;
+  details: string;
+  tool_call?: {
+    id?: string;
+    name?: string;
+    args?: Record<string, unknown>;
+  };
+  status: "pending" | "approved" | "rejected" | "expired" | "error";
+  isSubmitting?: boolean;
 }
 
 // --- Debug Config State ---
@@ -1783,6 +1799,9 @@ const sendMessage = async () => {
                 agentMsg.value.isThinking = true;
               }
             }
+            else if (data.type === "permission_required") {
+              handlePermissionRequired(agentMsg.value, data);
+            }
             // Handle Content Stream
             else if (data.content) {
               // --- [SMART TIMER STOP] ---
@@ -1853,7 +1872,7 @@ const sendMessage = async () => {
     // Final cleanup of pending logs
     if (agentMsg.value.logs) {
       agentMsg.value.logs.forEach(log => {
-        if (log.status === 'pending') {
+        if (log.status === 'pending' && log.category !== 'permission') {
           log.status = 'success'; // Assume success if stream finished normally
         }
       });
@@ -1925,6 +1944,190 @@ const addRealLog = (msg: Message, data: any) => {
       temperature: data.temperature
     };
     msg.logs.push(log);
+  }
+};
+
+const formatPermissionStatus = (status: PendingToolPermission["status"]) => {
+  const labels: Record<PendingToolPermission["status"], string> = {
+    pending: "待确认",
+    approved: "已允许",
+    rejected: "已拒绝",
+    expired: "已过期",
+    error: "异常",
+  };
+  return labels[status] || status;
+};
+
+const handlePermissionRequired = (msg: Message, data: any) => {
+  msg.pendingPermission = {
+    permission_request_id: data.permission_request_id,
+    reply_id: data.reply_id,
+    id: data.id,
+    title: data.title || "工具调用确认",
+    details: data.details || "",
+    tool_call: data.tool_call,
+    status: "pending",
+  };
+  msg.isThinking = false;
+  if (thoughtTimer) {
+    clearInterval(thoughtTimer);
+    thoughtTimer = null;
+  }
+  addRealLog(msg, {
+    id: `permission_${data.permission_request_id}`,
+    title: data.title || "工具调用需要确认",
+    details: data.details || "",
+    status: "pending",
+    category: "permission",
+  });
+};
+
+const applyPermissionStreamEvent = (msg: Message, data: any) => {
+  if (data.trace_id) msg.trace_id = data.trace_id;
+  if (data.data?.trace_id) msg.trace_id = data.data.trace_id;
+
+  if (data.type === "log") {
+    addRealLog(msg, data);
+  } else if (data.type === "router_log") {
+    const thoughtText = data.thought || "No reasoning provided.";
+    const agentName = data.selected_agent || "Unknown";
+    const conf = data.confidence !== undefined ? `(置信度: ${data.confidence})` : "";
+    addRealLog(msg, {
+      title: "智能路由决策",
+      details: `**思考过程 (Chain of Thought):**\n${thoughtText}\n\n**最终选择:** ${agentName} ${conf}`,
+      status: "success",
+      isDebug: true,
+      isRouter: true,
+    });
+  } else if (data.type === "debug" && data.subtype === "raw_prompt") {
+    msg.rawPrompt = data.data;
+    addRealLog(msg, {
+      title: "Debug: Raw Prompt Captured",
+      details: 'Click "Raw Prompt" button to view.',
+      status: "success",
+      isDebug: true,
+    });
+  } else if (data.type === "citation" && Array.isArray(data.data)) {
+    if (!msg.citations) msg.citations = [];
+    data.data.forEach((newRef: any) => {
+      const exists = msg.citations?.some(c => c.chunk_id === newRef.chunk_id || (c.content === newRef.content && c.doc_name === newRef.doc_name));
+      if (!exists) msg.citations?.push(newRef);
+    });
+  } else if (data.type === "context") {
+    addRealLog(msg, {
+      title: "✨ Context Updated",
+      details: JSON.stringify(data.data, null, 2),
+      status: "success",
+    });
+    if (data.data) {
+      agentContext.value = { ...agentContext.value, ...data.data };
+    }
+  } else if (data.type === "thinking" && data.status === "continuing") {
+    msg.isThinking = true;
+  } else if (data.type === "meta") {
+    if (data.agent_name) msg.agentName = data.agent_name;
+    if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+  } else if (data.type === "permission_result") {
+    if (msg.pendingPermission) {
+      msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
+    }
+    addRealLog(msg, {
+      id: `permission_${data.permission_request_id}`,
+      title: data.status === "rejected" ? "已拒绝工具调用" : "已允许工具调用",
+      details: `确认请求: ${data.permission_request_id}`,
+      status: "success",
+      category: "permission",
+    });
+  } else if (data.type === "error") {
+    if (msg.pendingPermission) msg.pendingPermission.status = "error";
+    msg.isThinking = false;
+    msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
+  } else if (data.content) {
+    const isRealContent = !data.content.includes("<function_calls") && !data.content.includes("<think");
+    if (isRealContent) {
+      if (msg.isThinking && msg.isThoughtExpanded) {
+        msg.isThoughtExpanded = false;
+      }
+      msg.content += data.content;
+      if (msg.isThinking) {
+        msg.isThinking = false;
+        if (thoughtTimer) {
+          clearInterval(thoughtTimer);
+          thoughtTimer = null;
+        }
+      }
+    }
+  }
+
+  if (data.status === "generating" && msg.content) {
+    msg.isThinking = false;
+  } else if (data.status === "error") {
+    msg.isThinking = false;
+  }
+  if (data.intent) msg.intent = data.intent;
+};
+
+const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
+  const pending = msg.pendingPermission;
+  if (!pending || pending.status !== "pending") return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  if (confirmed) {
+    msg.isThinking = true;
+    msg.thoughtStartTime = Date.now();
+    msg.thoughtDuration = "0.0";
+    msg.thinkingText = "正在继续执行...";
+  }
+
+  try {
+    const response = await fetch(`/api/v1/chat/permissions/${pending.permission_request_id}/confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": localStorage.getItem("api_key") || "",
+      },
+      body: JSON.stringify({ confirmed }),
+    });
+    if (!response.ok) throw new Error(response.statusText);
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    if (!reader) throw new Error("No response body");
+    const parser = createSseLineParser();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const dataLines = parser.feed(decoder.decode(value, { stream: true }));
+      for (const dataStr of dataLines) {
+        if (dataStr === "[DONE]") continue;
+        applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+      }
+      scrollToBottom();
+    }
+    for (const dataStr of parser.flush()) {
+      if (dataStr !== "[DONE]") applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+    }
+  } catch (error: any) {
+    pending.status = "error";
+    msg.isThinking = false;
+    msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = false;
+    msg.isThinking = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach(log => {
+        if (log.status === "pending" && log.category !== "permission") {
+          log.status = "success";
+        }
+      });
+    }
+    nextTick(() => {
+      if (chatInputRef.value) chatInputRef.value.focus();
+    });
   }
 };
 
@@ -2821,6 +3024,70 @@ onUnmounted(() => {
                 </transition>
               </div>
               <!-- Close the v-if="msg.logs && msg.logs.length > 0" container -->
+
+              <!-- Tool Permission Confirmation -->
+              <div
+                v-if="msg.pendingPermission"
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-xs"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-amber-100 text-amber-700">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    </svg>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-bold text-amber-900 truncate">
+                        {{ msg.pendingPermission.title || '工具调用确认' }}
+                      </div>
+                      <span
+                        class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase"
+                        :class="{
+                          'bg-amber-100 text-amber-700': msg.pendingPermission.status === 'pending',
+                          'bg-emerald-100 text-emerald-700': msg.pendingPermission.status === 'approved',
+                          'bg-gray-100 text-gray-600': msg.pendingPermission.status === 'rejected',
+                          'bg-red-100 text-red-700': msg.pendingPermission.status === 'error' || msg.pendingPermission.status === 'expired'
+                        }"
+                      >
+                        {{ formatPermissionStatus(msg.pendingPermission.status) }}
+                      </span>
+                    </div>
+                    <div class="mt-1 text-amber-800/80 break-words">
+                      {{ msg.pendingPermission.details }}
+                    </div>
+                    <div
+                      v-if="msg.pendingPermission.tool_call?.name"
+                      class="mt-2 rounded-md bg-white/80 border border-amber-100 p-2 font-mono text-[10px] text-gray-600 overflow-x-auto"
+                    >
+                      <span>{{ msg.pendingPermission.tool_call.name }}</span>
+                      <span v-if="msg.pendingPermission.tool_call.args"> {{ JSON.stringify(msg.pendingPermission.tool_call.args) }}</span>
+                    </div>
+                    <div v-if="msg.pendingPermission.status === 'pending'" class="mt-3 flex items-center gap-2">
+                      <button
+                        @click="confirmPendingPermission(msg, true)"
+                        :disabled="msg.pendingPermission.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="m5 13 4 4L19 7" />
+                        </svg>
+                        允许
+                      </button>
+                      <button
+                        @click="confirmPendingPermission(msg, false)"
+                        :disabled="msg.pendingPermission.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-bold text-gray-700 border border-gray-200 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <!-- Main Content -->
               <div
