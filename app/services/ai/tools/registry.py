@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class ToolRegistry:
     """
     Registry for managing available tools for agents.
-    Allows mapping string identifiers (from DB config) to actual LangChain tool objects.
+    Allows mapping string identifiers (from DB config) to actual runtime tool objects.
     """
     
     # Core tools available by default or for recovery
@@ -145,6 +145,22 @@ class ToolRegistry:
         return None
 
     @classmethod
+    async def get_runtime_tool(cls, name: str):
+        """
+        Retrieve a platform-neutral runtime tool spec by name.
+
+        This is the AgentScope migration entrypoint. The legacy get_tool()
+        method remains available until all executors stop consuming legacy tool
+        tool objects.
+        """
+        from app.services.ai.runtime.agentscope.tools import runtime_tool_spec_from_legacy_tool
+
+        tool = await cls.get_tool(name)
+        if not tool:
+            return None
+        return runtime_tool_spec_from_legacy_tool(tool, source_type="static")
+
+    @classmethod
     async def get_tools(cls, tool_configs: List[Any]) -> list[Any]:
         """
         Retrieve a list of tools, filtering out unknown ones (Async).
@@ -182,6 +198,31 @@ class ToolRegistry:
             
             tools.append(tool)
         return tools
+
+    @classmethod
+    async def get_runtime_tools(cls, tool_configs: List[Any]) -> list[Any]:
+        """
+        Retrieve runtime tool specs, filtering unknown tools.
+        Supports the same config item shapes as get_tools().
+        """
+        runtime_tools = []
+        for item in tool_configs:
+            if isinstance(item, str):
+                name = item
+            elif isinstance(item, dict):
+                name = item.get("name", "")
+            elif hasattr(item, "name"):
+                name = getattr(item, "name")
+            else:
+                name = ""
+
+            if not name:
+                continue
+
+            spec = await cls.get_runtime_tool(name)
+            if spec:
+                runtime_tools.append(spec)
+        return runtime_tools
 
     @classmethod
     async def _configure_tool_runtime(cls, tool: Any, config: Any) -> Any:

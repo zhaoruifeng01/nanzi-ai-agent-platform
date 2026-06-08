@@ -2,7 +2,7 @@ import pytest
 import json
 import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, HumanMessage
+from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.services.ai.intent_service import IntentType
 from app.services.ai.data_query_turn_classifier import DataQueryTurnClassification, DataQueryTurnType
@@ -34,7 +34,11 @@ def default_data_query_turn_classification():
     with patch(
         "app.services.ai.executors.data_executor.resolve_data_query_turn_classification",
         AsyncMock(return_value=(classification, None, 0.0)),
-    ) as mock_resolve:
+    ) as mock_resolve, patch.object(
+        DataQueryExecutor,
+        "_plan_schema_search_keywords",
+        AsyncMock(return_value=""),
+    ):
         yield mock_resolve
 
 class MockLLM:
@@ -563,4 +567,3 @@ def test_analyze_result_common_sql_and_tool_errors(data_config, err_text):
     executor = DataQueryExecutor(config=data_config, trace_id="test-analyze-errors", trace_buffer=[])
     status, _, _ = executor._analyze_result(err_text)
     assert status == "error", err_text
-

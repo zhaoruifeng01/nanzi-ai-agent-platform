@@ -2,7 +2,7 @@ import ast
 import logging
 import json
 import re
-from langchain_core.tools import tool
+from app.services.ai.tools.tool_compat import tool
 from typing import Any, Optional, List, Union
 from app.services.ai.ragflow_client import RagFlowClient
 from app.services.config_service import ConfigService

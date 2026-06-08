@@ -8,12 +8,12 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
 from enum import Enum
 
-from langchain_core.messages import (
-    HumanMessage, 
-    AIMessage, 
-    SystemMessage, 
+from app.services.ai.runtime.agentscope.compat import (
+    AIMessage,
     BaseMessage,
-    ToolMessage
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
 )
 from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
@@ -510,7 +510,7 @@ class DataQueryExecutor(BaseExecutor):
     def _should_rewrite_contextual_new_data_query(
         self,
         user_question: str,
-        langchain_messages: List[BaseMessage],
+        runtime_messages: List[BaseMessage],
     ) -> bool:
         """Only rewrite short/context-dependent new data queries; complete questions stay untouched."""
         q = (user_question or "").strip()
@@ -518,7 +518,7 @@ class DataQueryExecutor(BaseExecutor):
             return False
 
         prior_messages = [
-            m for m in langchain_messages[:-1]
+            m for m in runtime_messages[:-1]
             if isinstance(m, (HumanMessage, AIMessage)) and getattr(m, "content", None)
         ]
         if not prior_messages:
@@ -541,7 +541,7 @@ class DataQueryExecutor(BaseExecutor):
     async def _resolve_standalone_query_for_new_data_query(
         self,
         user_question: str,
-        langchain_messages: List[BaseMessage],
+        runtime_messages: List[BaseMessage],
     ) -> str:
         """Rewrite contextual new data-query follow-up into a standalone retrieval query for examples/schema."""
         q = (user_question or "").strip()
@@ -558,12 +558,12 @@ class DataQueryExecutor(BaseExecutor):
             if content_part:
                 has_ltm = True
 
-        need_rewrite = has_ltm or self._should_rewrite_contextual_new_data_query(q, langchain_messages)
+        need_rewrite = has_ltm or self._should_rewrite_contextual_new_data_query(q, runtime_messages)
         if not q or not need_rewrite:
             return q
 
         recent_history = []
-        for msg in langchain_messages[-7:-1]:
+        for msg in runtime_messages[-7:-1]:
             if not isinstance(msg, (HumanMessage, AIMessage)):
                 continue
             content = getattr(msg, "content", "") or ""
@@ -663,7 +663,7 @@ class DataQueryExecutor(BaseExecutor):
 
     async def _synthesize_from_last_data_result(
         self,
-        langchain_messages: List[BaseMessage],
+        runtime_messages: List[BaseMessage],
         system_prompt: str,
         user_question: str,
         last_result: Dict[str, Any],
@@ -684,7 +684,7 @@ class DataQueryExecutor(BaseExecutor):
             result_json = result_json[:30000] + "\n... [上一轮结果过长已截断]"
 
         synthesis_messages: List[BaseMessage] = [SystemMessage(content=prompt_without_menu)]
-        for msg in langchain_messages[-6:-1]:
+        for msg in runtime_messages[-6:-1]:
             if isinstance(msg, (HumanMessage, AIMessage)) and getattr(msg, "content", None):
                 synthesis_messages.append(msg)
         synthesis_messages.append(HumanMessage(content=DataQueryPrompts.followup_synthesis_user_message(user_question, result_json)))
@@ -813,9 +813,9 @@ class DataQueryExecutor(BaseExecutor):
         import re
 
         # 1. Build Messages
-        langchain_messages = self._convert_history(history)
+        runtime_messages = self._convert_history(history)
         system_prompt = self.config.system_prompt
-        self._current_user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+        self._current_user_question = next((m.content for m in reversed(runtime_messages) if isinstance(m, HumanMessage)), "")
         last_data_result_for_turn = await self._load_last_data_result()
 
         turn_cls, turn_intent_info, turn_elapsed_ms = await resolve_data_query_turn_classification(
@@ -852,7 +852,7 @@ class DataQueryExecutor(BaseExecutor):
             )
             if last_result:
                 async for chunk in self._synthesize_from_last_data_result(
-                    langchain_messages,
+                    runtime_messages,
                     system_prompt,
                     self._current_user_question,
                     last_result,
@@ -873,7 +873,7 @@ class DataQueryExecutor(BaseExecutor):
         if self._requires_fresh_data:
             self._standalone_query = await self._resolve_standalone_query_for_new_data_query(
                 self._current_user_question,
-                langchain_messages,
+                runtime_messages,
             )
 
         # 2. Prepare Tools
@@ -965,13 +965,13 @@ class DataQueryExecutor(BaseExecutor):
             }
             try:
                 from app.services.chatbi_example_service import ExampleService
-                user_question = self._standalone_query or next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "")
+                user_question = self._standalone_query or next((m.content for m in reversed(runtime_messages) if isinstance(m, HumanMessage)), "")
                 if user_question:
                     examples = await ExampleService.search_examples(
                         user_question, 
                         dataset_id=None, 
                         top_k=5,
-                        history=langchain_messages
+                        history=runtime_messages
                     )
                     fewshot_examples = examples or []
                     if examples:
@@ -1056,7 +1056,7 @@ class DataQueryExecutor(BaseExecutor):
                     else "用户原始问题"
                 )
                 append_system_instruction(
-                    langchain_messages,
+                    runtime_messages,
                     f"【Schema 检索词规划】本轮已结合{schema_hint_source}规划出 "
                     f"get_dataset_schema 的检索词：{self._schema_search_keywords}\n"
                     "首次检索数据集定义时，请优先使用这些 keywords；这些词仅用于检索元数据，不代表最终 SQL 表字段已确认。",
@@ -1088,14 +1088,14 @@ class DataQueryExecutor(BaseExecutor):
                 "execution_time_ms": (time.time() - dataset_menu_start) * 1000,
             }
         system_prompt = f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n{system_prompt}"
-        langchain_messages.insert(0, SystemMessage(content=system_prompt))
-        langchain_messages = normalize_messages_for_llm(langchain_messages)
+        runtime_messages.insert(0, SystemMessage(content=system_prompt))
+        runtime_messages = normalize_messages_for_llm(runtime_messages)
 
         # --- [Accuracy Upgrade] Force Plan -> SQL workflow (generic) ---
         # We add a strict instruction once per executor instance to reduce grain/join errors.
         if not self._sql_plan_enforcement_added:
-            append_system_instruction(langchain_messages, DataQueryPrompts.SQL_PLAN_ENFORCEMENT)
-            append_system_instruction(langchain_messages, DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT)
+            append_system_instruction(runtime_messages, DataQueryPrompts.SQL_PLAN_ENFORCEMENT)
+            append_system_instruction(runtime_messages, DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT)
             self._sql_plan_enforcement_added = True
 
         # 技能：摘要已注入 [Active Skills Loaded] 时，全文须 read_skill_instruction 后才算就绪。
@@ -1105,7 +1105,7 @@ class DataQueryExecutor(BaseExecutor):
             self._current_user_question
         )
         if self._skill_matched and not self._skill_ready:
-            append_system_instruction(langchain_messages, DataQueryPrompts.MUST_READ_MATCHED_SKILLS)
+            append_system_instruction(runtime_messages, DataQueryPrompts.MUST_READ_MATCHED_SKILLS)
 
         # 上下文动作（对已有结果做动作/可直接基于上下文作答）：注入上一轮结构化结果并放宽“先查库”约束，
         # 让模型可以直接调用工具（保存/导出/记忆/创建技能等）或基于上下文作答，而非机械重查。
@@ -1117,7 +1117,7 @@ class DataQueryExecutor(BaseExecutor):
                 if len(result_json) > 20000:
                     result_json = result_json[:20000] + "\n... [上一轮结果过长已截断]"
                 result_block = result_json
-            append_system_instruction(langchain_messages, DataQueryPrompts.context_action_guide(result_block))
+            append_system_instruction(runtime_messages, DataQueryPrompts.context_action_guide(result_block))
 
         # 3. Model Setup
         # Use streaming for orchestration to allow potential turn-1 short-circuit
@@ -1175,7 +1175,7 @@ class DataQueryExecutor(BaseExecutor):
                 accumulated_msg = None
                 has_tool_call_indicator = False
                 try:
-                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(langchain_messages)):
+                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(runtime_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -1251,29 +1251,29 @@ class DataQueryExecutor(BaseExecutor):
                 # If SQL has already succeeded, don't prolong the loop on empty tool calls.
                 # Break to final synthesis to reduce latency.
                 if self._sql_succeeded and self._empty_result_recheck_pending:
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RECHECK)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RECHECK)
                     continue
 
                 if self._sql_succeeded and self._empty_result_final_sql_pending:
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RUN_FINAL_SQL)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.EMPTY_RESULT_MUST_RUN_FINAL_SQL)
                     continue
 
                 if self._sql_succeeded:
-                    langchain_messages.append(response)
+                    runtime_messages.append(response)
                     break
 
                 # 元操作收尾：本轮已成功执行非数据类工具（如 create_skills）且未做数据查询，
                 # 说明这是对已有上下文的封装/保存类动作，不应再被“先查库”护栏逼回查询流程。
                 if self._non_data_tool_called and not self._sql_attempted:
-                    langchain_messages.append(response)
+                    runtime_messages.append(response)
                     break
 
                 # 非新查数轮且未查库：模型选择直接基于上下文作答而非调用工具。
                 # 不强制其去查 Schema/SQL，直接把本轮内容作为最终回答收尾。
                 if not self._requires_fresh_data and not self._sql_attempted:
-                    langchain_messages.append(response)
+                    runtime_messages.append(response)
                     final_text = (accumulated_content or "").strip()
                     if final_text:
                         async for ch in self._emit_direct_answer(final_text, start_thought):
@@ -1337,7 +1337,7 @@ class DataQueryExecutor(BaseExecutor):
                 # Schema 已就绪但上一轮 SQL 工具调用被计划护栏拦截未执行：代为执行，避免空转。
                 elif (
                     current_stage == DataQueryStage.NEED_SQL
-                    and (pending_sql := self._pending_sql_tool_calls_from_history(langchain_messages))
+                    and (pending_sql := self._pending_sql_tool_calls_from_history(runtime_messages))
                 ):
                     yield {
                         "type": "log",
@@ -1367,7 +1367,7 @@ class DataQueryExecutor(BaseExecutor):
                             "status": "warning",
                             "execution_time_ms": (time.time() - start_thought) * 1000,
                         }
-                        langchain_messages.append(response)
+                        runtime_messages.append(response)
                         break
 
                     if self._no_tool_call_streak in (2, 4):
@@ -1387,18 +1387,18 @@ class DataQueryExecutor(BaseExecutor):
                     # Keep backward-compatible procrastination nudge (Turn 1, chatty, no tools)
                     # Some unit tests and UI flows rely on this exact wording.
                     if step == 1 and len(accumulated_content or "") > 50:
-                        langchain_messages.append(response)
-                        append_system_instruction(langchain_messages, DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL)
+                        runtime_messages.append(response)
+                        append_system_instruction(runtime_messages, DataQueryPrompts.NUDGE_DESCRIBE_PLAN_NO_TOOL)
                         continue
                     # If required tools are not available, don't spin in enforcement loops.
                     # This happens in some unit tests (only schema tool is provided).
                     if self._schema_fetched_ok and "execute_sql_query" not in tool_names:
-                        langchain_messages.append(response)
+                        runtime_messages.append(response)
                         break
                     # 技能只作为辅助增强；非新查数轮可优先引导技能，ChatBI 新查数轮不能因此阻断 Schema/SQL 主流程。
                     if self._needs_skill_prep and not self._skill_ready and not self._requires_fresh_data:
-                        langchain_messages.append(response)
-                        append_system_instruction(langchain_messages, DataQueryPrompts.MUST_LOAD_SKILL_FIRST)
+                        runtime_messages.append(response)
+                        append_system_instruction(runtime_messages, DataQueryPrompts.MUST_LOAD_SKILL_FIRST)
                         continue
                     # Hard rule: DataQueryExecutor is not allowed to answer without querying data.
                     if not self._schema_fetched_ok:
@@ -1409,8 +1409,8 @@ class DataQueryExecutor(BaseExecutor):
                         must_msg = DataQueryPrompts.MUST_FIX_SQL
                     else:
                         must_msg = DataQueryPrompts.CONTINUE_OR_SUMMARIZE
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, must_msg)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, must_msg)
                     continue
 
             self._no_tool_call_streak = 0
@@ -1418,8 +1418,8 @@ class DataQueryExecutor(BaseExecutor):
             if self._schema_miss_retry_pending:
                 has_schema_call = any(tc.get("name") == "get_dataset_schema" for tc in response.tool_calls)
                 if not has_schema_call:
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, DataQueryPrompts.SCHEMA_MISS_RETRY)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.SCHEMA_MISS_RETRY)
                     continue
 
             # --- [Plan Policy] Enforce plan only for high-risk queries; otherwise just nudge ---
@@ -1429,11 +1429,11 @@ class DataQueryExecutor(BaseExecutor):
                 if require_plan and not self._sql_plan_block_used:
                     # 仅阻断一次；若模型仍不补计划，下一轮直接执行 SQL，避免「有 tool_calls 却无查询完成」的空转。
                     self._sql_plan_block_used = True
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN)
                     plan_blocked = True
                 elif not require_plan:
-                    append_system_instruction(langchain_messages, DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.PLAN_NUDGE_NON_BLOCKING)
             if plan_blocked:
                 continue
 
@@ -1444,12 +1444,12 @@ class DataQueryExecutor(BaseExecutor):
             ):
                 has_sql_call = any(tc.get("name") == "execute_sql_query" for tc in response.tool_calls)
                 if not has_sql_call:
-                    langchain_messages.append(response)
-                    append_system_instruction(langchain_messages, DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA)
+                    runtime_messages.append(response)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA)
                     continue
 
             # Process Tool Calls
-            langchain_messages.append(response)
+            runtime_messages.append(response)
             parallel_tasks = []
             for tool_call in response.tool_calls:
                 if not tool_call.get("id"): tool_call["id"] = f"call_{uuid.uuid4().hex[:8]}"
@@ -1553,7 +1553,7 @@ class DataQueryExecutor(BaseExecutor):
                         if anomaly_reason:
                             self._ratio_anomaly_feedback_sent = True
                             needs_followup_after_sql = True
-                            append_system_instruction(langchain_messages, DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason))
+                            append_system_instruction(runtime_messages, DataQueryPrompts.ratio_anomaly_recheck(anomaly_reason))
 
                     if (
                         tool_status == "success"
@@ -1578,7 +1578,7 @@ class DataQueryExecutor(BaseExecutor):
                                 "execution_time_ms": 0,
                             }
                             append_system_instruction(
-                                langchain_messages,
+                                runtime_messages,
                                 DataQueryPrompts.empty_result_recheck(empty_reason, executed_sql),
                             )
 
@@ -1601,7 +1601,7 @@ class DataQueryExecutor(BaseExecutor):
                             "execution_time_ms": 0,
                         }
                         append_system_instruction(
-                            langchain_messages,
+                            runtime_messages,
                             DataQueryPrompts.empty_result_final_sql_required(executed_sql),
                         )
 
@@ -1649,7 +1649,7 @@ class DataQueryExecutor(BaseExecutor):
                             "status": "warning",
                             "execution_time_ms": 0,
                         }
-                        append_system_instruction(langchain_messages, DataQueryPrompts.SCHEMA_MISS_RETRY)
+                        append_system_instruction(runtime_messages, DataQueryPrompts.SCHEMA_MISS_RETRY)
                     if tool_status == "success" and not self._metadata_unavailable:
                         self._schema_fetched_ok = True
                         if self._is_no_authorized_schema(tool_output):
@@ -1657,7 +1657,7 @@ class DataQueryExecutor(BaseExecutor):
                         # After schema is fetched, force an explicit, tool-call-only nudge once.
                         if (not self._schema_no_authorized) and (not self._sql_attempted) and (not self._sql_after_schema_nudge_sent):
                             self._sql_after_schema_nudge_sent = True
-                            append_system_instruction(langchain_messages, DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA)
+                            append_system_instruction(runtime_messages, DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA)
                     keywords = tool_call['args'].get('keywords', '未指定')
                     # 在日志详情顶部增加检索词
                     header = f"🔍 [检索关键词]: {keywords}\n" + "-"*30 + "\n"
@@ -1727,9 +1727,9 @@ class DataQueryExecutor(BaseExecutor):
                 if tool_status == "error": feedback = self._get_self_healing_feedback(tool_call["name"], tool_output)
                 if tool_call["name"] == "update_dashboard_context" and tool_status == "success":
                     yield {"type": "context_update", "data": tool_call["args"]}
-                langchain_messages.append(ToolMessage(content=str(feedback), tool_call_id=tool_call["id"]))
+                runtime_messages.append(ToolMessage(content=str(feedback), tool_call_id=tool_call["id"]))
                 if tool_status == "success" and tool_call["name"] == "read_skill_instruction":
-                    append_system_instruction(langchain_messages, DataQueryPrompts.SKILL_EXECUTION_GUIDE)
+                    append_system_instruction(runtime_messages, DataQueryPrompts.SKILL_EXECUTION_GUIDE)
 
                 # 元数据服务不可用：硬终止，直接给出明确失败结论，绝不进入 execute_sql_query 臆造查询。
                 if self._metadata_unavailable:
@@ -1748,7 +1748,7 @@ class DataQueryExecutor(BaseExecutor):
                 # 让模型在看完实时 Schema 数据后马上重新聚焦到参考案例的 SQL 逻辑
                 if (tool_call["name"] == "get_dataset_schema" and tool_status == "success"
                         and _few_shot_reminder and not _schema_reminder_injected):
-                    append_system_instruction(langchain_messages, _few_shot_reminder)
+                    append_system_instruction(runtime_messages, _few_shot_reminder)
                     _schema_reminder_injected = True
                     logger.info(f"[FewShot] Injected schema-reminder SystemMessage after get_dataset_schema")
 
@@ -1767,7 +1767,7 @@ class DataQueryExecutor(BaseExecutor):
                 break
 
         # 5. Final Synthesis
-        tool_msgs = [m for m in langchain_messages if isinstance(m, ToolMessage)]
+        tool_msgs = [m for m in runtime_messages if isinstance(m, ToolMessage)]
         if not tool_msgs:
             # Should not happen in DataQueryExecutor, but keep safe.
             return
@@ -1794,16 +1794,16 @@ class DataQueryExecutor(BaseExecutor):
         # --- [STRATEGY B+: Context-Aware Synthesis] ---
         synthesis_messages = []
         # 1. System
-        synthesis_messages.append(langchain_messages[0])
+        synthesis_messages.append(runtime_messages[0])
         # 2. Clean History (Skip current last human message)
-        for msg in langchain_messages[1:-1]:
+        for msg in runtime_messages[1:-1]:
             if isinstance(msg, HumanMessage):
                 synthesis_messages.append(msg)
             elif isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
                 synthesis_messages.append(msg)
         
         # 3. Current Question + Data
-        user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "无原始问题")
+        user_question = next((m.content for m in reversed(runtime_messages) if isinstance(m, HumanMessage)), "无原始问题")
         
         # [IMPROVED] Use structured trace instead of just raw tool outputs
         execution_review = self._format_trace_for_synthesis(self.trace_buffer)

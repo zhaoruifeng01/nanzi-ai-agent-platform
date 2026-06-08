@@ -15,7 +15,7 @@ from app.services.ai.dispatcher import AgentDispatcher
 from app.services.ai.memory_service import memory_service
 from app.services.ai.agent_prompts import AgentServicePrompts
 from app.services.ai.executors.common import extract_tokens_from_message
-from langchain_core.messages import SystemMessage, HumanMessage
+from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.core.orm import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)

@@ -43,6 +43,12 @@ class MockLLMResponse:
     def __init__(self, content):
         self.content = content
 
+
+def _mock_chat_client(content: str):
+    mock_client = AsyncMock()
+    mock_client.generate_text.return_value = content
+    return mock_client
+
 # --- Tests ---
 
 @pytest.mark.asyncio
@@ -70,15 +76,17 @@ async def test_route_query_high_confidence(mock_agents_metadata):
         "confidence": 0.95
     })
     
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
     
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
          
         mock_fetch.return_value = mock_agents_metadata
         mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
         mock_config.return_value = "System Prompt"
         
         result = await service.route_query("Show me user count")
@@ -107,14 +115,16 @@ async def test_route_query_returns_generic_turn_hints(mock_agents_metadata):
         "user_action_type": "transform_context"
     })
 
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
-         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm:
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
         mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
 
         result = await service.route_query("把上面的结果画成柱状图")
 
@@ -135,15 +145,17 @@ async def test_route_query_low_confidence_fallback(mock_agents_metadata):
         "confidence": 0.4
     })
     
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
     
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
          
         mock_fetch.return_value = mock_agents_metadata
         mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
         mock_config.return_value = "System Prompt"
         
         result = await service.route_query("Hello")
@@ -164,15 +176,17 @@ async def test_route_query_unknown_agent_fallback(mock_agents_metadata):
         "confidence": 0.99
     })
     
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
     
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
          
         mock_fetch.return_value = mock_agents_metadata
         mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
         mock_config.return_value = "System Prompt"
         
         result = await service.route_query("Do magic")
@@ -188,12 +202,12 @@ async def test_router_caching(mock_agents_metadata):
     
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
         
         mock_fetch.return_value = mock_agents_metadata
-        # Ensure ainvoke returns an object with .content immediately (since it's awaited)
-        mock_llm_instance = AsyncMock()
-        mock_llm_instance.ainvoke.return_value = MockLLMResponse('{"thought": "test", "agent_name": "ChatBI", "confidence": 1.0}')
+        mock_llm_instance = object()
+        mock_chat_factory.return_value = _mock_chat_client('{"thought": "test", "agent_name": "ChatBI", "confidence": 1.0}')
         mock_get_llm.return_value = mock_llm_instance
         
         mock_config.return_value = ""
@@ -224,8 +238,8 @@ async def test_route_query_filters_candidates_by_user_permission(mock_agents_met
         "confidence": 0.95
     })
 
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke.return_value = MockLLMResponse(llm_resp_content)
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
     permission_response = SimpleNamespace(
         roles=["user"],
         permissions=SimpleNamespace(agents=["agent-rag"])
@@ -233,19 +247,21 @@ async def test_route_query_filters_candidates_by_user_permission(mock_agents_met
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config, \
          patch("app.services.permission_service.PermissionService.get_user_permissions", new_callable=AsyncMock) as mock_perms:
 
         mock_fetch.return_value = mock_agents_metadata
         mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
         mock_config.return_value = RouterService.DEFAULT_SYSTEM_PROMPT
         mock_perms.return_value = permission_response
 
         result = await service.route_query("查文档", user_id=1001, is_admin=False)
 
     assert result.agent_id == "agent-rag"
-    routed_messages = mock_llm.ainvoke.call_args[0][0]
-    system_prompt = routed_messages[0].content
+    routed_messages = mock_chat.generate_text.call_args[0][0]
+    system_prompt = routed_messages[0].content[0].text
     assert "ID: KnowledgeBase" in system_prompt
     assert "UUID: agent-rag" in system_prompt
     assert "UUID: agent-chatbi" not in system_prompt

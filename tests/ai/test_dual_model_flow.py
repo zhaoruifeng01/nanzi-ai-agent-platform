@@ -1,9 +1,10 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage, SystemMessage
+from app.services.ai.runtime.agentscope.compat import AIMessage, ToolMessage, HumanMessage, SystemMessage
 from app.services.ai.executors.chat_executor import GeneralChatExecutor
 from app.schemas.agent import ChatConfig
 
+@pytest.mark.no_infrastructure
 @pytest.mark.asyncio
 async def test_dual_model_execution_flow():
     """

@@ -11,6 +11,7 @@ from app.services.ai.executors.prompts import OpenClawPrompts
 from app.services.ai.openclaw_client import OpenClawClient
 from app.schemas.agent import AgentExecutionStep, ChatConfig
 from app.core.llm.client import get_llm_async
+from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.services.ai.executors.common import (
     MODEL_STREAM_MAX_RETRIES,
     build_stream_retry_log,
@@ -279,7 +280,6 @@ class OpenClawExecutor(BaseExecutor):
             else:
                 system_prompt = custom_prompt
 
-            from langchain_core.messages import SystemMessage, HumanMessage
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=f"用户输入：{query}")

@@ -7,12 +7,12 @@ import re
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
 
-from langchain_core.messages import (
-    HumanMessage, 
-    AIMessage, 
-    SystemMessage, 
+from app.services.ai.runtime.agentscope.compat import (
+    AIMessage,
     BaseMessage,
-    ToolMessage
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
 )
 from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
@@ -97,9 +97,9 @@ class GeneralChatExecutor(BaseExecutor):
             system_content = f"{route_hint}\n\n{system_content}"
         if self._requires_knowledge_search:
             system_content = f"{GeneralChatPrompts.KNOWLEDGE_TURN_SYSTEM_HINT}\n\n{system_content}"
-        langchain_messages = [SystemMessage(content=system_content)]
-        langchain_messages.extend(convert_history_to_messages(history))
-        langchain_messages = normalize_messages_for_llm(langchain_messages)
+        runtime_messages = [SystemMessage(content=system_content)]
+        runtime_messages.extend(convert_history_to_messages(history))
+        runtime_messages = normalize_messages_for_llm(runtime_messages)
 
         # 3. Execution Mode Selection
         if not tools:
@@ -117,7 +117,7 @@ class GeneralChatExecutor(BaseExecutor):
             for stream_attempt in range(MODEL_STREAM_MAX_RETRIES):
                 accumulated_msg = None
                 try:
-                    async for chunk in llm.astream(normalize_messages_for_llm(langchain_messages)):
+                    async for chunk in llm.astream(normalize_messages_for_llm(runtime_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -224,7 +224,7 @@ class GeneralChatExecutor(BaseExecutor):
                 accumulated_msg = None
                 has_tool_call_indicator = False
                 try:
-                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(langchain_messages)):
+                    async for chunk in model_with_tools.astream(normalize_messages_for_llm(runtime_messages)):
                         if accumulated_msg is None:
                             accumulated_msg = chunk
                         else:
@@ -296,8 +296,8 @@ class GeneralChatExecutor(BaseExecutor):
                          "details": "本轮为知识库问答，须先调用 search_knowledge_base。",
                          "status": "warning",
                      }
-                     langchain_messages.append(response)
-                     append_system_instruction(langchain_messages, GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG)
+                     runtime_messages.append(response)
+                     append_system_instruction(runtime_messages, GeneralChatPrompts.KNOWLEDGE_SEARCH_CORRECTION_MSG)
                      knowledge_search_pending = False
                      continue
 
@@ -309,8 +309,8 @@ class GeneralChatExecutor(BaseExecutor):
                          "details": "用户询问历史对话，须先调用 memory_search。",
                          "status": "warning",
                      }
-                     langchain_messages.append(response)
-                     append_system_instruction(langchain_messages, MEMORY_SEARCH_CORRECTION_MSG)
+                     runtime_messages.append(response)
+                     append_system_instruction(runtime_messages, MEMORY_SEARCH_CORRECTION_MSG)
                      recall_query_pending = False
                      continue
                  
@@ -338,7 +338,7 @@ class GeneralChatExecutor(BaseExecutor):
                  break 
             
             # 3.2 Act (Process Tool Calls - Parallel)
-            langchain_messages.append(response)
+            runtime_messages.append(response)
             
             pending_tasks = []
             for i, tool_call in enumerate(current_tool_calls):
@@ -372,18 +372,18 @@ class GeneralChatExecutor(BaseExecutor):
             
             tool_results.sort(key=lambda x: x["index"])
             for res in tool_results:
-                if res.get("message"): langchain_messages.append(res["message"])
+                if res.get("message"): runtime_messages.append(res["message"])
                 self._increment_step()
 
         # --- Final Synthesis (After ReAct Loop) ---
         if step < MAX_STEPS:
             # Check if we have data to synthesize
-            tool_msgs = [m for m in langchain_messages if isinstance(m, ToolMessage)]
+            tool_msgs = [m for m in runtime_messages if isinstance(m, ToolMessage)]
             if not tool_msgs:
                 # 🌟 兜底保障：若没有任何 ToolMessage，说明整个交互期间模型未能成功执行任何工具。
                 # 此时，我们必须尝试提取大模型在 ReAct 循环中生成的最后一个 AIMessage 回答并输出给用户，
                 # 避免整个会话因没有 ToolMessage 而被静默吞掉返回。若无回答，则给出一个友好的平台级报错提示。
-                last_ai_msg = next((m for m in reversed(langchain_messages) if isinstance(m, AIMessage) and m.content), None)
+                last_ai_msg = next((m for m in reversed(runtime_messages) if isinstance(m, AIMessage) and m.content), None)
                 if last_ai_msg and last_ai_msg.content:
                     yield {"content": last_ai_msg.content}
                 else:
@@ -398,11 +398,11 @@ class GeneralChatExecutor(BaseExecutor):
             synthesis_messages = []
             
             # 1. Add System Message
-            synthesis_messages.append(langchain_messages[0])
+            synthesis_messages.append(runtime_messages[0])
             
             # 2. Add Clean History (User/Assistant pairs only, no ReAct noise)
             # We skip the very last human message as it will be merged with data below
-            for msg in langchain_messages[1:-1]:
+            for msg in runtime_messages[1:-1]:
                 if isinstance(msg, HumanMessage):
                     synthesis_messages.append(msg)
                 elif isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
@@ -410,7 +410,7 @@ class GeneralChatExecutor(BaseExecutor):
                     synthesis_messages.append(msg)
             
             # 3. Add Current Turn (Problem + Data)
-            user_question = next((m.content for m in reversed(langchain_messages) if isinstance(m, HumanMessage)), "无原始问题")
+            user_question = next((m.content for m in reversed(runtime_messages) if isinstance(m, HumanMessage)), "无原始问题")
             
             # [IMPROVED] Use structured trace instead of just raw tool outputs
             execution_review = self._format_trace_for_synthesis(self.trace_buffer)
@@ -480,7 +480,6 @@ class GeneralChatExecutor(BaseExecutor):
              yield {"content": GeneralChatPrompts.MAX_STEPS_REACHED}
 
     async def _execute_single_tool_safe(self, tool_call: Dict, tools: List[Any], index: int) -> Dict[str, Any]:
-        from langchain_core.messages import ToolMessage
         tool_name = tool_call["name"]; tool_args = tool_call["args"]; tool_id = tool_call["id"]
         start_tool = time.time(); tool_output = f"[TOOL_ERROR] Unknown tool: {tool_name}"
         

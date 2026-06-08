@@ -19,7 +19,7 @@ class AgentConfigProvider:
         temp_override: Optional[float] = None
     ):
         """
-        Instantiates a LangChain LLM based on system config, agent-specific overrides, or runtime overrides.
+        Instantiates an AgentScope LLM based on system config, agent-specific overrides, or runtime overrides.
         
         Priority:
         1. Runtime Override (model_override/temp_override from Tool Runtime Config)

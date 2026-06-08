@@ -2,7 +2,8 @@ from typing import List, Optional
 import json
 import logging
 from app.core.llm.client import get_llm_async
-from langchain_core.messages import SystemMessage, HumanMessage
+from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -178,8 +179,14 @@ class RouterService:
         
         formatted_prompt = system_prompt.replace("{agents_context}", agents_str).replace("{history_context}", history_str)
         messages = [
-            SystemMessage(content=formatted_prompt),
-            HumanMessage(content=f"Latest User Query: {user_input}")
+            RuntimeMessage(
+                role="system",
+                content=[RuntimeContentBlock(type="text", text=formatted_prompt)],
+            ),
+            RuntimeMessage(
+                role="user",
+                content=[RuntimeContentBlock(type="text", text=f"Latest User Query: {user_input}")],
+            ),
         ]
 
         # 3. Invoke LLM with one retry to avoid silently dropping a valid
@@ -188,8 +195,8 @@ class RouterService:
         for attempt in range(2):
             try:
                 llm = await get_llm_async(temperature=0.0)  # Use deterministic output
-                response = await llm.ainvoke(messages)
-                content = (getattr(response, "content", "") or "").strip()
+                chat_client = chat_client_from_handle(llm)
+                content = (await chat_client.generate_text(messages)).strip()
                 result_json = self._parse_router_json(content)
                 if result_json is None:
                     raise ValueError(f"Unparseable router response: {content[:200]!r}")

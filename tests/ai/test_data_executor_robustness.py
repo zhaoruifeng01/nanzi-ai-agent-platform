@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch, AsyncMock
 from app.schemas.agent import AgentExecutionStep
 from app.services.ai.executors.data_executor import DataQueryExecutor
@@ -7,7 +8,7 @@ from app.services.ai.executors.prompts import DataQueryPrompts, GeneralChatPromp
 from app.services.ai.intent_service import IntentType
 from app.services.ai.turn_classifier import TurnClassification, TurnType, attach_turn_classification
 from app.services.ai.data_query_turn_classifier import DataQueryTurnClassification, DataQueryTurnType
-from langchain_core.messages import AIMessage, SystemMessage
+from app.services.ai.runtime.agentscope.compat import AIMessage, SystemMessage
 
 @pytest.fixture(scope="function", autouse=True)
 async def init_infrastructure():
@@ -21,7 +22,7 @@ async def init_infrastructure():
 
 
 @pytest.fixture(scope="function", autouse=True)
-def default_data_query_turn_classification():
+def default_data_query_turn_classification(request):
     classification = DataQueryTurnClassification(
         turn_type=DataQueryTurnType.NEW_DATA_QUERY,
         reasoning="测试默认：新数据查询",
@@ -30,10 +31,24 @@ def default_data_query_turn_classification():
         skip_intent_llm=False,
         intent=IntentType.DATA_QUERY,
     )
+    plan_keywords_tests = {
+        "test_data_executor_plans_schema_keywords_without_examples_using_llm",
+        "test_data_executor_plans_schema_keywords_from_question_and_examples",
+        "test_data_executor_ignores_placeholder_schema_keywords",
+    }
+    plan_patch = (
+        patch.object(
+            DataQueryExecutor,
+            "_plan_schema_search_keywords",
+            AsyncMock(return_value=""),
+        )
+        if request.node.name not in plan_keywords_tests
+        else nullcontext()
+    )
     with patch(
         "app.services.ai.executors.data_executor.resolve_data_query_turn_classification",
         AsyncMock(return_value=(classification, None, 0.0)),
-    ) as mock_resolve:
+    ) as mock_resolve, plan_patch:
         yield mock_resolve
 
 
@@ -77,9 +92,9 @@ async def test_data_executor_react_nudge():
     async def mock_astream_main(*args, **kwargs):
         # We need to simulate multiple turns. 
         # But DataQueryExecutor.execute recreates the model/stream? No, it uses the same one in the loop.
-        # Wait, langchain models are usually stateless. 
+        # Wait, runtime model handles are usually stateless.
         # In the loop:
-        # async for chunk in model_with_tools.astream(langchain_messages):
+        # async for chunk in model_with_tools.astream(runtime_messages):
         # We can use side_effect on astream to return different generators
         pass
 
@@ -723,7 +738,7 @@ async def test_data_executor_resolves_standalone_query_with_recent_history():
     mock_config.temperature = 0.0
     executor = DataQueryExecutor(mock_config, "trace-standalone-direct", [])
 
-    langchain_messages = executor._convert_history([
+    runtime_messages = executor._convert_history([
         {"role": "user", "content": "查询上海机房上周 PUE 趋势"},
         {"role": "assistant", "content": "上海机房上周 PUE 趋势如下。"},
         {"role": "user", "content": "那本月呢"},
@@ -734,7 +749,7 @@ async def test_data_executor_resolves_standalone_query_with_recent_history():
     llm.ainvoke = AsyncMock(return_value=rewrite_response)
 
     with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=llm)):
-        result = await executor._resolve_standalone_query_for_new_data_query("那本月呢", langchain_messages)
+        result = await executor._resolve_standalone_query_for_new_data_query("那本月呢", runtime_messages)
 
     assert result == "查询上海机房本月 PUE 趋势"
     llm.ainvoke.assert_awaited_once()
@@ -746,14 +761,14 @@ async def test_data_executor_keeps_complete_new_data_query_without_rewrite_llm()
     mock_config = MagicMock()
     mock_config.agent_name = "ChatBI"
     executor = DataQueryExecutor(mock_config, "trace-standalone-complete", [])
-    langchain_messages = executor._convert_history([
+    runtime_messages = executor._convert_history([
         {"role": "user", "content": "查询上海机房上周 PUE 趋势"},
         {"role": "assistant", "content": "上海机房上周 PUE 趋势如下。"},
         {"role": "user", "content": "查询北京机房本月能耗趋势"},
     ])
 
     with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock()) as mock_get_llm:
-        result = await executor._resolve_standalone_query_for_new_data_query("查询北京机房本月能耗趋势", langchain_messages)
+        result = await executor._resolve_standalone_query_for_new_data_query("查询北京机房本月能耗趋势", runtime_messages)
 
     assert result == "查询北京机房本月能耗趋势"
     mock_get_llm.assert_not_called()

@@ -1,7 +1,7 @@
 import pytest
 import re
 from unittest.mock import MagicMock, patch, AsyncMock
-from langchain_core.messages import SystemMessage, AIMessage
+from app.services.ai.runtime.agentscope.compat import SystemMessage, AIMessage
 from app.services.ai.executors.data_executor import DataQueryExecutor
 
 @pytest.mark.no_infrastructure

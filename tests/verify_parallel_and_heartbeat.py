@@ -8,7 +8,7 @@ import sys
 sys.path.append(os.getcwd())
 
 from unittest.mock import MagicMock, AsyncMock, patch
-from langchain_core.messages import AIMessage
+from app.services.ai.runtime.agentscope.compat import AIMessage
 from app.services.ai.executors.data_executor import DataQueryExecutor
 from app.schemas.agent import ChatConfig
 

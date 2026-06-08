@@ -1,10 +1,10 @@
+import json
 import re
 from enum import Enum
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_core.output_parsers import PydanticOutputParser
-from app.core.llm.client import get_llm
+from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
 
 # 意图识别系统提示词，内置在代码中（不再从数据库读取，避免被误改）。
 # 占位符：{history_context} 注入最近对话，{format_instructions} 注入结构化输出说明。
@@ -273,14 +273,35 @@ class IntentResponse(BaseModel):
 
 class IntentService:
     """
-    Service for identifying user intent using LangChain LCEL.
+    Service for identifying user intent using the AgentScope runtime adapter.
     """
 
     DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
     def __init__(self):
         self._llm = None
-        self.parser = PydanticOutputParser(pydantic_object=IntentResponse)
+
+    @staticmethod
+    def _format_instructions() -> str:
+        return (
+            "返回一个 JSON 对象，字段为："
+            "intent（DATA_QUERY/KNOWLEDGE_BASE/GENERAL/UNKNOWN）、"
+            "confidence（0 到 1 的数字）、"
+            "reasoning（简短原因）、"
+            "entities（字符串数组）。"
+        )
+
+    @staticmethod
+    def _parse_response(raw: str) -> IntentResponse:
+        text = (raw or "").strip()
+        try:
+            return IntentResponse.model_validate_json(text)
+        except Exception:
+            match = re.search(r"\{[\s\S]*\}", text)
+            if not match:
+                raise
+            data = json.loads(match.group())
+            return IntentResponse.model_validate(data)
 
     async def identify_intent(
         self,
@@ -314,21 +335,26 @@ class IntentService:
 
         # 系统提示词内置在代码中，并用 .replace 注入占位符——避免 few-shot 中的 JSON
         # 花括号被 ChatPromptTemplate 当成模板变量解析。
-        format_instructions = self.parser.get_format_instructions()
+        format_instructions = self._format_instructions()
         system_content = self.DEFAULT_SYSTEM_PROMPT.replace(
             "{history_context}", _build_history_context(history)
         ).replace("{format_instructions}", format_instructions)
 
         messages = [
-            SystemMessage(content=system_content),
-            HumanMessage(content=user_input),
+            RuntimeMessage(
+                role="system",
+                content=[RuntimeContentBlock(type="text", text=system_content)],
+            ),
+            RuntimeMessage(
+                role="user",
+                content=[RuntimeContentBlock(type="text", text=user_input)],
+            ),
         ]
 
-        chain = active_llm | self.parser
-
         try:
-            response = await chain.ainvoke(messages)
-            return response
+            chat_client = chat_client_from_handle(active_llm)
+            response = await chat_client.generate_text(messages)
+            return self._parse_response(response)
         except Exception as e:
             # Fallback for parsing errors or LLM failures
             import logging

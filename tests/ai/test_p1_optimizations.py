@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from langchain_core.messages import AIMessage
+from app.services.ai.runtime.agentscope.compat import AIMessage
 
 from app.services.ai.executors.chat_executor import GeneralChatExecutor
 from app.services.ai.intent_service import IntentResponse, IntentType
