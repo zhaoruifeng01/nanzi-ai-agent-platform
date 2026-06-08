@@ -10,7 +10,38 @@ from app.services.ai.runtime.agentscope.errors import RuntimeToolError, RuntimeT
 
 
 ToolSourceType = Literal["static", "generic_api", "mcp", "class", "system"]
+RuntimePermissionScope = Literal["read", "write", "ask", "dangerous"]
 RuntimeToolAuditStatus = Literal["start", "success", "error"]
+
+
+READ_ONLY_TOOL_NAMES = {
+    "get_dataset_schema",
+    "search_knowledge_base",
+    "memory_search",
+    "fetch_user_long_term_memory",
+    "get_my_tasks",
+    "jira_search",
+    "jira_get_projects",
+    "read_file",
+    "search_text",
+    "list_process",
+    "list_available_skills",
+    "read_skill_instruction",
+    "directory_tree_navigator",
+    "web_renderer_and_snapshot",
+    "code_syntax_linter",
+    "fetch_static_web_url",
+    "web_search_baidu",
+}
+
+DANGEROUS_TOOL_NAMES = {
+    "execute_sql_query",
+    "system_http_request",
+    "write_file",
+    "exec_command",
+    "manage_process",
+    "create_skills",
+}
 
 
 @dataclass(frozen=True)
@@ -18,7 +49,7 @@ class RuntimeToolAuditEvent:
     tool_name: str
     status: RuntimeToolAuditStatus
     source_type: ToolSourceType
-    permission_scope: str
+    permission_scope: RuntimePermissionScope
     arguments: dict[str, Any]
     elapsed_ms: float | None = None
     result_preview: str | None = None
@@ -32,7 +63,7 @@ class RuntimeToolSpec:
     parameters_schema: dict[str, Any]
     source_type: ToolSourceType
     callable: Callable[..., Any]
-    permission_scope: str = "write"
+    permission_scope: RuntimePermissionScope = "ask"
     timeout_seconds: float | None = None
     audit_callback: Callable[[RuntimeToolAuditEvent], Any] | None = None
 
@@ -133,9 +164,22 @@ class AgentScopeRuntimeTool:
             from agentscope.permission import PermissionBehavior, PermissionDecision
         except Exception:
             return None
+        if self.spec.permission_scope == "read":
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message=f"Tool '{self.name}' is read-only and can run automatically.",
+            )
+        if self.spec.permission_scope == "dangerous":
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=f"Tool '{self.name}' is marked dangerous and cannot run automatically.",
+                decision_reason="dangerous runtime tool scope",
+                bypass_immune=True,
+            )
         return PermissionDecision(
-            behavior=PermissionBehavior.ALLOW,
-            message="runtime permission checks are handled by platform middleware",
+            behavior=PermissionBehavior.ASK,
+            message=f"Tool '{self.name}' requires user confirmation before execution.",
+            decision_reason=f"runtime tool scope: {self.spec.permission_scope}",
         )
 
     async def check_read_only(self, tool_input: dict[str, Any]) -> bool:
@@ -143,6 +187,9 @@ class AgentScopeRuntimeTool:
 
     def match_rule(self, rule_content: str | None, tool_input: dict[str, Any]) -> bool:
         return rule_content is None
+
+    def generate_suggestions(self, tool_input: dict[str, Any]) -> list[Any]:
+        return []
 
     async def __call__(self, **kwargs: Any) -> Any:
         from agentscope.message import TextBlock, ToolResultState
@@ -185,7 +232,7 @@ def _schema_from_legacy_tool(tool: Any) -> dict[str, Any]:
 def runtime_tool_spec_from_legacy_tool(
     tool: Any,
     source_type: ToolSourceType,
-    permission_scope: str = "write",
+    permission_scope: RuntimePermissionScope | None = None,
 ) -> RuntimeToolSpec:
     async def _invoke(**kwargs: Any) -> Any:
         if hasattr(tool, "ainvoke"):
@@ -202,6 +249,7 @@ def runtime_tool_spec_from_legacy_tool(
     name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
     if not name:
         raise ValueError("Legacy tool is missing a name")
+    resolved_scope = permission_scope or infer_runtime_permission_scope(name, source_type)
 
     return RuntimeToolSpec(
         name=name,
@@ -209,5 +257,18 @@ def runtime_tool_spec_from_legacy_tool(
         parameters_schema=_schema_from_legacy_tool(tool),
         source_type=source_type,
         callable=_invoke,
-        permission_scope=permission_scope,
+        permission_scope=resolved_scope,
     )
+
+
+def infer_runtime_permission_scope(
+    tool_name: str,
+    source_type: ToolSourceType,
+) -> RuntimePermissionScope:
+    if tool_name in READ_ONLY_TOOL_NAMES:
+        return "read"
+    if tool_name in DANGEROUS_TOOL_NAMES:
+        return "dangerous"
+    if source_type in {"generic_api", "mcp"}:
+        return "ask"
+    return "ask"

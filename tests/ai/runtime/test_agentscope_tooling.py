@@ -126,6 +126,36 @@ async def test_agentscope_tool_wrapper_exposes_tool_shape_and_invokes_spec():
     assert chunk.state == "success"
 
 
+@pytest.mark.asyncio
+async def test_agentscope_tool_wrapper_maps_runtime_permission_scopes():
+    from agentscope.permission import PermissionBehavior
+
+    from app.services.ai.runtime.agentscope.tools import (
+        AgentScopeRuntimeTool,
+        RuntimeToolSpec,
+    )
+
+    def make_tool(scope: str) -> AgentScopeRuntimeTool:
+        return AgentScopeRuntimeTool(
+            RuntimeToolSpec(
+                name=f"{scope}_tool",
+                description="Permission test tool",
+                parameters_schema={"type": "object", "properties": {}},
+                source_type="static",
+                callable=lambda: "ok",
+                permission_scope=scope,
+            )
+        )
+
+    assert (await make_tool("read").check_permissions({}, None)).behavior == PermissionBehavior.ALLOW
+    assert (await make_tool("write").check_permissions({}, None)).behavior == PermissionBehavior.ASK
+    assert (await make_tool("ask").check_permissions({}, None)).behavior == PermissionBehavior.ASK
+    assert (await make_tool("dangerous").check_permissions({}, None)).behavior == PermissionBehavior.DENY
+
+    assert await make_tool("read").check_read_only({}) is True
+    assert await make_tool("write").check_read_only({}) is False
+
+
 def test_build_toolkit_returns_agent_scope_toolkit_when_available(monkeypatch):
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, build_toolkit
 

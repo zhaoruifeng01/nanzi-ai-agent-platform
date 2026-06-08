@@ -248,6 +248,7 @@ async def test_general_runner_executes_runtime_tool_specs(chat_config):
         },
         source_type="static",
         callable=runtime_tool,
+        permission_scope="read",
     )
 
     msg_call_tool = AIMessage(
@@ -324,6 +325,7 @@ async def test_general_runner_uses_agentscope_native_agent_for_runtime_tools(cha
         },
         source_type="static",
         callable=runtime_tool,
+        permission_scope="read",
     )
     handle = AgentScopeLLMHandle(
         native_model=FakeModel(
@@ -353,6 +355,97 @@ async def test_general_runner_uses_agentscope_native_agent_for_runtime_tools(cha
     assert "Native final answer" in "".join(
         e["content"] for e in events if "content" in e and "type" not in e
     )
+
+
+@pytest.mark.asyncio
+async def test_general_runner_emits_permission_required_for_agentscope_ask_tool(chat_config):
+    """AgentScope ASK 权限事件应转换成现有 SSE 可消费的确认事件，且不执行工具。"""
+    from agentscope.credential import CredentialBase
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id="call_requires_confirm",
+                        name="send_message",
+                        input='{"message": "hello"}',
+                    )
+                ],
+                is_last=True,
+            )
+
+    invoked = False
+
+    async def send_message(message: str):
+        nonlocal invoked
+        invoked = True
+        return f"sent:{message}"
+
+    runtime_spec = RuntimeToolSpec(
+        name="send_message",
+        description="Send a message",
+        parameters_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+        source_type="static",
+        callable=send_message,
+        permission_scope="ask",
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=FakeModel(
+            credential=FakeCredential(),
+            model="fake-native-general",
+            parameters=FakeModel.Parameters(),
+            stream=False,
+            max_retries=0,
+        ),
+        model_name="fake-native-general",
+        temperature=0.0,
+        streaming=True,
+    )
+    executor = GeneralChatExecutor(config=chat_config, trace_id="test-native-ask", trace_buffer=[])
+
+    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=handle)), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_runtime_tools", AsyncMock(return_value=[runtime_spec])), \
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = []
+        async for chunk in executor.execute([{"role": "user", "content": "Send it"}]):
+            events.append(chunk)
+
+    permission_events = [event for event in events if event.get("type") == "permission_required"]
+    assert permission_events == [
+        {
+            "type": "permission_required",
+            "status": "pending",
+            "id": "call_requires_confirm",
+            "title": "需要确认工具调用: send_message",
+            "details": '参数: {"message": "hello"}',
+            "tool_call": {
+                "id": "call_requires_confirm",
+                "name": "send_message",
+                "args": {"message": "hello"},
+            },
+        }
+    ]
+    assert invoked is False
+
 
 @pytest.mark.asyncio
 async def test_xml_tool_call_parsing(chat_config, mock_tool):

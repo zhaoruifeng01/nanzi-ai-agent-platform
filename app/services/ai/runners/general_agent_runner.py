@@ -600,6 +600,31 @@ class GeneralAgentRunner(BaseExecutor):
                     self.trace_buffer.append(result["trace"])
                 continue
 
+            if event_type == "REQUIRE_USER_CONFIRM":
+                for tool_call in getattr(event, "tool_calls", []) or []:
+                    tool_id = getattr(tool_call, "id", "") or f"call_{uuid.uuid4().hex[:8]}"
+                    tool_name = getattr(tool_call, "name", "")
+                    raw_args = getattr(tool_call, "input", "") or "{}"
+                    try:
+                        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        tool_args = {"input": raw_args}
+                    if not isinstance(tool_args, dict):
+                        tool_args = {"input": tool_args}
+                    yield {
+                        "type": "permission_required",
+                        "status": "pending",
+                        "id": tool_id,
+                        "title": f"需要确认工具调用: {tool_name}",
+                        "details": f"参数: {json.dumps(tool_args, ensure_ascii=False)}",
+                        "tool_call": {
+                            "id": tool_id,
+                            "name": tool_name,
+                            "args": tool_args,
+                        },
+                    }
+                return
+
             if event_type == "TEXT_BLOCK_DELTA":
                 if used_tools and not synthesis_log_emitted:
                     synthesis_log_emitted = True
