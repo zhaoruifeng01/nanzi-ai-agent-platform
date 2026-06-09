@@ -62,10 +62,33 @@ from app.services.config_service import ConfigService
 logger = logging.getLogger(__name__)
 
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
+SQL_REPEAT_GATE_PREFIX = "[SQL_REPEAT_GATE]"
+MAX_DATA_REPAIR_ROUNDS = 2
 _SQL_RESULT_DISPLAY_MAX_ROWS = 15
 _SQL_RESULT_ROW_KEYS = ("items", "rows", "data", "records")
 _SQL_TOOL_RESULT_DELIMITER = "--- 结果 ---"
 _SQL_TOOL_ERROR_DELIMITER = "--- 错误 ---"
+
+
+class _ForcedFirstToolChoiceModel:
+    """Inject tool_choice on the first model call of a repair round."""
+
+    def __init__(self, inner: Any, tool_choice: Any):
+        self._inner = inner
+        self._tool_choice = tool_choice
+        self._consumed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if not self._consumed and self._tool_choice is not None:
+            kwargs["tool_choice"] = self._tool_choice
+            self._consumed = True
+        result = self._inner(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 @dataclass
@@ -96,6 +119,18 @@ class _DataRunState:
     active_text_block_id: str = ""
     text_blocks_emitted_since_last_tool: int = 0
     current_text_block_emitted: bool = False
+
+    @property
+    def has_successful_nonempty_sql(self) -> bool:
+        if not self.requires_fresh_data:
+            return False
+        return (
+            self.schema_completed
+            and self.sql_completed
+            and not self.sql_before_schema
+            and not self.sql_error
+            and not self.empty_sql_result
+        )
 
     @property
     def ready_to_answer(self) -> bool:
@@ -251,6 +286,10 @@ class DataAgentRunner(BaseExecutor):
     def _is_schema_gate_block(output: Any) -> bool:
         return str(output or "").startswith(SCHEMA_GATE_PREFIX)
 
+    @staticmethod
+    def _is_sql_repeat_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(SQL_REPEAT_GATE_PREFIX)
+
     def _wrap_tools_with_schema_gate(
         self,
         tools: list[RuntimeToolSpec],
@@ -272,6 +311,11 @@ class DataAgentRunner(BaseExecutor):
                     return (
                         f"{SCHEMA_GATE_PREFIX} 为保证数据准确性，必须先调用 get_dataset_schema "
                         "获取数据集定义，再执行 execute_sql_query。"
+                    )
+                if state.has_successful_nonempty_sql:
+                    return (
+                        f"{SQL_REPEAT_GATE_PREFIX} 本轮已成功获取非空查数结果，禁止再次 execute_sql_query。"
+                        "请直接基于现有结果生成回答；如需重新查数，请调整条件后由用户发起新一轮提问。"
                     )
                 result = _original(**kwargs)
                 if inspect.isawaitable(result):
@@ -584,8 +628,11 @@ class DataAgentRunner(BaseExecutor):
                 )
             return
 
-        repair_message = self._build_repair_message(state)
-        if repair_message:
+        for _ in range(MAX_DATA_REPAIR_ROUNDS):
+            repair_message = self._build_repair_message(state)
+            if not repair_message:
+                break
+            repair_tool_choice = self._resolve_repair_tool_choice(state)
             yield {
                 "type": "log",
                 "id": f"data_repair_{uuid.uuid4().hex[:8]}",
@@ -593,44 +640,40 @@ class DataAgentRunner(BaseExecutor):
                 "details": repair_message,
                 "status": "warning",
             }
-            state.blocked_content = ""
-            state.full_content = ""
-            state.content_emitted = False
-            state.ignore_text_block = False
-            state.active_text_block_id = ""
-            state.text_blocks_emitted_since_last_tool = 0
-            state.current_text_block_emitted = False
-            state.sql_completed = False
-            state.sql_error = False
-            state.sql_error_message = ""
-            state.empty_sql_result = False
-            state.empty_sql_reason = ""
-            state.sql_plan_missing = False
-            state.sql_before_schema = False
+            self._reset_state_for_repair(state)
             repair_inputs = to_agentscope_messages(compat_to_runtime_messages(repair_message))
-            async for chunk in self._stream_agentscope_events(
-                event_stream=agent.reply_stream(repair_inputs),
-                agent=agent,
-                tools=guarded_tools,
-                native_model=native_model,
-                state=state,
-                stream_meta=stream_meta,
-                emit_final_guard=True,
-            ):
-                if is_interrupt_sse_chunk(chunk):
-                    interrupted = True
-                yield chunk
-            if not interrupted and self.conversation_id:
-                await agent_state_store.save(
-                    user_id=self._runtime_user_id(),
-                    conversation_id=self.conversation_id,
-                    agent_name=agent_name,
-                    agent_version=self.config.agent_version,
-                    tools_fingerprint=tools_fingerprint,
-                    model_name=str(model_name) if model_name else None,
-                    state=agent.state,
-                )
-            return
+            original_model = agent.model
+            if repair_tool_choice is not None:
+                agent.model = _ForcedFirstToolChoiceModel(original_model, repair_tool_choice)
+            try:
+                async for chunk in self._stream_agentscope_events(
+                    event_stream=agent.reply_stream(repair_inputs),
+                    agent=agent,
+                    tools=guarded_tools,
+                    native_model=native_model,
+                    state=state,
+                    stream_meta=stream_meta,
+                    emit_final_guard=False,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+            finally:
+                agent.model = original_model
+            if interrupted:
+                return
+            if state.full_content:
+                if self.conversation_id:
+                    await agent_state_store.save(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        agent_name=agent_name,
+                        agent_version=self.config.agent_version,
+                        tools_fingerprint=tools_fingerprint,
+                        model_name=str(model_name) if model_name else None,
+                        state=agent.state,
+                    )
+                return
 
         async for chunk in self._emit_final_guard(state):
             yield chunk
@@ -1101,7 +1144,9 @@ class DataAgentRunner(BaseExecutor):
                 state.no_authorized_schema = self._is_no_authorized_schema(output)
                 state.schema_miss = self._is_no_relevant_schema(output)
             elif tool_name == "execute_sql_query":
-                if self._is_schema_gate_block(output) or not state.schema_completed:
+                if self._is_sql_repeat_gate_block(output):
+                    pass
+                elif self._is_schema_gate_block(output) or not state.schema_completed:
                     state.sql_before_schema = True
                 else:
                     if state.requires_sql_plan and not state.sql_plan_seen:
@@ -1310,10 +1355,48 @@ class DataAgentRunner(BaseExecutor):
             if not state.sql_completed:
                 return (
                     "【查数顺序要求】你已获取数据集 Schema，但尚未执行 execute_sql_query。\n"
-                    f"{DataQueryPrompts.MUST_EXECUTE_SQL_AFTER_SCHEMA}\n"
+                    f"{DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA}\n"
                     "禁止直接回答用户，必须先完成 SQL 查数。"
                 )
         return ""
+
+    def _reset_state_for_repair(self, state: _DataRunState) -> None:
+        state.blocked_content = ""
+        state.full_content = ""
+        state.content_emitted = False
+        state.ignore_text_block = False
+        state.active_text_block_id = ""
+        state.text_blocks_emitted_since_last_tool = 0
+        state.current_text_block_emitted = False
+        state.sql_completed = False
+        state.sql_error = False
+        state.sql_error_message = ""
+        state.empty_sql_result = False
+        state.empty_sql_reason = ""
+        state.sql_plan_missing = False
+        state.sql_before_schema = False
+
+    def _resolve_repair_tool_choice(self, state: _DataRunState) -> Any | None:
+        from agentscope.tool import ToolChoice
+
+        if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
+            return ToolChoice(mode="get_dataset_schema")
+        if state.schema_miss and not state.no_authorized_schema:
+            return ToolChoice(mode="get_dataset_schema")
+        if state.sql_plan_missing:
+            return None
+        if state.sql_error or state.empty_sql_result:
+            return ToolChoice(mode="required")
+        if (
+            state.requires_fresh_data
+            and state.blocked_content.strip()
+            and not state.ready_to_answer
+        ):
+            if not state.schema_completed:
+                return ToolChoice(mode="get_dataset_schema")
+            if not state.sql_completed:
+                return ToolChoice(mode="execute_sql_query")
+        return None
 
     def _build_repair_title(self, state: _DataRunState) -> str:
         if state.requires_fresh_data and state.sql_before_schema and not state.schema_completed:
@@ -1429,6 +1512,8 @@ class DataAgentRunner(BaseExecutor):
             details = truncate_for_context(str(output or ""), max_len=1000)
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
+        if tool_name == "execute_sql_query" and self._is_sql_repeat_gate_block(output):
+            details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
         if tool_name == "execute_sql_query" and state.sql_error_message:

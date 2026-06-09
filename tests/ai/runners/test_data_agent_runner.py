@@ -1153,7 +1153,36 @@ def test_build_repair_message_when_schema_done_sql_missing(data_config):
     )
     repair = runner._build_repair_message(state)
     assert "execute_sql_query" in repair
+    assert "下一步强制动作" in repair
     assert runner._build_repair_title(state) == "必须先执行 SQL 查数"
+
+
+def test_resolve_repair_tool_choice_forces_sql_after_schema(data_config):
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-force-sql", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        blocked_content="直接总结",
+    )
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
+
+
+def test_resolve_repair_tool_choice_forces_schema_when_missing(data_config):
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-force-schema", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, blocked_content="直接回答")
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "get_dataset_schema"
 
 
 def test_build_repair_message_empty_when_no_blocked_content(data_config):
@@ -1235,6 +1264,83 @@ async def test_data_agent_runner_schema_gate_blocks_sql_tool(data_config):
     )
     assert invoked is True
     assert result2 == [{"ok": 1}]
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_sql_repeat_gate_blocks_second_sql(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    call_count = 0
+
+    async def fake_sql(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return '{"columns": [{"name": "id"}], "items": [[1]]}'
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        empty_sql_result=False,
+        sql_error=False,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-repeat-gate", trace_buffer=[])
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    result = await wrapped.invoke(
+        {"sql": "SELECT 2", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+    )
+
+    assert call_count == 0
+    assert "[SQL_REPEAT_GATE]" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_sql_repeat_gate_allows_after_empty_result(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    call_count = 0
+
+    async def fake_sql(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return '{"rows": [], "total": 0}'
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        empty_sql_result=True,
+        empty_sql_reason="SQL 返回的行容器为空，未命中任何数据行",
+        sql_error=False,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-repeat-empty", trace_buffer=[])
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    result = await wrapped.invoke(
+        {"sql": "SELECT 1", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+    )
+
+    assert call_count == 1
+    assert "[SQL_REPEAT_GATE]" not in str(result)
 
 
 @pytest.mark.asyncio
@@ -1879,6 +1985,148 @@ async def test_data_agent_runner_execute_repairs_sql_error_before_final_answer(
     assert "修正后结果是 1" in content
     assert any(event.get("title") == "修正 SQL 查询" for event in events if isinstance(event, dict))
     assert any(event.get("title") == "工具完成: execute_sql_query" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_double_repair_when_model_skips_sql_twice(
+    data_config,
+    monkeypatch,
+):
+    from agentscope.credential import CredentialBase
+    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.model import ChatModelBase, ChatResponse
+
+    from app.core.llm.client import AgentScopeLLMHandle
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    class FakeCredential(CredentialBase):
+        @classmethod
+        def get_chat_model_class(cls):
+            return FakeModel
+
+    class FakeModel(ChatModelBase):
+        class Parameters(BaseModel):
+            pass
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.calls = 0
+            self.tool_choices = []
+
+        async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kwargs):
+            self.calls += 1
+            self.tool_choices.append(tool_choice)
+            if self.calls == 1:
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_schema",
+                            name="get_dataset_schema",
+                            input='{"keywords": "demo"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            if self.calls == 2:
+                return ChatResponse(
+                    content=[TextBlock(text="第一次跳过 SQL 直接回答")],
+                    is_last=True,
+                )
+            if self.calls == 3:
+                return ChatResponse(
+                    content=[TextBlock(text="第一次 repair 仍跳过 SQL")],
+                    is_last=True,
+                )
+            if self.calls == 4:
+                return ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="call_sql",
+                            name="execute_sql_query",
+                            input='{"sql": "SELECT id FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            return ChatResponse(
+                content=[TextBlock(text="第二次 repair 后查数成功，结果是 1")],
+                is_last=True,
+            )
+
+    async def fake_load_context_config():
+        return None
+
+    async def fake_build_model_config(**kwargs):
+        return None
+
+    async def fake_config_get(key):
+        return "5"
+
+    fake_model = FakeModel(
+        credential=FakeCredential(),
+        model="fake-native-data",
+        parameters=FakeModel.Parameters(),
+        stream=False,
+        max_retries=0,
+    )
+    handle = AgentScopeLLMHandle(
+        native_model=fake_model,
+        model_name="fake-native-data",
+        temperature=0.0,
+        streaming=True,
+    )
+
+    async def fake_get_configured_llm(**kwargs):
+        return handle
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.load_context_config",
+        fake_load_context_config,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_model_config",
+        fake_build_model_config,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.ConfigService.get",
+        fake_config_get,
+    )
+
+    async def fake_schema(keywords=None):
+        return "table_name: demo\ncolumns: id"
+
+    async def fake_sql(sql, data_source, dataset_name):
+        return [{"id": 1}]
+
+    from app.services.ai.tools.registry import ToolRegistry
+
+    monkeypatch.setitem(ToolRegistry._registry, "get_dataset_schema", fake_schema)
+    monkeypatch.setitem(ToolRegistry._registry, "execute_sql_query", fake_sql)
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-double-repair", trace_buffer=[])
+
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "查 demo"}]):
+        events.append(chunk)
+
+    content = "".join(event["content"] for event in events if "content" in event and "type" not in event)
+    assert "第一次跳过 SQL 直接回答" not in content
+    assert "第一次 repair 仍跳过 SQL" not in content
+    assert "第二次 repair 后查数成功，结果是 1" in content
+    repair_titles = [
+        event.get("title")
+        for event in events
+        if isinstance(event, dict) and event.get("title") == "必须先执行 SQL 查数"
+    ]
+    assert len(repair_titles) == 2
+    assert fake_model.tool_choices[2] is not None
+    assert getattr(fake_model.tool_choices[2], "mode", None) == "execute_sql_query"
+    assert fake_model.tool_choices[3] is not None
+    assert getattr(fake_model.tool_choices[3], "mode", None) == "execute_sql_query"
 
 
 @pytest.mark.asyncio
