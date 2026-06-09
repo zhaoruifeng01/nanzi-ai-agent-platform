@@ -133,6 +133,66 @@ async def test_route_query_returns_generic_turn_hints(mock_agents_metadata):
     assert result.relation_to_previous == "followup"
     assert result.user_action_type == "transform_context"
 
+
+@pytest.mark.asyncio
+async def test_route_prompt_guides_local_machine_load_to_general(mock_agents_metadata):
+    """路由提示词应区分本机诊断与业务指标查询，避免把本机负载当作 ChatBI 查数。"""
+    service = RouterService()
+    llm_resp_content = json.dumps({
+        "thought": "This asks for the current machine runtime status, not historical business metrics.",
+        "agent_name": "general-chat",
+        "confidence": 0.93
+    })
+
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query("看看我机器的负载情况")
+
+    assert result.agent_id == "agent-general"
+    assert result.confidence == 0.93
+    routed_messages = mock_chat.generate_text.call_args[0][0]
+    system_prompt = routed_messages[0].content[0].text
+    assert "当前系统/本机/这台机器/服务器运行状态" in system_prompt
+    assert "不要因为出现\"负载/利用率/CPU/内存\"等词就直接判为数据查询" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_route_query_business_load_metric_still_uses_llm(mock_agents_metadata):
+    """业务/机房负载指标不命中本机诊断捷径，仍由 LLM 路由给 ChatBI。"""
+    service = RouterService()
+    llm_resp_content = json.dumps({
+        "thought": "Query asks for IDC load trend metrics.",
+        "agent_name": "ChatBI",
+        "confidence": 0.91
+    })
+
+    mock_llm = object()
+    mock_chat = _mock_chat_client(llm_resp_content)
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_get_llm.return_value = mock_llm
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query("查询上海机房负载趋势")
+
+    assert result.agent_id == "agent-chatbi"
+    assert result.confidence == 0.91
+    mock_get_llm.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_route_query_low_confidence_fallback(mock_agents_metadata):
     """测试低置信度回退: 路由给 general-chat"""

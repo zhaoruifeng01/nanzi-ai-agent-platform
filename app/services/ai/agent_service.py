@@ -57,7 +57,8 @@ class AgentService:
         user_info: Optional[Dict[str, Any]] = None,
         api_key: Optional[str] = None,
         enable_multi_agent: bool = True,
-        debug_options: Optional[Dict[str, Any]] = None
+        debug_options: Optional[Dict[str, Any]] = None,
+        permission_options: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Main entry point for streaming chat.
@@ -582,6 +583,7 @@ class AgentService:
                     trace_id,
                     trace_buffer,
                     debug_options,
+                    permission_options,
                     user_info,
                     api_key,
                     conversation_id,
@@ -601,6 +603,7 @@ class AgentService:
                     trace_id,
                     trace_buffer,
                     debug_options,
+                    permission_options,
                     user_info,
                     conversation_id,
                     shared_turn=session_turn,
@@ -709,7 +712,8 @@ class AgentService:
         conversation_id: Optional[str] = None,
         user_info: Optional[Dict[str, Any]] = None,
         api_key: Optional[str] = None,
-        enable_multi_agent: bool = True
+        enable_multi_agent: bool = True,
+        permission_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Non-streaming wrapper for chat completion.
@@ -727,7 +731,8 @@ class AgentService:
             conversation_id=conversation_id,
             user_info=user_info,
             api_key=api_key,
-            enable_multi_agent=enable_multi_agent
+            enable_multi_agent=enable_multi_agent,
+            permission_options=permission_options,
         ):
             if "trace_id" in chunk and chunk.get("status") == "init":
                 trace_id = chunk["trace_id"]
@@ -1042,6 +1047,7 @@ class AgentService:
         trace_id: str,
         trace_buffer: List[AgentExecutionStep],
         debug_options: Dict[str, Any],
+        permission_options: Optional[Dict[str, Any]],
         user_info: Optional[Dict[str, Any]],
         api_key: Optional[str],
         conversation_id: Optional[str] = None,
@@ -1084,6 +1090,7 @@ class AgentService:
                 trace_id,
                 trace_buffer,
                 debug_options,
+                permission_options,
                 user_info,
                 conversation_id,
                 shared_turn=session_turn,

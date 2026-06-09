@@ -280,12 +280,24 @@ async def stream_observability_agentscope_events(
         return
 
 
+async def _maybe_await_pending_hook(
+    hook: Callable[[Dict[str, Any]], Any] | None,
+    state: Dict[str, Any],
+) -> None:
+    if hook is None:
+        return
+    result = hook(state)
+    if hasattr(result, "__await__"):
+        await result
+
+
 async def map_standard_agentscope_event(
     event: Any,
     *,
     state: Dict[str, Any],
     on_tool_result_end: Callable[[Any], AsyncGenerator[Dict[str, Any], None]] | None = None,
     on_text_block_delta: Callable[[Any], AsyncGenerator[Dict[str, Any], None]] | None = None,
+    on_before_pending_interrupt: Callable[[Dict[str, Any]], Any] | None = None,
     agent: Any | None = None,
     runner: PendingInterruptHost | None = None,
     tools: List[Any] | None = None,
@@ -355,6 +367,7 @@ async def map_standard_agentscope_event(
 
     if event_type == "REQUIRE_EXTERNAL_EXECUTION":
         if agent is not None and runner is not None and tools is not None and native_model is not None:
+            await _maybe_await_pending_hook(on_before_pending_interrupt, state)
             async for chunk in stream_pending_tool_interrupt(
                 event=event,
                 agent=agent,
@@ -370,6 +383,7 @@ async def map_standard_agentscope_event(
 
     if event_type == "REQUIRE_USER_CONFIRM":
         if agent is not None and runner is not None and tools is not None and native_model is not None:
+            await _maybe_await_pending_hook(on_before_pending_interrupt, state)
             async for chunk in stream_pending_tool_interrupt(
                 event=event,
                 agent=agent,

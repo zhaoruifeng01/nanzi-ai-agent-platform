@@ -177,11 +177,17 @@ def is_workspace_managed_tool_spec(spec: Any) -> bool:
     return native_name in WORKSPACE_BUILTIN_TOOL_NAMES
 
 
-async def build_workspace_toolkit(workspace: Any, tool_specs: list[Any]):
+async def build_workspace_toolkit(
+    workspace: Any,
+    tool_specs: list[Any],
+    *,
+    approval_mode: str | None = None,
+):
     """Assemble Toolkit from workspace discovery + remaining platform tools."""
     from app.services.ai.runtime.agentscope.tools import (
-        AgentScopeRuntimeTool,
         _load_agentscope_toolkit,
+        runtime_tool_from_native,
+        runtime_tool_from_spec,
     )
 
     toolkit_cls = _load_agentscope_toolkit()
@@ -193,15 +199,22 @@ async def build_workspace_toolkit(workspace: Any, tool_specs: list[Any]):
             sorted(workspace_names),
         )
 
+    runtime_workspace_tools = [
+        runtime_tool_from_native(tool, approval_mode=approval_mode)
+        for tool in workspace_tools
+    ]
     platform_tools = [
-        spec.native_tool if spec.native_tool is not None else AgentScopeRuntimeTool(spec)
+        runtime_tool_from_spec(
+            spec,
+            approval_mode=approval_mode,
+        )
         for spec in tool_specs
         if not is_workspace_managed_tool_spec(spec)
     ]
     skills = await workspace.list_skills()
     mcps = await workspace.list_mcps()
     return toolkit_cls(
-        tools=[*workspace_tools, *platform_tools],
+        tools=[*runtime_workspace_tools, *platform_tools],
         skills_or_loaders=skills,
         mcps=mcps,
     )

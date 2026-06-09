@@ -15,12 +15,14 @@ class BaseExecutor(ABC):
         trace_buffer: List[AgentExecutionStep],
         debug_options: Dict[str, Any] = None,
         user_info: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        permission_options: Dict[str, Any] = None,
     ):
         self.config = config
         self.trace_id = trace_id
         self.trace_buffer = trace_buffer
         self.debug_options = debug_options or {}
+        self.permission_options = permission_options or {}
         self.user_info = user_info
         self.conversation_id = conversation_id
         self.step_counter = 0

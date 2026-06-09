@@ -157,6 +157,61 @@ async def test_agentscope_tool_wrapper_maps_runtime_permission_scopes():
 
 
 @pytest.mark.asyncio
+async def test_agentscope_tool_wrapper_honors_runtime_approval_mode_for_non_read_tools():
+    from agentscope.permission import PermissionBehavior
+
+    from app.services.ai.runtime.agentscope.tools import (
+        AgentScopeRuntimeTool,
+        RuntimeToolSpec,
+    )
+
+    spec = RuntimeToolSpec(
+        name="write_tool",
+        description="Permission test tool",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=lambda: "ok",
+        permission_scope="write",
+    )
+
+    assert (
+        await AgentScopeRuntimeTool(spec, approval_mode="allow").check_permissions({}, None)
+    ).behavior == PermissionBehavior.ALLOW
+    assert (
+        await AgentScopeRuntimeTool(spec, approval_mode="deny").check_permissions({}, None)
+    ).behavior == PermissionBehavior.DENY
+    assert (
+        await AgentScopeRuntimeTool(spec, approval_mode="ask").check_permissions({}, None)
+    ).behavior == PermissionBehavior.ASK
+
+
+@pytest.mark.asyncio
+async def test_runtime_approval_mode_does_not_override_read_or_dangerous_tools():
+    from agentscope.permission import PermissionBehavior
+
+    from app.services.ai.runtime.agentscope.tools import (
+        AgentScopeRuntimeTool,
+        RuntimeToolSpec,
+    )
+
+    def make_tool(scope: str) -> AgentScopeRuntimeTool:
+        return AgentScopeRuntimeTool(
+            RuntimeToolSpec(
+                name=f"{scope}_tool",
+                description="Permission test tool",
+                parameters_schema={"type": "object", "properties": {}},
+                source_type="static",
+                callable=lambda: "ok",
+                permission_scope=scope,
+            ),
+            approval_mode="allow",
+        )
+
+    assert (await make_tool("read").check_permissions({}, None)).behavior == PermissionBehavior.ALLOW
+    assert (await make_tool("dangerous").check_permissions({}, None)).behavior == PermissionBehavior.DENY
+
+
+@pytest.mark.asyncio
 async def test_chatbi_runtime_tools_are_allowed_without_ask():
     from agentscope.permission import PermissionBehavior
 
@@ -181,6 +236,56 @@ async def test_chatbi_runtime_tools_are_allowed_without_ask():
         PermissionBehavior.ALLOW,
     ]
     assert [await tool.check_read_only({}) for tool in tools] == [True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_chatbi_runtime_tools_ignore_runtime_deny_approval_mode():
+    from agentscope.permission import PermissionBehavior
+
+    from app.services.ai.runtime.agentscope.tools import AgentScopeRuntimeTool
+    from app.services.ai.tools.registry import ToolRegistry
+
+    specs = await ToolRegistry.get_runtime_tools(
+        ["get_dataset_schema", "execute_sql_query", "update_dashboard_context"]
+    )
+    tools = [AgentScopeRuntimeTool(spec, approval_mode="deny") for spec in specs]
+
+    decisions = [await tool.check_permissions({}, None) for tool in tools]
+
+    assert [decision.behavior for decision in decisions] == [
+        PermissionBehavior.ALLOW,
+        PermissionBehavior.ALLOW,
+        PermissionBehavior.ALLOW,
+    ]
+
+
+def test_build_toolkit_applies_runtime_approval_mode_to_wrapped_tools(monkeypatch):
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, build_toolkit
+
+    class FakeToolkit:
+        def __init__(self, tools):
+            self.tools = tools
+
+    monkeypatch.setattr(
+        "app.services.ai.runtime.agentscope.tools._load_agentscope_toolkit",
+        lambda: FakeToolkit,
+    )
+
+    toolkit = build_toolkit(
+        [
+            RuntimeToolSpec(
+                name="write_tool",
+                description="No-op",
+                parameters_schema={"type": "object", "properties": {}},
+                source_type="static",
+                callable=lambda: "ok",
+                permission_scope="write",
+            )
+        ],
+        approval_mode="allow",
+    )
+
+    assert toolkit.tools[0].approval_mode == "allow"
 
 
 def test_build_toolkit_returns_agent_scope_toolkit_when_available(monkeypatch):
@@ -211,10 +316,14 @@ def test_build_toolkit_returns_agent_scope_toolkit_when_available(monkeypatch):
     assert [tool.name for tool in toolkit.tools] == ["noop"]
 
 
-def test_build_toolkit_passes_native_agentscope_tools_through(monkeypatch):
+def test_build_toolkit_wraps_native_agentscope_tools_with_approval_mode(monkeypatch):
     from agentscope.tool import Bash
 
-    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, build_toolkit
+    from app.services.ai.runtime.agentscope.tools import (
+        AgentScopeNativeApprovalTool,
+        RuntimeToolSpec,
+        build_toolkit,
+    )
 
     class FakeToolkit:
         def __init__(self, tools):
@@ -236,11 +345,14 @@ def test_build_toolkit_passes_native_agentscope_tools_through(monkeypatch):
                 callable=lambda: "unused",
                 native_tool=native_tool,
             )
-        ]
+        ],
+        approval_mode="allow",
     )
 
-    assert toolkit.tools == [native_tool]
+    assert isinstance(toolkit.tools[0], AgentScopeNativeApprovalTool)
+    assert toolkit.tools[0].native_tool is native_tool
     assert toolkit.tools[0].name == "Bash"
+    assert toolkit.tools[0].approval_mode == "allow"
 
 
 @pytest.mark.asyncio

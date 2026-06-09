@@ -1221,7 +1221,7 @@ async def test_data_agent_runner_syncs_data_run_state_before_interrupt(data_conf
         }
 
     monkeypatch.setattr(
-        "app.services.ai.runners.data_agent_runner.stream_pending_tool_interrupt",
+        "app.services.ai.runtime.agentscope.event_stream.stream_pending_tool_interrupt",
         fake_interrupt,
     )
 

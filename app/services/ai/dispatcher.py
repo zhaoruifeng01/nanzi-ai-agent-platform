@@ -29,6 +29,7 @@ class AgentDispatcher:
         trace_id: str,
         trace_buffer: List[AgentExecutionStep],
         debug_options: Optional[Dict[str, Any]] = None,
+        permission_options: Optional[Dict[str, Any]] = None,
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         shared_turn: Optional[SharedTurn] = None,
@@ -41,10 +42,26 @@ class AgentDispatcher:
 
         # 1. External Engine Check
         if agent_config.engine_type == 'RAGFLOW':
-            return RAGExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+            return RAGExecutor(
+                agent_config,
+                trace_id,
+                trace_buffer,
+                debug_options,
+                user_info,
+                conversation_id,
+                permission_options=permission_options,
+            )
 
         if agent_config.engine_type == 'OPENCLAW':
-            return OpenClawExecutor(agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+            return OpenClawExecutor(
+                agent_config,
+                trace_id,
+                trace_buffer,
+                debug_options,
+                user_info,
+                conversation_id,
+                permission_options=permission_options,
+            )
 
         can_do_data = "data_query" in (agent_config.capabilities or [])
 
@@ -56,7 +73,13 @@ class AgentDispatcher:
                 agent_config.agent_name,
             )
             return DataQueryExecutor(
-                agent_config, trace_id, trace_buffer, debug_options, user_info, conversation_id
+                agent_config,
+                trace_id,
+                trace_buffer,
+                debug_options,
+                user_info,
+                conversation_id,
+                permission_options=permission_options,
             )
 
         # 2. 非数据执行器保留现有粗分类，用于知识库护栏等非 ChatBI 流程。
@@ -88,6 +111,7 @@ class AgentDispatcher:
             debug_options,
             user_info,
             conversation_id,
+            permission_options=permission_options,
             route_hints=route_hints,
         )
 

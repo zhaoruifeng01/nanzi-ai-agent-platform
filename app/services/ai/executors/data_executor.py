@@ -20,6 +20,7 @@ class DataQueryExecutor(BaseExecutor):
             trace_id=self.trace_id,
             trace_buffer=self.trace_buffer,
             debug_options=self.debug_options,
+            permission_options=self.permission_options,
             user_info=self.user_info,
             conversation_id=self.conversation_id,
         )

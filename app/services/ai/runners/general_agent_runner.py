@@ -62,9 +62,10 @@ class GeneralAgentRunner(BaseExecutor):
         debug_options: Dict[str, Any] = None,
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        permission_options: Dict[str, Any] = None,
         route_hints: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id, permission_options)
         self.intent_info = None
         self.intent_elapsed_ms = 0.0
         self.turn_classification = None
@@ -84,6 +85,7 @@ class GeneralAgentRunner(BaseExecutor):
             "runner_type": "general",
             "config": self.config.model_dump(),
             "debug_options": self.debug_options,
+            "permission_options": self.permission_options,
             "system_content": system_content,
             "max_steps": max_steps,
             "route_hints": self.route_hints,
@@ -106,6 +108,7 @@ class GeneralAgentRunner(BaseExecutor):
             trace_id=trace_id,
             trace_buffer=trace_buffer or [],
             debug_options=runner_context.get("debug_options"),
+            permission_options=runner_context.get("permission_options"),
             user_info=user_info,
             conversation_id=conversation_id,
             route_hints=runner_context.get("route_hints"),
@@ -416,9 +419,16 @@ class GeneralAgentRunner(BaseExecutor):
             conversation_id=self.conversation_id,
         )
         if workspace is not None:
-            toolkit = await build_workspace_toolkit(workspace, tools)
+            toolkit = await build_workspace_toolkit(
+                workspace,
+                tools,
+                approval_mode=self.permission_options.get("approval_mode"),
+            )
         else:
-            toolkit = build_toolkit(tools)
+            toolkit = build_toolkit(
+                tools,
+                approval_mode=self.permission_options.get("approval_mode"),
+            )
         return Agent(
             name=self._runtime_agent_name(),
             system_prompt=system_content,

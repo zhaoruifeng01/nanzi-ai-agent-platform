@@ -11,6 +11,7 @@ from app.services.ai.runtime.agentscope.errors import RuntimeToolError, RuntimeT
 
 ToolSourceType = Literal["static", "generic_api", "mcp", "class", "system"]
 RuntimePermissionScope = Literal["read", "write", "ask", "dangerous"]
+RuntimeApprovalMode = Literal["ask", "allow", "deny"]
 RuntimeToolAuditStatus = Literal["start", "success", "error"]
 
 
@@ -143,12 +144,17 @@ class AgentScopeRuntimeTool:
     is_mcp = False
     mcp_name = None
 
-    def __init__(self, spec: RuntimeToolSpec) -> None:
+    def __init__(
+        self,
+        spec: RuntimeToolSpec,
+        approval_mode: RuntimeApprovalMode | str | None = None,
+    ) -> None:
         self.spec = spec
         self.name = spec.name
         self.description = spec.description
         self.input_schema = spec.parameters_schema
         self.is_read_only = spec.is_read_only
+        self.approval_mode = _normalize_runtime_approval_mode(approval_mode)
 
     async def check_permissions(self, tool_input: dict[str, Any], context: Any) -> Any:
         try:
@@ -165,6 +171,19 @@ class AgentScopeRuntimeTool:
                 behavior=PermissionBehavior.DENY,
                 message=f"Tool '{self.name}' is marked dangerous and cannot run automatically.",
                 decision_reason="dangerous runtime tool scope",
+                bypass_immune=True,
+            )
+        if self.approval_mode == "allow":
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message=f"Tool '{self.name}' is allowed by runtime approval mode.",
+                decision_reason=f"runtime approval mode: {self.approval_mode}",
+            )
+        if self.approval_mode == "deny":
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=f"Tool '{self.name}' is denied by runtime approval mode.",
+                decision_reason=f"runtime approval mode: {self.approval_mode}",
                 bypass_immune=True,
             )
         return PermissionDecision(
@@ -192,6 +211,97 @@ class AgentScopeRuntimeTool:
         )
 
 
+class AgentScopeNativeApprovalTool:
+    """Apply runtime approval mode to AgentScope native tools such as Bash."""
+
+    def __init__(
+        self,
+        native_tool: Any,
+        *,
+        approval_mode: RuntimeApprovalMode | str | None = None,
+        permission_scope: RuntimePermissionScope | None = None,
+    ) -> None:
+        self.native_tool = native_tool
+        self.name = getattr(native_tool, "name", "")
+        self.description = getattr(native_tool, "description", "")
+        self.input_schema = getattr(native_tool, "input_schema", {"type": "object", "properties": {}})
+        self.is_read_only = bool(getattr(native_tool, "is_read_only", False))
+        self.approval_mode = _normalize_runtime_approval_mode(approval_mode)
+        self.permission_scope = permission_scope or _infer_native_permission_scope(native_tool)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.native_tool, name)
+
+    async def check_permissions(self, tool_input: dict[str, Any], context: Any) -> Any:
+        try:
+            from agentscope.permission import PermissionBehavior, PermissionDecision
+        except Exception:
+            return None
+        if self.permission_scope == "read":
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message=f"Tool '{self.name}' is read-only and can run automatically.",
+            )
+        if self.permission_scope == "dangerous":
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=f"Tool '{self.name}' is marked dangerous and cannot run automatically.",
+                decision_reason="dangerous runtime tool scope",
+                bypass_immune=True,
+            )
+        if self.approval_mode == "allow":
+            return PermissionDecision(
+                behavior=PermissionBehavior.ALLOW,
+                message=f"Tool '{self.name}' is allowed by runtime approval mode.",
+                decision_reason=f"runtime approval mode: {self.approval_mode}",
+            )
+        if self.approval_mode == "deny":
+            return PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=f"Tool '{self.name}' is denied by runtime approval mode.",
+                decision_reason=f"runtime approval mode: {self.approval_mode}",
+                bypass_immune=True,
+            )
+        native_check = getattr(self.native_tool, "check_permissions", None)
+        if native_check:
+            result = native_check(tool_input, context)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        return PermissionDecision(
+            behavior=PermissionBehavior.ASK,
+            message=f"Tool '{self.name}' requires user confirmation before execution.",
+            decision_reason=f"runtime tool scope: {self.permission_scope}",
+        )
+
+    async def check_read_only(self, tool_input: dict[str, Any]) -> bool:
+        native_check = getattr(self.native_tool, "check_read_only", None)
+        if native_check:
+            result = native_check(tool_input)
+            if inspect.isawaitable(result):
+                return bool(await result)
+            return bool(result)
+        return self.permission_scope == "read"
+
+    def match_rule(self, rule_content: str | None, tool_input: dict[str, Any]) -> bool:
+        native_match = getattr(self.native_tool, "match_rule", None)
+        if native_match:
+            return bool(native_match(rule_content, tool_input))
+        return rule_content is None
+
+    def generate_suggestions(self, tool_input: dict[str, Any]) -> list[Any]:
+        native_generate = getattr(self.native_tool, "generate_suggestions", None)
+        if native_generate:
+            return native_generate(tool_input)
+        return []
+
+    async def __call__(self, **kwargs: Any) -> Any:
+        result = self.native_tool(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+
 def _load_agentscope_toolkit():
     from agentscope.tool import Toolkit
 
@@ -205,12 +315,55 @@ def _preview_result(result: Any, max_length: int = 500) -> str:
     return text[: max_length - 3] + "..."
 
 
-def build_toolkit(tool_specs: list[RuntimeToolSpec]):
+def _normalize_runtime_approval_mode(
+    approval_mode: RuntimeApprovalMode | str | None,
+) -> RuntimeApprovalMode:
+    if approval_mode in {"allow", "deny", "ask"}:
+        return approval_mode
+    return "ask"
+
+
+def _infer_native_permission_scope(native_tool: Any) -> RuntimePermissionScope:
+    if bool(getattr(native_tool, "is_read_only", False)):
+        return "read"
+    name = str(getattr(native_tool, "name", "") or "")
+    if name in {"Read", "Glob", "Grep"}:
+        return "read"
+    return "ask"
+
+
+def runtime_tool_from_spec(
+    spec: RuntimeToolSpec,
+    *,
+    approval_mode: RuntimeApprovalMode | str | None = None,
+) -> Any:
+    if spec.native_tool is not None:
+        return AgentScopeNativeApprovalTool(
+            spec.native_tool,
+            approval_mode=approval_mode,
+            permission_scope=spec.permission_scope,
+        )
+    return AgentScopeRuntimeTool(
+        spec,
+        approval_mode=approval_mode,
+    )
+
+
+def runtime_tool_from_native(
+    native_tool: Any,
+    *,
+    approval_mode: RuntimeApprovalMode | str | None = None,
+) -> Any:
+    return AgentScopeNativeApprovalTool(native_tool, approval_mode=approval_mode)
+
+
+def build_toolkit(
+    tool_specs: list[RuntimeToolSpec],
+    *,
+    approval_mode: RuntimeApprovalMode | str | None = None,
+):
     toolkit_cls = _load_agentscope_toolkit()
-    tools = [
-        spec.native_tool if spec.native_tool is not None else AgentScopeRuntimeTool(spec)
-        for spec in tool_specs
-    ]
+    tools = [runtime_tool_from_spec(spec, approval_mode=approval_mode) for spec in tool_specs]
     return toolkit_cls(tools=tools)
 
 

@@ -1153,6 +1153,11 @@
         :allowed-agents="allowedAgents"
         :current-user="currentUser"
         :window-width="windowWidth"
+        :approval-mode="config.approvalMode"
+        :selected-model="config.overrideModel"
+        :available-models="availableModels"
+        @update:approval-mode="(mode) => { config.approvalMode = mode; saveRoutingSettings(); }"
+        @update:selected-model="(model) => { config.overrideModel = model; saveRoutingSettings(); }"
         @send="sendMessage"
         @stop="stopGeneration"
         @toggle-shortcuts="toggleShortcuts"
@@ -2506,6 +2511,7 @@ const config = reactive({
   theme: "light",
   welcomeMessage: "",
   overrideModel: "", // To override default model
+  approvalMode: "ask" as "ask" | "allow" | "deny",
   overrideAgentId: "", // To override agent via @mention
   userAvatar: "", // Custom user avatar URL
   routingMode: "auto", // 'auto' | 'expert'
@@ -2523,6 +2529,7 @@ const saveRoutingSettings = () => {
     localStorage.setItem("yovole_enable_multi_agent", config.enableMultiAgent ? "1" : "0");
     localStorage.setItem("yovole_show_shortcuts", config.showShortcuts ? "1" : "0");
     localStorage.setItem("yovole_override_model", config.overrideModel || "");
+    localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
     localStorage.setItem("yovole_embed_theme", config.theme || "light");
 };
 const triggerMultiAgentHint = (enabled: boolean) => {
@@ -4313,6 +4320,9 @@ const sendMessage = async () => {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
       },
+      permission_options: {
+        approval_mode: config.approvalMode || "ask",
+      },
     };
     const headers: any = {
       "Content-Type": "application/json",
@@ -4666,6 +4676,10 @@ onMounted(() => {
   if (savedShortcuts !== null) config.showShortcuts = savedShortcuts === "1";
   const savedOverrideModel = localStorage.getItem("yovole_override_model");
   if (savedOverrideModel) config.overrideModel = savedOverrideModel;
+  const savedApprovalMode = localStorage.getItem("yovole_approval_mode");
+  if (savedApprovalMode === "ask" || savedApprovalMode === "allow" || savedApprovalMode === "deny") {
+    config.approvalMode = savedApprovalMode;
+  }
   const savedTheme = localStorage.getItem("yovole_embed_theme");
   if (savedTheme) {
     config.theme = savedTheme;

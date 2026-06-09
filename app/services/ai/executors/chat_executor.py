@@ -14,9 +14,10 @@ class GeneralChatExecutor(BaseExecutor):
         debug_options: Dict[str, Any] = None,
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        permission_options: Dict[str, Any] = None,
         route_hints: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id, permission_options)
         self.intent_info = None
         self.intent_elapsed_ms = 0.0
         self.turn_classification = None
@@ -32,6 +33,7 @@ class GeneralChatExecutor(BaseExecutor):
             trace_id=self.trace_id,
             trace_buffer=self.trace_buffer,
             debug_options=self.debug_options,
+            permission_options=self.permission_options,
             user_info=self.user_info,
             conversation_id=self.conversation_id,
             route_hints=self.route_hints,

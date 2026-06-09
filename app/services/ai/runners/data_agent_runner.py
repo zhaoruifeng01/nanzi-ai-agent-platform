@@ -41,9 +41,7 @@ from app.services.ai.runtime.agentscope.agent_runtime import (
 )
 from app.services.ai.runtime.agentscope.event_stream import (
     is_interrupt_sse_chunk,
-    map_tool_result_data_delta,
-    stream_observability_agentscope_events,
-    stream_pending_tool_interrupt,
+    map_standard_agentscope_event,
 )
 from app.services.ai.runtime.agentscope.session_lock import (
     SessionLockTimeout,
@@ -119,8 +117,9 @@ class DataAgentRunner(BaseExecutor):
         debug_options: Dict[str, Any] = None,
         user_info: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        permission_options: Dict[str, Any] = None,
     ):
-        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id)
+        super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id, permission_options)
         self._last_run_state: _DataRunState | None = None
         self.turn_classification = None
         self.intent_info = None
@@ -143,6 +142,7 @@ class DataAgentRunner(BaseExecutor):
             "runner_type": "data",
             "config": self.config.model_dump(),
             "debug_options": self.debug_options,
+            "permission_options": self.permission_options,
             "system_content": system_content,
             "max_steps": max_steps,
             "standalone_query": self._standalone_query,
@@ -166,6 +166,7 @@ class DataAgentRunner(BaseExecutor):
             trace_id=trace_id,
             trace_buffer=trace_buffer or [],
             debug_options=runner_context.get("debug_options"),
+            permission_options=runner_context.get("permission_options"),
             user_info=user_info,
             conversation_id=conversation_id,
         )
@@ -1033,6 +1034,19 @@ class DataAgentRunner(BaseExecutor):
         pending_state["data_run_state"] = asdict(state)
 
     @staticmethod
+    def _build_stream_state(
+        state: _DataRunState,
+        stream_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        stream_state = DataAgentRunner._data_run_state_to_pending_state(state, stream_meta)
+        stream_state["tool_names"] = state.tool_names
+        stream_state["tool_args_text"] = state.tool_args_text
+        stream_state["tool_outputs"] = state.tool_outputs
+        stream_state["tool_started_at"] = state.tool_started_at
+        stream_state.setdefault("tool_data", {})
+        return stream_state
+
+    @staticmethod
     def _pending_state_to_data_run_state(pending_state: Dict[str, Any]) -> tuple[_DataRunState, Dict[str, Any]]:
         from dataclasses import fields
 
@@ -1061,134 +1075,98 @@ class DataAgentRunner(BaseExecutor):
         state = state or _DataRunState()
         stream_meta = stream_meta or {}
         self._last_run_state = state
-        pending_state = self._data_run_state_to_pending_state(state, stream_meta)
+        stream_state = self._build_stream_state(state, stream_meta)
+
+        async def on_before_pending_interrupt(pending_state: Dict[str, Any]) -> None:
+            self._sync_pending_data_run_state(state, pending_state)
+
+        async def on_tool_result_end(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
+            tool_id = getattr(event, "tool_call_id", "")
+            tool_name = state.tool_names.get(tool_id, "")
+            raw_args = state.tool_args_text.get(tool_id, "") or "{}"
+            try:
+                tool_args = json.loads(raw_args)
+            except Exception:
+                tool_args = {"input": raw_args}
+            output = state.tool_outputs.get(tool_id, "")
+            duration_ms = (time.time() - state.tool_started_at.get(tool_id, time.time())) * 1000
+            if tool_name == "get_dataset_schema":
+                state.schema_completed = True
+                state.sql_before_schema = False
+                state.no_authorized_schema = self._is_no_authorized_schema(output)
+                state.schema_miss = self._is_no_relevant_schema(output)
+            elif tool_name == "execute_sql_query":
+                if self._is_schema_gate_block(output) or not state.schema_completed:
+                    state.sql_before_schema = True
+                else:
+                    if state.requires_sql_plan and not state.sql_plan_seen:
+                        state.sql_plan_missing = True
+                    state.sql_completed = True
+                    parsed_output = self._try_parse_json_output(output)
+                    state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
+                    state.empty_sql_result = bool(state.empty_sql_reason)
+                    state.sql_error, state.sql_error_message = self._detect_sql_error(output)
+                    if not state.sql_error:
+                        await self._save_last_data_result_for_followups(tool_args, parsed_output)
+            self._sync_pending_data_run_state(state, stream_state)
+            self._increment_step()
+            self.trace_buffer.append(
+                AgentExecutionStep(
+                    step_number=self.step_counter,
+                    event_type="tool_call",
+                    agent_name=self.config.agent_name,
+                    model=getattr(native_model, "model", self.config.model_name),
+                    temperature=float(self.config.temperature or 0),
+                    tool_name=tool_name,
+                    tool_input=tool_args,
+                    tool_output=output,
+                    raw_log=str(output),
+                    execution_time_ms=duration_ms,
+                    timestamp=datetime.fromtimestamp(state.tool_started_at.get(tool_id, time.time())),
+                )
+            )
+            yield {
+                "type": "log",
+                "id": tool_id,
+                "title": f"工具完成: {tool_name}",
+                "details": self._format_tool_details(tool_name, output, state),
+                "status": "success",
+                "execution_time_ms": duration_ms,
+            }
+
+        async def on_text_block_delta(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
+            block_id = str(getattr(event, "block_id", "") or "")
+            if block_id:
+                if (
+                    state.final_answer_block_id
+                    and block_id != state.final_answer_block_id
+                ):
+                    return
+                state.active_text_block_id = block_id
+            if state.ignore_text_block:
+                return
+            delta = str(getattr(event, "delta", ""))
+            state.text_window = (state.text_window + delta)[-4000:]
+            if self._has_sql_plan(state.text_window):
+                if not state.sql_plan_seen:
+                    state.sql_plan_seen = True
+                    self._sync_pending_data_run_state(state, stream_state)
+            if not state.ready_to_answer:
+                state.blocked_content += delta
+                return
+            if not state.content_emitted:
+                state.content_emitted = True
+                yield {
+                    "type": "log",
+                    "id": f"gen_data_{uuid.uuid4().hex[:8]}",
+                    "title": "✨ 开始生成回复",
+                    "status": "success",
+                }
+            state.full_content += delta
+            yield {"content": delta}
 
         async for event in event_stream:
-            async for chunk in stream_observability_agentscope_events(
-                event,
-                state=pending_state,
-                agent=agent,
-                agent_name=self._runtime_agent_name(),
-            ):
-                yield chunk
-
             event_type = str(getattr(event, "type", ""))
-            if event_type == "TOOL_RESULT_DATA_DELTA":
-                yield map_tool_result_data_delta(event, pending_state)
-                continue
-
-            if event_type == "REQUIRE_EXTERNAL_EXECUTION":
-                if agent is not None:
-                    self._sync_pending_data_run_state(state, pending_state)
-                    async for pending_chunk in stream_pending_tool_interrupt(
-                        event=event,
-                        agent=agent,
-                        runner=self,
-                        tools=tools,
-                        native_model=native_model,
-                        state=pending_state,
-                        kind="external",
-                        sse_type="external_execution_required",
-                    ):
-                        yield pending_chunk
-                return
-
-            if event_type == "REQUIRE_USER_CONFIRM":
-                if agent is not None:
-                    self._sync_pending_data_run_state(state, pending_state)
-                    async for pending_chunk in stream_pending_tool_interrupt(
-                        event=event,
-                        agent=agent,
-                        runner=self,
-                        tools=tools,
-                        native_model=native_model,
-                        state=pending_state,
-                        kind="permission",
-                        sse_type="permission_required",
-                    ):
-                        yield pending_chunk
-                return
-
-            if event_type == "TOOL_CALL_START":
-                tool_id = getattr(event, "tool_call_id", "") or f"call_{uuid.uuid4().hex[:8]}"
-                tool_name = getattr(event, "tool_call_name", "")
-                state.tool_names[tool_id] = tool_name
-                state.tool_started_at[tool_id] = time.time()
-                yield {
-                    "type": "log",
-                    "id": tool_id,
-                    "title": f"调用工具: {tool_name}",
-                    "details": "参数: {}",
-                    "status": "pending",
-                    "started_at": int(time.time() * 1000),
-                }
-                continue
-
-            if event_type == "TOOL_CALL_DELTA":
-                tool_id = getattr(event, "tool_call_id", "")
-                state.tool_args_text[tool_id] = state.tool_args_text.get(tool_id, "") + str(getattr(event, "delta", ""))
-                continue
-
-            if event_type == "TOOL_RESULT_TEXT_DELTA":
-                tool_id = getattr(event, "tool_call_id", "")
-                state.tool_outputs[tool_id] = state.tool_outputs.get(tool_id, "") + str(getattr(event, "delta", ""))
-                continue
-
-            if event_type == "TOOL_RESULT_END":
-                tool_id = getattr(event, "tool_call_id", "")
-                tool_name = state.tool_names.get(tool_id, "")
-                raw_args = state.tool_args_text.get(tool_id, "") or "{}"
-                try:
-                    tool_args = json.loads(raw_args)
-                except Exception:
-                    tool_args = {"input": raw_args}
-                output = state.tool_outputs.get(tool_id, "")
-                duration_ms = (time.time() - state.tool_started_at.get(tool_id, time.time())) * 1000
-                if tool_name == "get_dataset_schema":
-                    state.schema_completed = True
-                    state.sql_before_schema = False
-                    state.no_authorized_schema = self._is_no_authorized_schema(output)
-                    state.schema_miss = self._is_no_relevant_schema(output)
-                elif tool_name == "execute_sql_query":
-                    if self._is_schema_gate_block(output) or not state.schema_completed:
-                        state.sql_before_schema = True
-                    else:
-                        if state.requires_sql_plan and not state.sql_plan_seen:
-                            state.sql_plan_missing = True
-                        state.sql_completed = True
-                        parsed_output = self._try_parse_json_output(output)
-                        state.empty_sql_reason = self._detect_empty_result(parsed_output) or ""
-                        state.empty_sql_result = bool(state.empty_sql_reason)
-                        state.sql_error, state.sql_error_message = self._detect_sql_error(output)
-                        if not state.sql_error:
-                            await self._save_last_data_result_for_followups(tool_args, parsed_output)
-                self._sync_pending_data_run_state(state, pending_state)
-                self._increment_step()
-                self.trace_buffer.append(
-                    AgentExecutionStep(
-                        step_number=self.step_counter,
-                        event_type="tool_call",
-                        agent_name=self.config.agent_name,
-                        model=getattr(native_model, "model", self.config.model_name),
-                        temperature=float(self.config.temperature or 0),
-                        tool_name=tool_name,
-                        tool_input=tool_args,
-                        tool_output=output,
-                        raw_log=str(output),
-                        execution_time_ms=duration_ms,
-                        timestamp=datetime.fromtimestamp(state.tool_started_at.get(tool_id, time.time())),
-                    )
-                )
-                yield {
-                    "type": "log",
-                    "id": tool_id,
-                    "title": f"工具完成: {tool_name}",
-                    "details": self._format_tool_details(tool_name, output, state),
-                    "status": "success",
-                    "execution_time_ms": duration_ms,
-                }
-                continue
-
             if event_type == "TEXT_BLOCK_START":
                 block_id = str(getattr(event, "block_id", "") or "")
                 if block_id:
@@ -1204,41 +1182,21 @@ class DataAgentRunner(BaseExecutor):
                         state.final_answer_block_id = block_id
                 continue
 
-            if event_type == "TEXT_BLOCK_DELTA":
-                block_id = str(getattr(event, "block_id", "") or "")
-                if block_id:
-                    if (
-                        state.final_answer_block_id
-                        and block_id != state.final_answer_block_id
-                    ):
-                        continue
-                    state.active_text_block_id = block_id
-                if state.ignore_text_block:
-                    continue
-                delta = str(getattr(event, "delta", ""))
-                state.text_window = (state.text_window + delta)[-4000:]
-                if self._has_sql_plan(state.text_window):
-                    if not state.sql_plan_seen:
-                        state.sql_plan_seen = True
-                        self._sync_pending_data_run_state(state, pending_state)
-                if not state.ready_to_answer:
-                    state.blocked_content += delta
-                    continue
-                if not state.content_emitted:
-                    state.content_emitted = True
-                    yield {
-                        "type": "log",
-                        "id": f"gen_data_{uuid.uuid4().hex[:8]}",
-                        "title": "✨ 开始生成回复",
-                        "status": "success",
-                    }
-                state.full_content += delta
-                yield {"content": delta}
-                continue
-
-            if event_type == "EXCEED_MAX_ITERS":
-                yield {"content": GeneralChatPrompts.MAX_STEPS_REACHED}
-                return
+            async for chunk in map_standard_agentscope_event(
+                event,
+                state=stream_state,
+                on_tool_result_end=on_tool_result_end,
+                on_text_block_delta=on_text_block_delta,
+                on_before_pending_interrupt=on_before_pending_interrupt,
+                agent=agent,
+                runner=self,
+                tools=tools,
+                native_model=native_model,
+                agent_name=self._runtime_agent_name(),
+            ):
+                yield chunk
+                if is_interrupt_sse_chunk(chunk):
+                    return
 
         if emit_final_guard:
             guard_emitted = False

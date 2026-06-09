@@ -742,6 +742,7 @@ const showLogicFlowModal = ref(false);
 const isConfigPanelFloating = ref(false);
 const debugConfig = reactive({
   model: "", // Empty means default
+  approvalMode: "ask" as "ask" | "allow" | "deny",
   temperature: 0.0,
   dryRun: false, // SQL Review Mode
   returnRawPrompt: true, // Always verify context
@@ -1692,6 +1693,9 @@ const sendMessage = async () => {
         stream: true,
         enable_multi_agent: debugConfig.enableMultiAgent,
         debug_options: debugOptions,
+        permission_options: {
+          approval_mode: debugConfig.approvalMode || "ask",
+        },
         agent_id: agentParams.agent_id,
         version_id: agentParams.version_id,
         conversation_id: conversationId.value,
@@ -3334,6 +3338,11 @@ onUnmounted(() => {
             :allowed-agents="agents"
             :current-user="currentUser"
             :window-width="windowWidth"
+            :approval-mode="debugConfig.approvalMode"
+            :selected-model="debugConfig.model"
+            :available-models="availableModels"
+            @update:approval-mode="debugConfig.approvalMode = $event"
+            @update:selected-model="debugConfig.model = $event"
             @send="sendMessage"
             @stop="stopGeneration"
             @toggle-shortcuts="debugConfig.showShortcuts = !debugConfig.showShortcuts"

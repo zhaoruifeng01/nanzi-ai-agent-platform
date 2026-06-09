@@ -52,6 +52,7 @@ class ChatCompletionRequest(BaseModel):
     conversation_id: Optional[str] = None  # 服务端对话记忆 ID
     enable_multi_agent: bool = True        # 是否启用多智能体协同
     debug_options: Optional[Dict[str, Any]] = None
+    permission_options: Optional[Dict[str, Any]] = None
 
 class ChatCompletionResponse(BaseModel):
     content: str
@@ -224,7 +225,8 @@ async def create_chat_completion(
                 user_info=user_info,
                 api_key=api_key_str,
                 enable_multi_agent=completion_request.enable_multi_agent,
-                debug_options=completion_request.debug_options
+                debug_options=completion_request.debug_options,
+                permission_options=completion_request.permission_options,
             ):
                 # Format each chunk as an SSE data event
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -250,7 +252,8 @@ async def create_chat_completion(
             conversation_id=completion_request.conversation_id,
             user_info=user_info,
             api_key=api_key_str,
-            enable_multi_agent=completion_request.enable_multi_agent
+            enable_multi_agent=completion_request.enable_multi_agent,
+            permission_options=completion_request.permission_options,
         )
         return StandardResponse(data=result)
 
