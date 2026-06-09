@@ -468,6 +468,228 @@ async def test_general_runner_synthesis_fallback_when_no_text_and_no_context(cha
 
 
 @pytest.mark.asyncio
+async def test_general_runner_synthesis_after_transitional_text_and_more_tools(chat_config):
+    """过渡语后又调工具、再无正文时，应触发 synthesis 而非因 partial 跳过兜底。"""
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(session_id="s1", reply_id="r1", context=[])
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_skill",
+            tool_call_name="Skill",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_skill",
+            delta="ok",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_skill")
+        yield SimpleNamespace(
+            type="TEXT_BLOCK_DELTA",
+            delta="企业信息查询需要实时数据，让我尝试通过搜索来获取：",
+        )
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_bash",
+            delta="<meta name='aliyun_waf_aa'>",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash")
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    class SynthesisLLM:
+        async def astream(self, messages):
+            yield AIMessage(content="未能获取实时企业数据，建议使用官方 API 查询。")
+
+    runner = GeneralAgentRunner(
+        config=chat_config,
+        trace_id="test-partial-then-tools",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state(user_query="查企业信息")
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=SynthesisLLM()),
+    ):
+        chunks = []
+        async for chunk in runner._stream_agentscope_native_events(
+            event_stream=fake_event_stream(),
+            agent=FakeAgent(),
+            tools=[],
+            native_model=SimpleNamespace(model="qwen-test"),
+            state=state,
+        ):
+            chunks.append(chunk)
+
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and "type" not in c
+    )
+    assert "让我尝试通过搜索来获取" in content
+    assert "未能获取实时企业数据" in content
+
+
+@pytest.mark.asyncio
+async def test_general_runner_synthesis_when_empty_delta_after_tools_clears_pending(chat_config):
+    """工具后又收到仅含 think 的空 delta 时，仍应 synthesis（不能误清 pending）。"""
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(session_id="s1", reply_id="r1", context=[])
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_skill",
+            tool_call_name="Skill",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_skill",
+            delta="ok",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_skill")
+        yield SimpleNamespace(
+            type="TEXT_BLOCK_DELTA",
+            delta="让我尝试通过搜索来获取：",
+        )
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_bash",
+            delta="waf page",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash")
+        yield SimpleNamespace(
+            type="TEXT_BLOCK_DELTA",
+            delta="",
+        )
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    class SynthesisLLM:
+        async def astream(self, messages):
+            yield AIMessage(content="synthesis after empty think delta")
+
+    runner = GeneralAgentRunner(
+        config=chat_config,
+        trace_id="test-empty-delta-after-tools",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state(user_query="查企业")
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=SynthesisLLM()),
+    ):
+        chunks = []
+        async for chunk in runner._stream_agentscope_native_events(
+            event_stream=fake_event_stream(),
+            agent=FakeAgent(),
+            tools=[],
+            native_model=SimpleNamespace(model="qwen-test"),
+            state=state,
+        ):
+            chunks.append(chunk)
+
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and "type" not in c
+    )
+    assert "synthesis after empty think delta" in content
+
+
+@pytest.mark.asyncio
+async def test_general_runner_static_fallback_when_synthesis_returns_empty(chat_config):
+    """synthesis 模型若只输出 thinking 被 strip 后，应给出静态 WAF 说明。"""
+    from agentscope.state import AgentState
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+    from app.services.ai.runtime.agentscope.event_stream import new_native_stream_state
+
+    class FakeAgent:
+        def __init__(self):
+            self.state = AgentState(session_id="s1", reply_id="r1", context=[])
+
+    async def fake_event_stream():
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(
+            type="TOOL_RESULT_TEXT_DELTA",
+            tool_call_id="call_bash",
+            delta="<meta name='aliyun_waf_aa'>acw_sc__v2",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash")
+        yield SimpleNamespace(
+            type="TEXT_BLOCK_DELTA",
+            delta="让我尝试通过搜索来获取：",
+        )
+        yield SimpleNamespace(
+            type="TOOL_CALL_START",
+            tool_call_id="call_bash2",
+            tool_call_name="Bash",
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_bash2")
+        yield SimpleNamespace(type="REPLY_END", reply_id="r1", session_id="s1")
+
+    class EmptySynthesisLLM:
+        async def astream(self, messages):
+            yield AIMessage(content="")
+
+    runner = GeneralAgentRunner(
+        config=chat_config,
+        trace_id="test-static-fallback",
+        trace_buffer=[],
+    )
+    state = new_native_stream_state(user_query="查企业")
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=EmptySynthesisLLM()),
+    ):
+        chunks = []
+        async for chunk in runner._stream_agentscope_native_events(
+            event_stream=fake_event_stream(),
+            agent=FakeAgent(),
+            tools=[],
+            native_model=SimpleNamespace(model="qwen-test"),
+            state=state,
+        ):
+            chunks.append(chunk)
+
+    content = "".join(
+        c["content"] for c in chunks if "content" in c and "type" not in c
+    )
+    assert "WAF" in content or "未能生成完整回答" in content
+
+
+@pytest.mark.asyncio
 async def test_general_runner_restored_state_only_sends_latest_user_message(chat_config):
     """恢复 AgentState 后，只应向 AgentScope 追加本轮最新用户消息，避免重复灌入历史。"""
     from agentscope.message import Msg, TextBlock

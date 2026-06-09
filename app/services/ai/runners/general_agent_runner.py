@@ -40,6 +40,12 @@ from app.services.ai.runtime.agentscope.event_stream import (
     new_native_stream_state,
 )
 from app.services.ai.runtime.agentscope.text_sanitize import sanitize_assistant_stream_text
+from app.services.ai.runtime.agentscope.stream_reconcile import (
+    GENERIC_SYNTHESIS_EMPTY_FALLBACK,
+    compute_stream_reconcile_gap,
+    needs_tool_synthesis_fallback,
+    truncate_for_context,
+)
 from app.services.ai.runtime.agentscope.session_lock import (
     SessionLockTimeout,
     agentscope_session_lock,
@@ -499,6 +505,9 @@ class GeneralAgentRunner(BaseExecutor):
                 self.trace_buffer.append(result["trace"])
 
         async def on_text_block_delta(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
+            delta = sanitize_assistant_stream_text(str(getattr(event, "delta", "")))
+            if not delta:
+                return
             if state["used_tools"] and not state["synthesis_log_emitted"]:
                 state["synthesis_log_emitted"] = True
                 yield {
@@ -509,9 +518,6 @@ class GeneralAgentRunner(BaseExecutor):
                     "status": "success",
                 }
                 yield {"type": "thinking", "status": "continuing"}
-            delta = sanitize_assistant_stream_text(str(getattr(event, "delta", "")))
-            if not delta:
-                return
             if not state["content_emitted"]:
                 state["content_emitted"] = True
                 yield {
@@ -539,7 +545,7 @@ class GeneralAgentRunner(BaseExecutor):
                 if is_interrupt_sse_chunk(chunk):
                     return
 
-        async for chunk in self._emit_missed_reply_content(
+        async for chunk in self._reconcile_reply_after_stream(
             agent=agent,
             state=state,
             native_model=native_model,
@@ -587,35 +593,49 @@ class GeneralAgentRunner(BaseExecutor):
         state["full_content"] = (state.get("full_content") or "") + text
         yield {"content": text}
 
-    async def _emit_missed_reply_content(
+    async def _reconcile_reply_after_stream(
         self,
         *,
         agent: Any,
         state: Dict[str, Any],
         native_model: Any,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        if (state.get("full_content") or "").strip():
-            return
+        """流结束后：AgentState 与已发送 SSE 对齐，不足则 synthesis。"""
+        streamed = state.get("full_content") or ""
+        agent_text = (
+            extract_latest_assistant_text(agent, include_thinking=False)
+            if agent is not None
+            else ""
+        )
 
-        recovered = extract_latest_assistant_text(agent)
-        if recovered:
-            logger.warning(
-                "[GeneralAgentRunner] Recovered reply from AgentState after missed TEXT_BLOCK_DELTA chars=%d",
-                len(recovered),
+        gap = compute_stream_reconcile_gap(streamed, agent_text)
+        if gap.strip():
+            logger.info(
+                "[GeneralAgentRunner] Stream reconcile gap chars=%d streamed=%d agent=%d",
+                len(gap),
+                len(streamed),
+                len(agent_text),
             )
-            async for chunk in self._emit_reply_text_chunks(state, recovered):
+            async for chunk in self._emit_reply_text_chunks(state, gap):
                 yield chunk
             return
 
-        if not state.get("used_tools"):
-            logger.warning(
-                "[GeneralAgentRunner] Reply ended without streamed text and no assistant context to recover"
-            )
+        if not needs_tool_synthesis_fallback(
+            streamed,
+            agent_text,
+            used_tools=bool(state.get("used_tools")),
+        ):
+            if not streamed.strip() and not agent_text.strip():
+                logger.warning(
+                    "[GeneralAgentRunner] Reply ended without assistant text"
+                )
             return
 
+        append_sep = bool(streamed.strip())
         async for chunk in self._stream_general_synthesis_fallback(
             state=state,
             native_model=native_model,
+            append_after_partial=append_sep,
         ):
             yield chunk
 
@@ -624,55 +644,71 @@ class GeneralAgentRunner(BaseExecutor):
         *,
         state: Dict[str, Any],
         native_model: Any,
+        append_after_partial: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         tool_names: Dict[str, str] = state.get("tool_names", {})
         tool_outputs: Dict[str, str] = state.get("tool_outputs", {})
         review_lines = [
-            f"- {tool_names[tool_id]}: {str(tool_outputs.get(tool_id, ''))[:4000]}"
+            f"- {tool_names[tool_id]}: {truncate_for_context(tool_outputs.get(tool_id, ''))}"
             for tool_id in tool_names
         ]
         if not review_lines:
+            logger.warning("[GeneralAgentRunner] Synthesis skipped: no tool review lines")
+            state["full_content"] = (state.get("full_content") or "") + GENERIC_SYNTHESIS_EMPTY_FALLBACK
+            yield {"content": GENERIC_SYNTHESIS_EMPTY_FALLBACK}
             return
 
         user_query = str(state.get("user_query") or "")
         execution_review = "【执行过程回顾】\n" + "\n".join(review_lines)
         logger.warning(
-            "[GeneralAgentRunner] Falling back to synthesis LLM after tools (no TEXT_BLOCK_DELTA) tools=%d",
+            "[GeneralAgentRunner] Synthesis fallback after stream reconcile tools=%d",
             len(review_lines),
         )
 
-        if not state.get("synthesis_log_emitted"):
-            state["synthesis_log_emitted"] = True
+        if append_after_partial:
+            yield {"content": "\n\n"}
+
+        if not state.get("synthesis_fb_log_emitted"):
+            state["synthesis_fb_log_emitted"] = True
             yield {
                 "type": "log",
                 "id": f"synthesis_fb_{uuid.uuid4().hex[:8]}",
                 "title": "📝 汇总工具结果",
-                "details": "模型未流式输出正文，正在基于工具结果生成回答...",
+                "details": "正在基于工具结果生成最终回答...",
                 "status": "success",
             }
 
-        llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
-        messages = normalize_messages_for_llm([
-            SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
-            HumanMessage(
-                content=GeneralChatPrompts.synthesis_user_message(user_query, execution_review)
-            ),
-        ])
+        emitted_any = False
+        try:
+            llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+            messages = normalize_messages_for_llm([
+                SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
+                HumanMessage(
+                    content=GeneralChatPrompts.synthesis_user_message(user_query, execution_review)
+                ),
+            ])
+            async for chunk in llm.astream(messages):
+                content = sanitize_assistant_stream_text(str(getattr(chunk, "content", None) or ""))
+                if not content:
+                    continue
+                emitted_any = True
+                if not state.get("content_emitted"):
+                    state["content_emitted"] = True
+                    yield {
+                        "type": "log",
+                        "id": f"gen_fb_{uuid.uuid4().hex[:8]}",
+                        "title": "✨ 开始生成回复",
+                        "status": "success",
+                    }
+                state["full_content"] = (state.get("full_content") or "") + content
+                yield {"content": content}
+        except Exception as exc:
+            logger.error("[GeneralAgentRunner] Synthesis fallback failed: %s", exc, exc_info=True)
 
-        async for chunk in llm.astream(messages):
-            content = sanitize_assistant_stream_text(str(getattr(chunk, "content", None) or ""))
-            if not content:
-                continue
-            if not state.get("content_emitted"):
-                state["content_emitted"] = True
-                yield {
-                    "type": "log",
-                    "id": f"gen_fb_{uuid.uuid4().hex[:8]}",
-                    "title": "✨ 开始生成回复",
-                    "status": "success",
-                }
-            state["full_content"] = (state.get("full_content") or "") + content
-            yield {"content": content}
+        if not emitted_any:
+            logger.warning("[GeneralAgentRunner] Synthesis produced no visible text")
+            state["full_content"] = (state.get("full_content") or "") + GENERIC_SYNTHESIS_EMPTY_FALLBACK
+            yield {"content": GENERIC_SYNTHESIS_EMPTY_FALLBACK}
 
     async def _resolve_pending_runtime(
         self,
@@ -840,7 +876,16 @@ class GeneralAgentRunner(BaseExecutor):
             timestamp=datetime.fromtimestamp(time.time() - duration_tool / 1000)
         )
         
-        log_event = {"type": "log", "id": tool_id, "title": f"工具完成: {tool_name} ({duration_tool:.0f}ms)", "details": str(tool_output)[:5000], "status": "success" if not is_error else "error", "model": t_model, "temperature": t_temp}
+        display_output = truncate_for_context(str(tool_output), max_len=500)
+        log_event = {
+            "type": "log",
+            "id": tool_id,
+            "title": f"工具完成: {tool_name} ({duration_tool:.0f}ms)",
+            "details": display_output,
+            "status": "success" if not is_error else "error",
+            "model": t_model,
+            "temperature": t_temp,
+        }
         
         # --- [NEW: Citation Extraction & Multi-Track Unpacking] ---
         citation_event = None
