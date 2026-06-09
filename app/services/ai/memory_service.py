@@ -109,10 +109,8 @@ class MemoryService:
             message["files"] = files
         if agent_name:
             message["agent_name"] = agent_name
-        if prompt_tokens:
-            message["prompt_tokens"] = prompt_tokens
-        if completion_tokens:
-            message["completion_tokens"] = completion_tokens
+        message["prompt_tokens"] = int(prompt_tokens or 0)
+        message["completion_tokens"] = int(completion_tokens or 0)
 
         
         # Push to list

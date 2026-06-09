@@ -530,6 +530,13 @@ class GeneralAgentRunner(BaseExecutor):
             yield {"content": delta}
 
         async for event in event_stream:
+            event_type = str(getattr(event, "type", ""))
+            if event_type == "MODEL_CALL_END":
+                self._record_agent_scope_model_call(
+                    event,
+                    state=state,
+                    native_model=native_model,
+                )
             async for chunk in map_standard_agentscope_event(
                 event,
                 state=state,
@@ -679,6 +686,7 @@ class GeneralAgentRunner(BaseExecutor):
             }
 
         emitted_any = False
+        last_synthesis_chunk = None
         try:
             llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
             messages = normalize_messages_for_llm([
@@ -688,6 +696,7 @@ class GeneralAgentRunner(BaseExecutor):
                 ),
             ])
             async for chunk in llm.astream(messages):
+                last_synthesis_chunk = chunk
                 content = sanitize_assistant_stream_text(str(getattr(chunk, "content", None) or ""))
                 if not content:
                     continue
@@ -709,6 +718,26 @@ class GeneralAgentRunner(BaseExecutor):
             logger.warning("[GeneralAgentRunner] Synthesis produced no visible text")
             state["full_content"] = (state.get("full_content") or "") + GENERIC_SYNTHESIS_EMPTY_FALLBACK
             yield {"content": GENERIC_SYNTHESIS_EMPTY_FALLBACK}
+            return
+
+        synthesis_tokens = extract_tokens_from_message(last_synthesis_chunk)
+        if synthesis_tokens["prompt_tokens"] or synthesis_tokens["completion_tokens"]:
+            self._increment_step()
+            self.trace_buffer.append(
+                AgentExecutionStep(
+                    step_number=self.step_counter,
+                    event_type="synthesis",
+                    agent_name=self.config.agent_name,
+                    model=str(getattr(llm, "model_name", self.config.synthesis_model_name or self.config.model_name) or ""),
+                    temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
+                    tool_name="synthesis_fallback",
+                    tool_output={"content": state.get("full_content") or ""},
+                    prompt_tokens=synthesis_tokens["prompt_tokens"],
+                    completion_tokens=synthesis_tokens["completion_tokens"],
+                    total_tokens=synthesis_tokens["total_tokens"],
+                    timestamp=datetime.now(),
+                )
+            )
 
     async def _resolve_pending_runtime(
         self,

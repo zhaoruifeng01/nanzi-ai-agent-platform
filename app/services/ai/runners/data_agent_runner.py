@@ -23,6 +23,7 @@ from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.common import (
     convert_history_to_messages,
+    extract_tokens_from_message,
     normalize_messages_for_llm,
 )
 from app.services.ai.executors.prompts import DataQueryPrompts, GeneralChatPrompts
@@ -817,6 +818,14 @@ class DataAgentRunner(BaseExecutor):
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
             response = await model.ainvoke([SystemMessage(content=prompt)])
+            tokens = extract_tokens_from_message(response)
+            self.record_llm_token_usage(
+                prompt_tokens=tokens["prompt_tokens"],
+                completion_tokens=tokens["completion_tokens"],
+                event_type="thought",
+                model=str(getattr(model, "model_name", self.config.model_name) or ""),
+                tool_name="schema_keyword_planner",
+            )
             content = (getattr(response, "content", "") or "").strip()
             data = {}
             try:
@@ -929,6 +938,14 @@ class DataAgentRunner(BaseExecutor):
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
             response = await model.ainvoke([SystemMessage(content=prompt)])
+            tokens = extract_tokens_from_message(response)
+            self.record_llm_token_usage(
+                prompt_tokens=tokens["prompt_tokens"],
+                completion_tokens=tokens["completion_tokens"],
+                event_type="thought",
+                model=str(getattr(model, "model_name", self.config.model_name) or ""),
+                tool_name="standalone_query_rewrite",
+            )
             rewritten = (getattr(response, "content", "") or "").strip().strip('"').strip("'")
             if not rewritten:
                 return q
@@ -979,8 +996,10 @@ class DataAgentRunner(BaseExecutor):
         content_emitted = False
         generation_start = None
         gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
+        last_synthesis_chunk = None
         try:
             async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
+                last_synthesis_chunk = chunk
                 content = str(getattr(chunk, "content", "") or "")
                 if not content:
                     continue
@@ -1017,6 +1036,7 @@ class DataAgentRunner(BaseExecutor):
             }
             yield {"content": fallback}
 
+        synthesis_tokens = extract_tokens_from_message(last_synthesis_chunk)
         self._increment_step()
         self.trace_buffer.append(
             AgentExecutionStep(
@@ -1027,6 +1047,9 @@ class DataAgentRunner(BaseExecutor):
                 temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
                 tool_output={"content": full_synthesis_content, "reused_last_data_result": True},
                 raw_log=full_synthesis_content,
+                prompt_tokens=synthesis_tokens["prompt_tokens"],
+                completion_tokens=synthesis_tokens["completion_tokens"],
+                total_tokens=synthesis_tokens["total_tokens"],
                 execution_time_ms=(time.time() - start_synthesis) * 1000,
                 timestamp=datetime.fromtimestamp(start_synthesis),
             )
@@ -1213,6 +1236,12 @@ class DataAgentRunner(BaseExecutor):
 
         async for event in event_stream:
             event_type = str(getattr(event, "type", ""))
+            if event_type == "MODEL_CALL_END":
+                self._record_agent_scope_model_call(
+                    event,
+                    state=stream_state,
+                    native_model=native_model,
+                )
             if event_type == "TOOL_CALL_START":
                 state.text_blocks_emitted_since_last_tool = 0
                 state.ignore_text_block = False
