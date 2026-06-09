@@ -666,8 +666,30 @@
                              </div>
                           </div>                          <!-- Details -->
                           <div v-if="log.details && log.isExpanded" class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700/50">
-                            <!-- SQL Detection & Pretty Print -->
-                            <div v-if="log.details && (log.details.includes('SELECT ') || log.details.includes('[Executed SQL]:') || log.details.includes('SQL:'))" class="space-y-1.5 mb-1">
+                            <template v-if="splitSqlToolLogDetails(log.details)">
+                              <div class="space-y-1.5 mb-1">
+                                <div class="p-2 bg-gray-900 rounded border border-gray-800 font-mono text-[10px] text-emerald-400 leading-relaxed overflow-x-auto relative group/sql">
+                                  <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
+                                    <span>SQL Query</span>
+                                    <button @click.stop="copyMessage(splitSqlToolLogDetails(log.details)!.sqlPart)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
+                                  </div>
+                                  <pre class="whitespace-pre-wrap break-all">{{ splitSqlToolLogDetails(log.details)!.sqlPart }}</pre>
+                                </div>
+                                <div class="p-2 rounded border font-mono text-[10px] leading-relaxed overflow-x-auto"
+                                     :class="splitSqlToolLogDetails(log.details)!.bodyKind === 'error'
+                                       ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/40 text-red-700 dark:text-red-300'
+                                       : 'bg-gray-50 dark:bg-gray-900/60 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300'">
+                                  <div class="mb-1 text-[9px] font-sans uppercase tracking-tight"
+                                       :class="splitSqlToolLogDetails(log.details)!.bodyKind === 'error' ? 'text-red-500' : 'text-gray-500'">
+                                    {{ sqlToolLogBodyLabel(splitSqlToolLogDetails(log.details)!.bodyKind) }}
+                                  </div>
+                                  <pre class="whitespace-pre-wrap break-all">{{ splitSqlToolLogDetails(log.details)!.bodyPart }}</pre>
+                                </div>
+                                <pre v-if="splitSqlToolLogDetails(log.details)!.trailingPart" class="font-mono text-[10px] text-amber-600 dark:text-amber-400 whitespace-pre-wrap break-all">{{ splitSqlToolLogDetails(log.details)!.trailingPart }}</pre>
+                              </div>
+                            </template>
+                            <!-- SQL Detection & Pretty Print (legacy / error-only logs) -->
+                            <div v-else-if="log.details && isSqlLikeToolLogDetails(log.details)" class="space-y-1.5 mb-1">
                                 <div class="p-2 bg-gray-900 rounded border border-gray-800 font-mono text-[10px] text-emerald-400 leading-relaxed overflow-x-auto relative group/sql">
                                     <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
                                       <span>SQL Query</span>
@@ -2067,6 +2089,7 @@ import {
   countHiddenLogs,
   type TurnType,
 } from "@/utils/turnLogDisplay";
+import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
 import {
   dispatchAgentscopeStreamEvent,
   formatExternalExecutionStatus,

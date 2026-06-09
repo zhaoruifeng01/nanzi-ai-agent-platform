@@ -27,6 +27,7 @@ import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
+import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
 
 const route = useRoute();
 const { showToast } = useToast();
@@ -3017,8 +3018,30 @@ onUnmounted(() => {
                                     </table>
                                 </div>
 
-                                <!-- 3. SQL Detection & Pretty Print -->
-                                <div v-else-if="log.details && (log.details.includes('SELECT ') || log.details.includes('[Executed SQL]:') || log.details.includes('SQL:'))" class="space-y-1.5">
+                                <!-- 3. SQL + Result split (ChatBI success) -->
+                                <div v-if="splitSqlToolLogDetails(log.details)" class="space-y-1.5">
+                                    <div class="p-2 bg-gray-900 rounded border border-gray-800 font-mono text-[10px] text-emerald-400 leading-relaxed overflow-x-auto relative group/sql">
+                                        <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
+                                          <span>SQL Query</span>
+                                          <button @click.stop="copyContent(splitSqlToolLogDetails(log.details)!.sqlPart, $event)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
+                                        </div>
+                                        <pre class="whitespace-pre-wrap break-all">{{ splitSqlToolLogDetails(log.details)!.sqlPart }}</pre>
+                                    </div>
+                                    <div class="p-2 rounded border font-mono text-[10px] leading-relaxed overflow-x-auto"
+                                         :class="splitSqlToolLogDetails(log.details)!.bodyKind === 'error'
+                                           ? 'bg-red-50 border-red-200 text-red-700'
+                                           : 'bg-gray-50 border-gray-200 text-gray-600'">
+                                        <div class="mb-1 text-[9px] font-sans uppercase tracking-tight"
+                                             :class="splitSqlToolLogDetails(log.details)!.bodyKind === 'error' ? 'text-red-500' : 'text-gray-500'">
+                                          {{ sqlToolLogBodyLabel(splitSqlToolLogDetails(log.details)!.bodyKind) }}
+                                        </div>
+                                        <pre class="whitespace-pre-wrap break-all">{{ splitSqlToolLogDetails(log.details)!.bodyPart }}</pre>
+                                    </div>
+                                    <pre v-if="splitSqlToolLogDetails(log.details)!.trailingPart" class="font-mono text-[10px] text-amber-600 whitespace-pre-wrap break-all leading-relaxed">{{ splitSqlToolLogDetails(log.details)!.trailingPart }}</pre>
+                                </div>
+
+                                <!-- 4. SQL Detection & Pretty Print (legacy / error-only) -->
+                                <div v-else-if="log.details && isSqlLikeToolLogDetails(log.details)" class="space-y-1.5">
                                     <div class="p-2 bg-gray-900 rounded border border-gray-800 font-mono text-[10px] text-emerald-400 leading-relaxed overflow-x-auto relative group/sql">
                                         <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
                                           <span>SQL Query</span>
@@ -3028,7 +3051,7 @@ onUnmounted(() => {
                                     </div>
                                 </div>
 
-                                <!-- 4. Default JSON/Text -->
+                                <!-- 5. Default JSON/Text -->
                                 <pre v-else class="font-mono text-[10px] text-gray-500 whitespace-pre-wrap break-all leading-relaxed">{{ log.details }}</pre>
                             </div>
                         </div>

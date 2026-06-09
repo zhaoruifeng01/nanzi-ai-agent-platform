@@ -62,6 +62,10 @@ from app.services.config_service import ConfigService
 logger = logging.getLogger(__name__)
 
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
+_SQL_RESULT_DISPLAY_MAX_ROWS = 15
+_SQL_RESULT_ROW_KEYS = ("items", "rows", "data", "records")
+_SQL_TOOL_RESULT_DELIMITER = "--- 结果 ---"
+_SQL_TOOL_ERROR_DELIMITER = "--- 错误 ---"
 
 
 @dataclass
@@ -1130,7 +1134,7 @@ class DataAgentRunner(BaseExecutor):
                 "type": "log",
                 "id": tool_id,
                 "title": f"工具完成: {tool_name}",
-                "details": self._format_tool_details(tool_name, output, state),
+                "details": self._format_tool_details(tool_name, output, state, tool_args),
                 "status": "success",
                 "execution_time_ms": duration_ms,
             }
@@ -1321,8 +1325,81 @@ class DataAgentRunner(BaseExecutor):
             return True
         return re.search(r"按.{0,12}(组|类|类型|维度|机房|区域|部门|用户|状态)", question) is not None
 
-    def _format_tool_details(self, tool_name: str, output: Any, state: _DataRunState) -> str:
-        details = truncate_for_context(str(output), max_len=1000)
+    def _format_sql_result_for_display(self, output: Any, *, max_rows: int = _SQL_RESULT_DISPLAY_MAX_ROWS) -> str:
+        parsed = self._try_parse_json_output(output)
+        if isinstance(parsed, dict) and self._is_structured_sql_result(parsed):
+            display: dict[str, Any] = dict(parsed)
+            for key in _SQL_RESULT_ROW_KEYS:
+                rows = display.get(key)
+                if isinstance(rows, list) and len(rows) > max_rows:
+                    display[key] = rows[:max_rows]
+                    display["_display_note"] = f"仅展示前 {max_rows} 行，共 {len(rows)} 行"
+                    break
+            try:
+                return json.dumps(display, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(output or "")
+        if isinstance(parsed, list):
+            if len(parsed) > max_rows:
+                payload = {
+                    "_display_note": f"仅展示前 {max_rows} 行，共 {len(parsed)} 行",
+                    "rows": parsed[:max_rows],
+                }
+            else:
+                payload = parsed
+            try:
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(output or "")
+        return str(output or "")
+
+    def _build_sql_error_tool_details(self, output: Any, tool_args: dict[str, Any] | None) -> str:
+        text = str(output or "")
+        marker = "[Executed SQL]:"
+        if marker in text:
+            error_part, sql_part = text.split(marker, 1)
+            error_part = error_part.strip()
+            sql_part = sql_part.strip()
+        else:
+            error_part = text.strip()
+            sql_part = ""
+            if tool_args:
+                raw_sql = tool_args.get("sql") or tool_args.get("query")
+                if isinstance(raw_sql, str) and raw_sql.strip():
+                    sql_part = raw_sql.strip()
+        error_display = truncate_for_context(error_part, max_len=1000)
+        if sql_part:
+            return f"[Executed SQL]:\n{sql_part}\n\n{_SQL_TOOL_ERROR_DELIMITER}\n{error_display}"
+        return error_display
+
+    def _format_tool_details(
+        self,
+        tool_name: str,
+        output: Any,
+        state: _DataRunState,
+        tool_args: dict[str, Any] | None = None,
+    ) -> str:
+        if tool_name == "execute_sql_query" and not self._is_schema_gate_block(output):
+            parsed = self._try_parse_json_output(output)
+            if self._is_structured_sql_result(parsed):
+                result_text = self._format_sql_result_for_display(output)
+                result_details = truncate_for_context(result_text, max_len=1000)
+                details = result_details
+                output_text = str(output or "")
+                if "[Executed SQL]:" not in output_text and tool_args:
+                    raw_sql = tool_args.get("sql") or tool_args.get("query")
+                    if isinstance(raw_sql, str) and raw_sql.strip():
+                        details = (
+                            f"[Executed SQL]:\n{raw_sql.strip()}\n\n"
+                            f"{_SQL_TOOL_RESULT_DELIMITER}\n{result_details}"
+                        )
+            elif state.sql_error:
+                details = self._build_sql_error_tool_details(output, tool_args)
+            else:
+                result_text = self._format_sql_result_for_display(output)
+                details = truncate_for_context(result_text, max_len=1000)
+        else:
+            details = truncate_for_context(str(output or ""), max_len=1000)
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:

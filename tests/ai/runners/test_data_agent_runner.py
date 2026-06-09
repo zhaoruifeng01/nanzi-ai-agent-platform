@@ -1388,9 +1388,89 @@ def test_format_tool_details_appends_detection_after_truncation(data_config):
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-trunc-detect", trace_buffer=[])
     state = _DataRunState(empty_sql_reason="SQL 返回的行容器为空，未命中任何数据行")
-    details = runner._format_tool_details("execute_sql_query", "y" * 2000, state)
-    assert details.startswith("y" * 1000 + "\n… [输出已截断]")
+    tool_args = {"sql": "SELECT 1", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+    details = runner._format_tool_details("execute_sql_query", "y" * 2000, state, tool_args)
+    assert details.startswith("[Executed SQL]:\nSELECT 1\n\n--- 结果 ---\n")
+    assert "y" * 1000 + "\n… [输出已截断]" in details
     assert details.endswith("\n\n[系统检测] SQL 返回的行容器为空，未命中任何数据行")
+
+
+def test_format_tool_details_includes_sql_on_success(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-prefix", trace_buffer=[])
+    payload = json.dumps({"columns": [], "items": [["a"]]}, ensure_ascii=False)
+    tool_args = {
+        "sql": "SELECT metric FROM demo LIMIT 10",
+        "data_source": "clickhouse_ops",
+        "dataset_name": "demo",
+    }
+    details = runner._format_tool_details("execute_sql_query", payload, _DataRunState(), tool_args)
+    assert details.startswith("[Executed SQL]:\nSELECT metric FROM demo LIMIT 10\n\n--- 结果 ---\n")
+    assert '\n  "items"' in details or '\n  "columns"' in details
+
+
+def test_format_sql_result_pretty_print_with_row_cap(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-pretty-rows", trace_buffer=[])
+    payload = {
+        "columns": [{"name": "id", "type": "Int32"}],
+        "items": [[i] for i in range(20)],
+    }
+    text = runner._format_sql_result_for_display(json.dumps(payload, ensure_ascii=False))
+    parsed = json.loads(text)
+    assert len(parsed["items"]) == 15
+    assert parsed["_display_note"] == "仅展示前 15 行，共 20 行"
+    assert "\n  " in text
+
+
+def test_format_tool_details_normalizes_sql_error_output(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-error-fmt", trace_buffer=[])
+    output = "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: Unknown column 'bad_col'\n\n[Executed SQL]:\nSELECT bad_col FROM demo"
+    state = _DataRunState(sql_error=True, sql_error_message=output[:200])
+    details = runner._format_tool_details("execute_sql_query", output, state, {"sql": "SELECT bad_col FROM demo"})
+    assert details.startswith("[Executed SQL]:\nSELECT bad_col FROM demo\n\n--- 错误 ---\n")
+    assert "Unknown column 'bad_col'" in details
+    assert details.count("[Executed SQL]:") == 1
+
+
+def test_format_tool_details_builds_error_layout_from_plain_text(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-error-plain", trace_buffer=[])
+    output = "Unknown column 'bad_col' in 'field list'"
+    state = _DataRunState(sql_error=True, sql_error_message=output)
+    tool_args = {"sql": "SELECT bad_col FROM demo", "data_source": "mysql", "dataset_name": "demo"}
+    details = runner._format_tool_details("execute_sql_query", output, state, tool_args)
+    assert details.startswith("[Executed SQL]:\nSELECT bad_col FROM demo\n\n--- 错误 ---\n")
+    assert "Unknown column" in details
+
+
+def test_format_tool_details_skips_sql_prefix_when_already_in_output(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-dup", trace_buffer=[])
+    output = "[TOOL_ERROR] timeout\n\n[Executed SQL]:\nSELECT 1"
+    state = _DataRunState(sql_error=True, sql_error_message=output)
+    tool_args = {"sql": "SELECT 1"}
+    details = runner._format_tool_details("execute_sql_query", output, state, tool_args)
+    assert details.count("[Executed SQL]:") == 1
+    assert details.startswith("[Executed SQL]:\nSELECT 1\n\n--- 错误 ---\n")
+    assert "[TOOL_ERROR] timeout" in details
+
+
+def test_format_tool_details_skips_sql_on_schema_gate(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-gate", trace_buffer=[])
+    output = "[SCHEMA_GATE] 必须先调用 get_dataset_schema"
+    tool_args = {"sql": "SELECT 1"}
+    details = runner._format_tool_details("execute_sql_query", output, _DataRunState(), tool_args)
+    assert "[Executed SQL]:" not in details
+    assert "[系统检测] 已拦截" in details
 
 
 def test_detect_sql_error_ignores_failure_keyword_in_result_rows(data_config):
