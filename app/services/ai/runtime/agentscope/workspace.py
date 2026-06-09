@@ -183,7 +183,12 @@ async def build_workspace_toolkit(
     *,
     approval_mode: str | None = None,
 ):
-    """Assemble Toolkit from workspace discovery + remaining platform tools."""
+    """显式合并 LocalWorkspace 内置文件工具与平台工具（Runner 默认不再调用）。
+
+    AgentScope LocalWorkspace 会通过 list_tools() 返回 Bash/Read/Write/Edit/Glob/Grep。
+    平台 Runner 现已改为只挂载 agent 配置工具；如需 workspace 内置工具，请在 agent
+    后端配置对应别名（如 grep、read_file、exec_command）。
+    """
     from app.services.ai.runtime.agentscope.tools import (
         _load_agentscope_toolkit,
         runtime_tool_from_native,

@@ -53,10 +53,7 @@ from app.services.ai.runtime.agentscope.session_lock import (
     agentscope_session_lock,
 )
 from app.services.ai.runtime.agentscope.state_store import agent_state_store
-from app.services.ai.runtime.agentscope.workspace import (
-    build_workspace_toolkit,
-    get_local_workspace,
-)
+from app.services.ai.runtime.agentscope.workspace import get_local_workspace
 from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.data_runtime import DATA_QUERY_MAX_STEPS_CAP
 from app.services.ai.runtime.agentscope.data_tools import build_chatbi_toolkit
@@ -339,14 +336,12 @@ class DataAgentRunner(BaseExecutor):
         primary_model_name: str,
         restored_state: Any = None,
     ) -> Any:
+        # ChatBI 仅挂载查数相关工具；不合并 workspace 的 Grep/Read/Bash，避免模型跳过 get_dataset_schema。
+        toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
         workspace = await get_local_workspace(
             user_id=self._current_user_id(),
             conversation_id=self.conversation_id,
         )
-        if workspace is not None:
-            toolkit = await build_workspace_toolkit(workspace, tools)
-        else:
-            toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
         context_config = await load_context_config()
         model_config = await build_model_config(
             config=self.config,
@@ -500,6 +495,31 @@ class DataAgentRunner(BaseExecutor):
                 "execution_time_ms": (time.time() - need_analysis_start) * 1000,
             }
 
+        prefetched_schema_output: str | None = None
+        if turn_cls.requires_fresh_data:
+            schema_keywords = (
+                self._schema_search_keywords
+                or self._standalone_query
+                or user_question
+                or ""
+            ).strip()
+            async for chunk in self._auto_invoke_get_dataset_schema(
+                keywords=schema_keywords,
+                tools=tools,
+            ):
+                if chunk.get("__schema_output__") is not None:
+                    prefetched_schema_output = str(chunk["__schema_output__"])
+                    continue
+                yield chunk
+            if prefetched_schema_output:
+                system_content += (
+                    "\n\n"
+                    + DataQueryPrompts.prefetched_schema_context(
+                        schema_keywords,
+                        prefetched_schema_output,
+                    )
+                )
+
         llm_handle = await AgentConfigProvider.get_configured_llm(
             streaming=True,
             config=self.config,
@@ -534,6 +554,7 @@ class DataAgentRunner(BaseExecutor):
                     runtime_messages=runtime_messages,
                     user_question=user_question,
                     turn_cls=turn_cls,
+                    prefetched_schema_output=prefetched_schema_output,
                 ):
                     yield chunk
         except SessionLockTimeout:
@@ -557,6 +578,7 @@ class DataAgentRunner(BaseExecutor):
         runtime_messages: List[Any],
         user_question: str,
         turn_cls: Any,
+        prefetched_schema_output: str | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         persisted = await agent_state_store.load(
             self._runtime_user_id(),
@@ -578,6 +600,10 @@ class DataAgentRunner(BaseExecutor):
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
         state.requires_sql_plan = self._should_require_sql_plan(user_question)
+        if prefetched_schema_output is not None:
+            state.schema_completed = True
+            state.no_authorized_schema = self._is_no_authorized_schema(prefetched_schema_output)
+            state.schema_miss = self._is_no_relevant_schema(prefetched_schema_output)
         guarded_tools = self._wrap_tools_with_schema_gate(tools, state)
 
         agent = await self._build_native_agent(
@@ -854,6 +880,75 @@ class DataAgentRunner(BaseExecutor):
             "...", "…", "keyword", "keywords", "关键词", "问题关键词",
             "n/a", "na", "none", "null", "无",
         }
+
+    async def _auto_invoke_get_dataset_schema(
+        self,
+        *,
+        keywords: str,
+        tools: list[RuntimeToolSpec],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """新查数路径在 ReAct 开始前平台侧自动执行 get_dataset_schema。"""
+        schema_spec = next((tool for tool in tools if tool.name == "get_dataset_schema"), None)
+        if schema_spec is None:
+            logger.warning("[DataAgentRunner] get_dataset_schema tool missing; skip auto prefetch")
+            return
+
+        tool_id = f"schema_prefetch_{uuid.uuid4().hex[:8]}"
+        started_at = time.time()
+        yield {
+            "type": "log",
+            "id": tool_id,
+            "title": "自动获取数据集定义",
+            "details": f"平台自动调用 get_dataset_schema(keywords={keywords or 'None'})",
+            "status": "pending",
+            "category": "tool",
+            "started_at": int(started_at * 1000),
+        }
+
+        output = ""
+        try:
+            result = schema_spec.callable(keywords=keywords or None)
+            if inspect.isawaitable(result):
+                result = await result
+            output = str(result or "")
+        except Exception as exc:
+            logger.error("[DataAgentRunner] Auto get_dataset_schema failed: %s", exc)
+            output = f"[TOOL_ERROR] 自动获取数据集定义失败: {exc}"
+
+        preview_state = _DataRunState()
+        preview_state.schema_miss = self._is_no_relevant_schema(output)
+        preview_state.no_authorized_schema = self._is_no_authorized_schema(output)
+        yield {
+            "type": "log",
+            "id": tool_id,
+            "title": "工具完成: get_dataset_schema",
+            "details": self._format_tool_details(
+                "get_dataset_schema",
+                output,
+                preview_state,
+                {"keywords": keywords},
+            ),
+            "status": "success",
+            "category": "tool",
+            "execution_time_ms": (time.time() - started_at) * 1000,
+        }
+        self._increment_step()
+        self.trace_buffer.append(
+            AgentExecutionStep(
+                step_number=self.step_counter,
+                event_type="tool_call",
+                agent_name=self.config.agent_name,
+                model=self.config.model_name,
+                temperature=float(self.config.temperature or 0),
+                tool_name="get_dataset_schema",
+                tool_input={"keywords": keywords},
+                tool_output=output,
+                raw_log=output[:4000],
+                execution_time_ms=(time.time() - started_at) * 1000,
+                timestamp=datetime.fromtimestamp(started_at),
+            )
+        )
+        yield {"__schema_output__": output}
 
     def _should_rewrite_contextual_new_data_query(
         self,

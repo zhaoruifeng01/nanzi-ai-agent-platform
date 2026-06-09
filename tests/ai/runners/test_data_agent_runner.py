@@ -91,6 +91,146 @@ async def test_data_agent_runner_resolves_chatbi_runtime_tools(data_config):
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_auto_invokes_schema_before_react(data_config, monkeypatch):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    schema_calls: list[dict] = []
+
+    async def fake_schema(**kwargs):
+        schema_calls.append(kwargs)
+        return "dataset: demo\ntable_name: demo\ncolumns: id"
+
+    async def empty_agent_turn(*args, **kwargs):
+        assert schema_calls, "schema prefetch must happen before react"
+        if False:
+            yield {}
+
+    monkeypatch.setitem(
+        __import__("app.services.ai.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry._registry,
+        "get_dataset_schema",
+        fake_schema,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.DataAgentRunner._run_native_agent_turn",
+        empty_agent_turn,
+    )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-prefetch", trace_buffer=[])
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "查一下本月商机"}]):
+        events.append(chunk)
+
+    assert len(schema_calls) == 1
+    assert "商机" in str(schema_calls[0].get("keywords", ""))
+    assert any(event.get("title") == "自动获取数据集定义" for event in events)
+    assert any(event.get("title") == "工具完成: get_dataset_schema" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_skips_schema_prefetch_for_context_action(data_config, monkeypatch):
+    from app.services.ai.data_query_turn_classifier import (
+        DataQueryTurnClassification,
+        DataQueryTurnType,
+    )
+    from app.services.ai.intent_service import IntentType
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    context_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.CONTEXT_ACTION,
+        reasoning="测试：上下文动作",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.GENERAL,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return context_turn, None, 0.0
+
+    async def fake_schema(**kwargs):
+        raise AssertionError("context action must not auto invoke schema")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+    monkeypatch.setitem(
+        __import__("app.services.ai.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry._registry,
+        "get_dataset_schema",
+        fake_schema,
+    )
+    async def empty_agent_turn(*args, **kwargs):
+        if False:
+            yield {}
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.DataAgentRunner._run_native_agent_turn",
+        empty_agent_turn,
+    )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-no-prefetch", trace_buffer=[])
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "保存上面的结果"}]):
+        events.append(chunk)
+
+    assert not any(event.get("title") == "自动获取数据集定义" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_builds_chatbi_toolkit_without_workspace_file_tools(
+    data_config, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    fake_workspace = MagicMock()
+    fake_toolkit = MagicMock()
+    build_chatbi = AsyncMock(return_value=(fake_toolkit, []))
+    captured_agent_kwargs: dict = {}
+
+    def fake_agent(**kwargs):
+        captured_agent_kwargs.update(kwargs)
+        return MagicMock(name="AgentInstance")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.get_local_workspace",
+        AsyncMock(return_value=fake_workspace),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_chatbi_toolkit",
+        build_chatbi,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.Agent",
+        fake_agent,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.load_context_config",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.build_model_config",
+        AsyncMock(return_value=None),
+    )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-toolkit", trace_buffer=[])
+    tools = await runner._resolve_runtime_tools_from_config()
+    agent = await runner._build_native_agent(
+        native_model=MagicMock(model="fake"),
+        tools=tools,
+        system_content="system",
+        max_steps=3,
+        primary_model_name="fake-model",
+    )
+
+    build_chatbi.assert_awaited_once()
+    assert captured_agent_kwargs["toolkit"] is fake_toolkit
+    assert captured_agent_kwargs["offloader"] is fake_workspace
+    assert agent.name == "AgentInstance"
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_system_content_includes_data_guardrails(data_config):
     from app.services.ai.executors.prompts import DataQueryPrompts
     from app.services.ai.runners.data_agent_runner import DataAgentRunner

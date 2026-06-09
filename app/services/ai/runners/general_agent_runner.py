@@ -50,10 +50,7 @@ from app.services.ai.runtime.agentscope.session_lock import (
     SessionLockTimeout,
     agentscope_session_lock,
 )
-from app.services.ai.runtime.agentscope.workspace import (
-    build_workspace_toolkit,
-    get_local_workspace,
-)
+from app.services.ai.runtime.agentscope.workspace import get_local_workspace
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
 from app.services.ai.runtime.agentscope.tools import build_toolkit
 from app.services.ai.turn_classifier import TurnType
@@ -426,17 +423,11 @@ class GeneralAgentRunner(BaseExecutor):
             user_id=self._runtime_user_id(),
             conversation_id=self.conversation_id,
         )
-        if workspace is not None:
-            toolkit = await build_workspace_toolkit(
-                workspace,
-                tools,
-                approval_mode=self.permission_options.get("approval_mode"),
-            )
-        else:
-            toolkit = build_toolkit(
-                tools,
-                approval_mode=self.permission_options.get("approval_mode"),
-            )
+        # 仅挂载 agent 后端配置的工具；workspace 只作 offloader，不自动注入 Grep/Read/Bash 等内置工具。
+        toolkit = build_toolkit(
+            tools,
+            approval_mode=self.permission_options.get("approval_mode"),
+        )
         return Agent(
             name=self._runtime_agent_name(),
             system_prompt=system_content,

@@ -166,6 +166,20 @@ class DataQueryPrompts:
         "你已经拿到数据集 Schema。下一步必须执行 SQL 查数（调用 execute_sql_query），禁止直接进入总结或输出结论。"
     )
 
+    @staticmethod
+    def prefetched_schema_context(keywords: str, schema_text: str) -> str:
+        """平台在 ReAct 开始前自动执行 get_dataset_schema 后注入的上下文。"""
+        raw = str(schema_text or "")
+        if len(raw) > 20000:
+            raw = raw[:20000] + "\n... [Schema 过长已截断]"
+        return (
+            f"【已自动执行 get_dataset_schema】检索词：{keywords}\n"
+            f"【数据集定义】\n{raw}\n\n"
+            "平台已在 Agent 推理开始前自动完成 Schema 检索。你现在应基于以上内容构建 SQL，"
+            "并调用 execute_sql_query 查数；除非结果明显不匹配，禁止再次调用 get_dataset_schema，"
+            "禁止使用 Grep/Read/Bash 等文件工具查找元数据。"
+        )
+
     # get_dataset_schema 成功后强制进入 execute_sql_query
     FORCE_SQL_AFTER_SCHEMA = (
         "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻调用 execute_sql_query 查数。\n"

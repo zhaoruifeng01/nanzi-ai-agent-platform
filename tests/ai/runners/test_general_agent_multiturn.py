@@ -28,6 +28,83 @@ def isolate_general_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_general_runner_uses_configured_tools_only_when_workspace_exists(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from app.schemas.agent import ChatConfig
+    from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    fake_workspace = MagicMock()
+    fake_toolkit = MagicMock()
+    build_toolkit = MagicMock(return_value=fake_toolkit)
+    captured_agent_kwargs: dict = {}
+
+    def fake_agent(**kwargs):
+        captured_agent_kwargs.update(kwargs)
+        return MagicMock(name="AgentInstance")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.general_agent_runner.get_local_workspace",
+        AsyncMock(return_value=fake_workspace),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.general_agent_runner.build_toolkit",
+        build_toolkit,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.general_agent_runner.Agent",
+        fake_agent,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.general_agent_runner.load_context_config",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.general_agent_runner.build_model_config",
+        AsyncMock(return_value=None),
+    )
+
+    config = ChatConfig(
+        agent_id="general-agent-id",
+        agent_name="GeneralAgent",
+        agent_version=None,
+        model_name="gpt-4o",
+        temperature=0.0,
+        system_prompt="You are a general agent.",
+        tools=["search_knowledge_base"],
+    )
+    runner = GeneralAgentRunner(
+        config=config,
+        trace_id="trace-toolkit",
+        trace_buffer=[],
+        conversation_id="conv-1",
+    )
+    tools = [
+        RuntimeToolSpec(
+            name="search_knowledge_base",
+            description="kb",
+            parameters_schema={"type": "object", "properties": {}},
+            source_type="static",
+            callable=AsyncMock(return_value="ok"),
+            permission_scope="read",
+        )
+    ]
+    agent = await runner._build_native_agent(
+        native_model=MagicMock(model="fake"),
+        tools=tools,
+        system_content="system",
+        max_steps=3,
+        primary_model_name="fake-model",
+    )
+
+    build_toolkit.assert_called_once()
+    assert captured_agent_kwargs["toolkit"] is fake_toolkit
+    assert captured_agent_kwargs["offloader"] is fake_workspace
+    assert agent.name == "AgentInstance"
+
+
+@pytest.mark.asyncio
 async def test_general_runner_second_turn_skips_repeat_read_with_restored_state():
     """恢复 AgentState 后，第二轮不应再次触发 Read 工具调用。"""
     from agentscope.credential import CredentialBase
