@@ -34,8 +34,13 @@ from app.services.ai.runtime.agentscope.agent_runtime import (
 from app.services.ai.runtime.agentscope.chat import compat_to_runtime_messages, to_agentscope_messages
 from app.services.ai.runtime.agentscope.state_store import agent_state_store
 from app.services.ai.runtime.agentscope.event_stream import (
+    is_interrupt_sse_chunk,
     map_standard_agentscope_event,
     new_native_stream_state,
+)
+from app.services.ai.runtime.agentscope.session_lock import (
+    SessionLockTimeout,
+    agentscope_session_lock,
 )
 from app.services.ai.runtime.agentscope.workspace import (
     build_workspace_toolkit,
@@ -311,71 +316,83 @@ class GeneralAgentRunner(BaseExecutor):
         agent_name = self._runtime_agent_name()
         tools_fingerprint = build_tools_fingerprint(self.config, tools)
         model_name = getattr(native_model, "model", self.config.model_name)
-        persisted = await agent_state_store.load(
-            self._runtime_user_id(),
-            self.conversation_id,
-            agent_name,
-        )
-        restored_state = None
-        if persisted and persisted.matches(
-            tools_fingerprint=tools_fingerprint,
-            agent_name=agent_name,
-        ):
-            try:
-                from agentscope.state import AgentState
-
-                restored_state = AgentState.model_validate(persisted.state)
-            except Exception as exc:
-                logger.warning("[GeneralAgentRunner] Failed to restore AgentState: %s", exc)
-
-        agent = await self._build_native_agent(
-            native_model=native_model,
-            tools=tools,
-            system_content=system_content,
-            max_steps=max_steps,
-            restored_state=restored_state,
-            primary_model_name=str(model_name or ""),
-        )
-        if restored_state and restored_state.context:
-            latest_user_messages = self._latest_user_runtime_messages(runtime_messages)
-            inputs = to_agentscope_messages(compat_to_runtime_messages(latest_user_messages))
-        else:
-            inputs = to_agentscope_messages(compat_to_runtime_messages(runtime_messages[1:]))
-
-        state = new_native_stream_state(
-            system_content=system_content,
-            max_steps=max_steps,
-        )
-        state["user_query"] = next(
-            (
-                str(getattr(message, "content", ""))
-                for message in reversed(runtime_messages)
-                if isinstance(message, HumanMessage)
-            ),
-            "",
-        )
-        interrupted = False
-        async for chunk in self._stream_agentscope_native_events(
-            event_stream=agent.reply_stream(inputs),
-            agent=agent,
-            tools=tools,
-            native_model=native_model,
-            state=state,
-        ):
-            if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
-                interrupted = True
-            yield chunk
-
-        if not interrupted and self.conversation_id:
-            await agent_state_store.save(
+        try:
+            async with agentscope_session_lock.hold(
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
-                agent_version=self.config.agent_version,
-                tools_fingerprint=tools_fingerprint,
-                model_name=str(model_name) if model_name else None,
-                state=agent.state,
-            )
+            ):
+                persisted = await agent_state_store.load(
+                    self._runtime_user_id(),
+                    self.conversation_id,
+                    agent_name,
+                )
+                restored_state = None
+                if persisted and persisted.matches(
+                    tools_fingerprint=tools_fingerprint,
+                    agent_name=agent_name,
+                ):
+                    try:
+                        from agentscope.state import AgentState
+
+                        restored_state = AgentState.model_validate(persisted.state)
+                    except Exception as exc:
+                        logger.warning("[GeneralAgentRunner] Failed to restore AgentState: %s", exc)
+
+                agent = await self._build_native_agent(
+                    native_model=native_model,
+                    tools=tools,
+                    system_content=system_content,
+                    max_steps=max_steps,
+                    restored_state=restored_state,
+                    primary_model_name=str(model_name or ""),
+                )
+                if restored_state and restored_state.context:
+                    latest_user_messages = self._latest_user_runtime_messages(runtime_messages)
+                    inputs = to_agentscope_messages(compat_to_runtime_messages(latest_user_messages))
+                else:
+                    inputs = to_agentscope_messages(compat_to_runtime_messages(runtime_messages[1:]))
+
+                state = new_native_stream_state(
+                    system_content=system_content,
+                    max_steps=max_steps,
+                )
+                state["user_query"] = next(
+                    (
+                        str(getattr(message, "content", ""))
+                        for message in reversed(runtime_messages)
+                        if isinstance(message, HumanMessage)
+                    ),
+                    "",
+                )
+                interrupted = False
+                async for chunk in self._stream_agentscope_native_events(
+                    event_stream=agent.reply_stream(inputs),
+                    agent=agent,
+                    tools=tools,
+                    native_model=native_model,
+                    state=state,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+
+                if not interrupted and self.conversation_id:
+                    await agent_state_store.save(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        agent_name=agent_name,
+                        agent_version=self.config.agent_version,
+                        tools_fingerprint=tools_fingerprint,
+                        model_name=str(model_name) if model_name else None,
+                        state=agent.state,
+                    )
+        except SessionLockTimeout:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前会话正在处理中，请稍后再试。",
+            }
 
     async def _build_native_agent(
         self,
@@ -502,9 +519,10 @@ class GeneralAgentRunner(BaseExecutor):
                 runner=self,
                 tools=tools,
                 native_model=native_model,
+                agent_name=self._runtime_agent_name(),
             ):
                 yield chunk
-                if chunk.get("type") == "error" or chunk.get("type") == "permission_required":
+                if is_interrupt_sse_chunk(chunk):
                     return
 
         if state["full_content"] and not state["synthesis_recorded"]:
@@ -574,6 +592,50 @@ class GeneralAgentRunner(BaseExecutor):
                 tools.append(kb_tool)
         return tools
 
+    async def _resume_agentscope_native_stream(
+        self,
+        *,
+        pending: Any,
+        resume_event: Any,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        agent_name = self._runtime_agent_name()
+        try:
+            async with agentscope_session_lock.hold(
+                user_id=self._runtime_user_id(),
+                conversation_id=self.conversation_id,
+                agent_name=agent_name,
+            ):
+                agent, tools, native_model, state = await self._resolve_pending_runtime(pending)
+                interrupted = False
+                async for chunk in self._stream_agentscope_native_events(
+                    event_stream=agent.reply_stream(resume_event),
+                    agent=agent,
+                    tools=tools,
+                    native_model=native_model,
+                    state=state,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+
+                if not interrupted and self.conversation_id:
+                    tools_fingerprint = build_tools_fingerprint(self.config, tools)
+                    await agent_state_store.save(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        agent_name=agent_name,
+                        agent_version=self.config.agent_version,
+                        tools_fingerprint=tools_fingerprint,
+                        model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
+                        state=agent.state,
+                    )
+        except SessionLockTimeout:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前会话正在处理中，请稍后再试。",
+            }
+
     async def resume_agentscope_native_confirmation(
         self,
         pending: Any,
@@ -582,7 +644,6 @@ class GeneralAgentRunner(BaseExecutor):
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from agentscope.event import ConfirmResult, UserConfirmResultEvent
 
-        agent, tools, native_model, state = await self._resolve_pending_runtime(pending)
         event = UserConfirmResultEvent(
             reply_id=pending.reply_id,
             confirm_results=[
@@ -592,29 +653,11 @@ class GeneralAgentRunner(BaseExecutor):
                 )
             ],
         )
-        interrupted = False
-        async for chunk in self._stream_agentscope_native_events(
-            event_stream=agent.reply_stream(event),
-            agent=agent,
-            tools=tools,
-            native_model=native_model,
-            state=state,
+        async for chunk in self._resume_agentscope_native_stream(
+            pending=pending,
+            resume_event=event,
         ):
-            if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
-                interrupted = True
             yield chunk
-
-        if not interrupted and self.conversation_id:
-            tools_fingerprint = build_tools_fingerprint(self.config, tools)
-            await agent_state_store.save(
-                user_id=self._runtime_user_id(),
-                conversation_id=self.conversation_id,
-                agent_name=self._runtime_agent_name(),
-                agent_version=self.config.agent_version,
-                tools_fingerprint=tools_fingerprint,
-                model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
-                state=agent.state,
-            )
 
     async def resume_agentscope_external_execution(
         self,
@@ -624,34 +667,15 @@ class GeneralAgentRunner(BaseExecutor):
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from agentscope.event import ExternalExecutionResultEvent
 
-        agent, tools, native_model, state = await self._resolve_pending_runtime(pending)
         event = ExternalExecutionResultEvent(
             reply_id=pending.reply_id,
             execution_results=execution_results,
         )
-        interrupted = False
-        async for chunk in self._stream_agentscope_native_events(
-            event_stream=agent.reply_stream(event),
-            agent=agent,
-            tools=tools,
-            native_model=native_model,
-            state=state,
+        async for chunk in self._resume_agentscope_native_stream(
+            pending=pending,
+            resume_event=event,
         ):
-            if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
-                interrupted = True
             yield chunk
-
-        if not interrupted and self.conversation_id:
-            tools_fingerprint = build_tools_fingerprint(self.config, tools)
-            await agent_state_store.save(
-                user_id=self._runtime_user_id(),
-                conversation_id=self.conversation_id,
-                agent_name=self._runtime_agent_name(),
-                agent_version=self.config.agent_version,
-                tools_fingerprint=tools_fingerprint,
-                model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
-                state=agent.state,
-            )
 
     def _build_tool_observation(
         self,

@@ -39,12 +39,20 @@ from app.services.ai.runtime.agentscope.agent_runtime import (
     load_context_config,
 )
 from app.services.ai.runtime.agentscope.event_stream import (
-    EXTERNAL_EXECUTION_UNAVAILABLE_CHUNK,
+    is_interrupt_sse_chunk,
     map_tool_result_data_delta,
+    stream_observability_agentscope_events,
     stream_pending_tool_interrupt,
 )
+from app.services.ai.runtime.agentscope.session_lock import (
+    SessionLockTimeout,
+    agentscope_session_lock,
+)
 from app.services.ai.runtime.agentscope.state_store import agent_state_store
-from app.services.ai.runtime.agentscope.workspace import get_local_workspace
+from app.services.ai.runtime.agentscope.workspace import (
+    build_workspace_toolkit,
+    get_local_workspace,
+)
 from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage, SystemMessage
 from app.services.ai.runtime.agentscope.data_runtime import DATA_QUERY_MAX_STEPS_CAP
 from app.services.ai.runtime.agentscope.data_tools import build_chatbi_toolkit
@@ -240,15 +248,18 @@ class DataAgentRunner(BaseExecutor):
         primary_model_name: str,
         restored_state: Any = None,
     ) -> Any:
-        toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
+        workspace = await get_local_workspace(
+            user_id=self._current_user_id(),
+            conversation_id=self.conversation_id,
+        )
+        if workspace is not None:
+            toolkit = await build_workspace_toolkit(workspace, tools)
+        else:
+            toolkit, _ = await build_chatbi_toolkit([tool.name for tool in tools])
         context_config = await load_context_config()
         model_config = await build_model_config(
             config=self.config,
             primary_model_name=primary_model_name,
-        )
-        workspace = await get_local_workspace(
-            user_id=self._current_user_id(),
-            conversation_id=self.conversation_id,
         )
         kwargs: Dict[str, Any] = {
             "name": self._runtime_agent_name(),
@@ -414,6 +425,48 @@ class DataAgentRunner(BaseExecutor):
         agent_name = self._runtime_agent_name()
         tools_fingerprint = build_tools_fingerprint(self.config, tools)
         model_name = getattr(native_model, "model", self.config.model_name)
+        try:
+            async with agentscope_session_lock.hold(
+                user_id=self._runtime_user_id(),
+                conversation_id=self.conversation_id,
+                agent_name=agent_name,
+            ):
+                async for chunk in self._run_native_agent_turn(
+                    native_model=native_model,
+                    tools=tools,
+                    tools_fingerprint=tools_fingerprint,
+                    model_name=model_name,
+                    agent_name=agent_name,
+                    system_content=system_content,
+                    max_steps=max_steps,
+                    llm_handle=llm_handle,
+                    runtime_messages=runtime_messages,
+                    user_question=user_question,
+                    turn_cls=turn_cls,
+                ):
+                    yield chunk
+        except SessionLockTimeout:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前会话正在处理中，请稍后再试。",
+            }
+
+    async def _run_native_agent_turn(
+        self,
+        *,
+        native_model: Any,
+        tools: list[RuntimeToolSpec],
+        tools_fingerprint: str,
+        model_name: Any,
+        agent_name: str,
+        system_content: str,
+        max_steps: int,
+        llm_handle: Any,
+        runtime_messages: List[Any],
+        user_question: str,
+        turn_cls: Any,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         persisted = await agent_state_store.load(
             self._runtime_user_id(),
             self.conversation_id,
@@ -468,7 +521,7 @@ class DataAgentRunner(BaseExecutor):
             stream_meta=stream_meta,
             emit_final_guard=False,
         ):
-            if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
+            if is_interrupt_sse_chunk(chunk):
                 interrupted = True
             yield chunk
         if interrupted:
@@ -518,7 +571,7 @@ class DataAgentRunner(BaseExecutor):
                 stream_meta=stream_meta,
                 emit_final_guard=True,
             ):
-                if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
+                if is_interrupt_sse_chunk(chunk):
                     interrupted = True
                 yield chunk
             if not interrupted and self.conversation_id:
@@ -962,13 +1015,32 @@ class DataAgentRunner(BaseExecutor):
         pending_state = self._data_run_state_to_pending_state(state, stream_meta)
 
         async for event in event_stream:
+            async for chunk in stream_observability_agentscope_events(
+                event,
+                state=pending_state,
+                agent=agent,
+                agent_name=self._runtime_agent_name(),
+            ):
+                yield chunk
+
             event_type = str(getattr(event, "type", ""))
             if event_type == "TOOL_RESULT_DATA_DELTA":
                 yield map_tool_result_data_delta(event, pending_state)
                 continue
 
             if event_type == "REQUIRE_EXTERNAL_EXECUTION":
-                yield EXTERNAL_EXECUTION_UNAVAILABLE_CHUNK
+                if agent is not None:
+                    async for pending_chunk in stream_pending_tool_interrupt(
+                        event=event,
+                        agent=agent,
+                        runner=self,
+                        tools=tools,
+                        native_model=native_model,
+                        state=pending_state,
+                        kind="external",
+                        sse_type="external_execution_required",
+                    ):
+                        yield pending_chunk
                 return
 
             if event_type == "REQUIRE_USER_CONFIRM":
@@ -1344,6 +1416,52 @@ class DataAgentRunner(BaseExecutor):
         )
         return agent, tools, native_model, data_state, stream_meta
 
+    async def _resume_agentscope_native_stream(
+        self,
+        *,
+        pending: Any,
+        resume_event: Any,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        agent_name = self._runtime_agent_name()
+        try:
+            async with agentscope_session_lock.hold(
+                user_id=self._runtime_user_id(),
+                conversation_id=self.conversation_id,
+                agent_name=agent_name,
+            ):
+                agent, tools, native_model, data_state, stream_meta = await self._resolve_pending_runtime(pending)
+                interrupted = False
+                async for chunk in self._stream_agentscope_events(
+                    event_stream=agent.reply_stream(resume_event),
+                    agent=agent,
+                    tools=tools,
+                    native_model=native_model,
+                    state=data_state,
+                    stream_meta=stream_meta,
+                    emit_final_guard=True,
+                ):
+                    if is_interrupt_sse_chunk(chunk):
+                        interrupted = True
+                    yield chunk
+
+                if not interrupted and self.conversation_id:
+                    tools_fingerprint = build_tools_fingerprint(self.config, tools)
+                    await agent_state_store.save(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        agent_name=agent_name,
+                        agent_version=self.config.agent_version,
+                        tools_fingerprint=tools_fingerprint,
+                        model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
+                        state=agent.state,
+                    )
+        except SessionLockTimeout:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前会话正在处理中，请稍后再试。",
+            }
+
     async def resume_agentscope_native_confirmation(
         self,
         pending: Any,
@@ -1352,7 +1470,6 @@ class DataAgentRunner(BaseExecutor):
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from agentscope.event import ConfirmResult, UserConfirmResultEvent
 
-        agent, tools, native_model, data_state, stream_meta = await self._resolve_pending_runtime(pending)
         event = UserConfirmResultEvent(
             reply_id=pending.reply_id,
             confirm_results=[
@@ -1362,28 +1479,26 @@ class DataAgentRunner(BaseExecutor):
                 )
             ],
         )
-        interrupted = False
-        async for chunk in self._stream_agentscope_events(
-            event_stream=agent.reply_stream(event),
-            agent=agent,
-            tools=tools,
-            native_model=native_model,
-            state=data_state,
-            stream_meta=stream_meta,
-            emit_final_guard=True,
+        async for chunk in self._resume_agentscope_native_stream(
+            pending=pending,
+            resume_event=event,
         ):
-            if chunk.get("type") in {"permission_required", "external_execution_required"} or chunk.get("status") == "error":
-                interrupted = True
             yield chunk
 
-        if not interrupted and self.conversation_id:
-            tools_fingerprint = build_tools_fingerprint(self.config, tools)
-            await agent_state_store.save(
-                user_id=self._runtime_user_id(),
-                conversation_id=self.conversation_id,
-                agent_name=self._runtime_agent_name(),
-                agent_version=self.config.agent_version,
-                tools_fingerprint=tools_fingerprint,
-                model_name=str(getattr(native_model, "model", self.config.model_name) or ""),
-                state=agent.state,
-            )
+    async def resume_agentscope_external_execution(
+        self,
+        pending: Any,
+        *,
+        execution_results: List[Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from agentscope.event import ExternalExecutionResultEvent
+
+        event = ExternalExecutionResultEvent(
+            reply_id=pending.reply_id,
+            execution_results=execution_results,
+        )
+        async for chunk in self._resume_agentscope_native_stream(
+            pending=pending,
+            resume_event=event,
+        ):
+            yield chunk

@@ -1,4 +1,5 @@
 import pytest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from pydantic import BaseModel
 
@@ -21,6 +22,34 @@ def data_config():
         temperature=0.0,
         system_prompt="You are a data agent.",
         tools=["update_dashboard_context"],
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolate_data_agent_runtime(monkeypatch):
+    async def _no_redis():
+        return None
+
+    @asynccontextmanager
+    async def _noop_session_lock_hold(**kwargs):
+        yield True
+
+    monkeypatch.setattr("app.core.redis.get_redis", _no_redis)
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.get_local_workspace",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.agentscope_session_lock.hold",
+        _noop_session_lock_hold,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.agent_state_store.load",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.agent_state_store.save",
+        AsyncMock(return_value=None),
     )
 
 

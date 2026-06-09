@@ -781,29 +781,7 @@ class AgentService:
             }
             return
 
-        runner = pending.runner
-        if runner is None:
-            ctx = pending.snapshot.runner_context or {}
-            if ctx.get("runner_type") == "data":
-                from app.services.ai.runners.data_agent_runner import DataAgentRunner
-
-                runner = DataAgentRunner.from_runner_context(
-                    runner_context=ctx,
-                    trace_id=pending.trace_id,
-                    trace_buffer=[],
-                    user_info=user_info,
-                    conversation_id=pending.snapshot.conversation_id,
-                )
-            else:
-                from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
-
-                runner = GeneralAgentRunner.from_runner_context(
-                    runner_context=ctx,
-                    trace_id=pending.trace_id,
-                    trace_buffer=[],
-                    user_info=user_info,
-                    conversation_id=pending.snapshot.conversation_id,
-                )
+        runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
 
         yield {
             "type": "permission_result",
@@ -883,6 +861,172 @@ class AgentService:
                     str(user_info.get("user_id")), conversation_id, full_response_content
                 )
             )
+
+    def _build_agentscope_runner_from_pending(
+        self,
+        pending: Any,
+        *,
+        user_info: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        runner = pending.runner
+        if runner is not None:
+            return runner
+
+        ctx = pending.snapshot.runner_context or {}
+        if ctx.get("runner_type") == "data":
+            from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+            return DataAgentRunner.from_runner_context(
+                runner_context=ctx,
+                trace_id=pending.trace_id,
+                trace_buffer=[],
+                user_info=user_info,
+                conversation_id=pending.snapshot.conversation_id,
+            )
+
+        from app.services.ai.runners.general_agent_runner import GeneralAgentRunner
+
+        return GeneralAgentRunner.from_runner_context(
+            runner_context=ctx,
+            trace_id=pending.trace_id,
+            trace_buffer=[],
+            user_info=user_info,
+            conversation_id=pending.snapshot.conversation_id,
+        )
+
+    @staticmethod
+    def _build_external_execution_results(results: List[Dict[str, Any]]) -> List[Any]:
+        from agentscope.message import ToolResultBlock, ToolResultState
+
+        state_map = {
+            "success": ToolResultState.SUCCESS,
+            "error": ToolResultState.ERROR,
+            "running": ToolResultState.RUNNING,
+            "interrupted": ToolResultState.INTERRUPTED,
+            "denied": ToolResultState.DENIED,
+        }
+        return [
+            ToolResultBlock(
+                id=str(item.get("id") or ""),
+                name=str(item.get("name") or ""),
+                output=str(item.get("output") or ""),
+                state=state_map.get(str(item.get("state") or "success").lower(), ToolResultState.SUCCESS),
+            )
+            for item in results
+        ]
+
+    async def resume_agentscope_external_execution_stream(
+        self,
+        *,
+        external_execution_request_id: str,
+        results: List[Dict[str, Any]],
+        user_info: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.ai.runtime.agentscope.confirmations import (
+            pending_agentscope_confirmations,
+        )
+
+        current_user_id = None
+        if user_info:
+            current_user_id = user_info.get("user_id") or user_info.get("id")
+
+        pending = await pending_agentscope_confirmations.pop_async(
+            external_execution_request_id,
+            user_id=current_user_id,
+        )
+        if not pending:
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "外部执行请求不存在或已过期，请重新发起本轮对话。",
+            }
+            return
+
+        if pending.user_id and current_user_id and str(current_user_id) != str(pending.user_id):
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "当前用户无权提交该外部执行结果。",
+            }
+            return
+
+        if pending.snapshot.kind != "external":
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": "该请求不是外部执行挂起，请使用 permission confirm 接口。",
+            }
+            return
+
+        runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
+        execution_results = self._build_external_execution_results(results)
+
+        yield {
+            "type": "external_execution_result",
+            "status": "success",
+            "external_execution_request_id": external_execution_request_id,
+            "tool_call_id": getattr(pending.tool_call, "id", None),
+        }
+
+        full_response_content = ""
+        execution_status = "success"
+        start_time = asyncio.get_running_loop().time()
+        async for chunk in runner.resume_agentscope_external_execution(
+            pending,
+            execution_results=execution_results,
+        ):
+            if "content" in chunk:
+                full_response_content += chunk["content"]
+            if chunk.get("status") == "error":
+                execution_status = "error"
+            yield chunk
+
+        p_tokens, c_tokens, t_tokens = 0, 0, 0
+        trace_buffer = runner.trace_buffer
+        try:
+            from app.services.ai.audit import aggregate_tokens_from_trace_buffer
+            p_tokens, c_tokens, t_tokens = aggregate_tokens_from_trace_buffer(trace_buffer) if trace_buffer else (0, 0, 0)
+        except Exception as agg_err:
+            logger.warning(f"Failed to aggregate tokens after external resume: {agg_err}")
+
+        if p_tokens or c_tokens:
+            yield {
+                "type": "meta",
+                "prompt_tokens": p_tokens,
+                "completion_tokens": c_tokens,
+                "total_tokens": t_tokens,
+            }
+
+        agent_config = runner.config
+        conversation_id = runner.conversation_id or pending.snapshot.conversation_id
+        user_query = (pending.state or {}).get("user_query") or ""
+
+        if conversation_id and full_response_content:
+            u_id = user_info.get("user_id") if user_info else pending.user_id
+            handled_by = getattr(agent_config, "agent_name", None) if agent_config else None
+            asyncio.create_task(memory_service.add_message(
+                u_id,
+                conversation_id,
+                "assistant",
+                full_response_content,
+                trace_id=pending.trace_id,
+                agent_name=handled_by,
+                prompt_tokens=p_tokens,
+                completion_tokens=c_tokens,
+            ))
+
+        duration = (asyncio.get_running_loop().time() - start_time) * 1000
+        asyncio.create_task(AuditManager.log_transaction(
+            pending.trace_id,
+            agent_config,
+            user_query,
+            full_response_content,
+            user_info,
+            execution_status,
+            duration,
+            trace_buffer,
+            conversation_id=conversation_id,
+        ))
 
     async def _execute_multi_agent(
         self,

@@ -81,7 +81,7 @@
 ## 10. 测试与文档回归
 
 - [x] 10.1 全量替换 `tests/ai/` 中的 LangChain Message 测试桩。
-- [ ] 10.2 运行 `pytest tests/ai -q`。
+- [x] 10.2 运行 `pytest tests/ai -q`（211/211 通过，2026-06-08）。
 - [ ] 10.3 运行 `python3 -m compileall app tests`。
 - [x] 10.4 搜索 `app` 和 `tests`，确认没有 LangChain 运行时代码残留。
 - [ ] 10.5 更新架构文档中 LangChain 相关描述。

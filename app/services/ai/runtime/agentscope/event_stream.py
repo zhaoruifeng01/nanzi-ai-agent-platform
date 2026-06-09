@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import uuid
 from typing import Any, AsyncGenerator, Callable, Dict, List, Protocol
 
-EXTERNAL_EXECUTION_UNAVAILABLE_CHUNK: Dict[str, Any] = {
-    "type": "error",
-    "status": "error",
-    "content": "当前版本尚未开放 AgentScope external execution 恢复接口，请改用 ASK 权限工具或平台托管工具执行。",
-}
+logger = logging.getLogger(__name__)
 
 
 class PendingInterruptHost(Protocol):
@@ -27,8 +25,6 @@ def new_native_stream_state(
     system_content: str = "",
     max_steps: int = 5,
 ) -> Dict[str, Any]:
-    import time
-
     return {
         "tool_names": {},
         "tool_args_text": {},
@@ -43,7 +39,20 @@ def new_native_stream_state(
         "synthesis_recorded": False,
         "system_content": system_content,
         "max_steps": max_steps,
+        "model_call_started_at": {},
+        "_observed_summary_len": 0,
     }
+
+
+def is_interrupt_sse_chunk(chunk: Dict[str, Any]) -> bool:
+    return chunk.get("type") in {
+        "permission_required",
+        "external_execution_required",
+    } or chunk.get("status") == "error"
+
+
+def _pending_request_id_field(kind: str) -> str:
+    return "permission_request_id" if kind == "permission" else "external_execution_request_id"
 
 
 async def stream_pending_tool_interrupt(
@@ -61,6 +70,7 @@ async def stream_pending_tool_interrupt(
         pending_agentscope_confirmations,
     )
 
+    request_id_field = _pending_request_id_field(kind)
     for tool_call in getattr(event, "tool_calls", []) or []:
         tool_id = getattr(tool_call, "id", "") or f"call_{uuid.uuid4().hex[:8]}"
         tool_name = getattr(tool_call, "name", "")
@@ -93,6 +103,7 @@ async def stream_pending_tool_interrupt(
             "type": sse_type,
             "status": "pending",
             "id": tool_id,
+            request_id_field: pending.request_id,
             "permission_request_id": pending.request_id,
             "reply_id": pending.reply_id,
             "expires_in_seconds": 600,
@@ -130,6 +141,133 @@ def map_tool_result_data_delta(
     }
 
 
+def maybe_emit_context_compression(
+    *,
+    agent: Any | None,
+    state: Dict[str, Any],
+    agent_name: str | None = None,
+) -> Dict[str, Any] | None:
+    if agent is None:
+        return None
+    agent_state = getattr(agent, "state", None)
+    summary = getattr(agent_state, "summary", None) or ""
+    prev_len = int(state.get("_observed_summary_len", 0) or 0)
+    current_len = len(summary)
+    state["_observed_summary_len"] = current_len
+    if current_len <= prev_len or current_len == 0:
+        return None
+    logger.info(
+        "[AgentScope] Context compressed agent=%s summary_chars=%d",
+        agent_name or getattr(agent, "name", "unknown"),
+        current_len,
+    )
+    preview = summary[:400] + ("..." if len(summary) > 400 else "")
+    return {
+        "type": "context_compression",
+        "title": "上下文已压缩",
+        "details": preview,
+        "summary_chars": current_len,
+        "status": "success",
+    }
+
+
+async def stream_observability_agentscope_events(
+    event: Any,
+    *,
+    state: Dict[str, Any],
+    agent: Any | None = None,
+    agent_name: str | None = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    event_type = str(getattr(event, "type", ""))
+
+    if event_type == "REPLY_START":
+        yield {
+            "type": "agent_reply",
+            "phase": "start",
+            "reply_id": getattr(event, "reply_id", ""),
+            "session_id": getattr(event, "session_id", ""),
+            "agent_name": getattr(event, "name", agent_name or ""),
+        }
+        return
+
+    if event_type == "REPLY_END":
+        yield {
+            "type": "agent_reply",
+            "phase": "end",
+            "reply_id": getattr(event, "reply_id", ""),
+            "session_id": getattr(event, "session_id", ""),
+        }
+        return
+
+    if event_type == "MODEL_CALL_START":
+        reply_id = getattr(event, "reply_id", "")
+        state.setdefault("model_call_started_at", {})[reply_id] = time.time()
+        yield {
+            "type": "model_call",
+            "phase": "start",
+            "reply_id": reply_id,
+            "model_name": getattr(event, "model_name", ""),
+        }
+        return
+
+    if event_type == "MODEL_CALL_END":
+        reply_id = getattr(event, "reply_id", "")
+        started_at = state.get("model_call_started_at", {}).get(reply_id, time.time())
+        yield {
+            "type": "model_call",
+            "phase": "end",
+            "reply_id": reply_id,
+            "input_tokens": int(getattr(event, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(event, "output_tokens", 0) or 0),
+            "duration_ms": (time.time() - started_at) * 1000,
+        }
+        compression = maybe_emit_context_compression(
+            agent=agent,
+            state=state,
+            agent_name=agent_name,
+        )
+        if compression:
+            yield compression
+        return
+
+    if event_type == "THINKING_BLOCK_START":
+        yield {
+            "type": "thinking",
+            "phase": "start",
+            "block_id": getattr(event, "block_id", ""),
+            "reply_id": getattr(event, "reply_id", ""),
+        }
+        return
+
+    if event_type == "THINKING_BLOCK_END":
+        yield {
+            "type": "thinking",
+            "phase": "end",
+            "block_id": getattr(event, "block_id", ""),
+            "reply_id": getattr(event, "reply_id", ""),
+        }
+        return
+
+    if event_type == "CUSTOM":
+        name = str(getattr(event, "name", "") or "")
+        value = getattr(event, "value", None) or {}
+        if name == "state_updated":
+            logger.info(
+                "[AgentScope] state_updated agent=%s payload=%s",
+                agent_name or "",
+                json.dumps(value, ensure_ascii=False)[:500],
+            )
+            yield {
+                "type": "context_update",
+                "name": name,
+                "value": value,
+                "title": "Agent 状态已更新",
+                "details": json.dumps(value, ensure_ascii=False)[:500],
+                "status": "success",
+            }
+        return
+
+
 async def map_standard_agentscope_event(
     event: Any,
     *,
@@ -140,9 +278,17 @@ async def map_standard_agentscope_event(
     runner: PendingInterruptHost | None = None,
     tools: List[Any] | None = None,
     native_model: Any | None = None,
+    agent_name: str | None = None,
+    emit_observability: bool = True,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """Map common AgentScope events to SSE chunks; delegate specialized hooks."""
-    import time
+    if emit_observability:
+        async for chunk in stream_observability_agentscope_events(
+            event,
+            state=state,
+            agent=agent,
+            agent_name=agent_name,
+        ):
+            yield chunk
 
     event_type = str(getattr(event, "type", ""))
     if event_type == "THINKING_BLOCK_DELTA":
@@ -186,10 +332,28 @@ async def map_standard_agentscope_event(
         if on_tool_result_end is not None:
             async for chunk in on_tool_result_end(event):
                 yield chunk
+        compression = maybe_emit_context_compression(
+            agent=agent,
+            state=state,
+            agent_name=agent_name,
+        )
+        if compression:
+            yield compression
         return
 
     if event_type == "REQUIRE_EXTERNAL_EXECUTION":
-        yield EXTERNAL_EXECUTION_UNAVAILABLE_CHUNK
+        if agent is not None and runner is not None and tools is not None and native_model is not None:
+            async for chunk in stream_pending_tool_interrupt(
+                event=event,
+                agent=agent,
+                runner=runner,
+                tools=tools,
+                native_model=native_model,
+                state=state,
+                kind="external",
+                sse_type="external_execution_required",
+            ):
+                yield chunk
         return
 
     if event_type == "REQUIRE_USER_CONFIRM":

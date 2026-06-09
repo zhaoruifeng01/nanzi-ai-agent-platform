@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional, List
+import inspect
 import time
 import logging
 from app.services.ai.tools.data_api import get_dataset_schema, execute_sql_query
@@ -296,6 +297,19 @@ class ToolRegistry:
         }
         return builtin_classes[builtin_name]()
 
+    @staticmethod
+    async def _invoke_registry_entry(tool: Any, payload: Dict[str, Any]) -> Any:
+        if hasattr(tool, "ainvoke"):
+            return await tool.ainvoke(payload)
+        if hasattr(tool, "arun"):
+            return await tool.arun(**payload)
+        if callable(tool):
+            result = tool(**payload)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        raise TypeError(f"Registry tool {tool!r} is not callable")
+
     @classmethod
     def _create_chatbi_runtime_tool_spec(cls, name: str):
         if name not in {"get_dataset_schema", "execute_sql_query", "update_dashboard_context"}:
@@ -309,7 +323,10 @@ class ToolRegistry:
 
         if name == "get_dataset_schema":
             async def invoke_schema(**kwargs):
-                return await tool.ainvoke({"keywords": kwargs.get("keywords")})
+                return await cls._invoke_registry_entry(
+                    tool,
+                    {"keywords": kwargs.get("keywords")},
+                )
 
             return RuntimeToolSpec(
                 name="get_dataset_schema",
@@ -339,12 +356,13 @@ class ToolRegistry:
                     sql = kwargs.get("query")
                 if isinstance(sql, str):
                     sql = sql.strip()
-                return await tool.ainvoke(
+                return await cls._invoke_registry_entry(
+                    tool,
                     {
                         "sql": sql,
                         "data_source": kwargs.get("data_source"),
                         "dataset_name": kwargs.get("dataset_name"),
-                    }
+                    },
                 )
 
             return RuntimeToolSpec(
@@ -377,12 +395,13 @@ class ToolRegistry:
             )
 
         async def invoke_dashboard_context(**kwargs):
-            return await tool.ainvoke(
+            return await cls._invoke_registry_entry(
+                tool,
                 {
                     "room_name": kwargs.get("room_name"),
                     "metric_name": kwargs.get("metric_name"),
                     "time_range": kwargs.get("time_range"),
-                }
+                },
             )
 
         return RuntimeToolSpec(

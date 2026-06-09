@@ -66,6 +66,20 @@ class ToolPermissionConfirmRequest(BaseModel):
     confirmed: bool = Field(..., description="是否允许执行该工具调用")
 
 
+class ExternalExecutionResultItem(BaseModel):
+    id: str = Field(..., description="tool_call id")
+    name: str = Field(..., description="tool name")
+    output: str = Field(..., description="tool execution output text")
+    state: str = Field(default="success", description="tool result state")
+
+
+class ExternalExecutionResumeRequest(BaseModel):
+    results: list[ExternalExecutionResultItem] = Field(
+        ...,
+        description="外部执行工具返回结果列表",
+    )
+
+
 from app.schemas.response import StandardResponse
 
 class GreetingResponse(BaseModel):
@@ -261,6 +275,29 @@ async def confirm_tool_permission(
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+
+@router.post(
+    "/external-executions/{external_execution_request_id}/resume",
+    summary="提交外部执行工具结果并恢复 Agent",
+    description="客户端执行 external tool 后，通过此接口回传结果并继续原 Agent 运行。",
+)
+async def resume_external_execution(
+    external_execution_request_id: str,
+    resume_request: ExternalExecutionResumeRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    async def sse_generator() -> AsyncGenerator[str, None]:
+        async for chunk in agent_service.resume_agentscope_external_execution_stream(
+            external_execution_request_id=external_execution_request_id,
+            results=[item.model_dump() for item in resume_request.results],
+            user_info=user_info,
+        ):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
 
 @router.get("/history", 
     response_model=StandardResponse[AgentExecutionHistoryListResponse],
