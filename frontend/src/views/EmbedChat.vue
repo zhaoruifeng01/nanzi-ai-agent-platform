@@ -747,6 +747,54 @@
                   </div>
                 </div>
               </div>
+              <!-- External Tool Execution -->
+              <div
+                v-if="msg.pendingExternalExecution"
+                class="mt-3 rounded-lg border border-sky-200 dark:border-sky-900/50 bg-sky-50/80 dark:bg-sky-900/20 p-3 text-xs"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-bold text-sky-900 dark:text-sky-100 truncate">
+                        {{ msg.pendingExternalExecution.title || '外部工具执行' }}
+                      </div>
+                      <span class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                        {{ formatExternalExecutionStatus(msg.pendingExternalExecution.status) }}
+                      </span>
+                    </div>
+                    <div class="mt-1 text-sky-800/80 dark:text-sky-200/80 break-words">
+                      {{ msg.pendingExternalExecution.details }}
+                    </div>
+                    <div
+                      v-if="msg.pendingExternalExecution.tool_call?.name"
+                      class="mt-2 rounded-md bg-white/70 dark:bg-gray-950/30 border border-sky-100 dark:border-sky-900/40 p-2 font-mono text-[10px] text-gray-600 dark:text-gray-300 overflow-x-auto"
+                    >
+                      <span>{{ msg.pendingExternalExecution.tool_call.name }}</span>
+                      <span v-if="msg.pendingExternalExecution.tool_call.args"> {{ JSON.stringify(msg.pendingExternalExecution.tool_call.args) }}</span>
+                    </div>
+                    <div v-if="msg.pendingExternalExecution.status === 'pending'" class="mt-3 space-y-2">
+                      <textarea
+                        v-model="msg.pendingExternalExecution.outputDraft"
+                        rows="4"
+                        placeholder="在此粘贴客户端执行该工具后的输出结果..."
+                        class="w-full rounded-md border border-sky-200 dark:border-sky-800 bg-white/90 dark:bg-gray-950/40 px-3 py-2 text-xs text-gray-700 dark:text-gray-200"
+                      />
+                      <button
+                        @click="submitPendingExternalExecution(msg)"
+                        :disabled="msg.pendingExternalExecution.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        提交结果并继续
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <!-- Main Content -->
               <div v-if="msg.content" class="relative group/content mt-2">
                 <!-- Floating Copy Button (Moved here to avoid overlap) -->
@@ -2013,6 +2061,15 @@ import {
   countHiddenLogs,
   type TurnType,
 } from "@/utils/turnLogDisplay";
+import {
+  dispatchAgentscopeStreamEvent,
+  formatExternalExecutionStatus,
+  formatPermissionStatus,
+  handlePermissionRequired as applyPermissionRequiredEvent,
+  resumeExternalExecutionStream,
+  type PendingExternalExecution,
+  type PendingToolPermission,
+} from "@/utils/agentscopeSseHandlers";
 // --- Types ---
 interface LogEntry {
   id: number | string;
@@ -2021,7 +2078,7 @@ interface LogEntry {
   status: "pending" | "success" | "error";
   isExpanded: boolean;
   isRouter?: boolean;
-  category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'default';
+  category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'external' | 'model' | 'agent' | 'context' | 'default';
   execution_time_ms?: number | null;
   elapsed_time_ms?: number | null;
   started_at?: number | null;
@@ -2064,21 +2121,8 @@ interface Message {
   timestamp?: string;
   isTimeLabel?: boolean;
   pendingPermission?: PendingToolPermission;
-}
-
-interface PendingToolPermission {
-  permission_request_id: string;
-  reply_id?: string;
-  id?: string;
-  title: string;
-  details: string;
-  tool_call?: {
-    id?: string;
-    name?: string;
-    args?: Record<string, unknown>;
-  };
-  status: "pending" | "approved" | "rejected" | "expired" | "error";
-  isSubmitting?: boolean;
+  pendingExternalExecution?: PendingExternalExecution;
+  toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
 }
 // Helper: Check Role
 const checkRole = (msg: Message, role: string): boolean => {
@@ -3953,17 +3997,6 @@ const handleQuickQuestion = (content: string) => {
   sendMessage();
 };
 
-const formatPermissionStatus = (status: PendingToolPermission["status"]) => {
-  const labels: Record<PendingToolPermission["status"], string> = {
-    pending: "待确认",
-    approved: "已允许",
-    rejected: "已拒绝",
-    expired: "已过期",
-    error: "异常",
-  };
-  return labels[status] || status;
-};
-
 const addEmbedLogFromStream = (msg: Message, data: any) => {
   if (!msg.logs) msg.logs = [];
   const logId = data.id || Date.now() + Math.random();
@@ -4010,6 +4043,25 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   if (data.trace_id) msg.trace_id = data.trace_id;
   if (data.data?.trace_id) msg.trace_id = data.data.trace_id;
 
+  if (dispatchAgentscopeStreamEvent(msg, data, addEmbedLogFromStream)) {
+    if (data.type === "error") {
+      if (msg.pendingPermission) msg.pendingPermission.status = "error";
+      if (msg.pendingExternalExecution) msg.pendingExternalExecution.status = "error";
+      msg.isThinking = false;
+      msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
+    } else if (data.content) {
+      const content = data.content || "";
+      const isRealContent = !content.includes("<function_calls") && !content.includes("<think");
+      if (isRealContent) {
+        if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
+        msg.content += content;
+        if (msg.isThinking) msg.isThinking = false;
+        resetStallTimer();
+      }
+    }
+    return;
+  }
+
   if (data.type === "log") {
     addEmbedLogFromStream(msg, data);
   } else if (data.type === "citation" && Array.isArray(data.data)) {
@@ -4038,19 +4090,6 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (data.turn_type) msg.turnType = data.turn_type;
     if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
     if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
-  } else if (data.type === "permission_required") {
-    handlePermissionRequired(msg, data);
-  } else if (data.type === "permission_result") {
-    if (msg.pendingPermission) {
-      msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
-    }
-    addEmbedLogFromStream(msg, {
-      id: `permission_${data.permission_request_id}`,
-      title: data.status === "rejected" ? "已拒绝工具调用" : "已允许工具调用",
-      details: `确认请求: ${data.permission_request_id}`,
-      status: "success",
-      category: "permission",
-    });
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -4068,27 +4107,54 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
 };
 
 const handlePermissionRequired = (msg: Message, data: any) => {
-  msg.pendingPermission = {
-    permission_request_id: data.permission_request_id,
-    reply_id: data.reply_id,
-    id: data.id,
-    title: data.title || "工具调用确认",
-    details: data.details || "",
-    tool_call: data.tool_call,
-    status: "pending",
-  };
-  msg.isThinking = false;
+  applyPermissionRequiredEvent(msg, data, addEmbedLogFromStream);
   if (thoughtTimer) {
     clearInterval(thoughtTimer);
     thoughtTimer = null;
   }
-  addEmbedLogFromStream(msg, {
-    id: `permission_${data.permission_request_id}`,
-    title: data.title || "工具调用需要确认",
-    details: data.details || "",
-    status: "pending",
-    category: "permission",
-  });
+};
+
+const submitPendingExternalExecution = async (msg: Message) => {
+  const pending = msg.pendingExternalExecution;
+  if (!pending || pending.status !== "pending") return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  msg.isThinking = true;
+  msg.thoughtStartTime = Date.now();
+  msg.thoughtDuration = "0.0";
+  msg.thinkingText = "正在提交外部执行结果...";
+  resetStallTimer();
+
+  try {
+    await resumeExternalExecutionStream({
+      requestId: pending.external_execution_request_id,
+      toolCall: pending.tool_call,
+      output: pending.outputDraft || "(empty external result)",
+      headers: embedAuthHeaders() || {},
+      credentials: "include",
+      onEvent: (data) => applyPermissionStreamEvent(msg, data),
+    });
+  } catch (error: any) {
+    pending.status = "error";
+    msg.content += `\n[外部执行恢复失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = msg.pendingExternalExecution?.status === "pending" || msg.pendingPermission?.status === "pending";
+    msg.isThinking = false;
+    clearStallTimer();
+    showStalledPrompt.value = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach((l) => {
+        if (l.status === "pending" && l.category !== "permission" && l.category !== "external") l.status = "success";
+      });
+    }
+    scrollToBottom();
+    nextTick(() => chatInputRef.value?.focus());
+  }
 };
 
 const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
@@ -4137,7 +4203,7 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
     msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
   } finally {
     pending.isSubmitting = false;
-    isProcessing.value = msg.pendingPermission?.status === "pending";
+    isProcessing.value = msg.pendingPermission?.status === "pending" || msg.pendingExternalExecution?.status === "pending";
     msg.isThinking = false;
     clearStallTimer();
     showStalledPrompt.value = false;
@@ -4377,10 +4443,12 @@ const sendMessage = async () => {
                 execution_time_ms: data.execution_time_ms ?? null,
               });
             }
-          } else if (data.type === "permission_required") {
-            handlePermissionRequired(agentMsg.value, data);
-          }
-          else if (data.type === "meta") {
+          } else if (dispatchAgentscopeStreamEvent(agentMsg.value, data, addEmbedLogFromStream)) {
+            if (data.type === "permission_required" && thoughtTimer) {
+              clearInterval(thoughtTimer);
+              thoughtTimer = null;
+            }
+          } else if (data.type === "meta") {
             if (data.agent_name) {
               agentMsg.value.agentName = data.agent_name;
               if (data.agent_display_name) {

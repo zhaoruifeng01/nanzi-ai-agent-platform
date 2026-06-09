@@ -213,13 +213,25 @@ async def stream_observability_agentscope_events(
     if event_type == "MODEL_CALL_END":
         reply_id = getattr(event, "reply_id", "")
         started_at = state.get("model_call_started_at", {}).get(reply_id, time.time())
+        input_tokens = int(getattr(event, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(event, "output_tokens", 0) or 0)
+        duration_ms = (time.time() - started_at) * 1000
+        logger.info(
+            "[AgentScope] model_call_end agent=%s reply_id=%s model=%s input_tokens=%d output_tokens=%d duration_ms=%.1f",
+            agent_name or "",
+            reply_id,
+            getattr(event, "model_name", ""),
+            input_tokens,
+            output_tokens,
+            duration_ms,
+        )
         yield {
             "type": "model_call",
             "phase": "end",
             "reply_id": reply_id,
-            "input_tokens": int(getattr(event, "input_tokens", 0) or 0),
-            "output_tokens": int(getattr(event, "output_tokens", 0) or 0),
-            "duration_ms": (time.time() - started_at) * 1000,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "duration_ms": duration_ms,
         }
         compression = maybe_emit_context_compression(
             agent=agent,

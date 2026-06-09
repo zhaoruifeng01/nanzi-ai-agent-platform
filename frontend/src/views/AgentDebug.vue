@@ -10,6 +10,15 @@ import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { createSseLineParser } from "@/utils/chartRenderer";
+import {
+  dispatchAgentscopeStreamEvent,
+  formatExternalExecutionStatus,
+  formatPermissionStatus,
+  handlePermissionRequired as applyPermissionRequiredEvent,
+  resumeExternalExecutionStream,
+  type PendingExternalExecution,
+  type PendingToolPermission,
+} from "@/utils/agentscopeSseHandlers";
 import { useToast } from "../composables/useToast";
 
 import ChatInput from "@/components/embed/ChatInput.vue";
@@ -673,7 +682,7 @@ interface LogEntry {
   isExpanded: boolean;
   isDebug?: boolean;
   isRouter?: boolean;
-  category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'default';
+  category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'external' | 'model' | 'agent' | 'context' | 'default';
   model?: string;
   temperature?: number;
 }
@@ -720,21 +729,10 @@ interface Message {
   isHistory?: boolean; // Is this a history separator or message?
   feedback?: "up" | "down" | null;
   pendingPermission?: PendingToolPermission;
-}
-
-interface PendingToolPermission {
-  permission_request_id: string;
-  reply_id?: string;
-  id?: string;
-  title: string;
-  details: string;
-  tool_call?: {
-    id?: string;
-    name?: string;
-    args?: Record<string, unknown>;
-  };
-  status: "pending" | "approved" | "rejected" | "expired" | "error";
-  isSubmitting?: boolean;
+  pendingExternalExecution?: PendingExternalExecution;
+  toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
+  prompt_tokens?: number;
+  completion_tokens?: number;
 }
 
 // --- Debug Config State ---
@@ -1799,8 +1797,11 @@ const sendMessage = async () => {
                 agentMsg.value.isThinking = true;
               }
             }
-            else if (data.type === "permission_required") {
-              handlePermissionRequired(agentMsg.value, data);
+            else if (dispatchAgentscopeStreamEvent(agentMsg.value, data, addRealLog)) {
+              if (data.type === "permission_required" && thoughtTimer) {
+                clearInterval(thoughtTimer);
+                thoughtTimer = null;
+              }
             }
             // Handle Content Stream
             else if (data.content) {
@@ -1947,44 +1948,85 @@ const addRealLog = (msg: Message, data: any) => {
   }
 };
 
-const formatPermissionStatus = (status: PendingToolPermission["status"]) => {
-  const labels: Record<PendingToolPermission["status"], string> = {
-    pending: "待确认",
-    approved: "已允许",
-    rejected: "已拒绝",
-    expired: "已过期",
-    error: "异常",
-  };
-  return labels[status] || status;
-};
-
 const handlePermissionRequired = (msg: Message, data: any) => {
-  msg.pendingPermission = {
-    permission_request_id: data.permission_request_id,
-    reply_id: data.reply_id,
-    id: data.id,
-    title: data.title || "工具调用确认",
-    details: data.details || "",
-    tool_call: data.tool_call,
-    status: "pending",
-  };
-  msg.isThinking = false;
+  applyPermissionRequiredEvent(msg, data, addRealLog);
   if (thoughtTimer) {
     clearInterval(thoughtTimer);
     thoughtTimer = null;
   }
-  addRealLog(msg, {
-    id: `permission_${data.permission_request_id}`,
-    title: data.title || "工具调用需要确认",
-    details: data.details || "",
-    status: "pending",
-    category: "permission",
-  });
+};
+
+const submitPendingExternalExecution = async (msg: Message) => {
+  const pending = msg.pendingExternalExecution;
+  if (!pending || pending.status !== "pending") return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  msg.isThinking = true;
+  msg.thoughtStartTime = Date.now();
+  msg.thoughtDuration = "0.0";
+  msg.thinkingText = "正在提交外部执行结果...";
+
+  try {
+    await resumeExternalExecutionStream({
+      requestId: pending.external_execution_request_id,
+      toolCall: pending.tool_call,
+      output: pending.outputDraft || "(empty external result)",
+      headers: {
+        "X-API-Key": localStorage.getItem("api_key") || "",
+      },
+      onEvent: (data) => applyPermissionStreamEvent(msg, data),
+    });
+  } catch (error: any) {
+    pending.status = "error";
+    msg.content += `\n[外部执行恢复失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = msg.pendingExternalExecution?.status === "pending" || msg.pendingPermission?.status === "pending";
+    msg.isThinking = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach((log) => {
+        if (log.status === "pending" && log.category !== "permission" && log.category !== "external") {
+          log.status = "success";
+        }
+      });
+    }
+    scrollToBottom();
+  }
 };
 
 const applyPermissionStreamEvent = (msg: Message, data: any) => {
   if (data.trace_id) msg.trace_id = data.trace_id;
   if (data.data?.trace_id) msg.trace_id = data.data.trace_id;
+
+  if (dispatchAgentscopeStreamEvent(msg, data, addRealLog)) {
+    if (data.type === "error") {
+      if (msg.pendingPermission) msg.pendingPermission.status = "error";
+      if (msg.pendingExternalExecution) msg.pendingExternalExecution.status = "error";
+      msg.isThinking = false;
+      msg.content += "\n\n> 服务异常: " + (data.content || "未知错误");
+    } else if (data.content) {
+      const isRealContent = !data.content.includes("<function_calls") && !data.content.includes("<think");
+      if (isRealContent) {
+        if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
+        msg.content += data.content;
+        if (msg.isThinking) {
+          msg.isThinking = false;
+          if (thoughtTimer) {
+            clearInterval(thoughtTimer);
+            thoughtTimer = null;
+          }
+        }
+      }
+    }
+    if (data.status === "generating" && msg.content) msg.isThinking = false;
+    else if (data.status === "error") msg.isThinking = false;
+    if (data.intent) msg.intent = data.intent;
+    return;
+  }
 
   if (data.type === "log") {
     addRealLog(msg, data);
@@ -2027,19 +2069,6 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   } else if (data.type === "meta") {
     if (data.agent_name) msg.agentName = data.agent_name;
     if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
-  } else if (data.type === "permission_required") {
-    handlePermissionRequired(msg, data);
-  } else if (data.type === "permission_result") {
-    if (msg.pendingPermission) {
-      msg.pendingPermission.status = data.status === "rejected" ? "rejected" : "approved";
-    }
-    addRealLog(msg, {
-      id: `permission_${data.permission_request_id}`,
-      title: data.status === "rejected" ? "已拒绝工具调用" : "已允许工具调用",
-      details: `确认请求: ${data.permission_request_id}`,
-      status: "success",
-      category: "permission",
-    });
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -3085,6 +3114,55 @@ onUnmounted(() => {
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18 18 6M6 6l12 12" />
                         </svg>
                         拒绝
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- External Tool Execution -->
+              <div
+                v-if="msg.pendingExternalExecution"
+                class="mt-3 rounded-lg border border-sky-200 bg-sky-50/80 p-3 text-xs"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-sky-100 text-sky-700">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="font-bold text-sky-900 truncate">
+                        {{ msg.pendingExternalExecution.title || '外部工具执行' }}
+                      </div>
+                      <span class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase bg-sky-100 text-sky-700">
+                        {{ formatExternalExecutionStatus(msg.pendingExternalExecution.status) }}
+                      </span>
+                    </div>
+                    <div class="mt-1 text-sky-800/80 break-words">
+                      {{ msg.pendingExternalExecution.details }}
+                    </div>
+                    <div
+                      v-if="msg.pendingExternalExecution.tool_call?.name"
+                      class="mt-2 rounded-md bg-white/80 border border-sky-100 p-2 font-mono text-[10px] text-gray-600 overflow-x-auto"
+                    >
+                      <span>{{ msg.pendingExternalExecution.tool_call.name }}</span>
+                      <span v-if="msg.pendingExternalExecution.tool_call.args"> {{ JSON.stringify(msg.pendingExternalExecution.tool_call.args) }}</span>
+                    </div>
+                    <div v-if="msg.pendingExternalExecution.status === 'pending'" class="mt-3 space-y-2">
+                      <textarea
+                        v-model="msg.pendingExternalExecution.outputDraft"
+                        rows="4"
+                        placeholder="在此粘贴客户端执行该工具后的输出结果..."
+                        class="w-full rounded-md border border-sky-200 bg-white/90 px-3 py-2 text-xs text-gray-700"
+                      />
+                      <button
+                        @click="submitPendingExternalExecution(msg)"
+                        :disabled="msg.pendingExternalExecution.isSubmitting"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        提交结果并继续
                       </button>
                     </div>
                   </div>
