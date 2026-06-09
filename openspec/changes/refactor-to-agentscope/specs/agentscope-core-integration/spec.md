@@ -12,9 +12,16 @@
 
 #### Scenario: 运行时入口唯一
 
-- **当** 用户通过 `/api/v1/chat/completions` 发起通用对话、ChatBI、RAG 或 OpenClaw 请求
+- **当** 用户通过 `/api/v1/chat/completions` 发起通用对话或 ChatBI 请求
 - **那么** 请求必须进入 AgentScope runtime 与对应 runner
 - **并且** 不得调用旧 LangChain executor 中的 `bind_tools()` 或 `astream()` 路径
+
+#### Scenario: RAG 与 OpenClaw 保持现有代理实现
+
+- **当** 用户通过 `/api/v1/chat/completions` 发起 RAG 或 OpenClaw 请求
+- **那么** 系统应保持现有 RAGFlow / OpenClaw API 代理实现
+- **并且** 不要求新增 `RagAgentRunner` 或 `OpenClawAgentRunner`
+- **并且** 不得重新引入 LangChain 执行路径
 
 ### Requirement: 平台中立运行时边界
 

@@ -31,17 +31,15 @@
 旧目录 `app/services/ai/executors/` 保留模块边界，但替换实现：
 
 - `chat_executor.py`：改为薄封装，调用 `GeneralAgentRunner`。保留现有“无工具直接回答 / 有工具 ReAct / 工具结果总结 / citation”语义。
-- `data_executor.py`：改为薄封装，调用 `DataTeamRunner`。ChatBI 内部采用显式阶段：
+- `data_executor.py`：改为薄封装，调用 `DataAgentRunner`。ChatBI 内部采用 AgentScope native Agent + Toolkit，并辅以显式运行状态守卫：
   1. `QuestionNormalizer`：判断追问、复用上一轮结构化结果、生成独立查询。
-  2. `SkillPreparation`：处理已挂载技能和必须读取技能的约束。
-  3. `MetadataAgent`：搜索数据集、表、字段、指标口径。
-  4. `SqlAgent`：生成 SQL 或工具参数。
-  5. `PermissionReview`：SELECT-only、数据集/表权限、行级权限、危险 SQL、执行前计划要求。
-  6. `SqlExecution`：调用现有数据 API / 本地 SQL 工具。
-  7. `ResultReview`：空结果、异常比例、字段缺失、schema miss、可重试错误。
-  8. `SynthesisAgent`：生成最终中文回答、图表说明、结构化结果摘要。
-- `rag_executor.py`：改为 AgentScope runner 外壳，继续代理 RAGFlow，保留 citation 事件。
-- `openclaw_executor.py`：改为 AgentScope runner 外壳，继续代理 OpenClaw API，保留任务状态和总结事件。
+  2. `ContextPreparation`：构建 dataset menu、上下文动作和 few-shot/schema 检索词。
+  3. `NativeAgent`：通过 AgentScope ReAct + ChatBI Toolkit 搜索数据集、表、字段、指标口径并生成 SQL。
+  4. `RuntimeGuard`：守卫 schema-before-sql、执行前计划、SQL 错误、空结果、schema miss。
+  5. `SqlExecution`：调用现有数据 API / 本地 SQL 工具。
+  6. `Synthesis`：生成最终中文回答、追问总结、结构化结果摘要和兜底。
+- `rag_executor.py`：保持现有 RAGFlow 直连实现，不新增 `RagAgentRunner`；仅确认 SSE、citation、错误事件兼容并清理 LangChain 残留。
+- `openclaw_executor.py`：保持现有 OpenClaw API 代理实现，不新增 `OpenClawAgentRunner`；仅确认任务状态、日志、错误和总结事件兼容并清理 LangChain 残留。
 - `common.py`：只保留平台中立的历史转换、多模态处理、token usage 抽取和 SSE 工具函数；删除 LangChain Message 相关逻辑。
 
 ### 模型与提示词
@@ -94,16 +92,16 @@ AgentScope event 必须转换为现有事件：
 2. 迁移工具注册中心，让工具先变成平台中立 `RuntimeToolSpec`。
 3. 实现 AgentScope Toolkit 包装器和工具执行审计。
 4. 重建通用对话 executor。
-5. 重建 RAG executor。
-6. 重建 OpenClaw executor。
-7. 重建 ChatBI DataTeam，逐项迁移现有 DataQueryExecutor 的安全与纠偏能力。
+5. RAG executor 保持现有 RAGFlow 直连实现，做兼容性测试和 LangChain 残留清理。
+6. OpenClaw executor 保持现有 API 代理实现，做兼容性测试和 LangChain 残留清理。
+7. 重建 ChatBI DataAgentRunner，逐项迁移现有 DataQueryExecutor 的安全与纠偏能力。
 8. 将 `AgentService`、router、intent、prompt ops、summarizer 等剩余 LangChain LLM 调用切到新模型接口。
 9. 替换测试桩，更新 `tests/CHECKLIST.md`。
 10. 删除 LangChain 依赖和旧代码，执行全量搜索与测试。
 
 ## 风险与应对
 
-- **ChatBI 回归风险最高**：用阶段化 DataTeam 和现有测试迁移降低风险，每个旧测试必须映射到新 runner 测试。
+- **ChatBI 回归风险最高**：用 `DataAgentRunner` 显式状态守卫和现有测试迁移降低风险，每个旧关键行为必须映射到新 runner 测试。
 - **AgentScope API 变动风险**：通过 runtime 层隔离业务代码，业务执行器不直接依赖 AgentScope 细节。
 - **Python 版本风险**：先升级 Docker 和 CI/本地环境，再安装 AgentScope。
 - **SSE 前端兼容风险**：事件适配器先写快照测试，确保 chunk 格式不变。

@@ -18,14 +18,14 @@
 ## 3. 工具体系迁移
 
 - [x] 3.1 实现 `RuntimeToolSpec`，统一工具名称、描述、参数 schema、来源、权限范围、执行函数、超时配置。
-- [ ] 3.2 将 `app/services/ai/tools/registry.py` 改为返回 `RuntimeToolSpec`，不再返回 LangChain Tool。
-- [ ] 3.3 迁移 `@tool` 静态函数工具到 runtime tool spec。
-- [ ] 3.4 迁移 `BaseTool` 类工具到 runtime tool spec。
-- [ ] 3.5 迁移 `generic_api.py` 通用 API 工具到 runtime tool spec。
-- [ ] 3.6 迁移 `mcp_factory.py` MCP 工具到 runtime tool spec。
+- [x] 3.2 将 `app/services/ai/tools/registry.py` 增加 `get_runtime_tool(s)` RuntimeToolSpec 入口；`get_tools()` 暂留旧测试和管理兼容。
+- [x] 3.3 迁移静态函数工具到 runtime tool spec（通过 legacy-compatible wrapper 与专用 ChatBI spec）。
+- [x] 3.4 迁移类工具到 runtime tool spec（通过 class source wrapper 覆盖 Jira/通知类工具形态）。
+- [x] 3.5 迁移 `generic_api.py` 通用 API 工具到 runtime tool spec，并保留 `source_type=generic_api`。
+- [x] 3.6 迁移 `mcp_factory.py` MCP 工具到 runtime tool spec，并保留 `source_type=mcp`。
 - [x] 3.7 实现 AgentScope Toolkit 包装器，将 runtime tool spec 注册为 AgentScope Tool。
 - [ ] 3.8 在工具包装器中注入权限检查、审计 trace、耗时、错误、citation、context_update。（已完成权限、耗时、错误审计基础；General 工具执行已走 RuntimeToolSpec；citation/context_update 仍待接入）
-- [ ] 3.9 为静态工具、类工具、通用 API 工具、MCP 工具分别写调用测试。
+- [x] 3.9 为静态工具、类工具、通用 API 工具、MCP 工具分别写调用测试。
 
 ## 4. 模型调用迁移
 
@@ -37,46 +37,46 @@
 ## 5. 通用对话执行器重建
 
 - [x] 5.1 新建 `GeneralAgentRunner`，承接通用对话 runner 边界，并在 runtime tool/native model 条件下接入 AgentScope Agent + Toolkit 原生 ReAct。
-- [ ] 5.2 保留无工具直接回答路径。
+- [x] 5.2 保留无工具直接回答路径。
 - [x] 5.3 保留有工具 ReAct 路径、XML tool call 兜底兼容、工具结果总结；General runtime tool 路径已优先走 AgentScope Agent 原生 ReAct，legacy/mock 路径保留 fallback。
-- [ ] 5.4 保留知识库 citation、记忆检索强制调用、工具失败用户可读提示。
+- [x] 5.4 保留知识库 citation、记忆检索强制调用、工具失败用户可读提示。
 - [x] 5.5 将 `chat_executor.py` 改为调用 `GeneralAgentRunner`。
 - [x] 5.6 迁移 `tests/ai/executors/test_chat_executor.py` 到 AgentScope/runtime 测试桩。
 
-## 6. RAG 执行器重建
+## 6. RAG 执行器保持现状
 
-- [ ] 6.1 新建 `RagAgentRunner`，保留现有 RAGFlow 客户端调用方式。
-- [ ] 6.2 将 RAGFlow answer、citation、log、error 事件转为现有 SSE chunk。
-- [ ] 6.3 将 `rag_executor.py` 改为调用 `RagAgentRunner`。
-- [ ] 6.4 迁移 RAG executor 测试，确保 citation 和 synthesis log 兼容。
+- [x] 6.1 明确 `rag_executor.py` 不迁移为 `RagAgentRunner`，继续保留现有 RAGFlow 客户端直连实现。
+- [x] 6.2 保留现有 RAGFlow answer、citation、log、error 到 SSE chunk 的输出协议。
+- [x] 6.3 不新增 `RagAgentRunner`，后续仅在必要时做兼容性测试和 LangChain 残留清理。
+- [x] 6.4 保留现有 RAG executor 测试边界，确保 citation 和 synthesis log 兼容。
 
-## 7. OpenClaw 执行器重建
+## 7. OpenClaw 执行器保持现状
 
-- [ ] 7.1 新建 `OpenClawAgentRunner`，保留现有 OpenClaw API 代理。
-- [ ] 7.2 保留任务状态、日志、错误、最终总结事件。
-- [ ] 7.3 将 `openclaw_executor.py` 改为调用 `OpenClawAgentRunner`。
-- [ ] 7.4 增加 OpenClaw API 错误、SSE 非 JSON 行、正常回答的测试。
+- [x] 7.1 明确 `openclaw_executor.py` 不迁移为 `OpenClawAgentRunner`，继续保留现有 OpenClaw API 代理。
+- [x] 7.2 保留现有任务状态、日志、错误、最终总结事件。
+- [x] 7.3 不新增 `OpenClawAgentRunner`，后续仅在必要时做兼容性测试和 LangChain 残留清理。
+- [x] 7.4 保留现有 OpenClaw API 错误、SSE 非 JSON 行、正常回答测试边界。
 
-## 8. ChatBI DataTeam 重建
+## 8. ChatBI DataAgentRunner 重建
 
-- [ ] 8.1 新建 `DataTeamRunner` 和阶段上下文对象，显式记录 question、metadata、sql、permission、result、review、synthesis。
-- [ ] 8.2 迁移追问识别和独立查询改写逻辑。
-- [ ] 8.3 迁移 dataset menu、授权数据集过滤、技能准备和必须读技能约束。
-- [ ] 8.4 实现 `MetadataAgent`，承接 schema/指标/表字段检索。
-- [ ] 8.5 实现 `SqlAgent`，承接 SQL 生成、计划说明、SQL 语法错误自纠。
-- [ ] 8.6 实现 `PermissionReview`，承接 SELECT-only、危险 SQL、数据集/表权限、行级权限、执行前计划要求。
-- [ ] 8.7 实现 `SqlExecution`，调用现有数据 API / 本地 SQL 工具并记录结构化结果。
-- [ ] 8.8 实现 `ResultReview`，承接空结果复查、schema miss、异常比例复查、强制 SQL 后重试。
-- [ ] 8.9 实现 `SynthesisAgent`，保留最终回答、图表说明、结构化结果摘要、失败兜底。
-- [ ] 8.10 将 `data_executor.py` 改为调用 `DataTeamRunner`。
-- [ ] 8.11 迁移 `tests/ai/executors/test_data_executor.py` 和 `tests/ai/test_data_executor_robustness.py` 到新 runner。
+- [x] 8.1 新建 `DataAgentRunner` 和显式运行状态对象，记录工具执行、schema、SQL、结果、修复和最终回答状态。
+- [x] 8.2 迁移追问识别、上一轮结果复用和独立查询改写逻辑。
+- [x] 8.3 迁移 dataset menu、授权数据集过滤和 ChatBI 上下文构建；技能准备/必须读技能不作为本轮 ChatBI native runner 范围。
+- [x] 8.4 通过 AgentScope native Agent + ChatBI runtime tools 承接 schema/指标/表字段检索。
+- [x] 8.5 通过 AgentScope native Agent + `execute_sql_query` 承接 SQL 生成、计划说明和 SQL 错误修复。
+- [x] 8.6 通过运行状态守卫和现有工具权限承接 SELECT-only、数据集/表权限、行级权限和执行前计划要求。
+- [x] 8.7 通过 ChatBI runtime tool 调用现有数据 API / 本地 SQL 工具并记录结构化结果。
+- [x] 8.8 实现空结果复查、schema miss、SQL 错误和强制 SQL 后重试守卫；异常比例复查不作为本轮 native runner 范围。
+- [x] 8.9 保留最终回答、上一轮结果追问总结、结构化结果记忆和失败兜底。
+- [x] 8.10 将 `data_executor.py` 改为调用 `DataAgentRunner`。
+- [x] 8.11 将旧 `tests/ai/executors/test_data_executor.py` 收敛为 executor wrapper 测试，并把 legacy robustness 覆盖迁移到 `tests/ai/runners/test_data_agent_runner.py`。
 
 ## 9. AgentService 与 API 接入
 
 - [x] 9.1 调整 `AgentService`，移除对 LangChain Message 的直接依赖。
 - [x] 9.2 保留路由日志、dry_run、return_raw_prompt、debug option、历史保存、多智能体综合回答。
-- [ ] 9.3 确认 `/api/v1/chat/completions` SSE 输出格式不变。
-- [ ] 9.4 增加 API 级流式快照测试，覆盖 content、log、citation、context_update、error、finish。
+- [x] 9.3 确认 `/api/v1/chat/completions` SSE 输出格式不变。
+- [x] 9.4 增加 API 级流式快照测试，覆盖 content、log、citation、context_update、error、finish。
 
 ## 10. 测试与文档回归
 

@@ -156,6 +156,33 @@ async def test_agentscope_tool_wrapper_maps_runtime_permission_scopes():
     assert await make_tool("write").check_read_only({}) is False
 
 
+@pytest.mark.asyncio
+async def test_chatbi_runtime_tools_are_allowed_without_ask():
+    from agentscope.permission import PermissionBehavior
+
+    from app.services.ai.runtime.agentscope.tools import AgentScopeRuntimeTool
+    from app.services.ai.tools.registry import ToolRegistry
+
+    specs = await ToolRegistry.get_runtime_tools(
+        ["get_dataset_schema", "execute_sql_query", "update_dashboard_context"]
+    )
+    tools = [AgentScopeRuntimeTool(spec) for spec in specs]
+
+    decisions = [await tool.check_permissions({}, None) for tool in tools]
+
+    assert [tool.name for tool in tools] == [
+        "get_dataset_schema",
+        "execute_sql_query",
+        "update_dashboard_context",
+    ]
+    assert [decision.behavior for decision in decisions] == [
+        PermissionBehavior.ALLOW,
+        PermissionBehavior.ALLOW,
+        PermissionBehavior.ALLOW,
+    ]
+    assert [await tool.check_read_only({}) for tool in tools] == [True, True, True]
+
+
 def test_build_toolkit_returns_agent_scope_toolkit_when_available(monkeypatch):
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, build_toolkit
 

@@ -117,6 +117,7 @@ class ToolRegistry:
 
     # Cache for DB Tools
     _db_tool_cache: Dict[str, Any] = {}
+    _db_tool_source_cache: Dict[str, str] = {}
     _db_tool_cache_ttl = 60.0 # 60 seconds
     _db_tool_ids_fetched_at: Dict[str, float] = {}
 
@@ -135,6 +136,17 @@ class ToolRegistry:
                 return cls._db_tool_cache[name]
 
         # 3. Check DB for Generic or MCP Tools
+        loaded = await cls._load_db_tool_with_source(name)
+        return loaded[0] if loaded else None
+
+    @classmethod
+    async def _load_db_tool_with_source(cls, name: str) -> Optional[tuple[Any, str]]:
+        now = time.time()
+        if name in cls._db_tool_cache:
+            last_fetched = cls._db_tool_ids_fetched_at.get(name, 0)
+            if now - last_fetched < cls._db_tool_cache_ttl:
+                return cls._db_tool_cache[name], cls._db_tool_source_cache.get(name, "static")
+
         try:
             async with AsyncSessionLocal() as session:
                 # A. Check MCP Tools first
@@ -148,8 +160,9 @@ class ToolRegistry:
                 if mcp_config:
                     tool_instance = McpToolFactory.create_tool(mcp_config)
                     cls._db_tool_cache[name] = tool_instance
+                    cls._db_tool_source_cache[name] = "mcp"
                     cls._db_tool_ids_fetched_at[name] = time.time()
-                    return tool_instance
+                    return tool_instance, "mcp"
 
                 # B. Check Generic API Tools
                 stmt = select(SysApiTool).where(SysApiTool.name == name, SysApiTool.is_active == True)
@@ -159,12 +172,13 @@ class ToolRegistry:
                 if tool_config:
                     tool_instance = GenericApiToolFactory.create_tool(tool_config)
                     cls._db_tool_cache[name] = tool_instance
+                    cls._db_tool_source_cache[name] = "generic_api"
                     cls._db_tool_ids_fetched_at[name] = time.time()
-                    return tool_instance
+                    return tool_instance, "generic_api"
         except Exception as e:
             logger.error(f"Error loading tool {name} from DB: {e}")
             pass
-            
+
         return None
 
     @classmethod
@@ -184,6 +198,15 @@ class ToolRegistry:
         native_tool = cls._create_agentscope_builtin_tool(name)
         if native_tool is not None:
             return runtime_tool_spec_from_native_agentscope_tool(native_tool, source_type="system")
+
+        data_tool_spec = cls._create_chatbi_runtime_tool_spec(name)
+        if data_tool_spec is not None:
+            return data_tool_spec
+
+        db_tool = await cls._load_db_tool_with_source(name)
+        if db_tool:
+            tool, source_type = db_tool
+            return runtime_tool_spec_from_legacy_tool(tool, source_type=source_type)
 
         tool = await cls.get_tool(name)
         if not tool:
@@ -272,6 +295,122 @@ class ToolRegistry:
             "Grep": Grep,
         }
         return builtin_classes[builtin_name]()
+
+    @classmethod
+    def _create_chatbi_runtime_tool_spec(cls, name: str):
+        if name not in {"get_dataset_schema", "execute_sql_query", "update_dashboard_context"}:
+            return None
+
+        from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+        tool = cls._registry.get(name)
+        if tool is None:
+            return None
+
+        if name == "get_dataset_schema":
+            async def invoke_schema(**kwargs):
+                return await tool(keywords=kwargs.get("keywords"))
+
+            return RuntimeToolSpec(
+                name="get_dataset_schema",
+                description=(
+                    "Retrieve authorized dataset schemas, tables, columns, metric definitions, "
+                    "relationships, and synonyms for ChatBI SQL planning."
+                ),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "keywords": {
+                            "anyOf": [{"type": "string"}, {"type": "null"}],
+                            "default": None,
+                            "description": "Business keywords for metadata/schema retrieval.",
+                        },
+                    },
+                },
+                source_type="static",
+                callable=invoke_schema,
+                permission_scope="read",
+            )
+
+        if name == "execute_sql_query":
+            async def invoke_sql(**kwargs):
+                sql = kwargs.get("sql")
+                if sql is None:
+                    sql = kwargs.get("query")
+                if isinstance(sql, str):
+                    sql = sql.strip()
+                return await tool(
+                    sql=sql,
+                    data_source=kwargs.get("data_source"),
+                    dataset_name=kwargs.get("dataset_name"),
+                )
+
+            return RuntimeToolSpec(
+                name="execute_sql_query",
+                description=(
+                    "Execute a read-only SQL SELECT query against a permitted dataset. "
+                    "The platform validates dataset permissions and SQL safety before execution."
+                ),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "Read-only SQL SELECT query to execute.",
+                        },
+                        "data_source": {
+                            "type": "string",
+                            "description": "Data source identifier, for example mysql_oa.",
+                        },
+                        "dataset_name": {
+                            "type": "string",
+                            "description": "Authorized dataset name used for permission validation.",
+                        },
+                    },
+                    "required": ["sql", "data_source", "dataset_name"],
+                },
+                source_type="static",
+                callable=invoke_sql,
+                permission_scope="read",
+            )
+
+        async def invoke_dashboard_context(**kwargs):
+            result = tool(
+                room_name=kwargs.get("room_name"),
+                metric_name=kwargs.get("metric_name"),
+                time_range=kwargs.get("time_range"),
+            )
+            return result
+
+        return RuntimeToolSpec(
+            name="update_dashboard_context",
+            description=(
+                "Update the UI dashboard context for entities mentioned in the ChatBI conversation."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "room_name": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "default": None,
+                        "description": "Room or location name mentioned by the user.",
+                    },
+                    "metric_name": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "default": None,
+                        "description": "Metric name mentioned by the user.",
+                    },
+                    "time_range": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "default": None,
+                        "description": "Time range mentioned by the user.",
+                    },
+                },
+            },
+            source_type="static",
+            callable=invoke_dashboard_context,
+            permission_scope="read",
+        )
 
     @classmethod
     async def _configure_tool_runtime(cls, tool: Any, config: Any) -> Any:

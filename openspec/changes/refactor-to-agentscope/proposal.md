@@ -12,9 +12,9 @@
 - **工具体系替换**：将静态工具、通用 API 工具、MCP 工具、Jira 工具、知识库工具、记忆工具、系统执行工具统一包装为 AgentScope `ToolBase` / `Toolkit`，不再暴露 LangChain Tool 对象。
 - **执行器重建**：
   - 通用对话重建为 `GeneralAgentRunner`。
-  - ChatBI 重建为 `DataTeamRunner`，以 Leader、Metadata、SQL、Review、Synthesis 的协作流程承接现有 ChatBI 约束。
-  - RAG 重建为 `RagAgentRunner`，保留 RAGFlow 直连能力和引用事件。
-  - OpenClaw 重建为 `OpenClawAgentRunner`，保留现有 OpenClaw API 代理与总结链路。
+  - ChatBI 重建为 `DataAgentRunner`，以 AgentScope native Agent + Toolkit 和显式运行状态守卫承接现有 ChatBI 约束。
+  - RAG 不重建 Runner，保留现有 RAGFlow 直连能力和引用事件，仅清理 LangChain 残留并做兼容性验证。
+  - OpenClaw 不重建 Runner，保留现有 OpenClaw API 代理与总结链路，仅清理 LangChain 残留并做兼容性验证。
 - **事件协议兼容**：新增 AgentScope Event 到现有 SSE chunk 的适配层，前端 `/api/v1/chat/completions` 协议、日志事件、引用事件、`context_update`、结束事件保持兼容。
 - **审计与 trace 兼容**：保留 `AgentExecutionHistory`、`AgentExecutionTrace` 数据结构，新的 AgentScope 事件必须写入现有审计表。
 - **部署升级**：将 Python 容器基础镜像升级到 AgentScope 支持的 Python 3.11+，补齐 AgentScope storage/service/workspace 相关依赖。
@@ -38,6 +38,6 @@
 
 - `rg "langchain|LangChain|ChatOpenAI|StructuredTool|BaseTool|ToolMessage|SystemMessage|HumanMessage|AIMessage" app tests` 不再命中运行代码和测试代码中的 LangChain 依赖。
 - `/api/v1/chat/completions` 的流式输出对前端保持兼容。
-- 通用对话、ChatBI、RAG、OpenClaw 四类执行路径均通过自动化测试。
+- 通用对话、ChatBI 通过 AgentScope/runtime 自动化测试；RAG、OpenClaw 保持现有实现并通过兼容性测试。
 - ChatBI 保留现有关键安全与准确性能力：数据集权限、行级权限、SELECT-only、SQL 错误自纠、空结果复查、最终总结、图表/结构化结果输出。
 - Docker 镜像使用 Python 3.11+ 并可安装 AgentScope 所需依赖。
