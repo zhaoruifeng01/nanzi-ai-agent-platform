@@ -572,6 +572,7 @@ class DataAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 async for chunk in self._run_native_agent_turn(
                     native_model=native_model,
@@ -617,16 +618,30 @@ class DataAgentRunner(BaseExecutor):
             agent_name,
         )
         restored_state = None
-        if persisted and persisted.matches(
-            tools_fingerprint=tools_fingerprint,
-            agent_name=agent_name,
-        ):
-            try:
-                from agentscope.state import AgentState
+        if persisted:
+            if persisted.matches(
+                tools_fingerprint=tools_fingerprint,
+                agent_name=agent_name,
+            ):
+                try:
+                    from agentscope.state import AgentState
 
-                restored_state = AgentState.model_validate(persisted.state)
-            except Exception as exc:
-                logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
+                    restored_state = AgentState.model_validate(persisted.state)
+                except Exception as exc:
+                    logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
+            else:
+                logger.warning(
+                    "[DataAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
+                    "Resetting conversation state to prevent tool call conflicts.",
+                    agent_name, persisted.tools_fingerprint, tools_fingerprint
+                )
+                yield {
+                    "type": "log",
+                    "id": f"state_reset_{uuid.uuid4().hex[:8]}",
+                    "title": "智能体配置变更：历史会话状态已重置",
+                    "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
+                    "status": "warning",
+                }
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
@@ -876,6 +891,15 @@ class DataAgentRunner(BaseExecutor):
         examples: List[Dict[str, Any]],
     ) -> str:
         fallback_query = (standalone_query or user_question or "").strip()[:300]
+        if len(fallback_query) < 12 and re.match(r"^[\u4e00-\u9fa5\w\s-]+$", fallback_query):
+            query_lower = fallback_query.lower()
+            sql_keywords = {"select", "show", "list", "查询", "列出", "展示", "显示", "获取", "查一下", "统计"}
+            if not any(kw in query_lower for kw in sql_keywords):
+                logger.info(
+                    "[DataAgentRunner] Schema keyword planner bypassed for query: %s",
+                    fallback_query
+                )
+                return fallback_query
         prompt = (
             "你是 ChatBI 的元数据检索词规划器。你的任务不是生成 SQL，而是为 get_dataset_schema(keywords) "
             "生成最适合检索数据集/表/字段/指标定义的短关键词。\n\n"
@@ -1957,6 +1981,7 @@ class DataAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 agent, tools, native_model, data_state, stream_meta = await self._resolve_pending_runtime(pending)
                 interrupted = False

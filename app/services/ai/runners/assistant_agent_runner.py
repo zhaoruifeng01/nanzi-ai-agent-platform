@@ -299,6 +299,7 @@ class AssistantAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 persisted = await agent_state_store.load(
                     self._runtime_user_id(),
@@ -306,16 +307,30 @@ class AssistantAgentRunner(BaseExecutor):
                     agent_name,
                 )
                 restored_state = None
-                if persisted and persisted.matches(
-                    tools_fingerprint=tools_fingerprint,
-                    agent_name=agent_name,
-                ):
-                    try:
-                        from agentscope.state import AgentState
+                if persisted:
+                    if persisted.matches(
+                        tools_fingerprint=tools_fingerprint,
+                        agent_name=agent_name,
+                    ):
+                        try:
+                            from agentscope.state import AgentState
 
-                        restored_state = AgentState.model_validate(persisted.state)
-                    except Exception as exc:
-                        logger.warning("[AssistantAgentRunner] Failed to restore AgentState: %s", exc)
+                            restored_state = AgentState.model_validate(persisted.state)
+                        except Exception as exc:
+                            logger.warning("[AssistantAgentRunner] Failed to restore AgentState: %s", exc)
+                    else:
+                        logger.warning(
+                            "[AssistantAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
+                            "Resetting conversation state to prevent tool call conflicts.",
+                            agent_name, persisted.tools_fingerprint, tools_fingerprint
+                        )
+                        yield {
+                            "type": "log",
+                            "id": f"state_reset_{uuid.uuid4().hex[:8]}",
+                            "title": "智能体配置变更：历史会话状态已重置",
+                            "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
+                            "status": "warning",
+                        }
 
                 agent = await self._build_native_agent(
                     native_model=native_model,
@@ -762,6 +777,7 @@ class AssistantAgentRunner(BaseExecutor):
                 user_id=self._runtime_user_id(),
                 conversation_id=self.conversation_id,
                 agent_name=agent_name,
+                ttl_seconds=300,
             ):
                 agent, tools, native_model, state = await self._resolve_pending_runtime(pending)
                 interrupted = False
