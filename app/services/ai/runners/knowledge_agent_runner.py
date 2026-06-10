@@ -118,10 +118,14 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
     @staticmethod
     def _is_knowledge_service_unavailable(tool_output: Any) -> bool:
+        """仅识别工具显式返回的错误标记，勿对检索正文做子串匹配（正文可能含 503/timeout 等）。"""
         text = str(tool_output or "")
         if "[知识库服务不可用]" in text:
             return True
-        return MetadataRagService._is_service_unavailable(text)
+        normalized = text.lstrip()
+        if normalized.startswith("[Tool Error]") or normalized.startswith("[TOOL_ERROR]"):
+            return MetadataRagService._is_service_unavailable(text)
+        return False
 
     async def _yield_knowledge_fatal_abort(
         self,
@@ -185,9 +189,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 continue
             yield chunk
 
-        if knowledge_service_unavailable or self._is_knowledge_service_unavailable(
-            prefetched_knowledge_output,
-        ):
+        if knowledge_service_unavailable:
             async for chunk in self._yield_knowledge_fatal_abort(prefetched_knowledge_output):
                 yield chunk
             return

@@ -1173,6 +1173,25 @@ async def test_knowledge_runner_uses_agentscope_native_agent(chat_config):
 
 
 @pytest.mark.asyncio
+async def test_is_knowledge_service_unavailable_ignores_document_content_false_positives():
+    """检索正文含 503/timeout 等子串时，不应误判为服务不可用。"""
+    from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
+    import json
+
+    doc_content = (
+        "I found the following information in the knowledge base.\n"
+        "--- [ID:1] Source: EC6 用户手册.pdf ---\n"
+        "请拨打 400-503-1234 或等待 30 秒 timeout 后重试蓝牙连接。"
+    )
+    tool_output = json.dumps(
+        {"content": doc_content, "citations": [{"id": "1", "content": doc_content}]},
+        ensure_ascii=False,
+    )
+    assert KnowledgeAgentRunner._is_knowledge_service_unavailable(tool_output) is False
+    assert KnowledgeAgentRunner._is_knowledge_service_unavailable(doc_content) is False
+
+
+@pytest.mark.asyncio
 async def test_knowledge_runner_stops_on_service_unavailable(chat_config):
     """知识库服务不可用时，应终止问答并返回明确提示，不进入 ReAct。"""
     from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
