@@ -16,6 +16,7 @@ RuntimeToolAuditStatus = Literal["start", "success", "error"]
 
 
 READ_ONLY_TOOL_NAMES = {
+    "get_current_time",
     "get_dataset_schema",
     "search_knowledge_base",
     "memory_search",
