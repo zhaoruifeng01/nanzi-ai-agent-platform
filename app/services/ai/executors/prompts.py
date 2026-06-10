@@ -407,9 +407,17 @@ class AssistantPrompts:
 class KnowledgeChatPrompts:
     """KnowledgeExecutor 使用的系统级提示词。"""
 
+    CITATION_FORMAT_RULE = (
+        "【引用标注规范（必须遵守）】\n"
+        "凡引用知识库检索结果中的陈述，必须在对应句子末尾标注英文方括号引用序号 [ID:n]，"
+        "n 为检索结果中的序号（如 [ID:1]、[ID:7]）。\n"
+        "禁止省略引用标记；禁止编造检索结果中不存在的 [ID:n]。"
+    )
+
     TURN_SYSTEM_HINT = (
         "【知识库问答模式】用户正在询问文档/SOP/操作指引。"
-        "请基于知识库检索结果作答；若检索无结果，应明确说明未找到相关内容，禁止编造流程或制度。"
+        "请基于知识库检索结果作答；若检索无结果，应明确说明未找到相关内容，禁止编造流程或制度。\n"
+        f"{CITATION_FORMAT_RULE}"
     )
 
     SEARCH_CORRECTION_MSG = (
@@ -433,7 +441,21 @@ class KnowledgeChatPrompts:
             f"【已自动执行 search_knowledge_base】检索词：{query}\n"
             f"【知识库检索结果】\n{raw}\n\n"
             "平台已在 Agent 推理开始前自动完成知识库检索。请优先基于以上内容组织回答，"
-            "并在回答中引用关键依据；若结果不足以回答，可再次调用 search_knowledge_base 补充检索。"
+            "并在每个相关陈述句末尾标注 [ID:n]（n 为检索结果序号）；"
+            "若结果不足以回答，可再次调用 search_knowledge_base 补充检索。\n"
+            f"{KnowledgeChatPrompts.CITATION_FORMAT_RULE}"
+        )
+
+    @staticmethod
+    def synthesis_user_message(user_question: str, execution_review: str) -> str:
+        """知识库问答 synthesis 阶段的用户消息。"""
+        return (
+            f"【当前追问】：{user_question}\n\n"
+            f"{execution_review}\n\n"
+            "请结合上述【执行过程回顾】和知识库检索结果，为用户提供准确、连贯的最终回答。\n"
+            "每个基于检索内容的陈述句末尾必须保留 [ID:n] 引用标记。\n\n"
+            f"{KnowledgeChatPrompts.CITATION_FORMAT_RULE}\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
         )
 
 

@@ -607,6 +607,9 @@ class AssistantAgentRunner(BaseExecutor):
         ):
             yield chunk
 
+    def _build_synthesis_user_message(self, user_query: str, execution_review: str) -> str:
+        return AssistantPrompts.synthesis_user_message(user_query, execution_review)
+
     async def _stream_general_synthesis_fallback(
         self,
         *,
@@ -653,7 +656,7 @@ class AssistantAgentRunner(BaseExecutor):
             messages = normalize_messages_for_llm([
                 SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
                 HumanMessage(
-                    content=AssistantPrompts.synthesis_user_message(user_query, execution_review)
+                    content=self._build_synthesis_user_message(user_query, execution_review)
                 ),
             ])
             async for chunk in llm.astream(messages):

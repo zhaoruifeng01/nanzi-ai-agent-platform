@@ -50,7 +50,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'quick-question', question: string): void;
-  (e: 'show-citation', id: string): void;
+  (e: 'show-citation', payload: { id: string; anchor: HTMLElement }): void;
 }>();
 
 interface ContentSegment {
@@ -60,20 +60,33 @@ interface ContentSegment {
   title?: string;
 }
 
+  /** 将 [ID:n] 转为可点击徽章（Markdown 渲染前保护，避免被解析器吞掉） */
+  const protectCitationsInMarkdown = (text: string) => {
+    if (!text) return '';
+    return text.replace(/(?:[\[【]ID:(\w+)[\]】])|(?:Fig\.\s*(\d+))/gi, (match, id, figNum) => {
+      const finalId = id || figNum;
+      return `<span class="citation-badge" data-cite-id="${finalId}">${match}</span>`;
+    });
+  };
+
   /**
    * 后处理：修复被 Markdown 引擎“误杀”转义的 HTML
    */
   const postProcessHtml = (html: string) => {
     if (!html) return '';
     let res = postProcessQuickButtonHtml(html);
-  
-    // 处理 RAGFlow 引用的展示样式
+
+    // 兜底：HTML 中残留的 [ID:n] 再转一次
     res = res.replace(/(?:[\[【]ID:(\w+)[\]】])|(?:Fig\.\s*(\d+))/gi, (match, id, figNum) => {
       const finalId = id || figNum;
       return `<span class="citation-badge" data-cite-id="${finalId}">${match}</span>`;
     });
-  
+
     return res;
+  };
+
+  const renderMarkdownSegment = (text: string) => {
+    return postProcessHtml(renderMarkdown(protectCitationsInMarkdown(text)));
   };
 
 const handleContentClick = (event: MouseEvent) => {
@@ -81,7 +94,12 @@ const handleContentClick = (event: MouseEvent) => {
   const citeEl = target.closest('[data-cite-id]');
   if (citeEl) {
     const citeId = citeEl.getAttribute('data-cite-id');
-    if (citeId) { emit('show-citation', citeId); event.preventDefault(); event.stopPropagation(); return; }
+    if (citeId) {
+      emit('show-citation', { id: citeId, anchor: citeEl as HTMLElement });
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
   }
 
   const linkEl = target.closest('a');
@@ -127,7 +145,7 @@ const segments = computed<ContentSegment[]>(() => {
 
   while ((match = regex.exec(cleanContent)) !== null) {
     if (match.index > lastIndex) {
-      result.push({ type: 'text', content: postProcessHtml(renderMarkdown(cleanContent.slice(lastIndex, match.index))) });
+      result.push({ type: 'text', content: renderMarkdownSegment(cleanContent.slice(lastIndex, match.index)) });
     }
     if (match[1]) result.push({ type: 'thought', content: renderMarkdown(match[1].trim()) });
     else if (match[4]) result.push({ type: 'mermaid', content: match[4].trim() });
@@ -153,7 +171,7 @@ const segments = computed<ContentSegment[]>(() => {
   }
 
   if (lastIndex < cleanContent.length) {
-    result.push({ type: 'text', content: postProcessHtml(renderMarkdown(cleanContent.slice(lastIndex))) });
+    result.push({ type: 'text', content: renderMarkdownSegment(cleanContent.slice(lastIndex)) });
   }
   return result;
 });

@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 class KnowledgeAgentRunner(AssistantAgentRunner):
     """知识库问答 Runner：自动检索 + AgentScope ReAct，可扩展挂载业务工具。"""
 
+    def _build_synthesis_user_message(self, user_query: str, execution_review: str) -> str:
+        return KnowledgeChatPrompts.synthesis_user_message(user_query, execution_review)
+
     def _runtime_agent_name(self) -> str:
         return self.config.agent_name or "KnowledgeAgent"
 

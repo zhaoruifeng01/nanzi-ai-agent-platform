@@ -833,7 +833,7 @@
                                                                 <MessageRenderer
                                                                   :content="msg.content"
                                                                   @quick-question="handleQuickQuestion"
-                                                                  @show-citation="(id) => handleShowCitation(msg, id)"
+                                                                  @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
                                                                 />
                                 <!-- Typewriter Cursor -->
                                 <span 
@@ -864,7 +864,7 @@
                                   </span>
                                 </div>
                                                                                                                           <!-- Citation Cards -->
-                                                                                                                          <div v-if="msg.citations && msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50">
+                                                                                                                          <div v-if="msg.citations && msg.citations.length > 0" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50">
                                                                                                                             <button 
                                                                                                                               @click="msg.isCitationsExpanded = !msg.isCitationsExpanded"
                                                                                                                               class="flex items-center space-x-1.5 mb-2 w-full text-left group/cite-head"
@@ -872,7 +872,7 @@
                                                                                                                                <svg class="w-3.5 h-3.5 text-gray-400 group-hover/cite-head:text-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                                                                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                                                                                                                                </svg>
-                                                                                                                               <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1 group-hover/cite-head:text-gray-600 dark:group-hover/cite-head:text-gray-300 transition-colors">引用来源 ({{ msg.citations.filter(c => (c.similarity || 0) >= 0.5).length }})</span>
+                                                                                                                               <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1 group-hover/cite-head:text-gray-600 dark:group-hover/cite-head:text-gray-300 transition-colors">引用来源 ({{ msg.citations.length }})</span>
                                                                                                                                <svg 
                                                                                                                                   class="w-3.5 h-3.5 text-gray-400 transform transition-transform duration-200"
                                                                                                                                   :class="{ 'rotate-180': msg.isCitationsExpanded }"
@@ -891,12 +891,10 @@
                                                                                                                               >
                                                                                                                                 <div v-show="msg.isCitationsExpanded" class="overflow-hidden">
                                                                                                                                                                   <div class="flex flex-wrap gap-2 py-1">
-                                                                                                                                                                     <!-- Only render visible cards with similarity > 50% -->
                                                                                                                                                                      <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
                                                                                                                                                                        <div 
-                                                                                                                                                                          v-if="(cite.similarity || 0) >= 0.5"
-                                                                                                                                                                          class="group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden"
-                                                                                                                                                                          @click="cite.isExpanded = !cite.isExpanded"
+                                                                                                                                                                          class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden"
+                                                                                                                                                                          @click.stop="openCitationPopover(cite, $event)"
                                                                                                                                                                        >
                                                                                                                                                                           <!-- File Icon -->
                                                                                                                                                                           <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -911,44 +909,7 @@
                                                                                                                                                                             {{ (cite.similarity * 100).toFixed(0) }}%
                                                                                                                                                                           </span>
                                                                                                                                                                        </div>
-                                                                                                                                                                       <!-- Global Preview Modal (Rendered regardless of similarity threshold) -->
-                                                                                                                                                                       <div v-if="cite.isExpanded" class="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/20 backdrop-blur-sm" @click.stop="cite.isExpanded = false">
-                                                                                                                                                                          <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col border border-gray-200 dark:border-gray-700 animate-fade-in-up" @click.stop>
-                                                                                                                                                                             <div class="flex justify-between items-start mb-4">
-                                                                                                                                                                                <div class="flex items-center gap-3">
-                                                                                                                                                                                   <div class="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                                                                                                                                                                                      <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                                                                                                                                                                   </div>
-                                                                                                                                                                                   <div>
-                                                                                                                                                                                      <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ cite.doc_name }}</h4>
-                                                                                                                                                                                      <div class="flex items-center gap-2 mt-0.5">
-                                                                                                                                                                                         <span class="text-[10px] text-gray-400 font-mono">匹配度: {{ (cite.similarity * 100).toFixed(1) }}%</span>
-                                                                                                                                                                                         <span class="w-1 h-1 rounded-full bg-gray-300"></span>
-                                                                                                                                                                                         <span class="text-[10px] text-gray-400">RAGFlow Chunk #{{ cite.chunk_id?.slice(-6) || cite.id }}</span>
-                                                                                                                                                                                      </div>
-                                                                                                                                                                                   </div>
-                                                                                                                                                                                </div>
-                                                                                                                                                                                <button @click="cite.isExpanded = false" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-400">
-                                                                                                                                                                                   <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-                                                                                                                                                                                </button>
-                                                                                                                                                                             </div>
-                                                                                                                                                                             <div class="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-100 dark:border-gray-700/50">
-                                                                                                                                                                                <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap font-sans">
-                                                                                                                                                                                   {{ cite.content }}
-                                                                                                                                                                                </div>
-                                                                                                                                                                             </div>
-                                                                                                                                                                             <div class="mt-4 flex justify-end">
-                                                                                                                                                                                <button @click="cite.isExpanded = false" class="px-4 py-2 bg-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-all shadow-md shadow-primary/20" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
-                                                                                                                                                                                   关闭
-                                                                                                                                                                                </button>
-                                                                                                                                                                             </div>
-                                                                                                                                                                          </div>
-                                                                                                                                                                       </div>
                                                                                                                                                                      </template>
-                                                                                                                                     <!-- Fallback if no high-similarity chunks found -->
-                                                                                                                                     <div v-if="!msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="w-full py-2 text-[10px] text-gray-400 italic">
-                                                                                                                                        未发现相关度超过 50% 的直接参考资料
-                                                                                                                                     </div>
                                                                                                                                   </div>
                                                                                                                                 </div>
                                                                                                                               </transition>
@@ -1107,65 +1068,14 @@
       </div>
     </transition>
 
-    <!-- Citation Bottom Sheet (Mobile Only) -->
-    <teleport to="body">
-        <transition name="drawer">
-            <div v-if="showCitationDrawer" class="fixed inset-0 z-[200] flex flex-col justify-end">
-                <!-- Backdrop -->
-                <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="showCitationDrawer = false"></div>
-                <!-- Panel -->
-                <div 
-                    class="relative bg-white dark:bg-gray-900 rounded-t-[2.5rem] shadow-[0_-10px_40px_rgba(0,0,0,0.2)] p-6 pt-2 pb-12 flex flex-col animate-slide-up border-t border-white/10 select-none touch-none"
-                    @click.stop
-                    ref="citationPanel"
-                    @touchstart="handleTouchStart"
-                    @touchmove="handleTouchMove"
-                    @touchend="handleTouchEnd"
-                    :style="panelStyle"
-                >
-                    <!-- Drag Handle -->
-                    <div class="w-12 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mx-auto my-4 mb-6"></div>
-                    
-                    <div class="flex justify-between items-start mb-6">
-                        <div class="flex items-center gap-3">
-                            <div class="p-2.5 bg-blue-50 dark:bg-blue-900/30 rounded-2xl text-blue-600">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            </div>
-                            <div class="min-w-0">
-                                <h4 class="text-sm font-black text-gray-800 dark:text-gray-100 truncate max-w-[200px]">{{ activeCitation?.doc_name }}</h4>
-                                <div class="text-[10px] text-gray-400 font-bold uppercase tracking-tighter mt-0.5">Reference Material · {{ (activeCitation?.similarity * 100).toFixed(0) }}% Match</div>
-                            </div>
-                        </div>
-                        <button @click="showCitationDrawer = false" class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-400">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
-                    </div>
-
-                    <div class="flex-1 overflow-y-auto max-h-[50vh] bg-gray-50/50 dark:bg-gray-800/50 p-5 rounded-3xl border border-gray-100 dark:border-gray-800 mb-4 custom-scrollbar">
-                        <div class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed font-medium">
-                            {{ activeCitation?.content }}
-                        </div>
-                    </div>
-
-                    <div class="flex gap-3">
-                        <button 
-                            @click="copyToClipboard(activeCitation?.content)"
-                            class="flex-1 py-3.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-2xl text-xs font-black uppercase tracking-widest active:scale-95 transition-all"
-                        >
-                            复制内容
-                        </button>
-                        <button 
-                            @click="showCitationDrawer = false"
-                            class="flex-1 py-3.5 bg-primary text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-primary/20 active:scale-95 transition-all"
-                            :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
-                        >
-                            阅读完毕
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </transition>
-    </teleport>
+    <CitationPopover
+      :visible="citationPopover.visible"
+      :citation="citationPopover.citation"
+      :anchor-rect="citationPopover.anchorRect"
+      :anchor-el="citationPopover.anchorEl"
+      @close="closeCitationPopover"
+      @copy="(content) => copyToClipboard(content)"
+    />
 
     <!-- Input Area -->
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 relative z-20">
@@ -2072,6 +1982,7 @@ import { useToast } from "../composables/useToast";
 const toast = useToast();
 const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import CitationPopover from "@/components/CitationPopover.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
 import ExpertCapsule from "@/components/embed/ExpertCapsule.vue";
@@ -3124,39 +3035,6 @@ const executeDeleteCommand = async () => {
   }
 };
 
-// --- Touch Handling for Citation Drawer ---
-const touchStartY = ref(0);
-const touchCurrentY = ref(0);
-
-const handleTouchStart = (e: TouchEvent) => {
-    if (e.touches && e.touches[0]) {
-        touchStartY.value = e.touches[0].clientY;
-        touchCurrentY.value = e.touches[0].clientY;
-    }
-};
-
-const handleTouchMove = (e: TouchEvent) => {
-    if (e.touches && e.touches[0]) {
-        touchCurrentY.value = e.touches[0].clientY;
-    }
-};
-
-const handleTouchEnd = () => {
-    const diff = touchCurrentY.value - touchStartY.value;
-    if (diff > 100) { // Dragged down significantly
-        showCitationDrawer.value = false;
-    }
-    touchStartY.value = 0;
-    touchCurrentY.value = 0;
-};
-
-const panelStyle = computed(() => {
-    const diff = touchCurrentY.value - touchStartY.value;
-    if (touchStartY.value > 0 && diff > 0) {
-        return { transform: `translateY(${diff}px)`, transition: 'none' };
-    }
-    return {};
-});
 watch(showHistorySidebar, (val) => {
     if (val && historyList.value.length === 0) {
         fetchHistory();
@@ -3988,40 +3866,74 @@ const stopGeneration = () => {
     }
   }
 };
-// Citation Drawer State (Mobile Only)
-const showCitationDrawer = ref(false);
-const activeCitation = ref<any>(null);
+const citationPopover = ref<{
+  visible: boolean;
+  citation: any;
+  anchorRect: DOMRect | null;
+  anchorEl: HTMLElement | null;
+}>({
+  visible: false,
+  citation: null,
+  anchorRect: null,
+  anchorEl: null,
+});
 
-const handleShowCitation = (msg: Message, citeId: string) => {
-  console.log("[Citation] UI Action - Target ID:", citeId);
-  if (!msg.citations || msg.citations.length === 0) {
-    console.warn("[Citation] Message has no citations attached.");
+const closeCitationPopover = () => {
+  citationPopover.value.visible = false;
+  citationPopover.value.citation = null;
+  citationPopover.value.anchorRect = null;
+  citationPopover.value.anchorEl = null;
+};
+
+const openCitationPopover = (citation: any, event: MouseEvent | HTMLElement) => {
+  const anchor = event instanceof HTMLElement ? event : (event.currentTarget as HTMLElement);
+  if (!anchor) return;
+
+  if (
+    citationPopover.value.visible &&
+    citationPopover.value.citation === citation
+  ) {
+    closeCitationPopover();
     return;
   }
-  
-  // 1. Find the target
-  let target = msg.citations.find(c => 
-    String(c.id) === String(citeId) || 
-    String(c.chunk_id) === String(citeId) ||
-    String(c.chunk_id)?.endsWith(String(citeId))
+
+  const rect = anchor.getBoundingClientRect();
+  citationPopover.value = {
+    visible: true,
+    citation,
+    anchorRect: new DOMRect(rect.x, rect.y, rect.width, rect.height),
+    anchorEl: anchor,
+  };
+};
+
+const resolveCitation = (msg: Message, citeId: string) => {
+  if (!msg.citations || msg.citations.length === 0) return null;
+
+  let target = msg.citations.find(
+    (c) =>
+      String(c.id) === String(citeId) ||
+      String(c.chunk_id) === String(citeId) ||
+      String(c.chunk_id)?.endsWith(String(citeId))
   );
-  
+
   if (!target && /^\d+$/.test(citeId)) {
-      const idx = parseInt(citeId);
-      target = msg.citations[idx - 1] || msg.citations[idx];
+    const idx = parseInt(citeId);
+    target = msg.citations[idx - 1] || msg.citations[idx];
   }
 
-  if (target) {
-    if (windowWidth.value < 640) {
-        // MOBILE: Open Bottom Sheet
-        activeCitation.value = target;
-        showCitationDrawer.value = true;
-    } else {
-        // DESKTOP: Open Modal
-        msg.isCitationsExpanded = true;
-        msg.citations.forEach(c => { c.isExpanded = false; });
-        target.isExpanded = true;
-    }
+  return target || null;
+};
+
+const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLElement) => {
+  const target = resolveCitation(msg, citeId);
+  if (!target) return;
+
+  msg.isCitationsExpanded = true;
+  await nextTick();
+  const anchorEl = anchor || (document.querySelector(`[data-cite-id="${citeId}"]`) as HTMLElement);
+  if (anchorEl) {
+    anchorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    openCitationPopover(target, anchorEl);
   }
 };
 

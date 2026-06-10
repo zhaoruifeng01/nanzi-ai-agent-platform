@@ -6,6 +6,7 @@ import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import DebugConfigPanel from "@/components/DebugConfigPanel.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import MessageRenderer from "@/components/MessageRenderer.vue";
+import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
@@ -1489,28 +1490,84 @@ const handleQuickQuestion = (question: string) => {
   sendMessage();
 };
 
-const handleShowCitation = (msg: Message, citeId: string) => {
-  console.log("[Citation Debug] UI Action - Target ID:", citeId);
-  if (!msg.citations || msg.citations.length === 0) return;
-  
-  // 1. Match by ID
-  let target = msg.citations.find(c => 
-    String(c.chunk_id) === String(citeId) || 
-    String(c.id) === String(citeId) ||
-    String(c.chunk_id)?.endsWith(String(citeId))
-  );
-  
-  // 2. Match by index
-  if (!target && /^\d+$/.test(citeId)) {
-      const idx = parseInt(citeId);
-      target = msg.citations[idx - 1] || msg.citations[idx];
+const citationPopover = ref<{
+  visible: boolean;
+  citation: any;
+  anchorRect: DOMRect | null;
+  anchorEl: HTMLElement | null;
+}>({
+  visible: false,
+  citation: null,
+  anchorRect: null,
+  anchorEl: null,
+});
+
+const closeCitationPopover = () => {
+  citationPopover.value.visible = false;
+  citationPopover.value.citation = null;
+  citationPopover.value.anchorRect = null;
+  citationPopover.value.anchorEl = null;
+};
+
+const openCitationPopover = (citation: any, event: MouseEvent | HTMLElement) => {
+  const anchor = event instanceof HTMLElement ? event : (event.currentTarget as HTMLElement);
+  if (!anchor) return;
+
+  if (
+    citationPopover.value.visible &&
+    citationPopover.value.citation === citation
+  ) {
+    closeCitationPopover();
+    return;
   }
 
-  if (target) {
-    msg.isCitationsExpanded = true;
-    msg.citations.forEach(c => c.isExpanded = false);
-    target.isExpanded = true;
-    console.log("[Citation Debug] Opened:", target.doc_name);
+  const rect = anchor.getBoundingClientRect();
+  citationPopover.value = {
+    visible: true,
+    citation,
+    anchorRect: new DOMRect(rect.x, rect.y, rect.width, rect.height),
+    anchorEl: anchor,
+  };
+};
+
+const resolveCitation = (msg: Message, citeId: string) => {
+  if (!msg.citations || msg.citations.length === 0) return null;
+
+  let target = msg.citations.find(
+    (c) =>
+      String(c.chunk_id) === String(citeId) ||
+      String(c.id) === String(citeId) ||
+      String(c.chunk_id)?.endsWith(String(citeId))
+  );
+
+  if (!target && /^\d+$/.test(citeId)) {
+    const idx = parseInt(citeId);
+    target = msg.citations[idx - 1] || msg.citations[idx];
+  }
+
+  return target || null;
+};
+
+const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLElement) => {
+  const target = resolveCitation(msg, citeId);
+  if (!target) return;
+
+  msg.isCitationsExpanded = true;
+  await nextTick();
+  const anchorEl = anchor || (document.querySelector(`[data-cite-id="${citeId}"]`) as HTMLElement);
+  if (anchorEl) {
+    anchorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    openCitationPopover(target, anchorEl);
+  }
+};
+
+const copyCitationContent = async (content: string) => {
+  try {
+    await navigator.clipboard.writeText(content);
+    showToast("已复制引用内容", "success");
+  } catch (err) {
+    console.error("Failed to copy citation:", err);
+    showToast("复制失败", "error");
   }
 };
 
@@ -3216,7 +3273,7 @@ onUnmounted(() => {
                     />
                   </svg>
                 </button>
-                <MessageRenderer :content="msg.content" @quick-question="handleQuickQuestion" @show-citation="(id) => handleShowCitation(msg, id)" />
+                <MessageRenderer :content="msg.content" @quick-question="handleQuickQuestion" @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)" />
                 <!-- 导出 / 点赞踩（托管 RAGFlow、OpenClaw 不展示点赞踩） -->
                 <div
                   v-if="msg.role === 'agent' && !msg.isThinking && (msg.trace_id || !hideDebugLikeDislikeForHostedAgent)"
@@ -3267,53 +3324,21 @@ onUnmounted(() => {
                 ></span>
               </div>
               <!-- Citations Area (Always outside text content container) -->
-              <div v-if="msg.citations && msg.citations.some(c => (c.similarity || 0) >= 0.5)" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50 relative z-10">
+              <div v-if="msg.citations && msg.citations.length > 0" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50 relative z-10">
                 <button @click="msg.isCitationsExpanded = !msg.isCitationsExpanded" class="flex items-center space-x-1.5 mb-2 w-full text-left group/cite-head">
                    <svg class="w-3.5 h-3.5 text-gray-400 group-hover/cite-head:text-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
-                   <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1">引用来源 ({{ msg.citations.filter(c => (c.similarity || 0) >= 0.5).length }})</span>
+                   <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1">引用来源 ({{ msg.citations.length }})</span>
                    <svg class="w-3.5 h-3.5 text-gray-400 transform transition-transform duration-200" :class="{ 'rotate-180': msg.isCitationsExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
                 </button>
                 <transition enter-active-class="transition-all duration-300 ease-out" enter-from-class="opacity-0 max-h-0" enter-to-class="opacity-100 max-h-[500px]" leave-active-class="transition-all duration-200 ease-in" leave-from-class="opacity-100 max-h-[500px]" leave-to-class="opacity-0 max-h-0">
                   <div v-show="msg.isCitationsExpanded" class="overflow-hidden">
                     <div class="flex flex-wrap gap-2 py-1">
                        <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
-                         <div v-if="(cite.similarity || 0) >= 0.5" class="group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden" @click="cite.isExpanded = !cite.isExpanded">
+                         <div class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 bg-gray-50 dark:bg-gray-800/80 border border-gray-100 dark:border-gray-700 rounded-lg hover:border-primary/40 dark:hover:border-primary/40 transition-all cursor-pointer overflow-hidden" @click.stop="openCitationPopover(cite, $event)">
                             <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             <span class="text-[11px] font-medium text-gray-600 dark:text-gray-300 truncate max-w-[150px]">{{ cite.doc_name }}</span>
                             <span v-if="cite.similarity" class="text-[9px] font-mono text-gray-400 px-1 rounded bg-gray-100 dark:bg-gray-700">{{ (cite.similarity * 100).toFixed(0) }}%</span>
                          </div>
-                         <Teleport to="body">
-                           <div v-if="cite.isExpanded" class="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm" @click.stop="cite.isExpanded = false">
-                              <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col border border-gray-200 dark:border-gray-700 animate-fade-in-up" @click.stop>
-                                 <div class="flex justify-between items-start mb-4">
-                                    <div class="flex items-center gap-3">
-                                       <div class="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                                          <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                       </div>
-                                       <div>
-                                          <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">{{ cite.doc_name }}</h4>
-                                          <div class="flex items-center gap-2 mt-0.5">
-                                             <span class="text-[10px] text-gray-400 font-mono">匹配度: {{ (cite.similarity * 100).toFixed(1) }}%</span>
-                                             <span class="w-1 h-1 rounded-full bg-gray-300"></span>
-                                             <span class="text-[10px] text-gray-400">ID: {{ cite.id }}</span>
-                                          </div>
-                                       </div>
-                                    </div>
-                                    <button @click="cite.isExpanded = false" class="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-400">
-                                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-                                    </button>
-                                 </div>
-                                 <div class="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-100 dark:border-gray-700/50 text-sm text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-wrap font-sans italic">
-                                    “{{ cite.content }}”
-                                 </div>
-                                 <div class="mt-4 flex justify-end">
-                                    <button @click="cite.isExpanded = false" class="px-4 py-2 bg-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-all shadow-md shadow-primary/20">
-                                       关闭
-                                    </button>
-                                 </div>
-                              </div>
-                           </div>
-                         </Teleport>
                        </template>
                     </div>
                   </div>
@@ -3618,6 +3643,15 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <CitationPopover
+    :visible="citationPopover.visible"
+    :citation="citationPopover.citation"
+    :anchor-rect="citationPopover.anchorRect"
+    :anchor-el="citationPopover.anchorEl"
+    @close="closeCitationPopover"
+    @copy="copyCitationContent"
+  />
 
   <!-- Confirm Modal -->
   <ConfirmModal
