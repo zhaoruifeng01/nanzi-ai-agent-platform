@@ -216,7 +216,7 @@ def _compress_markdown_tables(text: str) -> str:
     table_lines = []
 
     def do_compress(tbl: List[str]) -> List[str]:
-        if len(tbl) <= 5:
+        if len(tbl) <= 8:
             return tbl
         header = tbl[:2]
         data = tbl[2:5]

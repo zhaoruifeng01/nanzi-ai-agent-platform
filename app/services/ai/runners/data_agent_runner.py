@@ -663,8 +663,9 @@ class DataAgentRunner(BaseExecutor):
             primary_model_name=str(getattr(llm_handle, "model_name", self.config.model_name) or ""),
         )
         if self._standalone_query and self._standalone_query != user_question:
-            # 限制发送给大模型的历史，仅保留最近 2 轮历史对话（即最多 4 条消息）加本轮提问
-            last_history = runtime_messages[:-1][-4:]
+            # 仅保留最近 3 轮对话历史（6 条 Human/AI 消息），工具消息不计入轮数
+            conv_only = [m for m in runtime_messages[:-1] if isinstance(m, (HumanMessage, AIMessage))]
+            last_history = conv_only[-6:]
             runtime_messages = [
                 *last_history,
                 HumanMessage(content=self._standalone_query),

@@ -149,8 +149,10 @@ class AssistantAgentRunner(BaseExecutor):
         route_hint = AssistantPrompts.route_hints(self.route_hints)
         if route_hint:
             system_content = f"{route_hint}\n\n{system_content}"
+        # 仅保留最近 10 轮原始历史（20 条消息），防止长对话 Token 无限累积
+        pruned_history = history[-20:] if history else history
         runtime_messages = [SystemMessage(content=system_content)]
-        runtime_messages.extend(convert_history_to_messages(history))
+        runtime_messages.extend(convert_history_to_messages(pruned_history, strip_thought=True))
         runtime_messages = normalize_messages_for_llm(runtime_messages)
 
         # 3. Execution Mode Selection
