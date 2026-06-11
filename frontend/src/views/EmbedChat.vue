@@ -1631,7 +1631,7 @@
       title="确定要开始新对话吗？"
       message="当前内容将保存至历史记录。"
       type="primary"
-      @confirm="() => { resetSession(); showConfirmModal = false; }"
+      @confirm="handleConfirmClearSession"
       @cancel="showConfirmModal = false"
     />
     <!-- Settings Modal -->
@@ -3676,6 +3676,13 @@ const resetSession = (newToken?: string) => {
     axios.defaults.headers.common["X-API-Key"] = newToken;
   }
   initChat();
+};
+const handleConfirmClearSession = () => {
+  resetSession();
+  showConfirmModal.value = false;
+  nextTick(() => {
+    chatInputRef.value?.focus();
+  });
 };
 const fetchSlashCommands = async () => {
   try {
