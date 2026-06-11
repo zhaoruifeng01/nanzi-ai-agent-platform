@@ -185,6 +185,9 @@ class ModelCallStatDetail(BaseModel):
     tool_names: List[str] = Field(..., description="调用的工具名称列表")
     elapsed_ms: float = Field(..., description="调用耗时(ms)")
     trace_id: Optional[str] = Field(None, description="本次运行的 Trace ID")
+    response_text: Optional[str] = Field("", description="模型输出文本")
+    reasoning_content: Optional[str] = Field("", description="模型深度思考内容")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="工具调用详情")
 
 
 class ModelCallStatsResponse(BaseModel):

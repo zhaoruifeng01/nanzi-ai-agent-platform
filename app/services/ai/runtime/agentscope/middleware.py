@@ -65,6 +65,40 @@ def _extract_tool_info(content: Any) -> tuple[bool, list[str]]:
     return has_tool_calls, tool_names
 
 
+def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
+    """安全地获取属性，防范 agentscope DictMixin 抛出 KeyError。"""
+    try:
+        return getattr(obj, name, default)
+    except (AttributeError, KeyError):
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return default
+
+
+def _extract_tool_calls_detail(content: Any) -> list[dict[str, Any]]:
+    """从 ChatResponse.content 中提取包含详细参数的工具调用列表。"""
+    tool_calls: list[dict[str, Any]] = []
+    try:
+        for block in content or []:
+            if _safe_getattr(block, "type", None) == "tool_call":
+                name = _safe_getattr(block, "name", None)
+                args = _safe_getattr(block, "arguments", None)
+                if name:
+                    arguments_val = args
+                    if isinstance(args, str) and args.strip():
+                        try:
+                            arguments_val = json.loads(args)
+                        except Exception:
+                            pass
+                    tool_calls.append({
+                        "name": str(name),
+                        "arguments": arguments_val or {}
+                    })
+    except Exception:
+        pass
+    return tool_calls
+
+
 async def _stream_with_stats(
     gen: AsyncGenerator,
     *,
@@ -75,33 +109,83 @@ async def _stream_with_stats(
     """包装流式 generator，在所有 chunk 消费完后追加统计记录。"""
     last_usage = None
     all_tool_names: list[str] = []
+    all_tool_calls: list[dict[str, Any]] = []
     has_tool_calls = False
+    full_text_chunks: list[str] = []
+    full_reasoning_chunks: list[str] = []
+
+    last_complete_text = None
+    last_complete_reasoning = None
 
     async for chunk in gen:
-        _has_tc, _names = _extract_tool_info(getattr(chunk, "content", None))
-        if _has_tc:
+        _details = _extract_tool_calls_detail(_safe_getattr(chunk, "content", None))
+        if _details:
             has_tool_calls = True
-            for n in _names:
-                if n not in all_tool_names:
-                    all_tool_names.append(n)
-        chunk_usage = getattr(chunk, "usage", None)
+            for call in _details:
+                if not any(c["name"] == call["name"] and c["arguments"] == call["arguments"] for c in all_tool_calls):
+                    all_tool_calls.append(call)
+                if call["name"] not in all_tool_names:
+                    all_tool_names.append(call["name"])
+        
+        # 1. 提取当前 chunk 的 text 和 reasoning
+        chunk_text = _safe_getattr(chunk, "text", "") or ""
+        chunk_reasoning = _safe_getattr(chunk, "reasoning_content", "") or ""
+        
+        # 2. 从 chunk.content 解析 Block
+        content_list = _safe_getattr(chunk, "content") or []
+        block_text_list = []
+        block_reasoning_list = []
+        for block in content_list:
+            b_type = _safe_getattr(block, "type")
+            if b_type == "text":
+                txt = _safe_getattr(block, "text", "")
+                if txt:
+                    block_text_list.append(txt)
+            elif b_type == "thinking":
+                thk = _safe_getattr(block, "thinking", "")
+                if thk:
+                    block_reasoning_list.append(thk)
+        
+        if not chunk_text and block_text_list:
+            chunk_text = "".join(block_text_list)
+        if not chunk_reasoning and block_reasoning_list:
+            chunk_reasoning = "".join(block_reasoning_list)
+
+        # 3. 判断是否是完整响应
+        is_last = _safe_getattr(chunk, "is_last", False)
+        if is_last:
+            last_complete_text = chunk_text
+            last_complete_reasoning = chunk_reasoning
+        else:
+            if chunk_text:
+                full_text_chunks.append(chunk_text)
+            if chunk_reasoning:
+                full_reasoning_chunks.append(chunk_reasoning)
+
+        chunk_usage = _safe_getattr(chunk, "usage", None)
         if chunk_usage is not None:
             last_usage = chunk_usage
         yield chunk
 
     # 流式结束后写入统计
     elapsed_ms = (time.time() - start_ts) * 1000
+    final_text = last_complete_text if last_complete_text is not None else "".join(full_text_chunks)
+    final_reasoning = last_complete_reasoning if last_complete_reasoning is not None else "".join(full_reasoning_chunks)
+
     record = {
         **record_base,
-        "input_tokens": getattr(last_usage, "input_tokens", 0) or 0,
-        "output_tokens": getattr(last_usage, "output_tokens", 0) or 0,
-        "cache_input_tokens": getattr(last_usage, "cache_input_tokens", 0) or 0,
+        "input_tokens": _safe_getattr(last_usage, "input_tokens", 0) or 0,
+        "output_tokens": _safe_getattr(last_usage, "output_tokens", 0) or 0,
+        "cache_input_tokens": _safe_getattr(last_usage, "cache_input_tokens", 0) or 0,
         "total_tokens": (
-            (getattr(last_usage, "input_tokens", 0) or 0)
-            + (getattr(last_usage, "output_tokens", 0) or 0)
+            (_safe_getattr(last_usage, "input_tokens", 0) or 0)
+            + (_safe_getattr(last_usage, "output_tokens", 0) or 0)
         ),
         "has_tool_calls": has_tool_calls,
         "tool_names": all_tool_names,
+        "tool_calls": all_tool_calls,
+        "response_text": final_text,
+        "reasoning_content": final_reasoning,
         "elapsed_ms": round(elapsed_ms, 1),
     }
     logger.info(
@@ -186,13 +270,35 @@ class ModelCallStatsMiddleware(MiddlewareBase):
 
         # ── 非流式响应：直接收集并写入 ────────────────────────────────────
         elapsed_ms = (time.time() - start_ts) * 1000
-        usage = getattr(result, "usage", None)
-        has_tool_calls, tool_names = _extract_tool_info(
-            getattr(result, "content", None)
-        )
-        input_tokens = getattr(usage, "input_tokens", 0) or 0
-        output_tokens = getattr(usage, "output_tokens", 0) or 0
-        cache_input_tokens = getattr(usage, "cache_input_tokens", 0) or 0
+        usage = _safe_getattr(result, "usage", None)
+        tool_calls = _extract_tool_calls_detail(_safe_getattr(result, "content", None))
+        has_tool_calls = bool(tool_calls)
+        tool_names = [c["name"] for c in tool_calls]
+        input_tokens = _safe_getattr(usage, "input_tokens", 0) or 0
+        output_tokens = _safe_getattr(usage, "output_tokens", 0) or 0
+        cache_input_tokens = _safe_getattr(usage, "cache_input_tokens", 0) or 0
+        
+        response_text = _safe_getattr(result, "text", "") or ""
+        reasoning_content = _safe_getattr(result, "reasoning_content", "") or ""
+        
+        content_list = _safe_getattr(result, "content") or []
+        block_text_list = []
+        block_reasoning_list = []
+        for block in content_list:
+            b_type = _safe_getattr(block, "type")
+            if b_type == "text":
+                txt = _safe_getattr(block, "text", "")
+                if txt:
+                    block_text_list.append(txt)
+            elif b_type == "thinking":
+                thk = _safe_getattr(block, "thinking", "")
+                if thk:
+                    block_reasoning_list.append(thk)
+        
+        if not response_text and block_text_list:
+            response_text = "".join(block_text_list)
+        if not reasoning_content and block_reasoning_list:
+            reasoning_content = "".join(block_reasoning_list)
 
         record = {
             **record_base,
@@ -202,6 +308,9 @@ class ModelCallStatsMiddleware(MiddlewareBase):
             "total_tokens": input_tokens + output_tokens,
             "has_tool_calls": has_tool_calls,
             "tool_names": tool_names,
+            "tool_calls": tool_calls,
+            "response_text": response_text,
+            "reasoning_content": reasoning_content,
             "elapsed_ms": round(elapsed_ms, 1),
         }
         logger.info(

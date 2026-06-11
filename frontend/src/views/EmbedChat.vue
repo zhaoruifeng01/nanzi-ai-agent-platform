@@ -2098,7 +2098,7 @@
                     <span class="font-medium text-gray-700 dark:text-gray-300 font-mono">
                       {{ stat.input_tokens }}
                       <span v-if="stat.cache_input_tokens > 0" class="text-[10px] text-green-500 font-normal ml-0.5" :title="'命中上下文缓存 Token: ' + stat.cache_input_tokens">
-                        (hit:{{ stat.cache_input_tokens }})
+                        (hit:{{ stat.cache_input_tokens }}, {{ ((stat.cache_input_tokens / stat.input_tokens) * 100).toFixed(0) }}%)
                       </span>
                     </span>
                   </div>
@@ -2111,7 +2111,7 @@
                 </div>
 
                 <!-- Tool Calls -->
-                <div class="pt-1 text-[11px]">
+                <div class="pt-1 text-[11px] space-y-1.5">
                   <div class="flex items-center space-x-1">
                     <span class="text-gray-400 shrink-0">工具调用:</span>
                     <span
@@ -2132,6 +2132,37 @@
                     <span v-else class="text-gray-400 italic">
                       无（未绑定工具）
                     </span>
+                  </div>
+                  <!-- Tool Call Arguments Details -->
+                  <div v-if="stat.tool_calls && stat.tool_calls.length > 0" class="bg-gray-100/60 dark:bg-gray-950/40 p-2 rounded-lg text-[10px] font-mono text-gray-600 dark:text-gray-400 border border-gray-100 dark:border-gray-800 space-y-1 max-h-[100px] overflow-y-auto">
+                    <div v-for="(call, cIdx) in stat.tool_calls" :key="cIdx" class="break-all whitespace-pre-wrap">
+                      <span class="text-blue-500 dark:text-blue-400 font-bold">{{ call.name }}</span>(<span class="text-gray-600 dark:text-gray-400">{{ formatToolArgs(call.arguments) }}</span>)
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Thoughts and Output Text Expansion Panel -->
+                <div v-if="stat.reasoning_content || stat.response_text" class="pt-1 border-t border-gray-100/50 dark:border-gray-700/20">
+                  <button 
+                    @click="toggleStatExpand(stat.call_index)" 
+                    class="text-[10px] text-primary dark:text-blue-400 hover:underline flex items-center space-x-1 font-bold focus:outline-none cursor-pointer"
+                  >
+                    <span>{{ expandedStats[stat.call_index] ? '收起思考与输出' : '展开思考与输出' }}</span>
+                    <svg class="w-3 h-3 transform transition-transform" :class="expandedStats[stat.call_index] ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  <div v-if="expandedStats[stat.call_index]" class="mt-2 space-y-2 text-[10px] font-mono">
+                    <!-- Reasoning/Thought -->
+                    <div v-if="stat.reasoning_content" class="bg-amber-50/40 dark:bg-amber-950/10 border border-amber-100/50 dark:border-amber-900/20 p-2 rounded-lg text-amber-800 dark:text-amber-300">
+                      <div class="font-bold text-[9px] uppercase text-amber-500 mb-1">思考过程 (Thought)</div>
+                      <div class="whitespace-pre-wrap leading-relaxed">{{ stat.reasoning_content }}</div>
+                    </div>
+                    <!-- Final text output -->
+                    <div v-if="stat.response_text" class="bg-gray-100/80 dark:bg-gray-950/60 border border-gray-200/50 dark:border-gray-800/40 p-2 rounded-lg text-gray-700 dark:text-gray-300">
+                      <div class="font-bold text-[9px] uppercase text-gray-400 mb-1">大模型输出 (Output)</div>
+                      <div class="whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto break-all">{{ stat.response_text }}</div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2407,6 +2438,27 @@ const showFileBrowserModal = ref(false);
 const showStatsModal = ref(false);
 const loadingStats = ref(false);
 const currentStats = ref<any[]>([]);
+const expandedStats = ref<Record<string, boolean>>({});
+
+const toggleStatExpand = (callIndex: number) => {
+  expandedStats.value[callIndex] = !expandedStats.value[callIndex];
+};
+
+const formatToolArgs = (args: any): string => {
+  if (!args) return "{}";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args);
+  } catch (e) {
+    return String(args);
+  }
+};
+
+watch(showStatsModal, (newVal) => {
+  if (!newVal) {
+    expandedStats.value = {};
+  }
+});
 
 const statsSummary = computed(() => {
   let totalCalls = currentStats.value.length;
