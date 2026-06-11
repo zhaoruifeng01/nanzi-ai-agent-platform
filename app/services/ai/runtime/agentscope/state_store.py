@@ -63,6 +63,11 @@ class AgentStateStore:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
             data = json.loads(raw)
+            
+            state_data = data.get("state") or {}
+            # Prune the state context to avoid token bloat
+            state_data = prune_agent_state_context(state_data)
+            
             return RuntimeStateEnvelope(
                 schema_version=int(data.get("schema_version", 0)),
                 agent_name=str(data.get("agent_name", "")),
@@ -70,7 +75,7 @@ class AgentStateStore:
                 tools_fingerprint=str(data.get("tools_fingerprint", "")),
                 model_name=data.get("model_name"),
                 updated_at=str(data.get("updated_at", "")),
-                state=data.get("state") or {},
+                state=state_data,
             )
         except Exception as exc:
             logger.warning("[AgentStateStore] Failed to load key=%s: %s", key, exc)
@@ -147,4 +152,53 @@ class AgentStateStore:
             logger.warning("[AgentStateStore] Failed to delete keys: %s", exc)
 
 
+def prune_agent_state_context(state_dict: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state_dict, dict):
+        return state_dict
+    context = state_dict.get("context")
+    if not isinstance(context, list):
+        return state_dict
+
+    from app.services.ai.executors.common import _clean_assistant_text
+
+    pruned_context = []
+    for msg in context:
+        if not isinstance(msg, dict):
+            pruned_context.append(msg)
+            continue
+
+        role = msg.get("name") or msg.get("role") or ""
+        content = msg.get("content")
+
+        # user messages are kept as is
+        if role == "user" or role == "Human":
+            pruned_context.append(msg)
+            continue
+
+        # assistant messages
+        if isinstance(content, list):
+            cleaned_content = []
+            for block in content:
+                if not isinstance(block, dict):
+                    cleaned_content.append(block)
+                    continue
+                b_type = block.get("type")
+                if b_type == "text":
+                    text_val = block.get("text") or ""
+                    if text_val:
+                        cleaned_text = _clean_assistant_text(text_val, strip_thought=True)
+                        if cleaned_text:
+                            cleaned_content.append({**block, "text": cleaned_text})
+                # tool_call and tool_result blocks are completely stripped!
+            msg["content"] = cleaned_content
+        elif isinstance(content, str):
+            msg["content"] = _clean_assistant_text(content, strip_thought=True)
+
+        pruned_context.append(msg)
+
+    state_dict["context"] = pruned_context
+    return state_dict
+
+
 agent_state_store = AgentStateStore()
+

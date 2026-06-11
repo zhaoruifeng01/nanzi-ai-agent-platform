@@ -646,36 +646,38 @@ class DataAgentRunner(BaseExecutor):
         turn_cls: Any,
         prefetched_schema_output: str | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        persisted = await agent_state_store.load(
-            self._runtime_user_id(),
-            self.conversation_id,
-            agent_name,
-        )
         restored_state = None
-        if persisted:
-            if persisted.matches(
-                tools_fingerprint=tools_fingerprint,
-                agent_name=agent_name,
-            ):
-                try:
-                    from agentscope.state import AgentState
+        # 优化：新数据查询 (requires_fresh_data=True) 路径下，不从 Redis 恢复旧的 AgentState 内存，避免历史 DDL 等累积导致首个 Prompt Token 爆炸
+        if not turn_cls.requires_fresh_data:
+            persisted = await agent_state_store.load(
+                self._runtime_user_id(),
+                self.conversation_id,
+                agent_name,
+            )
+            if persisted:
+                if persisted.matches(
+                    tools_fingerprint=tools_fingerprint,
+                    agent_name=agent_name,
+                ):
+                    try:
+                        from agentscope.state import AgentState
 
-                    restored_state = AgentState.model_validate(persisted.state)
-                except Exception as exc:
-                    logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
-            else:
-                logger.warning(
-                    "[DataAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
-                    "Resetting conversation state to prevent tool call conflicts.",
-                    agent_name, persisted.tools_fingerprint, tools_fingerprint
-                )
-                yield {
-                    "type": "log",
-                    "id": f"state_reset_{uuid.uuid4().hex[:8]}",
-                    "title": "智能体配置变更：历史会话状态已重置",
-                    "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
-                    "status": "warning",
-                }
+                        restored_state = AgentState.model_validate(persisted.state)
+                    except Exception as exc:
+                        logger.warning("[DataAgentRunner] Failed to restore AgentState: %s", exc)
+                else:
+                    logger.warning(
+                        "[DataAgentRunner] Tools fingerprint mismatch for agent=%s (stored=%s, current=%s). "
+                        "Resetting conversation state to prevent tool call conflicts.",
+                        agent_name, persisted.tools_fingerprint, tools_fingerprint
+                    )
+                    yield {
+                        "type": "log",
+                        "id": f"state_reset_{uuid.uuid4().hex[:8]}",
+                        "title": "智能体配置变更：历史会话状态已重置",
+                        "details": "检测到绑定的工具集或模型配置发生改变，为防工具调用崩溃，已重置运行时状态。",
+                        "status": "warning",
+                    }
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
