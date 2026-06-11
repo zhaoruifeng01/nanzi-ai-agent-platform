@@ -25,12 +25,18 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# 安装系统依赖 (Oracle Client 需要 libaio)
+# 安装系统依赖 (Oracle Client + Playwright/Chromium headless 运行环境)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libaio1 \
-    || apt-get install -y --no-install-recommends libaio1t64 \
+    # Playwright Chromium 在 Linux 下所需的系统库
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libgbm1 libasound2 \
+    fonts-liberation \
+    || true \
+    && apt-get install -y --no-install-recommends libaio1t64 \
     && ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 || true \
-    && rm -rf /var/lib/apt/lists/*    
+    && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
 COPY requirements.txt .
@@ -39,6 +45,10 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
     pip install -r requirements.txt
+
+# 安装 Playwright 浏览器内核（Chromium headless，供网页检索工具使用，约 260 MiB）
+# 注意：不使用 cache mount，浏览器二进制必须持久化进镜像层
+RUN playwright install chromium
 
 # 复制项目代码
 COPY . .
