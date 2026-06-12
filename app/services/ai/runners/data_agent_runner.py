@@ -2488,7 +2488,6 @@ class DataAgentRunner(BaseExecutor):
         fatal_prefixes = (
             "[Permission Denied]",
             "[Security Error]",
-            "[Validation Failed]",
             "Error: Dataset",
         )
         if any(q.startswith(prefix) for prefix in fatal_prefixes):
