@@ -63,6 +63,12 @@ class DataQueryPrompts:
     # 缺少可复用查询结果时的回复
     NO_REUSABLE_RESULT = "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"
 
+    # ChatBI 入口没有足够查数意图时的回复
+    CLARIFICATION_OR_NON_DATA = (
+        "请告诉我想查询的业务数据、指标、维度或时间范围。"
+        "例如：查询本月各机房 PUE 趋势、统计最近一周告警记录，或基于刚才的查询结果继续分析。"
+    )
+
     # SQL 生成强约束（通用），每个执行器实例注入一次
     SQL_PLAN_ENFORCEMENT = (
         "【SQL 生成强约束（通用）】\n"

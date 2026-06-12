@@ -35,6 +35,7 @@ class DataQueryTurnType(str, Enum):
     REUSE_PREVIOUS_RESULT = "reuse_previous_result"
     CONTEXT_ACTION = "context_action"
     SKILL_EXECUTION = "skill_execution"
+    CLARIFICATION_OR_NON_DATA = "clarification_or_non_data"
 
 
 DATA_QUERY_TURN_TYPE_LABELS: dict[DataQueryTurnType, str] = {
@@ -42,6 +43,7 @@ DATA_QUERY_TURN_TYPE_LABELS: dict[DataQueryTurnType, str] = {
     DataQueryTurnType.REUSE_PREVIOUS_RESULT: "复用上一轮结果",
     DataQueryTurnType.CONTEXT_ACTION: "上下文动作",
     DataQueryTurnType.SKILL_EXECUTION: "技能执行",
+    DataQueryTurnType.CLARIFICATION_OR_NON_DATA: "需澄清或非查数请求",
 }
 
 
@@ -92,6 +94,15 @@ def _classification_for_turn_type(
             skip_intent_llm=skip_intent_llm,
             intent=IntentType.DATA_QUERY,
         )
+    if turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA:
+        return DataQueryTurnClassification(
+            turn_type=turn_type,
+            reasoning=reasoning,
+            requires_fresh_data=False,
+            requires_few_shot=False,
+            skip_intent_llm=skip_intent_llm,
+            intent=IntentType.GENERAL,
+        )
     return DataQueryTurnClassification(
         turn_type=DataQueryTurnType.NEW_DATA_QUERY,
         reasoning=reasoning,
@@ -115,6 +126,68 @@ def _looks_like_explicit_new_data_query(user_query: str) -> bool:
         "from ", "where ", "group by", "table", "users",
     ]
     return any(keyword in q for keyword in keywords)
+
+
+def _classification_for_clarification(reasoning: str, *, skip_intent_llm: bool) -> DataQueryTurnClassification:
+    return _classification_for_turn_type(
+        DataQueryTurnType.CLARIFICATION_OR_NON_DATA,
+        reasoning,
+        skip_intent_llm=skip_intent_llm,
+    )
+
+
+def _looks_like_general_chat_or_unsupported(user_query: str, *, has_last_data_result: bool) -> bool:
+    q = (user_query or "").strip().lower()
+    if not q:
+        return False
+    if looks_like_context_action(q) or looks_like_skill_execution(q):
+        return False
+    if looks_like_compound_query_with_viz(q) or _looks_like_explicit_new_data_query(q):
+        return False
+    if has_last_data_result and looks_like_pure_result_followup(q):
+        return False
+    if has_last_data_result and any(
+        signal in q
+        for signal in (
+            "这个数据", "该数据", "这些数据", "这个结果", "该结果",
+            "上轮", "上一轮", "刚才", "分析", "解读", "可视化", "图表", "总结",
+        )
+    ):
+        return False
+
+    general_signals = ["你好", "您好", "你是谁", "你能做什么", "谢谢", "感谢", "辛苦了"]
+    if any(signal in q for signal in general_signals) or re.search(r"\b(hi|hello)\b", q):
+        return True
+
+    vague_refs = ["这个", "那个", "这份", "这张", "上面", "刚才"]
+    vague_actions = ["看看", "看一下", "分析", "解读", "处理", "帮我"]
+    return (
+        not has_last_data_result
+        and any(ref in q for ref in vague_refs)
+        and any(action in q for action in vague_actions)
+    )
+
+
+def _recent_history_supports_reuse(messages: Optional[List[Dict[str, str]]]) -> bool:
+    """Avoid silently reusing stale data after the conversation has drifted away."""
+    if not messages:
+        return True
+    recent = messages[-7:-1]
+    if len(recent) < 3:
+        return True
+
+    data_context_signals = [
+        "上一轮", "刚才", "已返回", "查询结果", "结构化查询结果",
+        "数据结果", "表格", "图表", "sql", "rows", "items",
+        "列表", "统计结果", "可视化",
+    ]
+    for msg in recent:
+        if msg.get("role") != "assistant":
+            continue
+        content = re.sub(r"\s+", " ", str(msg.get("content") or "")).strip().lower()
+        if any(signal in content for signal in data_context_signals):
+            return True
+    return False
 
 
 def _recent_history_for_prompt(messages: Optional[List[Dict[str, str]]]) -> str:
@@ -165,6 +238,7 @@ async def _classify_with_llm(
 2. reuse_previous_result：不需要重新查库，只是基于上一轮结构化查询结果做展示、格式化、分析、总结、可视化、改列格式、排序说明等。
 3. context_action：对已有上下文或上一轮结果执行保存、导出、发送、记住、沉淀为技能等动作。
 4. skill_execution：显式要求使用/执行某个技能。
+5. clarification_or_non_data：当前不是明确查数请求，或指代过于模糊，需要先请用户补充业务数据对象、时间范围、指标/维度等信息。
 
 约束：
 - 如果选择 reuse_previous_result，必须确认“存在上一轮结构化查询结果”为 true。
@@ -172,7 +246,7 @@ async def _classify_with_llm(
 - 只返回 JSON，不要解释，不要 Markdown。
 
 JSON 格式：
-{{"turn_type":"new_data_query|reuse_previous_result|context_action|skill_execution","reasoning":"一句中文原因"}}
+{{"turn_type":"new_data_query|reuse_previous_result|context_action|skill_execution|clarification_or_non_data","reasoning":"一句中文原因"}}
 
 【存在上一轮结构化查询结果】
 {str(has_last_data_result).lower()}
@@ -224,6 +298,19 @@ async def resolve_data_query_turn_classification(
     has_last_data_result = bool(has_last_data_result)
 
     q = (user_query or "").strip()
+    if _looks_like_general_chat_or_unsupported(q, has_last_data_result=has_last_data_result):
+        classification = _classification_for_clarification(
+            "当前请求不是明确的 ChatBI 查数请求，需要用户补充想查询的业务数据、指标、维度或时间范围",
+            skip_intent_llm=True,
+        )
+        intent_info = IntentResponse(
+            intent=IntentType.GENERAL,
+            confidence=1.0,
+            reasoning=classification.reasoning,
+            entities=[],
+        )
+        return classification, intent_info, 0.0
+
     if not messages:
         classification = DataQueryTurnClassification(
             turn_type=DataQueryTurnType.NEW_DATA_QUERY,
@@ -249,6 +336,18 @@ async def resolve_data_query_turn_classification(
     )
     intent_elapsed_ms = (time.time() - intent_start) * 1000
 
+    if classification and classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT:
+        if not has_last_data_result:
+            classification = _classification_for_clarification(
+                "当前会话没有可复用的上一轮结构化查询结果，不能直接复用结果分析",
+                skip_intent_llm=False,
+            )
+        elif not _recent_history_supports_reuse(messages):
+            classification = _classification_for_clarification(
+                "最近对话没有明确的上一轮数据结果上下文，需要先确认是否基于之前的查询结果继续分析",
+                skip_intent_llm=False,
+            )
+
     if classification is None and looks_like_context_action(q):
         classification = DataQueryTurnClassification(
             turn_type=DataQueryTurnType.CONTEXT_ACTION,
@@ -268,18 +367,20 @@ async def resolve_data_query_turn_classification(
             intent=IntentType.DATA_QUERY,
         )
     elif classification is None and looks_like_pure_result_followup(q):
-        classification = DataQueryTurnClassification(
-            turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
-            reasoning=(
-                "请求类别 LLM 未返回有效结果；规则兜底检测到对上一轮数据结果的追问，复用结果"
-                if has_last_data_result
-                else "请求类别 LLM 未返回有效结果；规则兜底检测到结果追问，但当前会话没有可复用结构化查询结果"
-            ),
-            requires_fresh_data=False,
-            requires_few_shot=False,
-            skip_intent_llm=True,
-            intent=IntentType.DATA_QUERY,
-        )
+        if has_last_data_result and _recent_history_supports_reuse(messages):
+            classification = DataQueryTurnClassification(
+                turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+                reasoning="请求类别 LLM 未返回有效结果；规则兜底检测到对上一轮数据结果的追问，复用结果",
+                requires_fresh_data=False,
+                requires_few_shot=False,
+                skip_intent_llm=True,
+                intent=IntentType.DATA_QUERY,
+            )
+        else:
+            classification = _classification_for_clarification(
+                "请求类别 LLM 未返回有效结果；检测到结果追问但没有可信的近期可复用结构化查询结果",
+                skip_intent_llm=True,
+            )
     elif classification is None and looks_like_compound_query_with_viz(q):
         classification = DataQueryTurnClassification(
             turn_type=DataQueryTurnType.NEW_DATA_QUERY,

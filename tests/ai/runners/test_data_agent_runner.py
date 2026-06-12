@@ -673,6 +673,52 @@ async def test_data_agent_runner_reports_missing_reusable_result(data_config, mo
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_clarifies_non_data_request_without_native_agent(data_config, monkeypatch):
+    from app.services.ai.data_query_turn_classifier import (
+        DataQueryTurnClassification,
+        DataQueryTurnType,
+    )
+    from app.services.ai.intent_service import IntentType
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    clarify_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.CLARIFICATION_OR_NON_DATA,
+        reasoning="用户是在打招呼，不需要查数",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.GENERAL,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return clarify_turn, None, 0.0
+
+    async def forbidden_build_agent(*args, **kwargs):
+        raise AssertionError("clarification flow must not build the native AgentScope agent")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-clarify",
+        trace_buffer=[],
+        user_info={"user_id": 42},
+        conversation_id="conv-1",
+    )
+    monkeypatch.setattr(runner, "_build_native_agent", forbidden_build_agent)
+
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "你好，你是谁"}]):
+        events.append(chunk)
+
+    assert any(chunk.get("title") == "ChatBI 请求类别分析结果" for chunk in events)
+    assert any(chunk.get("title") == "需要补充查数信息" for chunk in events)
+    assert any("请告诉我想查询的业务数据" in chunk.get("content", "") for chunk in events)
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_checks_multimodal_compatibility_before_native_model(
     data_config,
     monkeypatch,
@@ -1810,6 +1856,50 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
     assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
     assert state.sql_static_risk is True
     assert "SELECT *" in state.sql_static_risk_reason
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call(data_config):
+    from app.services.ai.runners.data_agent_runner import (
+        DataAgentRunner,
+        RuntimeToolSpec,
+        SQL_STATIC_GATE_PREFIX,
+        _DataRunState,
+    )
+
+    called = False
+
+    async def fake_execute(**kwargs):
+        nonlocal called
+        called = True
+        return {"rows": []}
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-join-risk", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    [wrapped] = runner._wrap_tools_with_schema_gate([
+        RuntimeToolSpec(
+            name="execute_sql_query",
+            description="execute",
+            parameters_schema={},
+            source_type="static",
+            callable=fake_execute,
+            permission_scope="read",
+        )
+    ], state)
+
+    output = await wrapped.callable(
+        sql=(
+            "SELECT a.id, b.metric FROM large_a a "
+            "JOIN large_b b ON a.id = b.a_id WHERE a.status = 'active'"
+        ),
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+
+    assert called is False
+    assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
+    assert state.sql_static_risk is True
+    assert "JOIN 明细查询缺少 LIMIT" in state.sql_static_risk_reason
 
 
 def test_repair_budget_is_tracked_by_error_type(data_config):

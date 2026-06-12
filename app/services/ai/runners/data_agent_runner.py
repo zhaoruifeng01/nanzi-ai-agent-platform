@@ -542,6 +542,21 @@ class DataAgentRunner(BaseExecutor):
                 yield {"content": DataQueryPrompts.NO_REUSABLE_RESULT}
             return
 
+        if turn_cls.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA:
+            yield {
+                "type": "log",
+                "id": f"clarify_{uuid.uuid4().hex[:8]}",
+                "title": "需要补充查数信息",
+                "details": turn_cls.reasoning,
+                "status": "warning",
+                "category": "intent",
+            }
+            yield {
+                "content": DataQueryPrompts.CLARIFICATION_OR_NON_DATA,
+                "status": "success",
+            }
+            return
+
         tools = await self._resolve_runtime_tools_from_config()
         max_steps = await self._resolve_max_steps()
         self._standalone_query = user_question
@@ -2333,6 +2348,8 @@ class DataAgentRunner(BaseExecutor):
             return "JOIN 缺少明确 ON 条件，存在笛卡尔积风险"
         has_limit = bool(re.search(r"\bLIMIT\s+\d+\b", sql_upper) or re.search(r"\bROWNUM\s*<=\s*\d+\b", sql_upper))
         has_aggregation = any(marker in sql_upper for marker in (" GROUP BY ", " COUNT(", " SUM(", " AVG(", " MAX(", " MIN("))
+        if " JOIN " in f" {sql_upper} " and not has_limit and not has_aggregation:
+            return "JOIN 明细查询缺少 LIMIT 或聚合约束，可能放大返回行数"
         if not has_limit and not has_aggregation:
             return "缺少 LIMIT 或聚合约束，可能返回过多明细行"
         return ""
