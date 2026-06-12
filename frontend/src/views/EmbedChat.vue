@@ -2889,8 +2889,8 @@ const resetStallTimer = () => {
 // Slash Commands
 const showCommandMenu = ref(false);
 const slashCommands = ref<any[]>([
+  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ]);
 // History Sidebar State
@@ -3697,8 +3697,8 @@ const fetchSlashCommands = async () => {
       const userCommands = Array.isArray(res.data) ? res.data : [];
       // 定义系统命令
       const systemCommands = [
+        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
         { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
         { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 }
       ];
       // 合并系统命令和用户命令，并按 sort_order 排序
@@ -3709,8 +3709,8 @@ const fetchSlashCommands = async () => {
     } else {
       // 如果API没有返回数据，至少确保系统命令存在
       const systemCommands = [
+        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
         { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-        { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -18 },
         { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 }
       ];
       slashCommands.value = systemCommands;
@@ -3719,9 +3719,9 @@ const fetchSlashCommands = async () => {
     console.warn("Slash commands fetch failed", e);
     // 如果API调用失败，至少确保系统命令存在
     const systemCommands = [
+      { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
       { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
-      { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
-      { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -10 }
+      { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 }
     ];
     slashCommands.value = systemCommands;
   }
