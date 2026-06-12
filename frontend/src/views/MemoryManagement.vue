@@ -93,6 +93,8 @@ const CONFIG_FIELD_TYPES: Record<string, ConfigFieldType> = {
   memory_summarize_debounce_seconds: 'number',
   memory_search_knn_top_k: 'number',
   memory_summarize_min_assistant_chars: 'number',
+  memory_base_half_life: 'number',
+  memory_consolidation_threshold: 'number',
 }
 
 const CONFIG_LABELS: Record<string, string> = {
@@ -109,6 +111,8 @@ const CONFIG_LABELS: Record<string, string> = {
   memory_summarize_debounce_seconds: '触发摘要最短间隔',
   memory_search_knn_top_k: '默认记忆检索数量 (Top-K)',
   memory_summarize_min_assistant_chars: '触发摘要最少字符数',
+  memory_base_half_life: '记忆保留基础半衰期 (天)',
+  memory_consolidation_threshold: '记忆合并相似度阈值',
 }
 
 const CONFIG_TIPS: Record<string, string> = {
@@ -125,6 +129,8 @@ const CONFIG_TIPS: Record<string, string> = {
   memory_summarize_debounce_seconds: '两次自动执行摘要提取的最小时间间隔（秒），避免短时间内用户频繁说话导致系统重复、高频地调用 LLM 生成摘要，起到接口防抖与节约 Token 的作用。',
   memory_search_knn_top_k: '通过大模型调用 memory_search 工具或者在检索测试时，默认返回的与当前对话最相似的记忆片段的最大数量（K值）。推荐设置为 3 至 5。',
   memory_summarize_min_assistant_chars: '只有当智能体的回复字符数达到该设定值时，该轮对话才会被计入触发摘要的轮数中。防止“好的”、“收到”等短小的无意义回复触发频繁摘要生成，节约模型算力。',
+  memory_base_half_life: '用于控制艾宾浩斯时间敏感重排衰减的速度。数值越大，记忆遗忘速度越慢。默认值为 7.0 天。系统会结合此参数和记忆的被引用次数对检索结果进行后置重排。',
+  memory_consolidation_threshold: '凌晨定时进行记忆碎片重构降噪合并时的向量余弦相似度阈值（0.0 至 1.0）。数值越大要求内容越相似才进行合并。默认值为 0.82。',
 }
 
 const CONFIG_GROUPS: {
@@ -167,7 +173,12 @@ const CONFIG_GROUPS: {
   {
     id: 'retrieval',
     title: '检索与会话存储',
-    keys: ['memory_search_knn_top_k', 'memory_history_ttl_days'],
+    keys: [
+      'memory_search_knn_top_k',
+      'memory_history_ttl_days',
+      'memory_base_half_life',
+      'memory_consolidation_threshold'
+    ],
   },
 ]
 
@@ -545,6 +556,33 @@ const rebuildDaily = async (row: SummaryRow) => {
     showToast(e.response?.data?.detail || '重建失败', 'error')
   }
 }
+
+const consolidating = ref(false)
+
+const runConsolidation = async () => {
+  if (!canIndex.value) return
+  consolidating.value = true
+  try {
+    const payload: Record<string, unknown> = {}
+    if (canViewAllUsers.value) {
+      if (filterUserId.value !== '') {
+        payload.user_id = Number(filterUserId.value)
+      } else if (effectiveFilterUserId.value != null && filterUserId.value !== '') {
+        payload.user_id = effectiveFilterUserId.value
+      }
+    } else {
+      payload.user_id = effectiveFilterUserId.value
+    }
+    const res = await axios.post('/api/portal/memory/consolidate', payload)
+    showToast(res.data?.message || '长时记忆整理合并已触发完成', 'success')
+    await fetchMemoryData()
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '手动整理失败', 'error')
+  } finally {
+    consolidating.value = false
+  }
+}
+
 
 const runSearchTest = async () => {
   if (!canViewAllUsers.value && effectiveSearchUserId.value == null) {
@@ -969,19 +1007,34 @@ onMounted(async () => {
       <div v-if="!canViewData" class="text-gray-500 text-sm">无「查看记忆数据」权限</div>
       <template v-else>
         <div class="flex flex-col gap-3">
-          <div class="inline-flex w-fit rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
+          <div class="flex items-center gap-3">
+            <div class="inline-flex w-fit rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
+              <button
+                v-for="view in [
+                  { id: 'daily', label: '每日摘要' },
+                  { id: 'session', label: '会话摘要' },
+                ]"
+                :key="view.id"
+                type="button"
+                class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors"
+                :class="dataView === view.id ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'"
+                @click="switchDataView(view.id as 'daily' | 'session')"
+              >
+                {{ view.label }}
+              </button>
+            </div>
+
+            <!-- 手动触发记忆降噪按钮 -->
             <button
-              v-for="view in [
-                { id: 'daily', label: '每日摘要' },
-                { id: 'session', label: '会话摘要' },
-              ]"
-              :key="view.id"
+              v-if="dataView === 'session' && canIndex"
               type="button"
-              class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors"
-              :class="dataView === view.id ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'"
-              @click="switchDataView(view.id as 'daily' | 'session')"
+              class="px-3.5 py-2 text-sm font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              :disabled="consolidating"
+              @click="runConsolidation"
             >
-              {{ view.label }}
+              <span v-if="consolidating" class="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin" />
+              <span v-else>🧠</span>
+              {{ consolidating ? '整理合并中…' : '一键整理合并' }}
             </button>
           </div>
           <div class="flex flex-wrap gap-3 items-end">

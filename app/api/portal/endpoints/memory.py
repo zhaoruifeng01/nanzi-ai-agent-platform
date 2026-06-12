@@ -711,3 +711,73 @@ async def rebuild_my_daily_summary(
     return {"status": "success", "data": result}
 
 
+class ConsolidateRequest(BaseModel):
+    user_id: Optional[int] = None
+
+
+@router.post("/consolidate")
+async def consolidate_memories(
+    req: ConsolidateRequest,
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """手动触发记忆整理降噪接口（支持管理员指定用户或全部用户）"""
+    # 鉴权
+    is_admin = current_user.get("role") == "admin"
+    if not is_admin:
+        # 校验是否有 element:memory:view_all_users 权限
+        has_all_perm = await _can_view_all_users(current_user)
+        if not has_all_perm:
+            # 普通用户，只能整理自己本人的
+            if req.user_id is not None and req.user_id != _current_uid(current_user):
+                raise HTTPException(status_code=403, detail="无权为其他用户执行记忆整理")
+    
+    from app.core.orm import AsyncSessionLocal
+    from app.models.user import User
+    from sqlalchemy import select
+    
+    target_uids = []
+    if req.user_id is not None:
+        target_uids = [str(req.user_id)]
+    else:
+        # 如果不传，默认管理员可以整理所有人
+        if not is_admin:
+            target_uids = [str(_current_uid(current_user))]
+        else:
+            async with AsyncSessionLocal() as session:
+                stmt = select(User.id).where(User.status == 1)
+                result = await session.execute(stmt)
+                target_uids = [str(uid) for uid in result.scalars().all()]
+                
+    # 逐个执行
+    consolidated_count = 0
+    for uid in target_uids:
+        try:
+            await MemoryIndexService.consolidate_user_memories(uid)
+            consolidated_count += 1
+        except Exception as ex:
+            logger.error(f"Failed to manually consolidate memory for user {uid}: {ex}")
+            
+    return {
+        "status": "success",
+        "message": f"成功触发并整理了 {consolidated_count} 个用户的历史记忆",
+        "processed_users": target_uids
+    }
+
+
+@router.post("/my/consolidate")
+async def consolidate_my_memories(
+    current_user: Dict = Depends(require_api_key),
+    _health: Dict = Depends(require_memory_vector_ready),
+):
+    """当前用户本人手动触发自己长时记忆整理"""
+    uid = str(_current_uid(current_user))
+    try:
+        await MemoryIndexService.consolidate_user_memories(uid)
+        return {"status": "success", "message": "记忆整理与合并归约成功完成"}
+    except Exception as ex:
+        logger.error(f"Failed to manually consolidate my memory {uid}: {ex}")
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+

@@ -106,6 +106,16 @@ class MemoryConfigService:
             return default
 
     @staticmethod
+    async def get_float(key: str, default: float) -> float:
+        raw = await MemoryConfigService.get(key)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     def invalidate_cache():
         MemoryConfigService._cache = None
         MemoryConfigService._cache_at = 0

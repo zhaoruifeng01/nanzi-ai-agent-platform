@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     RAGFLOW_API_URL: Optional[str] = None
     RAGFLOW_API_KEY: Optional[str] = None
 
+    # Ebbinghaus Memory Configs
+    MEMORY_BASE_HALF_LIFE: float = 7.0
+    MEMORY_CONSOLIDATION_THRESHOLD: float = 0.82
+
     # SSO Configuration
     SSO_API_URL: str = "https://yovole.net/api/v1/user/check/login"
     SSO_ACCESS_TOKEN: str = "laplace"
