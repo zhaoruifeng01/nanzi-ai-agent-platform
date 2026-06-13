@@ -2204,7 +2204,7 @@ async def test_data_agent_runner_repair_after_sql_before_schema(data_config):
 
 
 @pytest.mark.asyncio
-async def test_data_agent_runner_marks_schema_miss_and_empty_sql_result(data_config):
+async def test_data_agent_runner_marks_schema_miss_and_blocks_sql_before_schema(data_config):
     from types import SimpleNamespace
 
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
@@ -2234,9 +2234,9 @@ async def test_data_agent_runner_marks_schema_miss_and_empty_sql_result(data_con
         events.append(chunk)
 
     assert runner._last_run_state.schema_miss is True
-    assert runner._last_run_state.empty_sql_result is True
-    assert runner._last_run_state.empty_sql_reason == "SQL 返回的行容器为空，未命中任何数据行"
-    assert any("SQL 返回的行容器为空" in event.get("details", "") for event in events if isinstance(event, dict))
+    assert runner._last_run_state.sql_before_schema is True
+    assert runner._last_run_state.empty_sql_result is False
+    assert any("未命中相关数据集定义" in event.get("details", "") for event in events if isinstance(event, dict))
 
 
 @pytest.mark.asyncio
@@ -2545,6 +2545,44 @@ async def test_data_agent_runner_detects_split_sql_plan_before_sql(data_config):
     assert state.sql_plan_missing is False
     assert any(event.get("content") == "计划后结果是 8" for event in events if isinstance(event, dict))
     assert not any(event.get("title") == "阻止未查数回答" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_tracks_sql_plan_in_thinking_and_forces_sql(data_config):
+    from types import SimpleNamespace
+
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    async def fake_events():
+        yield SimpleNamespace(
+            type="THINKING_BLOCK_DELTA",
+            delta="<thought><sql_plan>{\"dataset_name\":\"demo\",\"data_source\":\"mysql_aiagent\"}</sql_plan></thought>",
+        )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-thinking-plan", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        requires_sql_plan=True,
+    )
+
+    async for _chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+        state=state,
+        emit_final_guard=False,
+    ):
+        pass
+
+    assert state.sql_plan_seen is True
+    assert state.sql_completed is False
+    assert runner._current_repair_kind(state) == "missing_sql"
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
 
 
 @pytest.mark.asyncio

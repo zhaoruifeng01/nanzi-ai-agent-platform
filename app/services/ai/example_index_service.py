@@ -58,7 +58,7 @@ class ExampleIndexService:
         if not redis:
             return False
         idx = await ExampleIndexService.index_name()
-        dim = await EmbeddingClient.get_dimensions()
+        dim = await EmbeddingClient.get_dimensions(use_global=True)
         try:
             info = await redis.execute_command("FT.INFO", idx)
             if info:
@@ -214,7 +214,7 @@ class ExampleIndexService:
                             if not text_to_embed:
                                 continue
                             
-                            embedding = await EmbeddingClient.embed_text(text_to_embed)
+                            embedding = await EmbeddingClient.embed_text(text_to_embed, use_global=True)
                             ds_name = dataset_name_map.get(ex.dataset_id) or "通用数据集"
                             
                             await ExampleIndexService.upsert_vector(

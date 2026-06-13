@@ -879,7 +879,7 @@ onMounted(async () => {
             <span class="font-mono text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100 font-medium">local-redis 向量语义搜索</span>
           </template>
           <template v-else>
-            <span>当前 RAGFlow 引擎：</span>
+            <span>当前 知识库引擎(RAGFlow)：</span>
             <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="font-mono text-primary bg-gray-100 px-1.5 py-0.5 rounded hover:underline">{{ ragflowApiUrl }}</a>
             <span v-if="ragflowConfig && !ragflowConfig.api_key_configured" class="ml-2 text-amber-600 font-medium">⚠️ API Key 未配置</span>
           </template>

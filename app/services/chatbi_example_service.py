@@ -309,7 +309,7 @@ class ExampleService:
 
                         text_to_embed = example.refined_query or example.user_query
                         if text_to_embed:
-                            embedding = await EmbeddingClient.embed_text(text_to_embed)
+                            embedding = await EmbeddingClient.embed_text(text_to_embed, use_global=True)
                             await ExampleIndexService.upsert_vector(
                                 example_id=example.id,
                                 dataset_id=example.dataset_id or 0,
@@ -440,12 +440,17 @@ class ExampleService:
             logger.warning(f"[ExampleSync] Cleanup failed: {e}")
 
     @staticmethod
-    async def search_examples(query: str, dataset_id: int = None, top_k: int = 5, history: List[Any] = None) -> List[Dict[str, Any]]:
+    async def search_examples(query: str, dataset_id: int = None, top_k: int = None, history: List[Any] = None) -> List[Dict[str, Any]]:
         """
         从经验库中检索相似案例。支持意图改写（De-contextualization）。
         """
         try:
-            logger.info(f"[ExampleSearch] >>> Start searching examples for query: '{query}'")
+            # 动态获取 Top K 检索条数
+            if top_k is None:
+                top_k_str = await ConfigService.get("chatbi_sample_top_k")
+                top_k = int(top_k_str) if top_k_str and top_k_str.isdigit() else 5
+
+            logger.info(f"[ExampleSearch] >>> Start searching examples for query: '{query}' (top_k={top_k})")
             
             # 1. 意图改写：如果 query 太短或包含代词，尝试根据 history 进行改写
             search_query = query
@@ -464,7 +469,7 @@ class ExampleService:
                     from app.services.ai.example_index_service import ExampleIndexService
                     from app.services.ai.embedding_client import EmbeddingClient
                     
-                    query_embedding = await EmbeddingClient.embed_text(search_query)
+                    query_embedding = await EmbeddingClient.embed_text(search_query, use_global=True)
                     authorized_dataset_ids = [dataset_id] if dataset_id is not None else None
                     
                     examples = await ExampleIndexService.search_knn(
@@ -473,11 +478,17 @@ class ExampleService:
                         top_k=top_k
                     )
                     
-                    logger.info(f"[ExampleSearch] Local Redis search returned {len(examples)} examples.")
-                    if examples:
-                        return examples
+                    # 关联读取并应用相似度阈值过滤，防止非相似问答混入 Prompt 中
+                    threshold_str = await ConfigService.get("chatbi_sample_similarity_threshold")
+                    similarity_threshold = float(threshold_str) if threshold_str else 0.4
                     
-                    logger.info("[ExampleSearch] Local Redis search returned empty. Falling back to MySQL LIKE search.")
+                    filtered_examples = [ex for ex in examples if ex.get("similarity", 0.0) >= similarity_threshold]
+                    
+                    logger.info(f"[ExampleSearch] Local Redis search returned {len(examples)} examples, filtered to {len(filtered_examples)} above threshold ({similarity_threshold}).")
+                    if filtered_examples:
+                        return filtered_examples
+                    
+                    logger.info("[ExampleSearch] Local Redis search returned empty or no examples passed threshold. Falling back to MySQL LIKE search.")
                     return await ExampleService._search_mysql_fallback(search_query, dataset_id, top_k)
                 except Exception as local_err:
                     logger.warning(f"[ExampleSearch] Local Redis search failed: {local_err}. Falling back to MySQL LIKE search.")

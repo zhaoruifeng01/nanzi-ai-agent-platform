@@ -57,7 +57,7 @@ class MetadataIndexService:
         if not redis:
             return False
         idx = await MetadataIndexService.index_name()
-        dim = await EmbeddingClient.get_dimensions()
+        dim = await EmbeddingClient.get_dimensions(use_global=True)
         try:
             info = await redis.execute_command("FT.INFO", idx)
             if info:
@@ -226,7 +226,7 @@ class MetadataIndexService:
                     # 4. Upsert/Update keys that are expected
                     for doc_name, content in expected_docs.items():
                         try:
-                            embedding = await EmbeddingClient.embed_text(content)
+                            embedding = await EmbeddingClient.embed_text(content, use_global=True)
                             await MetadataIndexService.upsert_vector(
                                 dataset_id=dataset_id,
                                 doc_name=doc_name,

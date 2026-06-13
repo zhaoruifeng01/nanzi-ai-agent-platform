@@ -714,7 +714,7 @@ onMounted(async () => {
         <h1 class="text-2xl font-bold text-gray-900 tracking-tight">知识库管理</h1>
         <p class="text-sm text-gray-500 mt-1">管理 RAGFlow 知识库、平台扩展元数据及一体化文档解析。</p>
         <p class="text-xs text-gray-400 mt-2 flex items-center gap-1">
-          <span>当前 RAGFlow 引擎：</span>
+          <span>当前 知识库引擎(RAGFlow)：</span>
           <a :href="ragflowApiUrl" target="_blank" rel="noopener noreferrer" class="font-mono text-primary bg-gray-100 px-1.5 py-0.5 rounded hover:underline">{{ ragflowApiUrl }}</a>
           <span v-if="ragflowConfig && !ragflowConfig.api_key_configured" class="ml-2 text-amber-600 font-medium">⚠️ API Key 未配置</span>
         </p>

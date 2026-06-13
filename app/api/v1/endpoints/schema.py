@@ -211,7 +211,7 @@ async def get_database_schema(
             from app.services.ai.metadata_index_service import MetadataIndexService
             
             # 计算提问词向量
-            query_embedding = await EmbeddingClient.embed_text(query)
+            query_embedding = await EmbeddingClient.embed_text(query, use_global=True)
             
             # 执行 FT.SEARCH KNN 检索
             redis_results = await MetadataIndexService.search_knn(

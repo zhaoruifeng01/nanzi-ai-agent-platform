@@ -937,7 +937,7 @@ class DataAgentRunner(BaseExecutor):
             examples = await ExampleService.search_examples(
                 user_question,
                 dataset_id=None,
-                top_k=5,
+                top_k=None,
                 history=runtime_messages,
             )
             self._fewshot_examples = examples or []
@@ -1598,6 +1598,13 @@ class DataAgentRunner(BaseExecutor):
                 "execution_time_ms": duration_ms,
             }
 
+        def track_sql_plan_delta(delta: str) -> None:
+            state.text_window = (state.text_window + delta)[-4000:]
+            if self._has_sql_plan(state.text_window):
+                if not state.sql_plan_seen:
+                    state.sql_plan_seen = True
+                    self._sync_pending_data_run_state(state, stream_state)
+
         async def on_text_block_delta(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
             block_id = str(getattr(event, "block_id", "") or "")
             if block_id:
@@ -1605,11 +1612,7 @@ class DataAgentRunner(BaseExecutor):
             if state.ignore_text_block:
                 return
             delta = str(getattr(event, "delta", ""))
-            state.text_window = (state.text_window + delta)[-4000:]
-            if self._has_sql_plan(state.text_window):
-                if not state.sql_plan_seen:
-                    state.sql_plan_seen = True
-                    self._sync_pending_data_run_state(state, stream_state)
+            track_sql_plan_delta(delta)
             if not state.ready_to_answer:
                 state.blocked_content += delta
                 return
@@ -1633,6 +1636,8 @@ class DataAgentRunner(BaseExecutor):
                     state=stream_state,
                     native_model=native_model,
                 )
+            if event_type == "THINKING_BLOCK_DELTA":
+                track_sql_plan_delta(str(getattr(event, "delta", "")))
             if event_type == "TOOL_CALL_START":
                 state.text_blocks_emitted_since_last_tool = 0
                 state.ignore_text_block = False
@@ -1823,6 +1828,14 @@ class DataAgentRunner(BaseExecutor):
             return "diagnostic_sql_pending_final"
         if (
             state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return "missing_sql"
+        if (
+            state.requires_fresh_data
             and state.blocked_content.strip()
             and not state.ready_to_answer
         ):
@@ -1914,6 +1927,18 @@ class DataAgentRunner(BaseExecutor):
             )
         if (
             state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return (
+                "【查数顺序要求】你已补充 <sql_plan>，但尚未执行 execute_sql_query。\n"
+                f"{DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA}\n"
+                "禁止直接回答用户，必须先完成 SQL 查数。"
+            )
+        if (
+            state.requires_fresh_data
             and state.blocked_content.strip()
             and not state.ready_to_answer
         ):
@@ -1965,6 +1990,9 @@ class DataAgentRunner(BaseExecutor):
     def _resolve_force_execute_sql_tool_choice(self, state: _DataRunState) -> Any | None:
         from agentscope.tool import ToolChoice
 
+        if state.requires_sql_plan and not state.sql_plan_seen:
+            return None
+
         if (
             state.requires_fresh_data
             and state.schema_completed
@@ -1996,7 +2024,17 @@ class DataAgentRunner(BaseExecutor):
         if state.ratio_anomaly:
             return ToolChoice(mode="required")  # 强制调用工具补充对账 SQL
         if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
+            if state.requires_sql_plan and not state.sql_plan_seen:
+                return None
             return ToolChoice(mode="required")
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return self._resolve_force_execute_sql_tool_choice(state)
         if (
             state.requires_fresh_data
             and state.blocked_content.strip()
@@ -2033,6 +2071,14 @@ class DataAgentRunner(BaseExecutor):
                 return "必须先完成查数流程"
             if not state.sql_completed:
                 return "必须先执行 SQL 查数"
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return "必须先执行 SQL 查数"
         return "修正 SQL 查询"
 
     def _has_sql_plan(self, text: str) -> bool:

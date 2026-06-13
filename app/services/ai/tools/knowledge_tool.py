@@ -34,7 +34,7 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
             Comma-separated without brackets also works: id1,id2
             If omitted, uses the agent's configured datasets or system default.
     """
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
 
     logger.info(f"[KnowledgeTool] Called with query='{query}', explicit_ids='{dataset_ids}'")
 
@@ -78,9 +78,9 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
                 "You may only use datasets assigned to you or created by yourself."
             )
 
-    sys_threshold = await ConfigService.get("ragflow_similarity_threshold")
-    sys_weight = await ConfigService.get("ragflow_vector_weight")
-    sys_top_k = await ConfigService.get("ragflow_metadata_top_k")
+    sys_threshold = await ConfigService.get("knowledge_ragflow_similarity_threshold")
+    sys_weight = await ConfigService.get("knowledge_ragflow_vector_weight")
+    sys_top_k = await ConfigService.get("knowledge_ragflow_metadata_top_k")
     threshold, vector_weight, top_k = resolve_rag_retrieval_params(
         system_threshold=sys_threshold,
         system_weight=sys_weight,
