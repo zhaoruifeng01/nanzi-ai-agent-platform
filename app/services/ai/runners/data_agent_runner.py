@@ -187,7 +187,6 @@ class _DataRunState:
             and not self.sql_error
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
-            and not self.sql_plan_missing
             and not self.ratio_anomaly
         )
 
@@ -756,7 +755,7 @@ class DataAgentRunner(BaseExecutor):
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
-        state.requires_sql_plan = self._should_require_sql_plan(user_question)
+        state.requires_sql_plan = False
         if prefetched_schema_output is not None:
             self._apply_schema_tool_result(state, prefetched_schema_output)
             if self._is_schema_fatal(state):
@@ -1478,7 +1477,6 @@ class DataAgentRunner(BaseExecutor):
         return (
             f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n"
             f"{time_anchor}\n\n"
-            f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT}\n\n"
             f"{DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT}\n\n"
             f"{system_prompt}"
             f"{context_action_prompt}"
@@ -1781,8 +1779,6 @@ class DataAgentRunner(BaseExecutor):
             content = "SQL 执行失败，必须根据错误信息修正 SQL 并重新执行成功后才能回答。"
         elif state.empty_sql_result:
             content = "SQL 返回空结果，必须先用诊断 SQL 复查筛选条件或 JOIN 条件，再执行最终 SQL 后才能回答。"
-        elif state.sql_plan_missing:
-            content = "高风险数据查询必须先补充 SQL 计划，再执行 SQL 查询并确认结果后才能回答。"
         elif state.sql_static_risk:
             content = "SQL 存在高风险执行特征，必须先修正 SQL 后才能继续查数。"
         elif state.ratio_anomaly:
@@ -1814,8 +1810,6 @@ class DataAgentRunner(BaseExecutor):
             return "schema_miss"
         if state.schema_needs_refinement:
             return "schema_refinement"
-        if state.sql_plan_missing:
-            return "sql_plan_missing"
         if state.sql_static_risk:
             return "sql_static_risk"
         if state.sql_error:
@@ -1887,14 +1881,6 @@ class DataAgentRunner(BaseExecutor):
                 f"{state.schema_ambiguous_reason}。请停止生成 SQL，先用自然语言和 quick 按钮请用户确认"
                 "具体数据集、指标口径或业务对象；确认前禁止执行 SQL。"
             )
-        if state.sql_plan_missing:
-            return (
-                "【SQL 计划补充要求】本轮问题属于高风险数据查询（如比率/趋势/排名/分组）。"
-                "上一轮 execute_sql_query 前没有提供 <sql_plan>。"
-                "请先输出 <thought><sql_plan>{...}</sql_plan></thought>，至少包含 dataset_name、data_source、"
-                "grain_keys、time_window、metrics_hit、joins、ratio，然后重新调用 execute_sql_query。"
-                "在补充计划并重新执行 SQL 成功前禁止直接回答用户。"
-            )
         if state.sql_static_risk:
             return (
                 "【SQL 静态风险修正要求】上一轮 execute_sql_query 被平台拦截，"
@@ -1933,7 +1919,7 @@ class DataAgentRunner(BaseExecutor):
             and not state.ready_to_answer
         ):
             return (
-                "【查数顺序要求】你已补充 <sql_plan>，但尚未执行 execute_sql_query。\n"
+                "【查数顺序要求】你已输出中间推理文本，但尚未执行 execute_sql_query。\n"
                 f"{DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA}\n"
                 "禁止直接回答用户，必须先完成 SQL 查数。"
             )
@@ -1990,9 +1976,6 @@ class DataAgentRunner(BaseExecutor):
     def _resolve_force_execute_sql_tool_choice(self, state: _DataRunState) -> Any | None:
         from agentscope.tool import ToolChoice
 
-        if state.requires_sql_plan and not state.sql_plan_seen:
-            return None
-
         if (
             state.requires_fresh_data
             and state.schema_completed
@@ -2017,15 +2000,11 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="get_dataset_schema")
         if state.schema_ambiguous:
             return None
-        if state.sql_plan_missing:
-            return None
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
         if state.ratio_anomaly:
             return ToolChoice(mode="required")  # 强制调用工具补充对账 SQL
         if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
-            if state.requires_sql_plan and not state.sql_plan_seen:
-                return None
             return ToolChoice(mode="required")
         if (
             state.requires_fresh_data
@@ -2054,8 +2033,6 @@ class DataAgentRunner(BaseExecutor):
             return "优化数据集定义检索"
         if state.schema_ambiguous:
             return "确认数据集或指标口径"
-        if state.sql_plan_missing:
-            return "补充 SQL 计划"
         if state.sql_static_risk:
             return "修正高风险 SQL"
         if state.ratio_anomaly:
@@ -2260,8 +2237,6 @@ class DataAgentRunner(BaseExecutor):
             state.sql_before_schema = True
             return output, False
 
-        if state.requires_sql_plan and not state.sql_plan_seen:
-            state.sql_plan_missing = True
         state.sql_completed = True
 
         parsed_output = self._try_parse_json_output(output)
