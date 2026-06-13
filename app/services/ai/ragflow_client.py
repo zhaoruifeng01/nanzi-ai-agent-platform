@@ -13,22 +13,23 @@ class RagFlowClient:
     Handles authentication, conversation management, and streaming responses.
     """
 
-    def __init__(self):
+    def __init__(self, config_prefix: str = "ragflow"):
         self.base_url: Optional[str] = None
         self.api_key: Optional[str] = None
+        self.config_prefix: str = config_prefix
 
     async def _ensure_config(self):
         """Lazy load configuration"""
         if not self.base_url:
-            self.base_url = await ConfigService.get("ragflow_api_url")
+            self.base_url = await ConfigService.get(f"{self.config_prefix}_api_url")
             if self.base_url and self.base_url.endswith("/"):
                 self.base_url = self.base_url[:-1]
         
         if not self.api_key:
-            self.api_key = await ConfigService.get("ragflow_api_key")
+            self.api_key = await ConfigService.get(f"{self.config_prefix}_api_key")
             
         if not self.base_url or not self.api_key:
-            raise ValueError("RAGFlow configuration (ragflow_api_url, ragflow_api_key) is missing.")
+            raise ValueError(f"RAGFlow configuration ({self.config_prefix}_api_url, {self.config_prefix}_api_key) is missing.")
 
     async def _handle_response(self, response: httpx.Response, action: str) -> Dict[str, Any]:
         """Centralized response handling"""
@@ -356,12 +357,12 @@ class RagFlowClient:
         # [Log] Request Payload
         logger.info(f"[RAGFlowClient] Retrieval Request Payload: {json.dumps(payload, ensure_ascii=False)}")
         
-        max_attempts = 3
+        max_attempts = 2
         last_exception = None
         
         for attempt in range(1, max_attempts + 1):
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=3.0) as client:
                     response = await client.post(url, headers=self._get_headers(), json=payload)
                     
                     if response.status_code == 200:

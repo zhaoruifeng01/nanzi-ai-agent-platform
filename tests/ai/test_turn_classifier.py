@@ -189,6 +189,7 @@ def test_classify_turn_from_intent_knowledge_non_data_agent():
 def test_turn_type_label():
     assert turn_type_label(TurnType.DATA_QUERY_REQUEST) == "数据查询请求"
     assert data_query_turn_type_label(DataQueryTurnType.REUSE_PREVIOUS_RESULT) == "复用上一轮结果"
+    assert data_query_turn_type_label(DataQueryTurnType.CLARIFICATION_OR_NON_DATA) == "需澄清或非查数请求"
 
 
 def test_shared_turn_classification_is_generic_not_chatbi_specific():
@@ -303,7 +304,7 @@ async def test_data_query_turn_classifier_reuses_result_for_date_formatting_foll
 
 
 @pytest.mark.asyncio
-async def test_data_query_turn_classifier_marks_followup_even_without_reusable_result():
+async def test_data_query_turn_classifier_rejects_reuse_without_reusable_result():
     llm = object()
     chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户是在要求可视化上一轮结果"}')
 
@@ -321,9 +322,91 @@ async def test_data_query_turn_classifier_marks_followup_even_without_reusable_r
         )
 
     mock_get_llm.assert_awaited_once()
+    assert classification.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA
+    assert classification.requires_fresh_data is False
+    assert classification.requires_few_shot is False
+    assert "没有可复用" in classification.reasoning
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_short_circuits_general_chat_without_sql():
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("general chat should not call classifier LLM")),
+    ):
+        classification, intent_info, elapsed_ms = await resolve_data_query_turn_classification(
+            "你好，你是谁",
+            [],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA
+    assert classification.requires_fresh_data is False
+    assert classification.requires_few_shot is False
+    assert classification.skip_intent_llm is True
+    assert intent_info.intent == IntentType.GENERAL
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_requires_recent_context_for_reuse():
+    llm = object()
+    chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户要求分析上一轮结果"}')
+
+    stale_history = [
+        {"role": "user", "content": "查询用户列表"},
+        {"role": "assistant", "content": "已返回用户列表。"},
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好。"},
+        {"role": "user", "content": "你是谁"},
+        {"role": "assistant", "content": "我是助手。"},
+        {"role": "user", "content": "帮我写个说明"},
+        {"role": "assistant", "content": "好的。"},
+        {"role": "user", "content": "分析一下"},
+    ]
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            "分析一下",
+            stale_history,
+            has_last_data_result=True,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA
+    assert classification.requires_fresh_data is False
+    assert "最近对话" in classification.reasoning
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_allows_polite_followup_with_reusable_result():
+    llm = object()
+    chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户礼貌地要求分析当前数据结果"}')
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ) as mock_get_llm, patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            "你好，帮我分析这个数据",
+            [
+                {"role": "assistant", "content": "已返回用户列表数据结果。"},
+                {"role": "user", "content": "你好，帮我分析这个数据"},
+            ],
+            has_last_data_result=True,
+        )
+
+    mock_get_llm.assert_awaited_once()
     assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
     assert classification.requires_fresh_data is False
-    assert "可视化" in classification.reasoning
 
 
 @pytest.mark.asyncio

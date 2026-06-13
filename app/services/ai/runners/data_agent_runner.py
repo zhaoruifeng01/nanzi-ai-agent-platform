@@ -152,6 +152,7 @@ class _DataRunState:
     active_text_block_id: str = ""
     text_blocks_emitted_since_last_tool: int = 0
     current_text_block_emitted: bool = False
+    halt_current_react: bool = False
     last_successful_sql_output: Any = None
     successful_sqls: dict[str, Any] = field(default_factory=dict)
     ratio_anomaly: bool = False          # SQL 结果含超阈值比率（>1.5 或负值），触发对账修复
@@ -187,7 +188,6 @@ class _DataRunState:
             and not self.sql_error
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
-            and not self.sql_plan_missing
             and not self.ratio_anomaly
         )
 
@@ -542,6 +542,21 @@ class DataAgentRunner(BaseExecutor):
                 yield {"content": DataQueryPrompts.NO_REUSABLE_RESULT}
             return
 
+        if turn_cls.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA:
+            yield {
+                "type": "log",
+                "id": f"clarify_{uuid.uuid4().hex[:8]}",
+                "title": "需要补充查数信息",
+                "details": turn_cls.reasoning,
+                "status": "warning",
+                "category": "intent",
+            }
+            yield {
+                "content": DataQueryPrompts.CLARIFICATION_OR_NON_DATA,
+                "status": "success",
+            }
+            return
+
         tools = await self._resolve_runtime_tools_from_config()
         max_steps = await self._resolve_max_steps()
         self._standalone_query = user_question
@@ -741,7 +756,7 @@ class DataAgentRunner(BaseExecutor):
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
-        state.requires_sql_plan = self._should_require_sql_plan(user_question)
+        state.requires_sql_plan = False
         if prefetched_schema_output is not None:
             self._apply_schema_tool_result(state, prefetched_schema_output)
             if self._is_schema_fatal(state):
@@ -922,7 +937,7 @@ class DataAgentRunner(BaseExecutor):
             examples = await ExampleService.search_examples(
                 user_question,
                 dataset_id=None,
-                top_k=5,
+                top_k=None,
                 history=runtime_messages,
             )
             self._fewshot_examples = examples or []
@@ -1463,7 +1478,6 @@ class DataAgentRunner(BaseExecutor):
         return (
             f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n"
             f"{time_anchor}\n\n"
-            f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT}\n\n"
             f"{DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT}\n\n"
             f"{system_prompt}"
             f"{context_action_prompt}"
@@ -1555,6 +1569,13 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                state.halt_current_react = (
+                    state.sql_error
+                    or state.empty_sql_result
+                    or state.sql_static_risk
+                    or state.ratio_anomaly
+                    or state.diagnostic_sql_pending_final
+                )
                 if should_save_followup:
                     await self._save_last_data_result_for_followups(tool_args, parsed_output)
             self._sync_pending_data_run_state(state, stream_state)
@@ -1583,6 +1604,13 @@ class DataAgentRunner(BaseExecutor):
                 "execution_time_ms": duration_ms,
             }
 
+        def track_sql_plan_delta(delta: str) -> None:
+            state.text_window = (state.text_window + delta)[-4000:]
+            if self._has_sql_plan(state.text_window):
+                if not state.sql_plan_seen:
+                    state.sql_plan_seen = True
+                    self._sync_pending_data_run_state(state, stream_state)
+
         async def on_text_block_delta(event: Any) -> AsyncGenerator[Dict[str, Any], None]:
             block_id = str(getattr(event, "block_id", "") or "")
             if block_id:
@@ -1590,11 +1618,7 @@ class DataAgentRunner(BaseExecutor):
             if state.ignore_text_block:
                 return
             delta = str(getattr(event, "delta", ""))
-            state.text_window = (state.text_window + delta)[-4000:]
-            if self._has_sql_plan(state.text_window):
-                if not state.sql_plan_seen:
-                    state.sql_plan_seen = True
-                    self._sync_pending_data_run_state(state, stream_state)
+            track_sql_plan_delta(delta)
             if not state.ready_to_answer:
                 state.blocked_content += delta
                 return
@@ -1618,6 +1642,8 @@ class DataAgentRunner(BaseExecutor):
                     state=stream_state,
                     native_model=native_model,
                 )
+            if event_type == "THINKING_BLOCK_DELTA":
+                track_sql_plan_delta(str(getattr(event, "delta", "")))
             if event_type == "TOOL_CALL_START":
                 state.text_blocks_emitted_since_last_tool = 0
                 state.ignore_text_block = False
@@ -1669,6 +1695,9 @@ class DataAgentRunner(BaseExecutor):
                     "status": "error",
                 }
                 return
+            if state.halt_current_react:
+                logger.info("[DataAgentRunner] SQL result requires repair. Stopping current ReAct stream.")
+                break
 
         if emit_final_guard:
             guard_emitted = False
@@ -1751,7 +1780,17 @@ class DataAgentRunner(BaseExecutor):
         self,
         state: _DataRunState,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        if state.full_content or not state.blocked_content or state.ready_to_answer:
+        has_guard_condition = (
+            bool(state.blocked_content)
+            or state.sql_before_schema
+            or state.sql_error
+            or state.empty_sql_result
+            or state.sql_static_risk
+            or state.ratio_anomaly
+            or state.diagnostic_sql_pending_final
+            or self._is_schema_fatal(state)
+        )
+        if state.full_content or state.ready_to_answer or not has_guard_condition:
             return
         if self._is_schema_fatal(state):
             _, content = self._schema_fatal_response(state)
@@ -1761,8 +1800,6 @@ class DataAgentRunner(BaseExecutor):
             content = "SQL 执行失败，必须根据错误信息修正 SQL 并重新执行成功后才能回答。"
         elif state.empty_sql_result:
             content = "SQL 返回空结果，必须先用诊断 SQL 复查筛选条件或 JOIN 条件，再执行最终 SQL 后才能回答。"
-        elif state.sql_plan_missing:
-            content = "高风险数据查询必须先补充 SQL 计划，再执行 SQL 查询并确认结果后才能回答。"
         elif state.sql_static_risk:
             content = "SQL 存在高风险执行特征，必须先修正 SQL 后才能继续查数。"
         elif state.ratio_anomaly:
@@ -1794,8 +1831,6 @@ class DataAgentRunner(BaseExecutor):
             return "schema_miss"
         if state.schema_needs_refinement:
             return "schema_refinement"
-        if state.sql_plan_missing:
-            return "sql_plan_missing"
         if state.sql_static_risk:
             return "sql_static_risk"
         if state.sql_error:
@@ -1806,6 +1841,14 @@ class DataAgentRunner(BaseExecutor):
             return "ratio_anomaly"
         if state.diagnostic_sql_pending_final:
             return "diagnostic_sql_pending_final"
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return "missing_sql"
         if (
             state.requires_fresh_data
             and state.blocked_content.strip()
@@ -1859,14 +1902,6 @@ class DataAgentRunner(BaseExecutor):
                 f"{state.schema_ambiguous_reason}。请停止生成 SQL，先用自然语言和 quick 按钮请用户确认"
                 "具体数据集、指标口径或业务对象；确认前禁止执行 SQL。"
             )
-        if state.sql_plan_missing:
-            return (
-                "【SQL 计划补充要求】本轮问题属于高风险数据查询（如比率/趋势/排名/分组）。"
-                "上一轮 execute_sql_query 前没有提供 <sql_plan>。"
-                "请先输出 <thought><sql_plan>{...}</sql_plan></thought>，至少包含 dataset_name、data_source、"
-                "grain_keys、time_window、metrics_hit、joins、ratio，然后重新调用 execute_sql_query。"
-                "在补充计划并重新执行 SQL 成功前禁止直接回答用户。"
-            )
         if state.sql_static_risk:
             return (
                 "【SQL 静态风险修正要求】上一轮 execute_sql_query 被平台拦截，"
@@ -1899,6 +1934,18 @@ class DataAgentRunner(BaseExecutor):
             )
         if (
             state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return (
+                "【查数顺序要求】你已输出中间推理文本，但尚未执行 execute_sql_query。\n"
+                f"{DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA}\n"
+                "禁止直接回答用户，必须先完成 SQL 查数。"
+            )
+        if (
+            state.requires_fresh_data
             and state.blocked_content.strip()
             and not state.ready_to_answer
         ):
@@ -1926,6 +1973,7 @@ class DataAgentRunner(BaseExecutor):
         state.active_text_block_id = ""
         state.text_blocks_emitted_since_last_tool = 0
         state.current_text_block_emitted = False
+        state.halt_current_react = False
         state.sql_completed = False
         state.sql_error = False
         state.sql_error_message = ""
@@ -1974,14 +2022,20 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="get_dataset_schema")
         if state.schema_ambiguous:
             return None
-        if state.sql_plan_missing:
-            return None
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
         if state.ratio_anomaly:
             return ToolChoice(mode="required")  # 强制调用工具补充对账 SQL
         if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
             return ToolChoice(mode="required")
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return self._resolve_force_execute_sql_tool_choice(state)
         if (
             state.requires_fresh_data
             and state.blocked_content.strip()
@@ -2001,8 +2055,6 @@ class DataAgentRunner(BaseExecutor):
             return "优化数据集定义检索"
         if state.schema_ambiguous:
             return "确认数据集或指标口径"
-        if state.sql_plan_missing:
-            return "补充 SQL 计划"
         if state.sql_static_risk:
             return "修正高风险 SQL"
         if state.ratio_anomaly:
@@ -2018,6 +2070,14 @@ class DataAgentRunner(BaseExecutor):
                 return "必须先完成查数流程"
             if not state.sql_completed:
                 return "必须先执行 SQL 查数"
+        if (
+            state.requires_fresh_data
+            and state.schema_completed
+            and state.sql_plan_seen
+            and not state.sql_completed
+            and not state.ready_to_answer
+        ):
+            return "必须先执行 SQL 查数"
         return "修正 SQL 查询"
 
     def _has_sql_plan(self, text: str) -> bool:
@@ -2199,8 +2259,6 @@ class DataAgentRunner(BaseExecutor):
             state.sql_before_schema = True
             return output, False
 
-        if state.requires_sql_plan and not state.sql_plan_seen:
-            state.sql_plan_missing = True
         state.sql_completed = True
 
         parsed_output = self._try_parse_json_output(output)
@@ -2218,6 +2276,13 @@ class DataAgentRunner(BaseExecutor):
             return parsed_output, False
 
         if empty_reason:
+            if state.expecting_final_sql_after_diagnostic and not is_diag:
+                state.empty_sql_reason = ""
+                state.empty_sql_result = False
+                state.last_successful_sql_output = output
+                state.expecting_final_sql_after_diagnostic = False
+                state.diagnostic_sql_pending_final = False
+                return parsed_output, True
             if self._is_trusted_empty_result(sql_text, state):
                 state.empty_sql_reason = ""
                 state.empty_sql_result = False
@@ -2333,6 +2398,8 @@ class DataAgentRunner(BaseExecutor):
             return "JOIN 缺少明确 ON 条件，存在笛卡尔积风险"
         has_limit = bool(re.search(r"\bLIMIT\s+\d+\b", sql_upper) or re.search(r"\bROWNUM\s*<=\s*\d+\b", sql_upper))
         has_aggregation = any(marker in sql_upper for marker in (" GROUP BY ", " COUNT(", " SUM(", " AVG(", " MAX(", " MIN("))
+        if " JOIN " in f" {sql_upper} " and not has_limit and not has_aggregation:
+            return "JOIN 明细查询缺少 LIMIT 或聚合约束，可能放大返回行数"
         if not has_limit and not has_aggregation:
             return "缺少 LIMIT 或聚合约束，可能返回过多明细行"
         return ""
@@ -2488,7 +2555,6 @@ class DataAgentRunner(BaseExecutor):
         fatal_prefixes = (
             "[Permission Denied]",
             "[Security Error]",
-            "[Validation Failed]",
             "Error: Dataset",
         )
         if any(q.startswith(prefix) for prefix in fatal_prefixes):

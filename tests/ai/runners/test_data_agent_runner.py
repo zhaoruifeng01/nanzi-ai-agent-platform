@@ -366,7 +366,8 @@ async def test_data_agent_runner_system_content_includes_data_guardrails(data_co
     assert DataQueryPrompts.GLOBAL_GUARDRAILS in system_content
     assert "[当前时间锚点]" in system_content
     assert "【相对时间 SQL 规则】" in system_content
-    assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT in system_content
+    assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT not in system_content
+    assert "<sql_plan>" not in system_content
     assert DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT in system_content
     assert data_config.system_prompt in system_content
 
@@ -670,6 +671,52 @@ async def test_data_agent_runner_reports_missing_reusable_result(data_config, mo
 
     assert any(chunk.get("title") == "缺少可复用查询结果" for chunk in events)
     assert any(chunk.get("content") == DataQueryPrompts.NO_REUSABLE_RESULT for chunk in events)
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_clarifies_non_data_request_without_native_agent(data_config, monkeypatch):
+    from app.services.ai.data_query_turn_classifier import (
+        DataQueryTurnClassification,
+        DataQueryTurnType,
+    )
+    from app.services.ai.intent_service import IntentType
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    clarify_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.CLARIFICATION_OR_NON_DATA,
+        reasoning="用户是在打招呼，不需要查数",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.GENERAL,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return clarify_turn, None, 0.0
+
+    async def forbidden_build_agent(*args, **kwargs):
+        raise AssertionError("clarification flow must not build the native AgentScope agent")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-clarify",
+        trace_buffer=[],
+        user_info={"user_id": 42},
+        conversation_id="conv-1",
+    )
+    monkeypatch.setattr(runner, "_build_native_agent", forbidden_build_agent)
+
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "你好，你是谁"}]):
+        events.append(chunk)
+
+    assert any(chunk.get("title") == "ChatBI 请求类别分析结果" for chunk in events)
+    assert any(chunk.get("title") == "需要补充查数信息" for chunk in events)
+    assert any("请告诉我想查询的业务数据" in chunk.get("content", "") for chunk in events)
 
 
 @pytest.mark.asyncio
@@ -1771,6 +1818,31 @@ def test_diagnostic_sql_success_requires_final_sql_before_answer(data_config):
     assert state.ready_to_answer is True
 
 
+def test_final_empty_sql_after_diagnostic_can_answer_no_data(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-empty-after-diag", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT DATE(created_at) AS reg_date, COUNT(*) AS reg_count FROM users GROUP BY DATE(created_at)"},
+        output={"columns": [{"name": "reg_date"}, {"name": "reg_count"}], "items": []},
+    )
+
+    assert parsed == {"columns": [{"name": "reg_date"}, {"name": "reg_count"}], "items": []}
+    assert should_save is True
+    assert state.empty_sql_result is False
+    assert state.diagnostic_sql_pending_final is False
+    assert state.expecting_final_sql_after_diagnostic is False
+    assert state.ready_to_answer is True
+
+
 @pytest.mark.asyncio
 async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (
@@ -1810,6 +1882,50 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
     assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
     assert state.sql_static_risk is True
     assert "SELECT *" in state.sql_static_risk_reason
+
+
+@pytest.mark.asyncio
+async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call(data_config):
+    from app.services.ai.runners.data_agent_runner import (
+        DataAgentRunner,
+        RuntimeToolSpec,
+        SQL_STATIC_GATE_PREFIX,
+        _DataRunState,
+    )
+
+    called = False
+
+    async def fake_execute(**kwargs):
+        nonlocal called
+        called = True
+        return {"rows": []}
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-join-risk", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    [wrapped] = runner._wrap_tools_with_schema_gate([
+        RuntimeToolSpec(
+            name="execute_sql_query",
+            description="execute",
+            parameters_schema={},
+            source_type="static",
+            callable=fake_execute,
+            permission_scope="read",
+        )
+    ], state)
+
+    output = await wrapped.callable(
+        sql=(
+            "SELECT a.id, b.metric FROM large_a a "
+            "JOIN large_b b ON a.id = b.a_id WHERE a.status = 'active'"
+        ),
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+
+    assert called is False
+    assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
+    assert state.sql_static_risk is True
+    assert "JOIN 明细查询缺少 LIMIT" in state.sql_static_risk_reason
 
 
 def test_repair_budget_is_tracked_by_error_type(data_config):
@@ -2114,7 +2230,7 @@ async def test_data_agent_runner_repair_after_sql_before_schema(data_config):
 
 
 @pytest.mark.asyncio
-async def test_data_agent_runner_marks_schema_miss_and_empty_sql_result(data_config):
+async def test_data_agent_runner_marks_schema_miss_and_blocks_sql_before_schema(data_config):
     from types import SimpleNamespace
 
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
@@ -2144,9 +2260,9 @@ async def test_data_agent_runner_marks_schema_miss_and_empty_sql_result(data_con
         events.append(chunk)
 
     assert runner._last_run_state.schema_miss is True
-    assert runner._last_run_state.empty_sql_result is True
-    assert runner._last_run_state.empty_sql_reason == "SQL 返回的行容器为空，未命中任何数据行"
-    assert any("SQL 返回的行容器为空" in event.get("details", "") for event in events if isinstance(event, dict))
+    assert runner._last_run_state.sql_before_schema is True
+    assert runner._last_run_state.empty_sql_result is False
+    assert any("未命中相关数据集定义" in event.get("details", "") for event in events if isinstance(event, dict))
 
 
 @pytest.mark.asyncio
@@ -2418,6 +2534,49 @@ async def test_data_agent_runner_blocks_complex_empty_sql_result_for_recheck(dat
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_stops_current_react_after_empty_sql_result(data_config):
+    from types import SimpleNamespace
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    async def fake_events():
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_schema", tool_call_name="get_dataset_schema")
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_schema", delta="table_name: demo\ncolumns: room, used, total")
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_schema")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql_1", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql_1",
+            delta='{"sql": "SELECT room, SUM(used) / SUM(total) AS utilization_rate FROM demo GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql_1", delta='{"rows": [], "total": 0}')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql_1")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql_2", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql_2",
+            delta='{"sql": "SELECT room, COUNT(*) FROM demo GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql_2", delta='{"rows": [["A", 1]]}')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql_2")
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-empty-stop-current-react", trace_buffer=[])
+
+    events = []
+    async for chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+        emit_final_guard=False,
+    ):
+        events.append(chunk)
+
+    assert runner._last_run_state.empty_sql_result is True
+    assert any(event.get("id") == "call_sql_1" for event in events if isinstance(event, dict))
+    assert not any(event.get("id") == "call_sql_2" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_detects_split_sql_plan_before_sql(data_config):
     from types import SimpleNamespace
 
@@ -2455,6 +2614,44 @@ async def test_data_agent_runner_detects_split_sql_plan_before_sql(data_config):
     assert state.sql_plan_missing is False
     assert any(event.get("content") == "计划后结果是 8" for event in events if isinstance(event, dict))
     assert not any(event.get("title") == "阻止未查数回答" for event in events if isinstance(event, dict))
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_tracks_sql_plan_in_thinking_and_forces_sql(data_config):
+    from types import SimpleNamespace
+
+    from agentscope.tool import ToolChoice
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    async def fake_events():
+        yield SimpleNamespace(
+            type="THINKING_BLOCK_DELTA",
+            delta="<thought><sql_plan>{\"dataset_name\":\"demo\",\"data_source\":\"mysql_aiagent\"}</sql_plan></thought>",
+        )
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-thinking-plan", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        requires_sql_plan=True,
+    )
+
+    async for _chunk in runner._stream_agentscope_events(
+        event_stream=fake_events(),
+        tools=[],
+        native_model=SimpleNamespace(model="fake-native-data"),
+        state=state,
+        emit_final_guard=False,
+    ):
+        pass
+
+    assert state.sql_plan_seen is True
+    assert state.sql_completed is False
+    assert runner._current_repair_kind(state) == "missing_sql"
+    choice = runner._resolve_repair_tool_choice(state)
+    assert isinstance(choice, ToolChoice)
+    assert choice.mode == "execute_sql_query"
 
 
 @pytest.mark.asyncio
@@ -3105,7 +3302,7 @@ async def test_data_agent_runner_execute_retries_schema_miss_before_sql(
 
 
 @pytest.mark.asyncio
-async def test_data_agent_runner_execute_requires_sql_plan_for_high_risk_query(
+async def test_data_agent_runner_execute_does_not_require_sql_plan_for_high_risk_query(
     data_config,
     monkeypatch,
 ):
@@ -3148,39 +3345,18 @@ async def test_data_agent_runner_execute_requires_sql_plan_for_high_risk_query(
                         ToolCallBlock(
                             id="call_sql_without_plan",
                             name="execute_sql_query",
-                            input='{"sql": "SELECT room, used/total AS ratio FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
+                            input='{"sql": "SELECT room, SUM(used)/SUM(total) AS ratio FROM demo GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
                         )
                     ],
                     is_last=True,
                 )
             if self.calls == 3:
                 return ChatResponse(
-                    content=[TextBlock(text="没有计划也直接回答")],
-                    is_last=True,
-                )
-            if self.calls == 4:
-                return ChatResponse(
-                    content=[
-                        TextBlock(
-                            text=(
-                                "<thought><sql_plan>{\"dataset_name\":\"demo\","
-                                "\"data_source\":\"mysql_aiagent\",\"grain_keys\":[\"room\"],"
-                                "\"time_window\":{},\"metrics_hit\":[\"利用率\"],"
-                                "\"joins\":[],\"ratio\":{\"numerator\":\"used\","
-                                "\"denominator\":\"total\",\"denominator_semantics\":\"aggregate\"}}"
-                                "</sql_plan></thought>"
-                            )
-                        ),
-                        ToolCallBlock(
-                            id="call_sql_with_plan",
-                            name="execute_sql_query",
-                            input='{"sql": "SELECT room, SUM(used)/SUM(total) AS ratio FROM demo GROUP BY room", "data_source": "mysql_aiagent", "dataset_name": "demo"}',
-                        ),
-                    ],
+                    content=[TextBlock(text="无须 SQL 计划也能回答")],
                     is_last=True,
                 )
             return ChatResponse(
-                content=[TextBlock(text="计划后结果是 80%")],
+                content=[TextBlock(text="不应进入 SQL 计划修复")],
                 is_last=True,
             )
 
@@ -3245,6 +3421,7 @@ async def test_data_agent_runner_execute_requires_sql_plan_for_high_risk_query(
         events.append(chunk)
 
     content = "".join(event["content"] for event in events if "content" in event and "type" not in event)
-    assert "没有计划也直接回答" not in content
-    assert "计划后结果是 80%" in content
-    assert any(event.get("title") == "补充 SQL 计划" for event in events if isinstance(event, dict))
+    assert "无须 SQL 计划也能回答" in content
+    assert "不应进入 SQL 计划修复" not in content
+    assert fake_model.calls == 3
+    assert not any(event.get("title") == "补充 SQL 计划" for event in events if isinstance(event, dict))

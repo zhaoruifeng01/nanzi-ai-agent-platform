@@ -313,7 +313,11 @@ class MemoryIndexService:
             for item in items:
                 vec = item.pop("_embedding_vec", None)
                 item["score"] = _cosine(query_embedding, vec) if vec else 0.0
-            items.sort(key=lambda x: x.get("score", 0), reverse=True)
+            from app.services.memory_config_service import MemoryConfigService
+            base_half_life = await MemoryConfigService.get_float("memory_base_half_life", 7.0)
+            MemoryIndexService._apply_ebbinghaus_decay(items, base_half_life)
+            for item in items:
+                item.pop("_embedding_vec", None)
             return items[:limit]
 
         if query and query.strip():
@@ -373,7 +377,12 @@ class MemoryIndexService:
             "DIALECT",
             "2",
         )
-        return MemoryIndexService._parse_knn_response(raw)
+        items = MemoryIndexService._parse_knn_response(raw)
+        
+        # 引入艾宾浩斯时间衰减重排
+        from app.services.memory_config_service import MemoryConfigService
+        base_half_life = await MemoryConfigService.get_float("memory_base_half_life", 7.0)
+        return MemoryIndexService._apply_ebbinghaus_decay(items, base_half_life)
 
     @staticmethod
     def _parse_knn_response(raw: Any) -> List[Dict[str, Any]]:
@@ -403,6 +412,41 @@ class MemoryIndexService:
         return items
 
     @staticmethod
+    def _apply_ebbinghaus_decay(items: List[Dict[str, Any]], base_half_life: float) -> List[Dict[str, Any]]:
+        import math
+        import time
+        now = time.time()
+        for item in items:
+            last_active = float(item.get("last_active") or 0)
+            if last_active <= 0:
+                item["final_score"] = float(item.get("score") or 0.0)
+                continue
+            
+            # 时间差（天数）
+            t = (now - last_active) / 86400.0
+            if t < 0:
+                t = 0.0
+                
+            # 引用频次
+            try:
+                ref_count = int(item.get("reference_count") or 0)
+            except (TypeError, ValueError):
+                ref_count = 0
+                
+            # 记忆强度对数放大
+            S = base_half_life * (1.0 + math.log1p(ref_count))
+            
+            # 艾宾浩斯记忆保留度计算
+            R = math.exp(-t / S)
+            
+            # 结合原有相似度分数得出综合评分
+            item["final_score"] = float(item.get("score") or 0.0) * R
+            
+        # 根据 final_score 降序排序
+        items.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+        return items
+
+    @staticmethod
     async def delete_summary(user_id: str, conversation_id: str) -> None:
         redis = await get_redis()
         if not redis:
@@ -420,6 +464,174 @@ class MemoryIndexService:
             await redis.delete(key)
             count += 1
         return count
+
+    @staticmethod
+    async def consolidate_user_memories(user_id: str) -> None:
+        """
+        根据余弦相似度对用户的记忆进行聚类降噪，并调用大模型合并相似记忆碎片。
+        """
+        import math
+        import time
+        import uuid
+        import re
+        import asyncio
+        from app.services.memory_config_service import MemoryConfigService
+        from app.core.llm.client import get_llm_async
+        from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+        from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+        from app.services.ai.conversation_summarizer import ConversationSummarizer
+
+        # 1. 加载参数与配置
+        threshold = await MemoryConfigService.get_float("memory_consolidation_threshold", 0.82)
+        redis = await get_redis()
+        if not redis:
+            return
+
+        # 2. 拉取用户所有的记忆（最多 500 条）
+        items = await MemoryIndexService.list_summaries(user_id, limit=500)
+        # 过滤出有 Embedding 向量且 summary_type 为 session 的记忆进行归并
+        valid_items = [
+            i for i in items
+            if i.get("has_embedding") and i.get("_embedding_vec") and i.get("summary_type") == "session"
+        ]
+
+        n = len(valid_items)
+        if n < 2:
+            return
+
+        # 3. 强连通分量 (Connected Components) 聚类
+        # 构建邻接表
+        adj = {i: [] for i in range(n)}
+        for i in range(n):
+            vec_i = valid_items[i]["_embedding_vec"]
+            for j in range(i + 1, n):
+                vec_j = valid_items[j]["_embedding_vec"]
+                # 计算余弦距离
+                sim = _cosine(vec_i, vec_j)
+                if sim >= threshold:
+                    adj[i].append(j)
+                    adj[j].append(i)
+
+        # 深度优先搜索（DFS）寻找所有的连通分量
+        visited = set()
+        groups = []
+        for i in range(n):
+            if i not in visited:
+                group = []
+                stack = [i]
+                visited.add(i)
+                while stack:
+                    curr = stack.pop()
+                    group.append(curr)
+                    for neighbor in adj[curr]:
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            stack.append(neighbor)
+                if len(group) >= 2:
+                    groups.append(group)
+
+        if not groups:
+            logger.info("[MemoryConsolidation] User %s has no memories to consolidate.", user_id)
+            return
+
+        # 4. 初始化 LLM 客户端
+        llm = await get_llm_async(streaming=False, temperature=0.1)
+        if not llm:
+            logger.warning("[MemoryConsolidation] Failed to get LLM async handle.")
+            return
+        chat_client = chat_client_from_handle(llm)
+
+        CONSOLIDATION_SYSTEM_PROMPT = (
+            "你是记忆整理与降噪助手。你的任务是将同一位用户下多条高度相似或重复的记忆片段合并为一条。"
+            "在合并时，必须精简啰嗦的表述，但必须保留核心事实（例如具体的人名、数据库名、物理表名、指标数值及偏好细节）。"
+            "输出合并后的记忆，内容必须在 50 字以内。确保是一句通顺的陈述句。"
+        )
+
+        # 5. 循环处理每一个聚类组
+        for idx, group_indices in enumerate(groups):
+            group_items = [valid_items[g_idx] for g_idx in group_indices]
+
+            # 拼接输入
+            fragment_lines = []
+            total_reference_count = 0
+            for it in group_items:
+                summary_text = (it.get("summary") or "").strip()
+                if summary_text:
+                    fragment_lines.append(f"- {summary_text}")
+                total_reference_count += int(it.get("reference_count") or 0)
+
+            if not fragment_lines:
+                continue
+
+            fragments_prompt = "\n".join(fragment_lines)
+            user_content = f"请合并以下相似记忆碎片：\n\n{fragments_prompt}"
+
+            try:
+                # 调用 LLM 进行合并
+                raw_reply = await ConversationSummarizer._generate_with_retry(
+                    chat_client,
+                    [
+                        RuntimeMessage(
+                            role="system",
+                            content=[RuntimeContentBlock(type="text", text=CONSOLIDATION_SYSTEM_PROMPT)],
+                        ),
+                        RuntimeMessage(
+                            role="user",
+                            content=[RuntimeContentBlock(type="text", text=user_content)],
+                        ),
+                    ],
+                    max_retries=3
+                )
+
+                merged_summary = raw_reply.strip()
+                # 去除可能的 Markdown 包裹
+                merged_summary = re.sub(r"^`{1,3}(markdown)?|`{1,3}$", "", merged_summary).strip()
+                # 再次截断字数保证安全性
+                merged_summary = merged_summary[:150]
+
+                if not merged_summary:
+                    continue
+
+                # 生成合并记忆的 Embedding 向量
+                from app.services.ai.embedding_client import EmbeddingClient
+                merged_embedding = await EmbeddingClient.embed_text(merged_summary)
+
+                # 写入合并记忆
+                new_conv_id = f"consolidated_{uuid.uuid4().hex}"
+                await MemoryIndexService.upsert_summary(
+                    user_id=user_id,
+                    conversation_id=new_conv_id,
+                    title="记忆合并归纳",
+                    summary=merged_summary,
+                    turn_count=1,
+                    embedding=merged_embedding,
+                    memory_type="general"
+                )
+
+                # 继承引用次数并设置为 consolidated 类型的记忆
+                new_key = _doc_key(user_id, new_conv_id)
+                await redis.hset(new_key, "reference_count", str(total_reference_count))
+                await redis.hset(new_key, "summary_type", "consolidated")
+
+                # 物理删除原来的旧记忆碎片
+                for it in group_items:
+                    old_conv_id = it.get("conversation_id")
+                    if old_conv_id and old_conv_id != new_conv_id:
+                        await MemoryIndexService.delete_summary(user_id, old_conv_id)
+
+                logger.info(
+                    "[MemoryConsolidation] Consolidated %s memories into 1 for user %s. New Key: %s",
+                    len(group_items), user_id, new_key
+                )
+
+                # 平抑 LLM 请求，睡眠 500ms
+                await asyncio.sleep(0.5)
+
+            except Exception as ex:
+                logger.error(
+                    "[MemoryConsolidation] Failed to consolidate group %s for user %s: %s",
+                    idx, user_id, ex
+                )
 
     @staticmethod
     async def index_status() -> Dict[str, Any]:

@@ -32,15 +32,19 @@ class ConnectionTestResponse(BaseModel):
     message: str
     logs: List[str]
 
-# ... (Previous test-connection and redis routes remain unchanged)
+class EmbedConnectionTestPayload(BaseModel):
+    embed_api_url: Optional[str] = None
+    embed_api_key: Optional[str] = None
+    embed_model_name: Optional[str] = None
 
 @router.post("/test-connection/{component}", response_model=ConnectionTestResponse)
 async def test_connection(
     component: str,
+    payload: Optional[EmbedConnectionTestPayload] = None,
     user: Dict = Depends(require_permission("element", "element:system:config_save"))
 ):
     """
-    Test connection to infrastructure components (Redis) with detailed logs.
+    Test connection to infrastructure components (Redis, Global Embeddings) with detailed logs.
     """
     logs = []
     status = "failed"
@@ -94,6 +98,80 @@ async def test_connection(
             
             status = "success"
             message = f"ChatBI KB connection successful. ID: {kb_id}"
+
+        elif component == "global_embed":
+            log("Target: Global Embedding Service (local-redis backend)")
+            
+            # 优先读取 Payload 中的临时测试参数
+            test_url = payload.embed_api_url if payload else None
+            test_key = payload.embed_api_key if payload else None
+            test_model = payload.embed_model_name if payload else None
+            
+            # 清洗掩码参数（如果包含 '*' 或者是全 '.'，说明是前端脱敏展示的伪密钥，不能用于真实测试，需降级读取数据库）
+            if test_key and ("*" in test_key or all(c == "." for c in test_key)):
+                test_key = None
+                
+            # 如果没有，从数据库拉取
+            if not test_url:
+                test_url = await ConfigService.get("embed_api_url")
+            if not test_key:
+                test_key = await ConfigService.get("embed_api_key")
+            if not test_model:
+                test_model = await ConfigService.get("embed_model_name", default="bge-m3")
+                
+            # 降级获取一：记忆库 Embedding 配置
+            if not test_url:
+                from app.services.memory_config_service import MemoryConfigService
+                test_url = await MemoryConfigService.get("memory_embedding_base_url")
+            if not test_key:
+                from app.services.memory_config_service import MemoryConfigService
+                test_key = await MemoryConfigService.get("memory_embedding_api_key")
+                
+            # 降级获取二：LLM 底座配置
+            if not test_url:
+                test_url = await ConfigService.get("llm_base_url")
+            if not test_key:
+                test_key = await ConfigService.get("llm_api_key")
+                
+            test_url = (test_url or "").strip()
+            test_key = (test_key or "").strip()
+            test_model = (test_model or "").strip()
+            
+            log(f"API URL: {test_url}")
+            log(f"Model Name: {test_model}")
+            
+            if not test_url or not test_key:
+                raise Exception("Embedding API URL 或 Key 为空，未完成配置。")
+                
+            base = test_url.rstrip("/")
+            if base.endswith("/embeddings"):
+                url = base
+            elif base.endswith("/v1"):
+                url = f"{base}/embeddings"
+            else:
+                url = f"{base}/v1/embeddings"
+                
+            log(f"Sending test vector request to: {url}")
+            
+            import httpx
+            headers = {"Authorization": f"Bearer {test_key}", "Content-Type": "application/json"}
+            payload_data = {"model": test_model, "input": "hello"}
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload_data, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                
+            items = data.get("data") or []
+            if not items:
+                raise Exception("Embedding API 返回空 data")
+            emb = items[0].get("embedding")
+            if not emb:
+                raise Exception("Embedding API 返回结果无 embedding 字段")
+                
+            log(f"Successfully generated embedding vector of length: {len(emb)}")
+            status = "success"
+            message = "Embedding connection test successful."
 
         else:
             raise HTTPException(status_code=400, detail=f"Unknown component: {component}")
@@ -198,6 +276,105 @@ async def flush_redis_keys(
         
     except Exception as e:
         logging.error(f"Failed to flush redis keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/redis/rebuild-vectors")
+async def rebuild_vector_indexes(
+    user: Dict = Depends(require_permission("element", "element:system:config_save"))
+):
+    """
+    Drop existing vector search indexes and drop all vector docs,
+    then recreate indexes and trigger full background sync of embeddings.
+    """
+    try:
+        if not settings.REDIS_ENABLE:
+             raise HTTPException(status_code=400, detail="Redis is disabled")
+             
+        r = await redis.get_redis()
+        if not r:
+            await redis.init_redis()
+            r = await redis.get_redis()
+            
+        if not r:
+             raise HTTPException(status_code=500, detail="Redis client not available")
+
+        from app.services.ai.metadata_index_service import MetadataIndexService
+        from app.services.ai.example_index_service import ExampleIndexService
+
+        logs = []
+        # 1. Drop metadata index
+        meta_idx = await MetadataIndexService.index_name()
+        try:
+            # We use DD to completely delete existing vector document hashes
+            await r.execute_command("FT.DROPINDEX", meta_idx, "DD")
+            logs.append(f"Successfully dropped metadata index: {meta_idx} (with documents)")
+        except Exception as e:
+            logs.append(f"Metadata index drop skipped or failed: {str(e)}")
+
+        # 2. Drop example index
+        ex_idx = await ExampleIndexService.index_name()
+        try:
+            await r.execute_command("FT.DROPINDEX", ex_idx, "DD")
+            logs.append(f"Successfully dropped example index: {ex_idx} (with documents)")
+        except Exception as e:
+            logs.append(f"Example index drop skipped or failed: {str(e)}")
+
+        # 3. Ensure indexes exist (this creates them with the current dimension)
+        await MetadataIndexService.ensure_index()
+        logs.append("Recreated metadata index schema")
+        await ExampleIndexService.ensure_index()
+        logs.append("Recreated example index schema")
+
+        # 4. Count items to be rebuilt
+        from app.core.orm import AsyncSessionLocal
+        from app.services.metadata_service import MetadataService
+        from app.models.chatbi_example import ChatBIExample
+        from sqlalchemy import select, func
+
+        table_count = 0
+        metric_count = 0
+        example_count = 0
+
+        async with AsyncSessionLocal() as db:
+            try:
+                datasets = await MetadataService.get_datasets(db)
+                enabled_datasets = [ds for ds in datasets if ds.status == 1]
+                for ds in enabled_datasets:
+                    for table in ds.tables:
+                        if hasattr(table, "status") and table.status != 1:
+                            continue
+                        table_count += 1
+                    if ds.metrics:
+                        metric_count += len(ds.metrics)
+            except Exception as db_err:
+                logs.append(f"Counting metadata items failed: {str(db_err)}")
+
+            try:
+                stmt = select(func.count(ChatBIExample.id)).where(ChatBIExample.status == "approved")
+                res = await db.execute(stmt)
+                example_count = res.scalar() or 0
+            except Exception as db_err:
+                logs.append(f"Counting examples failed: {str(db_err)}")
+
+        # 5. Trigger full background sync
+        # Since these run as async background tasks, they will generate new vectors
+        # using the currently configured Embedding client.
+        await MetadataIndexService.sync_all_datasets()
+        logs.append(f"Triggered background sync for all enabled datasets (Total: {len(enabled_datasets) if 'enabled_datasets' in locals() else 'unknown'})")
+        await ExampleIndexService.sync_all_examples()
+        logs.append(f"Triggered background sync for all approved examples (Total: {example_count})")
+
+        msg = f"已成功重构本地向量索引。已在后台启动重新向量化任务，共计：{table_count} 张数据表、{metric_count} 个业务指标及 {example_count} 条案例。任务在后台异步执行，请在后台终端控制台查看最新进度。"
+
+        return {
+            "status": "success",
+            "message": msg,
+            "logs": logs
+        }
+    except Exception as e:
+        logging.error(f"Failed to rebuild vector indexes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Redis Browser Endpoints ---
 
 class RedisKeyListItem(BaseModel):

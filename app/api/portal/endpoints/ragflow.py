@@ -59,8 +59,8 @@ class RetrievalTestRequest(BaseModel):
     vector_similarity_weight: float = Field(default=0.3, ge=0, le=1)
 
 async def get_ragflow_client():
-    base_url = await ConfigService.get("ragflow_api_url")
-    api_key = await ConfigService.get("ragflow_api_key")
+    base_url = await ConfigService.get("knowledge_ragflow_api_url")
+    api_key = await ConfigService.get("knowledge_ragflow_api_key")
     
     if not base_url or not api_key:
         raise HTTPException(status_code=500, detail="RAGFlow configuration missing in system settings")
@@ -177,8 +177,9 @@ async def _grant_dataset_to_creator(db: AsyncSession, user: dict, dataset_id: st
 
 @router.get("/config")
 async def get_ragflow_config_summary():
-    base_url = await ConfigService.get("ragflow_api_url")
-    api_key = await ConfigService.get("ragflow_api_key")
+    base_url = await ConfigService.get("knowledge_ragflow_api_url")
+    api_key = await ConfigService.get("knowledge_ragflow_api_key")
+    metadata_provider = await ConfigService.get("metadata_provider", default="ragflow")
     api_url = base_url.rstrip("/") + "/" if base_url else ""
     return {
         "code": 0,
@@ -186,6 +187,7 @@ async def get_ragflow_config_summary():
             "api_url": api_url,
             "api_key_configured": bool(api_key),
             "configured": bool(api_url and api_key),
+            "metadata_provider": metadata_provider,
         },
     }
 

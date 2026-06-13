@@ -24,7 +24,8 @@ import {
   WrenchScrewdriverIcon,
   TrashIcon,
   ServerStackIcon,
-  PlayIcon
+  PlayIcon,
+  ArrowPathIcon
 } from '@heroicons/vue/24/outline'
 
 const { hasPermission, userInfo } = useUser()
@@ -39,7 +40,8 @@ const loading = ref<{ [key: string]: boolean }> ({
   redis: false,
   redis_scan: false,
   redis_flush: false,
-  redis_vector: false
+  redis_vector: false,
+  rebuild_vector: false
 })
 const results = ref<{ [key: string]: 'success' | 'failed' | null }> ({
   redis: null,
@@ -66,6 +68,7 @@ const redisVectorHealth = ref<VectorHealth | null>(null)
 
 const { showToast } = useToast()
 const showClearConfirm = ref(false)
+const showRebuildConfirm = ref(false)
 
 const appendLog = (msg: string) => {
   const timestamp = new Date().toLocaleTimeString()
@@ -209,6 +212,37 @@ const executeClearKeys = async () => {
   }
 }
 
+const openRebuildConfirm = () => {
+  showRebuildConfirm.value = true
+}
+
+const executeRebuildVectors = async () => {
+  loading.value['rebuild_vector'] = true
+  showRebuildConfirm.value = false
+  appendLog('>>> 正在启动本地向量索引与数据重构任务...')
+
+  try {
+     const response = await axios.post('/api/portal/system/redis/rebuild-vectors')
+     const { message, logs: serverLogs } = response.data
+     if (serverLogs && Array.isArray(serverLogs)) {
+       serverLogs.forEach((logStr: string) => {
+         appendLog(`>>> ${logStr}`)
+       })
+     }
+     appendLog(`>>> ✅ ${message}`)
+     showToast('本地向量数据重构成功，后台同步中', 'success')
+     
+     // 自动重新检测
+     testRedisVectorSearch(true)
+  } catch (e: any) {
+    const msg = e.response?.data?.detail || e.message
+    appendLog(`>>> ❌ 重构失败: ${msg}`)
+    showToast('重构失败', 'error')
+  } finally {
+    loading.value['rebuild_vector'] = false
+  }
+}
+
 const clearLogs = () => {
   logs.value = []
 }
@@ -235,7 +269,7 @@ interface ConfigItem {
 const configGroups = ref<{ [category: string]: ConfigItem[] }>({})
 const orderedCategories = computed(() => {
   if (!configGroups.value) return []
-  const order = ['agent', 'data_api', 'metadata', 'general', 'other']
+  const order = ['agent', 'metadata', 'data_api', 'knowledge', 'general', 'other']
   const keys = Object.keys(configGroups.value)
   return keys.sort((a, b) => {
     const idxA = order.indexOf(a)
@@ -245,6 +279,15 @@ const orderedCategories = computed(() => {
     if (idxB !== -1) return 1
     return a.localeCompare(b)
   })
+})
+
+const metadataProvider = computed(() => {
+  if (!configGroups.value) return 'local'
+  for (const cat in configGroups.value) {
+    const item = configGroups.value[cat].find(x => x.key === 'metadata_provider')
+    if (item) return item.value
+  }
+  return 'local'
 })
 const originalConfigs = ref<{ [key: string]: string }>({})
 const configLoading = ref(false)
@@ -306,6 +349,7 @@ const getCategoryLabel = (cat: string) => {
   const map: Record<string, string> = {
     'data_api': '智能报表 (ChatBI)',
     'metadata': '元数据与 RAG 设置 (Metadata & RAG)',
+    'knowledge': '知识库设置 (Knowledge Base)',
     'agent': '智能体设置 (AI Agent)',
     'general': '常规设置 (General Settings)',
     'other': '其他参数 (Other Parameters)'
@@ -318,6 +362,7 @@ const getCategoryIcon = (cat: string) => {
     'data_api': CircleStackIcon,
     'agent': CpuChipIcon,
     'metadata': SparklesIcon,
+    'knowledge': ServerStackIcon,
     'general': AdjustmentsHorizontalIcon
   }
   return map[cat] || AdjustmentsHorizontalIcon
@@ -332,11 +377,14 @@ const isLongText = (item: ConfigItem) => {
 const showRagSelector = ref(false)
 const workingConfigItem = ref<ConfigItem | null>(null)
 const showModelExplanation = ref(false)
+const showMetadataExplanation = ref(false)
 const activeExplanationItem = ref<ConfigItem | null>(null)
 
 const showExplanation = (item: ConfigItem) => {
   if (item.key === 'llm_model_name') {
     showModelExplanation.value = true
+  } else if (item.key === 'metadata_provider') {
+    showMetadataExplanation.value = true
   } else {
     activeExplanationItem.value = item
   }
@@ -344,7 +392,7 @@ const showExplanation = (item: ConfigItem) => {
 
 const getCategoryTip = (key: string) => {
   const tips: Record<string, string> = {
-    'llm_temperature': '温度系数，范围为 0.0 至 1.0。值较低（如 0.0）会使模型的回答更加确定、精准（适合数据查询与逻辑推理）；值较高（如 0.7）则模型更具创造性与多样性。',
+    'llm_temperature': '大模型温度系数，范围为 0.0 至 1.0。趋近于 0.0 表示回答更加确定、严谨和精准（适合数据查询与逻辑推理）；趋近于 1.0 表示回答更具创造力、发散性和随机性。',
     'agent_max_iterations': 'ReAct 智能体单次对话的最大思考与工具调用轮数限制。建议设定在 10-20 之间，过小可能导致任务未完成便终止，过大可能因死循环消耗过多 Token。',
     'agent_max_context_turns': '智能体能够保留的最大历史上下文轮数。设置合理的值能防止发送给大模型的消息体过长，从而节约 Token 并加速模型响应。',
     'external_sql_api_url': '用于远程安全沙箱中执行生成 SQL 查询的 API 服务网关地址。直连物理执行模式（local）下此配置项将被忽略。',
@@ -360,13 +408,24 @@ const getCategoryTip = (key: string) => {
     'ragflow_metadata_top_k': '检索数据库表/字段描述时，最大召回的候选文档数量。值越大，召回的内容越多，但会增加 Token 消耗。',
     'sql_execution_mode': '控制生成的 SQL 查询的执行位置。remote 表示通过安全的远程微服务沙箱执行，local 表示直连本地配置好的数据源连接池执行。',
     'chatbi_sample_knowledge_base': 'ChatBI 经验库在 RAGFlow 中自动创建和同步对应的知识库 ID（由系统自动校验与测试连接生成，不可手动修改）。',
+    'chatbi_sample_top_k': '检索用户提问时召回的最相似问答案例（Few-shot）最大限制条数。值越大参考条数越多，但会占据更多的 Prompt 上下文。',
     'chatbi_sample_similarity_threshold': '匹配用户提问与 ChatBI 历史案例时的相似度过滤阈值，推荐配置为 0.65，过滤不相关的参考案例。',
     'chatbi_sample_vector_similarity_weight': '案例匹配时向量语义距离的权重（推荐 0.85），可与关键词全文检索进行混合比例平衡。',
     'embedchat_watermark_enabled': '开启后，将在嵌入式对话界面（EmbedChat）背景中平铺渲染防止信息截屏泄露的安全审计水印。',
     'embedchat_watermark_style': '水印的文字样式方案。可以选择【用户名 + 时间戳】或【自定义文字 + 时间戳】（两者均会自动附加当前时间戳）。',
     'embedchat_watermark_text': '当水印样式为【自定义文字 + 时间戳】时，在对话背景中平铺显示的自定义文本，末尾会自动追加时间戳。',
     'yovole_sso_enabled': '控制是否启用 Yovole SSO 统一登录。关闭后，登录页面的 SSO 登录将隐藏，且用户管理中的 SSO 同步按钮也将隐藏。',
-    'audit_log_retention_days': '系统操作审计日志与智能体步骤级追踪 Trace 记录的物理保留天数。超出期限的整月历史分区会被自动 Drop 秒级清理以回收空间。'
+    'audit_log_retention_days': '系统操作审计日志与智能体步骤级追踪 Trace 记录的物理保留天数。超出期限的整月历史分区会被自动 Drop 秒级清理以回收空间。',
+    'embed_api_url': '全局 Embedding 服务的 API 接口网关地址。在本地模式（metadata_provider = local）下，此参数将在【本地元数据搜索】与【经验案例本地向量检索】场景中用于文本特征向量的在线生成计算。',
+    'embed_api_key': '用于调用全局 Embedding 服务的身份验证 Key，请确保保密。',
+    'embed_model_name': '全局 Embedding 服务的模型名称（例如 text-embedding-3-small 或 text-embedding-ada-002）。',
+    'embed_dimensions': '全局 Embedding 模型输出的特征向量维度（例如 1024 或 1536）。需要与本地 Redis HNSW 向量索引创建时指定的维度完全一致。',
+    'knowledge_ragflow_api_url': '对接的 RAGFlow 语义检索平台后端 API 服务地址，用于常规智能体的知识库问答检索。',
+    'knowledge_ragflow_api_key': '用于与 RAGFlow 知识库服务进行安全 API 调用的身份验证令牌（API Key）。',
+    'knowledge_ragflow_dataset_ids': '当前系统关联绑定的默认知识库 ID（可多选），用于为智能体问答检索背景文档和常识参考。',
+    'knowledge_ragflow_similarity_threshold': '知识库问答检索时的最低相似度阈值（0.0 至 1.0），过滤相关性低于该设定的文档片段。建议为 0.20。',
+    'knowledge_ragflow_vector_weight': '知识库问答检索时向量相似度的权重比例（0.0 至 1.0），其余为全文关键词检索。值为 0.30 表示混合偏向关键词组合。',
+    'knowledge_ragflow_metadata_top_k': '知识库问答检索时，最大召回匹配的候选文档片段数。值越大参考条数越多，但会消耗更多的模型 Token。'
   }
   return tips[key] || ''
 }
@@ -402,6 +461,41 @@ const testChatBiKb = async (item: ConfigItem) => {
   }
 }
 
+const globalEmbedTesting = ref(false)
+const testGlobalEmbed = async () => {
+  globalEmbedTesting.value = true
+  let url = ''
+  let key = ''
+  let model = ''
+  for (const cat in configGroups.value) {
+    const list = configGroups.value[cat]
+    const uItem = list.find(x => x.key === 'embed_api_url')
+    if (uItem) url = uItem.value
+    const kItem = list.find(x => x.key === 'embed_api_key')
+    if (kItem) key = kItem.value
+    const mItem = list.find(x => x.key === 'embed_model_name')
+    if (mItem) model = mItem.value
+  }
+  try {
+    const response = await axios.post(`/api/portal/system/test-connection/global_embed`, {
+      embed_api_url: url,
+      embed_api_key: key,
+      embed_model_name: model
+    })
+    const data = response.data
+    if (data.status === 'success') {
+      showToast('全局 Embedding 连通性测试成功，接口响应正常', 'success')
+    } else {
+      showToast(`测试连接失败: ${data.message}`, 'error')
+    }
+  } catch (error: any) {
+    const msg = error.response?.data?.detail || error.message
+    showToast(`测试请求失败: ${msg}`, 'error')
+  } finally {
+    globalEmbedTesting.value = false
+  }
+}
+
 const handleDatasetSelect = (val: string | string[]) => {
     if (workingConfigItem.value) {
         workingConfigItem.value.value = Array.isArray(val) ? val.join(',') : val
@@ -411,13 +505,74 @@ const handleDatasetSelect = (val: string | string[]) => {
 const getVisibleItems = (items: ConfigItem[], category: string) => {
   if (!items) return []
   let list = [...items]
+  if (category === 'agent') {
+    const order = [
+      'agent_max_context_messages',
+      'agent_max_iterations',
+      'llm_model_name',
+      'llm_temperature',
+      'embed_api_url',
+      'embed_api_key',
+      'embed_model_name',
+      'embed_dimensions'
+    ]
+    list.sort((a, b) => {
+      const idxA = order.indexOf(a.key)
+      const idxB = order.indexOf(b.key)
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB
+      if (idxA !== -1) return -1
+      if (idxB !== -1) return 1
+      return a.key.localeCompare(b.key)
+    })
+  }
+  if (category === 'metadata') {
+    if (metadataProvider.value === 'local') {
+      list = list.filter(x => !['ragflow_api_url', 'ragflow_api_key'].includes(x.key))
+    }
+    const order = [
+      'metadata_provider',
+      'ragflow_api_url',
+      'ragflow_api_key',
+      'ragflow_similarity_threshold',
+      'ragflow_vector_weight',
+      'ragflow_metadata_top_k'
+    ]
+    list.sort((a, b) => {
+      const idxA = order.indexOf(a.key)
+      const idxB = order.indexOf(b.key)
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB
+      if (idxA !== -1) return -1
+      if (idxB !== -1) return 1
+      return a.key.localeCompare(b.key)
+    })
+  }
+  if (category === 'knowledge') {
+    const order = [
+      'knowledge_ragflow_api_url',
+      'knowledge_ragflow_api_key',
+      'knowledge_ragflow_dataset_ids',
+      'knowledge_ragflow_similarity_threshold',
+      'knowledge_ragflow_vector_weight',
+      'knowledge_ragflow_metadata_top_k'
+    ]
+    list.sort((a, b) => {
+      const idxA = order.indexOf(a.key)
+      const idxB = order.indexOf(b.key)
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB
+      if (idxA !== -1) return -1
+      if (idxB !== -1) return 1
+      return a.key.localeCompare(b.key)
+    })
+  }
   if (category === 'data_api') {
     const chatbiKeys = [
       'chatbi_sample_knowledge_base',
+      'chatbi_sample_top_k',
       'chatbi_sample_similarity_threshold',
       'chatbi_sample_vector_similarity_weight'
     ]
     const chatbiItems = list.filter(x => chatbiKeys.includes(x.key))
+    chatbiItems.sort((a, b) => chatbiKeys.indexOf(a.key) - chatbiKeys.indexOf(b.key))
     const restItems = list.filter(x => !chatbiKeys.includes(x.key))
 
     const modeItemIndex = restItems.findIndex(x => x.key === 'sql_execution_mode')
@@ -887,6 +1042,15 @@ onMounted(() => {
               <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-emerald-400 border-t-transparent rounded-full"></span>
               {{ loading.redis_vector ? '检测中...' : '重新检测' }}
             </button>
+            <button
+              @click="openRebuildConfirm"
+              :disabled="loading.rebuild_vector || !canSave"
+              class="inline-flex justify-center items-center py-2 px-4 border border-rose-200 rounded-md shadow-sm text-sm font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 ml-3"
+            >
+              <ArrowPathIcon v-if="!loading.rebuild_vector" class="h-4 w-4 mr-2" />
+              <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-rose-400 border-t-transparent rounded-full"></span>
+              {{ loading.rebuild_vector ? '重构中...' : '重构本地向量数据' }}
+            </button>
           </div>
         </div>
         <!-- Right Column: Console Output / Redis Browser -->
@@ -1039,8 +1203,14 @@ onMounted(() => {
                    </div>
                    <h3 class="text-md font-medium text-gray-800">{{ getCategoryLabel(String(category)) }}</h3>
                 </div>
-                <div class="p-6 space-y-5">
-                   <div v-for="item in getVisibleItems(configGroups[category], String(category))" :key="item.key" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                 <div class="p-6 space-y-5">
+                    <div v-if="category === 'agent'" class="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-md text-sm text-amber-900 flex items-start space-x-2 mb-4">
+                       <span class="text-amber-500 font-bold shrink-0">⚠️ 提示：</span>
+                       <div>
+                          如果在此处变更了全局 <strong>Embedding 模型名</strong> 或 <strong>向量维度</strong>，已有的向量数据（包括本地元数据和经验案例集）必须进行重新向量化重建，否则无法正常进行相似度检索。保存变更后，请前往 <strong>【系统诊断】</strong> 标签页执行 <strong>【重构本地向量数据】</strong> 即可。
+                       </div>
+                    </div>
+                    <div v-for="item in getVisibleItems(configGroups[category], String(category))" :key="item.key" class="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div class="md:col-span-1 pt-2">
                          <label class="block text-sm font-medium text-gray-700 flex items-center gap-1.5">
                             <span>{{ item.key }}</span>
@@ -1070,10 +1240,16 @@ onMounted(() => {
                               </select>
                           </div>
                           <div v-else-if="item.key === 'metadata_provider'">
-                             <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
-                                <option value="local">local (本地元数据)</option>
-                                <option value="ragflow">ragflow (语义检索 RAG)</option>
-                             </select>
+                              <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                                 <option value="local">local (本地元数据)</option>
+                                 <option value="ragflow">ragflow (语义检索 RAG)</option>
+                              </select>
+                              <div v-if="item.value === 'local'" class="mt-2 text-xs text-blue-700 bg-blue-50/50 p-3 rounded-xl border border-blue-100/50 leading-relaxed select-none">
+                                  💡 <strong>本地元数据模式：</strong>直接在本地查询由元数据字典维护的表和字段，并使用全局 Embedding 算法计算向量，通过<strong>本地 Redis (HNSW) 向量索引</strong>进行高速检索，<strong>无需配置下方的 RAGFlow 地址与密钥</strong>。
+                              </div>
+                              <div v-else-if="item.value === 'ragflow'" class="mt-2 text-xs text-amber-700 bg-amber-50/50 p-3 rounded-xl border border-amber-100/50 leading-relaxed select-none">
+                                  💡 <strong>RAGFlow 语义检索模式：</strong>需要将本地元数据字典一键同步至 RAGFlow 系统，系统在检索表和字段的描述信息时会调用下方配置的 RAGFlow 网关地址与 API 密钥进行全文 + 向量的混合检索。
+                              </div>
                           </div>
                           <div v-else-if="item.key === 'sql_execution_mode'">
                              <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
@@ -1088,7 +1264,7 @@ onMounted(() => {
                                 <EyeSlashIcon v-else class="h-5 w-5" />
                              </div>
                           </div>
-                          <div v-else-if="item.key === 'ragflow_dataset_ids'">
+                          <div v-else-if="['ragflow_dataset_ids', 'knowledge_ragflow_dataset_ids'].includes(item.key)">
                                <div class="flex space-x-2">
                                    <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                                    <button
@@ -1102,7 +1278,11 @@ onMounted(() => {
                                </div>
                           </div>
                           <div v-else-if="item.key === 'chatbi_sample_knowledge_base'">
-                               <div class="flex items-center space-x-2">
+                               <div v-if="metadataProvider === 'local'" class="text-sm text-gray-500 py-2 bg-gray-50 border border-gray-200 rounded-md px-3 font-medium flex items-center">
+                                   <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-800 mr-2 border border-blue-200 whitespace-nowrap shrink-0">local-redis</span>
+                                   使用本地 Redis 向量存储 (HNSW)
+                               </div>
+                               <div v-else class="flex items-center space-x-2">
                                    <input type="text" v-model="item.value" :disabled="true" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                                    <span class="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 shrink-0 select-none border border-emerald-200">
                                        chatbi-example-meta
@@ -1118,7 +1298,21 @@ onMounted(() => {
                                    </button>
                                </div>
                           </div>
-                          <div v-else-if="['ragflow_similarity_threshold', 'ragflow_vector_weight', 'chatbi_sample_similarity_threshold', 'chatbi_sample_vector_similarity_weight'].includes(item.key)">
+                          <div v-else-if="item.key === 'embed_api_url'">
+                              <div class="flex items-center space-x-2">
+                                  <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
+                                  <button
+                                      @click="testGlobalEmbed"
+                                      :disabled="globalEmbedTesting"
+                                      class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 shrink-0"
+                                  >
+                                      <PlayIcon v-if="!globalEmbedTesting" class="h-4 w-4 mr-1.5 text-gray-500" />
+                                      <span v-else class="animate-spin h-4 w-4 mr-1.5 border-2 border-primary border-t-transparent rounded-full"></span>
+                                      测试
+                                  </button>
+                              </div>
+                          </div>
+                          <div v-else-if="['ragflow_similarity_threshold', 'ragflow_vector_weight', 'chatbi_sample_similarity_threshold', 'chatbi_sample_vector_similarity_weight', 'knowledge_ragflow_similarity_threshold', 'knowledge_ragflow_vector_weight', 'llm_temperature'].includes(item.key)">
                               <div class="flex items-center space-x-4">
                                   <div class="flex-1">
                                       <input
@@ -1132,9 +1326,9 @@ onMounted(() => {
                                         class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary disabled:opacity-50"
                                       />
                                       <div class="flex justify-between text-xs text-gray-400 mt-1 font-mono">
-                                          <span>0.0</span>
+                                          <span class="flex items-center">0.0<span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更严谨/精准)</span></span>
                                           <span>0.5</span>
-                                          <span>1.0</span>
+                                          <span class="flex items-center">1.0<span v-if="item.key === 'llm_temperature'" class="text-[10px] text-gray-500 font-sans ml-1 select-none">(更随机/发散)</span></span>
                                       </div>
                                   </div>
                                   <div class="w-16">
@@ -1174,7 +1368,7 @@ onMounted(() => {
                           <div v-else-if="isLongText(item)">
                              <textarea v-model="item.value" :disabled="!canSave" rows="10" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md font-mono text-xs bg-gray-100 p-3 disabled:opacity-70 disabled:cursor-not-allowed"></textarea>
                           </div>
-                          <div v-else-if="['audit_log_retention_days', 'agent_max_iterations', 'agent_max_context_turns', 'data_api_timeout_seconds', 'schema_api_timeout_seconds', 'ragflow_metadata_top_k'].includes(item.key)">
+                          <div v-else-if="['audit_log_retention_days', 'agent_max_iterations', 'agent_max_context_turns', 'data_api_timeout_seconds', 'schema_api_timeout_seconds', 'ragflow_metadata_top_k', 'knowledge_ragflow_metadata_top_k', 'embed_dimensions', 'chatbi_sample_top_k'].includes(item.key)">
                              <input type="text" v-model="item.value" @keypress="e => { if (!/[0-9]/.test(e.key)) e.preventDefault(); }" @input="e => { item.value = item.value.replace(/\D/g, '') }" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
                           </div>
                           <div v-else>
@@ -1210,6 +1404,17 @@ onMounted(() => {
       type="warning"
       @confirm="executeClearKeys"
       @cancel="showClearConfirm = false"
+    />
+
+    <ConfirmModal
+      v-if="showRebuildConfirm"
+      title="重构本地向量索引与数据？"
+      message="此操作将删除本地 Redis 中的元数据和经验案例的向量索引定义并清理其已存向量，随后重新创建索引并触发全量数据的重新向量化后台同步。如果变更了 Embedding 模型或维度，必须执行此操作。确定执行吗？"
+      confirm-text="确认重构"
+      cancel-text="取消"
+      type="danger"
+      @confirm="executeRebuildVectors"
+      @cancel="showRebuildConfirm = false"
     />
 
     <!-- LLM Model Name Explanation Modal -->
@@ -1288,6 +1493,90 @@ onMounted(() => {
         <div class="bg-gray-50 px-6 py-4 flex justify-end border-t border-gray-100">
           <button 
             @click="showModelExplanation = false" 
+            type="button" 
+            class="px-5 py-2 rounded-xl text-sm font-bold text-white bg-primary hover:bg-primary-dark transition-all duration-200 active:scale-95 shadow-sm focus:outline-none"
+          >
+            我知道了
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metadata Provider Explanation Modal -->
+    <div v-if="showMetadataExplanation" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in" @click.self="showMetadataExplanation = false">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden scale-100 transition-all duration-200 border border-gray-100 flex flex-col">
+        <!-- Header -->
+        <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+          <div class="flex items-center space-x-2.5">
+            <div class="p-2 bg-indigo-50 rounded-xl text-indigo-600">
+              <CircleStackIcon class="w-5 h-5" />
+            </div>
+            <div>
+              <h3 class="text-md font-bold text-gray-900">元数据提供方参数说明</h3>
+              <p class="text-xs text-gray-400 mt-0.5">参数名：metadata_provider</p>
+            </div>
+          </div>
+          <button @click="showMetadataExplanation = false" class="text-gray-400 hover:text-gray-600 focus:outline-none transition-colors">
+            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <!-- Content -->
+        <div class="p-6 space-y-4 text-sm text-gray-600 max-h-[500px] overflow-y-auto custom-scrollbar">
+          <p class="text-gray-500 leading-relaxed">
+            该参数决定了系统在“元数据检索（获取表/字段描述来生成 SQL）”场景下通过何种途径来获取数据：
+          </p>
+          
+          <div class="space-y-3">
+            <!-- Mode 1: Local -->
+            <div class="flex gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100/60 transition-colors">
+              <div class="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 font-bold text-xs">local</div>
+              <div class="space-y-1">
+                <h4 class="font-bold text-gray-900">本地元数据模式 (Local Metadata)</h4>
+                <p class="text-xs text-gray-500 leading-relaxed">
+                  直接检索系统内手工填写维护的本地元数据字典。在包含检索词的场景下，系统调用本地 Embedding 服务生成向量，并使用<strong>本地 Redis 向量数据库 (HNSW 索引)</strong> 进行高效的相似度检索过滤。
+                </p>
+              </div>
+            </div>
+
+            <!-- Mode 2: RAGFlow -->
+            <div class="flex gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100/60 transition-colors">
+              <div class="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 font-bold text-xs">ragflow</div>
+              <div class="space-y-1">
+                <h4 class="font-bold text-gray-900">知识库检索模式 (RAGFlow Retrieval)</h4>
+                <p class="text-xs text-gray-500 leading-relaxed">
+                  系统将元数据字典同步至 RAGFlow，并通过调用 RAGFlow 后端 API，自动在绑定的元数据知识库中进行全文 + 向量的混合语义匹配检索。
+                </p>
+              </div>
+            </div>
+
+            <!-- Shared parameters section -->
+            <div class="p-3 rounded-xl bg-amber-50/50 border border-amber-100 space-y-2">
+              <h4 class="font-bold text-amber-900 flex items-center text-xs">
+                <span class="mr-1">💡</span> 元数据检索参数说明（仅适用于元数据检索场景）
+              </h4>
+              <p class="text-xs text-amber-800 leading-relaxed">
+                以下三个配置参数仅控制了<strong>元数据检索</strong>的召回和过滤评分（无论是<strong>本地元数据检索</strong>还是 <strong>RAGFlow 元数据检索</strong>模式，均会使用这组参数）：
+              </p>
+              <ul class="text-xs text-amber-900 space-y-1.5 list-disc pl-4">
+                <li>
+                  <strong class="font-mono">ragflow_metadata_top_k</strong>: 元数据检索时最大召回的候选文档/描述条数上限。值越大召回越丰富，但大模型上下文占用（Token）也会越高。
+                </li>
+                <li>
+                  <strong class="font-mono">ragflow_similarity_threshold</strong>: 元数据相似度匹配过滤阈值（0.0 至 1.0）。低于此设定值的检索结果将被过滤，以防混入不相关的上下文。推荐配置为 <code class="bg-amber-100/80 px-1 py-0.5 rounded font-mono text-amber-900">0.40</code>。
+                </li>
+                <li>
+                  <strong class="font-mono">ragflow_vector_weight</strong>: 元数据混合检索中向量相似度匹配的分数占比（其余比例为全文关键词匹配）。注：此权重目前主要在 RAGFlow 的混合检索中生效，本地 Redis 模式下固定使用纯向量检索。
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div class="bg-gray-50 px-6 py-4 flex justify-end border-t border-gray-100">
+          <button 
+            @click="showMetadataExplanation = false" 
             type="button" 
             class="px-5 py-2 rounded-xl text-sm font-bold text-white bg-primary hover:bg-primary-dark transition-all duration-200 active:scale-95 shadow-sm focus:outline-none"
           >

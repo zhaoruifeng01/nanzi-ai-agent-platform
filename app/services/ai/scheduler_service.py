@@ -137,6 +137,42 @@ async def _system_audit_log_maintenance_job():
         logger.error(f"❌ Failed to run system audit log partition maintenance: {e}", exc_info=True)
 
 
+async def _system_memory_consolidation_job():
+    """
+    系统级定时任务：每天凌晨对所有活跃用户的相似记忆进行合并整理与降噪。
+    """
+    logger.info("⏰ Starting system memory consolidation job...")
+    
+    # 1. 分布式锁 (ex=3600 nx=True)
+    lock_key = f"lock:system_memory_consolidation:{datetime.now().strftime('%Y%m%d%H%M')}"
+    if not await redis.redis_client.set(lock_key, "locked", ex=3600, nx=True):
+        logger.warning("⏩ System memory consolidation skipped: lock already acquired by another node.")
+        return
+        
+    try:
+        from app.services.ai.memory_index_service import MemoryIndexService
+        
+        # 2. 查询所有启用的用户
+        async with AsyncSessionLocal() as session:
+            stmt = select(User.id).where(User.status == 1)
+            result = await session.execute(stmt)
+            user_ids = result.scalars().all()
+            
+        logger.info(f"Loaded {len(user_ids)} active users for memory consolidation.")
+        
+        # 3. 逐个用户执行记忆降噪合并
+        for u_id in user_ids:
+            try:
+                # 传入 str(u_id) 因为记忆是以 string 作为 user_id 键存储的
+                await MemoryIndexService.consolidate_user_memories(str(u_id))
+            except Exception as ex:
+                logger.error(f"❌ Failed to consolidate memory for user {u_id}: {ex}")
+                
+        logger.info("✅ System memory consolidation job finished successfully.")
+    except Exception as e:
+        logger.error(f"❌ Failed to run system memory consolidation job: {e}", exc_info=True)
+
+
 class TaskSchedulerService:
     _instance = None
     _scheduler: Optional[AsyncIOScheduler] = None
@@ -166,6 +202,14 @@ class TaskSchedulerService:
             _system_audit_log_maintenance_job,
             CronTrigger(hour=2, minute=0, timezone=tz),
             id="system_audit_log_maintenance",
+            replace_existing=True
+        )
+
+        # 注册系统记忆降噪合并任务，每日凌晨 3:00 运行
+        self._scheduler.add_job(
+            _system_memory_consolidation_job,
+            CronTrigger(hour=3, minute=0, timezone=tz),
+            id="system_memory_consolidation",
             replace_existing=True
         )
 

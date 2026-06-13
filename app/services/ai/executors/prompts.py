@@ -63,20 +63,18 @@ class DataQueryPrompts:
     # 缺少可复用查询结果时的回复
     NO_REUSABLE_RESULT = "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"
 
-    # SQL 生成强约束（通用），每个执行器实例注入一次
+    # ChatBI 入口没有足够查数意图时的回复
+    CLARIFICATION_OR_NON_DATA = (
+        "请告诉我想查询的业务数据、指标、维度或时间范围。"
+        "例如：查询本月各机房 PUE 趋势、统计最近一周告警记录，或基于刚才的查询结果继续分析。"
+    )
+
+    # 旧版曾要求模型在 SQL 前输出结构化计划，现已关闭该流程；保留常量供历史兼容/测试引用。
     SQL_PLAN_ENFORCEMENT = (
-        "【SQL 生成强约束（通用）】\n"
-        "当你准备调用 execute_sql_query 之前，建议先在 <thought> 中输出一段结构化计划（用于提高准确性，避免 JOIN 放大/粒度错）。格式如下：\n"
-        "<thought><sql_plan>{\n"
-        "  \"dataset_name\": \"...\",\n"
-        "  \"data_source\": \"...\",\n"
-        "  \"grain_keys\": [\"...\"],\n"
-        "  \"time_window\": {\"field\": \"...\", \"range\": \"...\"},\n"
-        "  \"metrics_hit\": [\"...\"],\n"
-        "  \"joins\": [{\"table\": \"...\", \"on\": \"...\", \"cardinality_risk\": \"1:1|1:N|N:M\"}],\n"
-        "  \"ratio\": {\"numerator\": \"...\", \"denominator\": \"...\", \"denominator_semantics\": \"single_value|aggregate\"}\n"
-        "}</sql_plan></thought>\n"
-        "并遵循：先对齐粒度（CTE 聚合）→ 再 JOIN → 再计算比率/占比。禁止在明细粒度多对多 JOIN 后再聚合。\n"
+        "【SQL 生成要求】\n"
+        "调用 execute_sql_query 前无需输出额外计划文本；请直接通过工具调用执行 SQL。"
+        "SQL 仍需遵循：先对齐粒度（CTE 聚合）→ 再 JOIN → 再计算比率/占比。"
+        "禁止在明细粒度多对多 JOIN 后再聚合。\n"
     )
 
     # 追问复用约束，每个执行器实例注入一次
@@ -176,14 +174,13 @@ class DataQueryPrompts:
 
     # 高风险查询：执行 SQL 前必须先输出计划（阻断一次）
     HIGH_RISK_REQUIRE_PLAN = (
-        "你当前问题属于高风险数据查询（包含比率/趋势/排名/分组等），为避免算错口径，执行 SQL 前必须先输出计划。\n"
-        "请先输出：<thought><sql_plan>{...}</sql_plan></thought>（简短即可，至少包含 dataset_name/data_source/grain_keys/time_window/joins/ratio）。\n"
-        "然后再调用 execute_sql_query。"
+        "你当前问题属于高风险数据查询（包含比率/趋势/排名/分组等）。"
+        "请直接调用 execute_sql_query，并确保 SQL 按正确粒度聚合、过滤和计算。"
     )
 
     # 低风险查询：建议补计划但不阻断
     PLAN_NUDGE_NON_BLOCKING = (
-        "提示：你将执行 SQL，但未输出 <thought><sql_plan>{...}</sql_plan></thought>。为提升准确性建议补齐（可简短）。本次不阻断执行。"
+        "提示：你将执行 SQL。请直接调用 execute_sql_query，并确保 SQL 字段、时间范围和聚合粒度正确。"
     )
 
     # 已拿 Schema，下一步必须执行 SQL（不得直接总结）
@@ -209,9 +206,8 @@ class DataQueryPrompts:
     FORCE_SQL_AFTER_SCHEMA = (
         "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻发起 execute_sql_query 查数。\n"
         "要求：\n"
-        "1) 先在 <thought> 中输出 <sql_plan>{...}</sql_plan>（简短即可，至少包含 dataset_name/data_source/grain_keys/time_window/joins/ratio）；\n"
-        "2) 随后直接通过大模型底层的原生 tools 参数发起 execute_sql_query 工具调用，切忌直接在文本中手写 XML 结构；\n"
-        "3) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
+        "1) 直接通过大模型底层的原生 tools 参数发起 execute_sql_query 工具调用，切忌直接在文本中手写 XML 结构；\n"
+        "2) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复
