@@ -152,6 +152,7 @@ class _DataRunState:
     active_text_block_id: str = ""
     text_blocks_emitted_since_last_tool: int = 0
     current_text_block_emitted: bool = False
+    halt_current_react: bool = False
     last_successful_sql_output: Any = None
     successful_sqls: dict[str, Any] = field(default_factory=dict)
     ratio_anomaly: bool = False          # SQL 结果含超阈值比率（>1.5 或负值），触发对账修复
@@ -1568,6 +1569,13 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                state.halt_current_react = (
+                    state.sql_error
+                    or state.empty_sql_result
+                    or state.sql_static_risk
+                    or state.ratio_anomaly
+                    or state.diagnostic_sql_pending_final
+                )
                 if should_save_followup:
                     await self._save_last_data_result_for_followups(tool_args, parsed_output)
             self._sync_pending_data_run_state(state, stream_state)
@@ -1687,6 +1695,9 @@ class DataAgentRunner(BaseExecutor):
                     "status": "error",
                 }
                 return
+            if state.halt_current_react:
+                logger.info("[DataAgentRunner] SQL result requires repair. Stopping current ReAct stream.")
+                break
 
         if emit_final_guard:
             guard_emitted = False
@@ -1769,7 +1780,17 @@ class DataAgentRunner(BaseExecutor):
         self,
         state: _DataRunState,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        if state.full_content or not state.blocked_content or state.ready_to_answer:
+        has_guard_condition = (
+            bool(state.blocked_content)
+            or state.sql_before_schema
+            or state.sql_error
+            or state.empty_sql_result
+            or state.sql_static_risk
+            or state.ratio_anomaly
+            or state.diagnostic_sql_pending_final
+            or self._is_schema_fatal(state)
+        )
+        if state.full_content or state.ready_to_answer or not has_guard_condition:
             return
         if self._is_schema_fatal(state):
             _, content = self._schema_fatal_response(state)
@@ -1952,6 +1973,7 @@ class DataAgentRunner(BaseExecutor):
         state.active_text_block_id = ""
         state.text_blocks_emitted_since_last_tool = 0
         state.current_text_block_emitted = False
+        state.halt_current_react = False
         state.sql_completed = False
         state.sql_error = False
         state.sql_error_message = ""
@@ -2254,6 +2276,13 @@ class DataAgentRunner(BaseExecutor):
             return parsed_output, False
 
         if empty_reason:
+            if state.expecting_final_sql_after_diagnostic and not is_diag:
+                state.empty_sql_reason = ""
+                state.empty_sql_result = False
+                state.last_successful_sql_output = output
+                state.expecting_final_sql_after_diagnostic = False
+                state.diagnostic_sql_pending_final = False
+                return parsed_output, True
             if self._is_trusted_empty_result(sql_text, state):
                 state.empty_sql_reason = ""
                 state.empty_sql_result = False

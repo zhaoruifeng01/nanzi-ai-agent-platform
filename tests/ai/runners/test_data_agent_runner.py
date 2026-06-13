@@ -1818,6 +1818,31 @@ def test_diagnostic_sql_success_requires_final_sql_before_answer(data_config):
     assert state.ready_to_answer is True
 
 
+def test_final_empty_sql_after_diagnostic_can_answer_no_data(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-empty-after-diag", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT DATE(created_at) AS reg_date, COUNT(*) AS reg_count FROM users GROUP BY DATE(created_at)"},
+        output={"columns": [{"name": "reg_date"}, {"name": "reg_count"}], "items": []},
+    )
+
+    assert parsed == {"columns": [{"name": "reg_date"}, {"name": "reg_count"}], "items": []}
+    assert should_save is True
+    assert state.empty_sql_result is False
+    assert state.diagnostic_sql_pending_final is False
+    assert state.expecting_final_sql_after_diagnostic is False
+    assert state.ready_to_answer is True
+
+
 @pytest.mark.asyncio
 async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (
