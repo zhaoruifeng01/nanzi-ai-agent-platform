@@ -71,6 +71,8 @@ logger = logging.getLogger(__name__)
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
 SQL_REPEAT_GATE_PREFIX = "[SQL_REPEAT_GATE]"
 SQL_STATIC_GATE_PREFIX = "[SQL_STATIC_GATE]"
+TOOL_LOOP_FUSE_THRESHOLD = 3
+DELAY_SECONDS_EXTREME_THRESHOLD = 7 * 24 * 60 * 60
 MAX_DATA_REPAIR_ROUNDS = 2
 DATA_REPAIR_BUDGETS = {
     "sql_before_schema": 1,
@@ -82,6 +84,8 @@ DATA_REPAIR_BUDGETS = {
     "sql_error": 2,
     "empty_sql_result": 1,
     "ratio_anomaly": 1,
+    "duration_anomaly": 1,
+    "tool_loop_fuse": 0,
     "diagnostic_sql_pending_final": 1,
     "missing_schema": 1,
     "missing_sql": 2,
@@ -142,6 +146,7 @@ class _DataRunState:
     sql_fatal_message: str = ""
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
+    sql_repeat_gate_block: bool = False
     requires_sql_plan: bool = False
     sql_plan_seen: bool = False
     sql_plan_missing: bool = False
@@ -157,6 +162,11 @@ class _DataRunState:
     successful_sqls: dict[str, Any] = field(default_factory=dict)
     ratio_anomaly: bool = False          # SQL 结果含超阈值比率（>1.5 或负值），触发对账修复
     ratio_anomaly_reason: str = ""       # 异常说明，用于修复提示词
+    duration_anomaly: bool = False       # 时延/时长/时间差字段结果明显反常，触发 SQL 复核
+    duration_anomaly_reason: str = ""
+    tool_call_signatures: dict[str, int] = field(default_factory=dict)
+    tool_loop_fuse_triggered: bool = False
+    tool_loop_fuse_reason: str = ""
     schema_miss_count: int = 0           # 累计 schema_miss 次数（含 prefetch + ReAct 内）
     repair_attempts: dict[str, int] = field(default_factory=dict)
 
@@ -174,6 +184,8 @@ class _DataRunState:
 
     @property
     def ready_to_answer(self) -> bool:
+        if self.tool_loop_fuse_triggered:
+            return False
         if not self.requires_fresh_data:
             return True
         if self.sql_fatal_error:
@@ -189,6 +201,8 @@ class _DataRunState:
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
             and not self.ratio_anomaly
+            and not self.duration_anomaly
+            and not self.tool_loop_fuse_triggered
         )
 
 
@@ -351,6 +365,72 @@ class DataAgentRunner(BaseExecutor):
     def _is_sql_static_gate_block(output: Any) -> bool:
         return str(output or "").startswith(SQL_STATIC_GATE_PREFIX)
 
+    @staticmethod
+    def _normalize_tool_arg_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): DataAgentRunner._normalize_tool_arg_value(value[key])
+                for key in sorted(value.keys(), key=str)
+            }
+        if isinstance(value, list):
+            return [DataAgentRunner._normalize_tool_arg_value(item) for item in value]
+        if isinstance(value, str):
+            return " ".join(value.strip().split())
+        return value
+
+    @classmethod
+    def _tool_call_signature(cls, tool_name: str, tool_args: dict[str, Any] | None) -> str:
+        normalized_args = cls._normalize_tool_arg_value(tool_args or {})
+        try:
+            args_text = json.dumps(normalized_args, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            args_text = str(normalized_args)
+        return f"{tool_name}:{args_text}"
+
+    def _record_tool_call_signature(
+        self,
+        state: _DataRunState,
+        tool_name: str,
+        tool_args: dict[str, Any] | None,
+    ) -> None:
+        if not tool_name or state.tool_loop_fuse_triggered:
+            return
+        signature = self._tool_call_signature(tool_name, tool_args)
+        if self._tool_call_made_progress(state, tool_name):
+            state.tool_call_signatures.pop(signature, None)
+            return
+        count = state.tool_call_signatures.get(signature, 0) + 1
+        state.tool_call_signatures[signature] = count
+        if count >= TOOL_LOOP_FUSE_THRESHOLD:
+            state.tool_loop_fuse_triggered = True
+            state.halt_current_react = True
+            state.tool_loop_fuse_reason = (
+                f"工具 `{tool_name}` 使用相同参数连续/重复调用 {count} 次，"
+                "系统判断继续执行大概率只会消耗步数。"
+            )
+
+    def _tool_call_made_progress(self, state: _DataRunState, tool_name: str) -> bool:
+        if tool_name == "get_dataset_schema":
+            return (
+                state.schema_completed
+                and not self._is_schema_fatal(state)
+                and not state.schema_miss
+                and not state.schema_needs_refinement
+                and not state.schema_ambiguous
+            )
+        if tool_name == "execute_sql_query":
+            return (
+                state.sql_completed
+                and not state.sql_error
+                and not state.empty_sql_result
+                and not state.sql_static_risk
+                and not state.sql_repeat_gate_block
+                and not state.ratio_anomaly
+                and not state.duration_anomaly
+                and not state.diagnostic_sql_pending_final
+            )
+        return False
+
     def _wrap_tools_with_schema_gate(
         self,
         tools: list[RuntimeToolSpec],
@@ -415,7 +495,8 @@ class DataAgentRunner(BaseExecutor):
                         parsed_output = self._try_parse_json_output(result)
                         empty_reason = self._detect_empty_result(parsed_output)
                         sql_error, _ = self._detect_sql_error(result)
-                        if not sql_error and not empty_reason:
+                        duration_anomaly, _ = self._detect_duration_anomaly(parsed_output)
+                        if not sql_error and not empty_reason and not duration_anomaly:
                             if current_sql_normalized:
                                 state.successful_sqls[current_sql_normalized] = result
                             state.last_successful_sql_output = result
@@ -842,6 +923,25 @@ class DataAgentRunner(BaseExecutor):
                     state=agent.state,
                 )
             return
+        if state.sql_repeat_gate_block and state.last_successful_sql_output is not None:
+            async for chunk in self._synthesize_from_cached_sql_result(
+                runtime_messages=runtime_messages,
+                system_prompt=system_content,
+                user_question=user_question,
+                state=state,
+            ):
+                yield chunk
+            if self.conversation_id:
+                await agent_state_store.save(
+                    user_id=self._runtime_user_id(),
+                    conversation_id=self.conversation_id,
+                    agent_name=agent_name,
+                    agent_version=self.config.agent_version,
+                    tools_fingerprint=tools_fingerprint,
+                    model_name=str(model_name) if model_name else None,
+                    state=agent.state,
+                )
+            return
 
         max_repair_rounds = max(sum(DATA_REPAIR_BUDGETS.values()), MAX_DATA_REPAIR_ROUNDS)
         for _ in range(max_repair_rounds):
@@ -898,6 +998,25 @@ class DataAgentRunner(BaseExecutor):
                     )
                     state.full_content = deduped
                     yield {"type": "retraction", "content": deduped}
+                if self.conversation_id:
+                    await agent_state_store.save(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        agent_name=agent_name,
+                        agent_version=self.config.agent_version,
+                        tools_fingerprint=tools_fingerprint,
+                        model_name=str(model_name) if model_name else None,
+                        state=agent.state,
+                    )
+                return
+            if state.sql_repeat_gate_block and state.last_successful_sql_output is not None:
+                async for chunk in self._synthesize_from_cached_sql_result(
+                    runtime_messages=runtime_messages,
+                    system_prompt=system_content,
+                    user_question=user_question,
+                    state=state,
+                ):
+                    yield chunk
                 if self.conversation_id:
                     await agent_state_store.save(
                         user_id=self._runtime_user_id(),
@@ -1454,6 +1573,125 @@ class DataAgentRunner(BaseExecutor):
             )
         )
 
+    async def _synthesize_from_cached_sql_result(
+        self,
+        *,
+        runtime_messages: List[Any],
+        system_prompt: str,
+        user_question: str,
+        state: _DataRunState,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        start_synthesis = time.time()
+        yield {
+            "type": "log",
+            "id": f"repeat_sql_{uuid.uuid4().hex[:8]}",
+            "title": "复用已执行 SQL 结果",
+            "details": "检测到模型重复调用相同 SQL。平台已拦截重复执行，并基于首次成功查询结果生成最终回答。",
+            "status": "success",
+        }
+
+        raw_result = state.last_successful_sql_output
+        parsed_result = self._try_parse_json_output(raw_result)
+        result_json = json.dumps(parsed_result, ensure_ascii=False, indent=2, default=str)
+        if len(result_json) > 20000:
+            result_json = result_json[:20000] + "\n... [SQL 结果过长已截断]"
+
+        execution_review = (
+            "【执行过程回顾】\n"
+            "- 已成功执行 SQL 并获得非空结果。\n"
+            "- 随后模型重复调用相同 SQL，平台已拦截重复执行并复用首次成功查询结果。\n\n"
+            "【查询结果】\n"
+            f"{result_json}"
+        )
+        prompt_without_menu = (system_prompt or "").replace(
+            "{dataset_menu}",
+            DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER,
+        )
+        synthesis_messages = [SystemMessage(content=prompt_without_menu)]
+        synthesis_messages.extend(
+            message
+            for message in runtime_messages[-6:-1]
+            if isinstance(message, HumanMessage) and getattr(message, "content", None)
+        )
+        synthesis_messages.append(
+            HumanMessage(content=DataQueryPrompts.synthesis_user_message(user_question, execution_review))
+        )
+
+        final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+        full_synthesis_content = ""
+        content_emitted = False
+        generation_start = None
+        gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
+        last_synthesis_chunk = None
+        try:
+            async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
+                last_synthesis_chunk = chunk
+                content = str(getattr(chunk, "content", "") or "")
+                if not content:
+                    continue
+                if not content_emitted:
+                    generation_start = time.time()
+                    content_emitted = True
+                    yield {
+                        "type": "log",
+                        "id": gen_log_id,
+                        "title": "✨ 开始生成回复",
+                        "status": "pending",
+                        "started_at": int(generation_start * 1000),
+                    }
+                full_synthesis_content += content
+                yield {"content": content}
+            if generation_start:
+                yield {
+                    "type": "log",
+                    "id": gen_log_id,
+                    "title": "✨ 生成回复完成",
+                    "status": "success",
+                    "execution_time_ms": (time.time() - generation_start) * 1000,
+                }
+        except Exception as syn_err:
+            logger.error("[DataAgentRunner] Cached SQL synthesis failed: %s", syn_err)
+            fallback = DataQueryPrompts.SYNTHESIS_FAILED_FALLBACK
+            full_synthesis_content = fallback
+            yield {
+                "type": "log",
+                "id": f"syn_err_{uuid.uuid4().hex[:6]}",
+                "title": "⚠️ 总结生成失败",
+                "details": str(syn_err),
+                "status": "error",
+            }
+            yield {"content": fallback}
+
+        deduped_synthesis = collapse_repeated_reply(full_synthesis_content)
+        if deduped_synthesis != full_synthesis_content:
+            logger.warning(
+                "[DataAgentRunner] Collapsed duplicated cached SQL synthesis output (len %s -> %s)",
+                len(full_synthesis_content),
+                len(deduped_synthesis),
+            )
+            full_synthesis_content = deduped_synthesis
+            if content_emitted:
+                yield {"type": "retraction", "content": full_synthesis_content}
+
+        synthesis_tokens = extract_tokens_from_message(last_synthesis_chunk)
+        self._increment_step()
+        self.trace_buffer.append(
+            AgentExecutionStep(
+                step_number=self.step_counter,
+                event_type="synthesis",
+                agent_name=self.config.agent_name,
+                model=str(getattr(final_llm, "model_name", self.config.synthesis_model_name or self.config.model_name)),
+                temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
+                tool_output={"content": full_synthesis_content, "reused_repeated_sql_result": True},
+                raw_log=full_synthesis_content,
+                prompt_tokens=synthesis_tokens["prompt_tokens"],
+                completion_tokens=synthesis_tokens["completion_tokens"],
+                total_tokens=synthesis_tokens["total_tokens"],
+                execution_time_ms=(time.time() - start_synthesis) * 1000,
+                timestamp=datetime.fromtimestamp(start_synthesis),
+            )
+        )
+
     async def _build_system_content(
         self,
         *,
@@ -1569,15 +1807,19 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
-                state.halt_current_react = (
-                    state.sql_error
-                    or state.empty_sql_result
-                    or state.sql_static_risk
-                    or state.ratio_anomaly
-                    or state.diagnostic_sql_pending_final
-                )
                 if should_save_followup:
                     await self._save_last_data_result_for_followups(tool_args, parsed_output)
+            self._record_tool_call_signature(state, tool_name, tool_args)
+            state.halt_current_react = (
+                state.sql_error
+                or state.empty_sql_result
+                or state.sql_static_risk
+                or state.sql_repeat_gate_block
+                or state.ratio_anomaly
+                or state.duration_anomaly
+                or state.diagnostic_sql_pending_final
+                or state.tool_loop_fuse_triggered
+            )
             self._sync_pending_data_run_state(state, stream_state)
             self._increment_step()
             self.trace_buffer.append(
@@ -1787,7 +2029,9 @@ class DataAgentRunner(BaseExecutor):
             or state.empty_sql_result
             or state.sql_static_risk
             or state.ratio_anomaly
+            or state.duration_anomaly
             or state.diagnostic_sql_pending_final
+            or state.tool_loop_fuse_triggered
             or self._is_schema_fatal(state)
         )
         if state.full_content or state.ready_to_answer or not has_guard_condition:
@@ -1804,8 +2048,12 @@ class DataAgentRunner(BaseExecutor):
             content = "SQL 存在高风险执行特征，必须先修正 SQL 后才能继续查数。"
         elif state.ratio_anomaly:
             content = "比率/占比结果疑似异常，必须先完成对账 SQL 复核后才能回答。"
+        elif state.duration_anomaly:
+            content = "时间差/时延/时长结果疑似异常，必须先复核时间字段方向、时区或单位换算后才能回答。"
         elif state.diagnostic_sql_pending_final:
             content = "诊断 SQL 只能用于定位问题，必须执行修正后的最终 SQL 后才能回答。"
+        elif state.tool_loop_fuse_triggered:
+            content = f"检测到工具重复调用循环，已停止继续执行。{state.tool_loop_fuse_reason}"
         else:
             content = "为保证数据准确性，必须先完成数据集定义检索和 SQL 查询后才能回答。"
         yield {
@@ -1839,6 +2087,10 @@ class DataAgentRunner(BaseExecutor):
             return "empty_sql_result"
         if state.ratio_anomaly:
             return "ratio_anomaly"
+        if state.duration_anomaly:
+            return "duration_anomaly"
+        if state.tool_loop_fuse_triggered:
+            return "tool_loop_fuse"
         if state.diagnostic_sql_pending_final:
             return "diagnostic_sql_pending_final"
         if (
@@ -1925,6 +2177,15 @@ class DataAgentRunner(BaseExecutor):
             )
         if state.ratio_anomaly:
             return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)
+        if state.duration_anomaly:
+            return (
+                "【时间差/时延结果异常复核】上一轮 execute_sql_query 返回了明显异常的时间差、"
+                f"时延或时长字段。原因：{state.duration_anomaly_reason}\n"
+                "请检查 SQL 中时间字段的相减方向、时区口径、now()/当前时间来源、单位换算（秒/毫秒/分钟/小时），"
+                "修正 SQL 后重新调用 execute_sql_query。修正并执行成功前禁止直接回答用户。"
+            )
+        if state.tool_loop_fuse_triggered:
+            return ""
         if state.diagnostic_sql_pending_final:
             return (
                 "【最终 SQL 执行要求】上一轮 execute_sql_query 是诊断 SQL，只能用于定位候选值、"
@@ -1988,6 +2249,8 @@ class DataAgentRunner(BaseExecutor):
         state.diagnostic_sql_pending_final = False
         state.ratio_anomaly = False          # 比率异常状态清除（每轮重新检测）
         state.ratio_anomaly_reason = ""
+        state.duration_anomaly = False
+        state.duration_anomaly_reason = ""
         # 彻底清空上一轮的 SQL 缓存，并重置 Schema 未命中状态，防范修复过程中的 Gate 误拦截
         state.last_successful_sql_output = None
         state.successful_sqls = {}
@@ -2026,6 +2289,8 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="execute_sql_query")
         if state.ratio_anomaly:
             return ToolChoice(mode="required")  # 强制调用工具补充对账 SQL
+        if state.duration_anomaly:
+            return ToolChoice(mode="execute_sql_query")
         if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
             return ToolChoice(mode="required")
         if (
@@ -2059,6 +2324,10 @@ class DataAgentRunner(BaseExecutor):
             return "修正高风险 SQL"
         if state.ratio_anomaly:
             return "比率/占比异常复核"
+        if state.duration_anomaly:
+            return "时间差/时延异常复核"
+        if state.tool_loop_fuse_triggered:
+            return "停止重复工具调用"
         if state.diagnostic_sql_pending_final:
             return "执行最终 SQL"
         if (
@@ -2177,6 +2446,14 @@ class DataAgentRunner(BaseExecutor):
             else:
                 result_text = self._format_sql_result_for_display(output)
                 details = truncate_for_context(result_text, max_len=1000)
+                output_text = str(output or "")
+                if "[Executed SQL]:" not in output_text and tool_args:
+                    raw_sql = tool_args.get("sql") or tool_args.get("query")
+                    if isinstance(raw_sql, str) and raw_sql.strip():
+                        details = (
+                            f"[Executed SQL]:\n{raw_sql.strip()}\n\n"
+                            f"{_SQL_TOOL_RESULT_DELIMITER}\n{details}"
+                        )
         else:
             details = truncate_for_context(str(output or ""), max_len=1000)
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
@@ -2187,8 +2464,13 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] SQL 存在高风险执行特征，已拦截执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
+        if tool_name == "execute_sql_query" and state.duration_anomaly_reason:
+            details = f"{details}\n\n[系统检测] {state.duration_anomaly_reason}"
         if tool_name == "execute_sql_query" and state.sql_error_message:
-            details = f"{details}\n\n[系统检测] SQL 执行异常: {state.sql_error_message[:500]}"
+            error_message = str(state.sql_error_message or "")
+            if "[Executed SQL]:" in error_message:
+                error_message = error_message.split("[Executed SQL]:", 1)[0].strip()
+            details = f"{details}\n\n[系统检测] SQL 执行异常: {error_message[:500]}"
         if tool_name == "get_dataset_schema" and state.schema_miss:
             details = f"{details}\n\n[系统检测] 未命中相关数据集定义。"
         if tool_name == "get_dataset_schema" and state.schema_needs_refinement:
@@ -2201,6 +2483,8 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 元数据服务不可用，已终止查数流程。"
         if tool_name == "get_dataset_schema" and state.rag_not_synced:
             details = f"{details}\n\n[系统检测] 元数据未同步到知识库，已终止查数流程。"
+        if state.tool_loop_fuse_triggered and state.tool_loop_fuse_reason:
+            details = f"{details}\n\n[系统检测] {state.tool_loop_fuse_reason}"
         return details
 
     @staticmethod
@@ -2220,6 +2504,15 @@ class DataAgentRunner(BaseExecutor):
         state.schema_ambiguous, state.schema_ambiguous_reason = self._detect_schema_ambiguity(output)
         if state.schema_miss:
             state.schema_miss_count += 1
+        elif not (
+            state.schema_service_unavailable
+            or state.no_authorized_schema
+            or state.rag_not_synced
+            or state.schema_needs_refinement
+            or state.schema_ambiguous
+            or not str(output or "").strip()
+        ):
+            state.schema_miss_count = 0
         if (
             self._is_schema_fatal(state)
             or state.schema_miss
@@ -2241,6 +2534,7 @@ class DataAgentRunner(BaseExecutor):
         output: Any,
     ) -> tuple[Any, bool]:
         if self._is_sql_repeat_gate_block(output):
+            state.sql_repeat_gate_block = True
             state.sql_completed = True
             text = str(output or "")
             cached_text = text
@@ -2303,7 +2597,15 @@ class DataAgentRunner(BaseExecutor):
         state.diagnostic_sql_pending_final = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.sql_repeat_gate_block = False
         state.last_successful_sql_output = output
+        duration_anomaly, duration_reason = self._detect_duration_anomaly(parsed_output)
+        if duration_anomaly:
+            state.duration_anomaly = True
+            state.duration_anomaly_reason = duration_reason
+            return parsed_output, False
+        state.duration_anomaly = False
+        state.duration_anomaly_reason = ""
         ratio_anomaly, anomaly_reason = self._detect_ratio_anomaly(parsed_output)
         if ratio_anomaly:
             state.ratio_anomaly = True
@@ -2571,6 +2873,104 @@ class DataAgentRunner(BaseExecutor):
         ]
         q_lower = q.lower()
         return any(kw in q_lower for kw in fatal_keywords)
+
+    @staticmethod
+    def _extract_column_names(parsed: dict[str, Any]) -> list[str]:
+        columns = parsed.get("columns")
+        if not isinstance(columns, list):
+            return []
+        names: list[str] = []
+        for item in columns:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("field") or item.get("column")
+            else:
+                name = item
+            if name is None:
+                names.append("")
+            else:
+                names.append(str(name))
+        return names
+
+    def _iter_named_result_rows(self, parsed: Any, depth: int = 0) -> list[dict[str, Any]]:
+        if depth > 3:
+            return []
+        if isinstance(parsed, list):
+            return [row for row in parsed if isinstance(row, dict)]
+        if not isinstance(parsed, dict):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        column_names = self._extract_column_names(parsed)
+        for key in ("items", "rows", "data", "records"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                for row in value:
+                    if isinstance(row, dict):
+                        rows.append(row)
+                    elif isinstance(row, list) and column_names:
+                        rows.append(
+                            {
+                                column_names[index]: cell
+                                for index, cell in enumerate(row)
+                                if index < len(column_names) and column_names[index]
+                            }
+                        )
+                if rows:
+                    return rows
+            elif isinstance(value, dict):
+                rows.extend(self._iter_named_result_rows(value, depth + 1))
+                if rows:
+                    return rows
+        return rows
+
+    @staticmethod
+    def _is_duration_like_column(column: str) -> bool:
+        name = str(column or "").strip().lower()
+        if not name:
+            return False
+        return bool(
+            re.search(
+                r"(interval|duration|latency|delay|lag|elapsed|time[_-]?diff|timediff|"
+                r"diff[_-]?(seconds|minutes|hours|ms)|age[_-]?(seconds|minutes|hours)|"
+                r"seconds|minutes|hours|milliseconds|"
+                r"时延|延迟|耗时|时长|时间差|间隔|秒|分钟|小时)",
+                name,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_delay_like_column(column: str) -> bool:
+        name = str(column or "").strip().lower()
+        return bool(re.search(r"(latency|delay|lag|延迟|时延|滞后)", name, flags=re.IGNORECASE))
+
+    def _detect_duration_anomaly(self, parsed: Any) -> tuple[bool, str]:
+        """Detect obviously impossible or suspicious duration/time-delta results."""
+        rows = self._iter_named_result_rows(parsed)
+        if not rows:
+            return False, ""
+
+        for row in rows[:50]:
+            for column, value in row.items():
+                if not self._is_duration_like_column(str(column)):
+                    continue
+                if isinstance(value, bool):
+                    continue
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if numeric_value < 0:
+                    return True, (
+                        f"字段 `{column}` 值为 {numeric_value:g}，时间差/时延/时长不应为负值，"
+                        "疑似时间字段相减方向、时区或单位换算错误"
+                    )
+                if self._is_delay_like_column(str(column)) and numeric_value > DELAY_SECONDS_EXTREME_THRESHOLD:
+                    return True, (
+                        f"字段 `{column}` 值为 {numeric_value:g} 秒，超过 7 天，"
+                        "疑似延迟计算口径、时区或单位换算错误"
+                    )
+        return False, ""
 
     @staticmethod
     def _detect_ratio_anomaly(parsed: Any) -> tuple[bool, str]:

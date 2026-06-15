@@ -313,113 +313,27 @@ async def get_dataset_schema(keywords: Optional[str] = None) -> str:
 
     Args:
         keywords: Optional. A search term or topic (e.g., "sales", "user behavior") to find relevant data.
-                 In Local Mode, all authorized datasets are returned regardless of keywords.
+                 In Local Mode, this is used for local vector metadata search.
                  In RAGFlow Mode, this is used as the semantic search query.
     """
     try:
         from app.core.orm import AsyncSessionLocal
-        from app.services.metadata_service import MetadataService
-        from app.services.auth_service import AuthService
         from app.core.context import get_current_agent_context
-        from app.services.config_service import ConfigService
+        from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
 
         ctx = get_current_agent_context()
         user_id = ctx.user_id if ctx else None
         is_admin = ctx.is_admin if ctx else False
+        api_key = ctx.api_key if ctx else None
 
         async with AsyncSessionLocal() as session:
-            # Fallback: Resolve User via API Key if ID missing
-            if not user_id and ctx and ctx.api_key:
-                u_info = await AuthService.verify_api_key(ctx.api_key, session)
-                if u_info:
-                    user_id = int(u_info["user_id"])
-                    if u_info["role"] == "admin":
-                        is_admin = True
-
-            # 1. Get ALL Authorized Datasets (Permission Check)
-            # In Local Mode, we return all of these. In RAG Mode, we use these to filter search.
-            # We pass query=None to get everything the user has access to.
-            authorized_datasets = await MetadataService.search_datasets(
+            return await fetch_dataset_schema_core(
                 session,
-                query=None,
+                keywords=keywords,
                 user_id=user_id,
                 is_admin=is_admin,
-                status=1
+                api_key=api_key,
             )
-
-            if not authorized_datasets:
-                return "No authorized datasets found. You do not have permission to view any data."
-
-            # Check Metadata Provider Config
-            provider = await ConfigService.get("metadata_provider", default="local")
-            logger.info(f"[Tool: get_dataset_schema] Using provider: {provider.upper()}")
-
-            # --- RAGFlow Mode ---
-            if provider == "ragflow":
-                from app.services.ai.ragflow_client import RagFlowClient
-                from app.services.metadata_rag_service import MetadataRagService, MetadataServiceUnavailableError
-
-                # Filter for datasets that actually have a RAG ID
-                rag_ids = [ds.rag_dataset_id for ds in authorized_datasets if ds.rag_dataset_id]
-
-                if not rag_ids:
-                    return "Authorized datasets found, but none are synced to RAG knowledge base."
-
-                # If no keywords provided, return a directory of datasets instead of searching
-                if not keywords:
-                    directory = ["Available Datasets (Please provide keywords to search specific tables):"]
-                    for ds in authorized_datasets:
-                        if ds.rag_dataset_id:
-                            directory.append(f"- {ds.display_name or ds.name} (Source: {ds.data_source or 'clickhouse'})")
-                            if ds.description:
-                                directory.append(f"  Description: {ds.description}")
-                    return "\n".join(directory)
-
-                # Retrieve with Auto-Retry using Semantic Search
-                # Agent is expected to provide expanded keywords for better recall
-                query = keywords
-                threshold = float(await ConfigService.get("ragflow_similarity_threshold") or 0.2)
-                weight = float(await ConfigService.get("ragflow_vector_weight") or 0.3)
-                top_k = int(await ConfigService.get("ragflow_metadata_top_k") or 5)
-
-                logger.info(f"[Agent Debug] Tool get_dataset_schema: top_k={top_k}, threshold={threshold}, weight={weight}")
-
-                client = RagFlowClient()
-                try:
-                    chunks, trace_logs = await MetadataRagService.retrieve_with_retry(
-                        client,
-                        query,
-                        rag_ids,
-                        top_k=top_k,
-                        threshold=threshold,
-                        weight=weight
-                    )
-                except MetadataServiceUnavailableError as e:
-                    logger.error(f"[Tool: get_dataset_schema] Metadata service unavailable: {e}")
-                    return MetadataRagService.unavailable_hint(str(e))
-
-                if not chunks:
-                    return f"No relevant schema info found for '{query}'.\nDebug Logs: {'; '.join(trace_logs)}"
-
-                # Format
-                context_parts = []
-                for chunk in chunks:
-                    similarity = chunk.get('similarity', 0)
-                    context_parts.append(f"[置信度: {similarity:.2f}]\n--- Source: {chunk['doc_name']} ---\n{chunk['content']}")
-
-                return "\n\n".join(context_parts)
-
-            # --- Local Mode (Default) ---
-            # Return Schema for ALL authorized datasets (ignoring keywords as requested)
-            results = []
-            for ds in authorized_datasets:
-                # Get full detail (tables, columns, metrics)
-                # Note: We rely on the initial search_datasets to have checked permissions.
-                # export_dataset_yaml handles the formatting.
-                yaml_text = await MetadataService.export_dataset_yaml(session, ds.id)
-                results.append(f"--- Dataset: {ds.display_name} ({ds.name}) ---\n{yaml_text}")
-
-            return "\n\n".join(results)
 
     except Exception as e:
         logger.error(f"[Tool Error] Schema Retrieval Failed: {e}", exc_info=True)

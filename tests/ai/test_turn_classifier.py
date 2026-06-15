@@ -384,6 +384,87 @@ async def test_data_query_turn_classifier_requires_recent_context_for_reuse():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "我要看各机房数据采集是否延迟",
+        "我要看各门店库存是否异常",
+        "检查各客户订单同步状态",
+        "查看各项目回款是否延迟",
+        "确认各渠道线索是否断流",
+    ],
+)
+async def test_data_query_turn_classifier_rescues_business_status_query_from_stale_reuse(query):
+    llm = object()
+    chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"误判为基于上一轮结果继续分析"}')
+
+    stale_history = [
+        {"role": "user", "content": "查询用户列表"},
+        {"role": "assistant", "content": "已返回用户列表。"},
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好。"},
+        {"role": "user", "content": "你是谁"},
+        {"role": "assistant", "content": "我是助手。"},
+        {"role": "user", "content": "帮我写个说明"},
+        {"role": "assistant", "content": "好的。"},
+        {"role": "user", "content": query},
+    ]
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            query,
+            stale_history,
+            has_last_data_result=True,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.NEW_DATA_QUERY
+    assert classification.requires_fresh_data is True
+    assert classification.requires_few_shot is True
+    assert "明确新数据查询" in classification.reasoning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["帮我看看这个状态", "这个是否正常"])
+async def test_data_query_turn_classifier_keeps_vague_status_followup_as_clarification(query):
+    llm = object()
+    chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户像是在追问上一轮状态"}')
+
+    stale_history = [
+        {"role": "user", "content": "查询用户列表"},
+        {"role": "assistant", "content": "已返回用户列表。"},
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好。"},
+        {"role": "user", "content": "你是谁"},
+        {"role": "assistant", "content": "我是助手。"},
+        {"role": "user", "content": "帮我写个说明"},
+        {"role": "assistant", "content": "好的。"},
+        {"role": "user", "content": query},
+    ]
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            query,
+            stale_history,
+            has_last_data_result=True,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA
+    assert "最近对话" in classification.reasoning
+
+
+@pytest.mark.asyncio
 async def test_data_query_turn_classifier_allows_polite_followup_with_reusable_result():
     llm = object()
     chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户礼貌地要求分析当前数据结果"}')

@@ -75,6 +75,10 @@ def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
+def _is_async_iterable(obj: Any) -> bool:
+    return _safe_getattr(obj, "__aiter__") is not None
+
+
 def _extract_tool_calls_detail(content: Any) -> list[dict[str, Any]]:
     """从 ChatResponse.content 中提取包含详细参数的工具调用列表。"""
     tool_calls: list[dict[str, Any]] = []
@@ -260,7 +264,7 @@ class ModelCallStatsMiddleware(MiddlewareBase):
         }
 
         # ── 流式响应：return 包装后的 async generator ──────────────────────
-        if hasattr(result, "__aiter__"):
+        if _is_async_iterable(result):
             return _stream_with_stats(
                 result,
                 redis_key=redis_key,
