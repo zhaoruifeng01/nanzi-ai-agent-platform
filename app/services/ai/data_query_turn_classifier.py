@@ -125,7 +125,44 @@ def _looks_like_explicit_new_data_query(user_query: str) -> bool:
         "用户表", "用户列表", "query", "how many", "count", "select ",
         "from ", "where ", "group by", "table", "users",
     ]
-    return any(keyword in q for keyword in keywords)
+    return any(keyword in q for keyword in keywords) or _looks_like_business_status_data_query(q)
+
+
+def _looks_like_business_status_data_query(user_query: str) -> bool:
+    """识别“查看某业务对象的状态/延迟/异常”等不一定包含“查询”的查数请求。"""
+    q = (user_query or "").strip().lower()
+    if not q:
+        return False
+
+    action_signals = [
+        "我要看", "想看", "看一下", "看看", "查看", "检查", "确认", "检测",
+        "监控", "展示", "显示", "排查",
+    ]
+    status_or_metric_signals = [
+        "是否延迟", "延迟", "延时", "滞后", "是否正常", "状态", "运行情况",
+        "运行状态", "同步情况", "采集时间", "更新时间", "上报时间", "最新",
+        "离线", "在线", "异常", "失败", "成功", "断流", "超时", "积压",
+        "缺失", "波动", "偏高", "偏低",
+    ]
+
+    action_matches = [(q.find(signal), signal) for signal in action_signals if signal in q]
+    status_matches = [(q.find(signal), signal) for signal in status_or_metric_signals if signal in q]
+    if not action_matches or not status_matches:
+        return False
+
+    action_idx, action = min(action_matches, key=lambda item: item[0])
+    status_idx, _ = min(status_matches, key=lambda item: item[0])
+    if status_idx <= action_idx:
+        return False
+
+    object_text = q[action_idx + len(action):status_idx]
+    object_text = re.sub(r"[，,。？！\s]|的|一下|一下子|是否|是不是", "", object_text)
+    vague_refs = {"这个", "那个", "这些", "那些", "它", "其", "上面", "刚才"}
+    if not object_text or object_text in vague_refs:
+        return False
+
+    scope_markers = ["各", "每", "所有", "全部", "全量", "不同", "各个", "各类", "各项"]
+    return len(object_text) >= 2 or any(marker in q for marker in scope_markers)
 
 
 def _classification_for_clarification(reasoning: str, *, skip_intent_llm: bool) -> DataQueryTurnClassification:
@@ -343,10 +380,17 @@ async def resolve_data_query_turn_classification(
                 skip_intent_llm=False,
             )
         elif not _recent_history_supports_reuse(messages):
-            classification = _classification_for_clarification(
-                "最近对话没有明确的上一轮数据结果上下文，需要先确认是否基于之前的查询结果继续分析",
-                skip_intent_llm=False,
-            )
+            if _looks_like_explicit_new_data_query(q):
+                classification = _classification_for_turn_type(
+                    DataQueryTurnType.NEW_DATA_QUERY,
+                    "复用上一轮结果上下文不可信，但当前问题包含明确新数据查询诉求，改按新数据查询处理",
+                    skip_intent_llm=False,
+                )
+            else:
+                classification = _classification_for_clarification(
+                    "最近对话没有明确的上一轮数据结果上下文，需要先确认是否基于之前的查询结果继续分析",
+                    skip_intent_llm=False,
+                )
 
     if classification is None and looks_like_context_action(q):
         classification = DataQueryTurnClassification(

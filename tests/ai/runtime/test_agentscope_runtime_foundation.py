@@ -124,6 +124,47 @@ def test_runtime_error_envelope_normalizes_unknown_errors():
 
 
 @pytest.mark.asyncio
+async def test_model_call_stats_middleware_handles_keyerror_getattr_response(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.services.ai.runtime.agentscope.middleware import ModelCallStatsMiddleware
+
+    class KeyErrorGetattrResponse:
+        content = []
+        text = "ok"
+        usage = None
+
+        def __getattr__(self, name):
+            raise KeyError(name)
+
+    async def next_handler(**kwargs):
+        return KeyErrorGetattrResponse()
+
+    monkeypatch.setattr(
+        "app.services.ai.runtime.agentscope.middleware._append_stat_to_redis",
+        AsyncMock(),
+    )
+    middleware = ModelCallStatsMiddleware(
+        user_id="u1",
+        conversation_id="c1",
+        agent_name="DataAgent",
+        trace_id="trace-1",
+    )
+
+    result = await middleware.on_model_call(
+        agent=None,
+        input_kwargs={
+            "current_model": types.SimpleNamespace(model="fake-model"),
+            "messages": [],
+            "tools": [],
+        },
+        next_handler=next_handler,
+    )
+
+    assert result.text == "ok"
+
+
+@pytest.mark.asyncio
 async def test_model_factory_requires_api_key_for_openai_compatible_model(monkeypatch):
     from app.services.ai.runtime.agentscope.models import AgentScopeModelConfig, create_openai_chat_model
 

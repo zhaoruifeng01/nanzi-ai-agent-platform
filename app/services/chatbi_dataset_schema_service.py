@@ -22,10 +22,10 @@ async def fetch_dataset_schema_core(
     api_key: Optional[str] = None,
 ) -> str:
     """
-    按当前用户权限获取数据集 Schema 文本（local 为 YAML；ragflow 为检索片段或目录）。
+    按当前用户权限获取数据集 Schema 文本（local/ragflow 均优先返回检索片段）。
 
     Args:
-        keywords: RAGFlow 模式下作为语义检索 query；local 模式下忽略。
+        keywords: 元数据检索 query；local 模式下用于本地向量检索，向量异常时用于 MySQL LIKE 兜底。
         user_id: 用户 ID；可与 api_key 二选一补全（工具场景）。
         is_admin: 是否平台管理员。
         api_key: 无 user_id 时用于解析用户身份。
@@ -132,8 +132,69 @@ async def _fetch_dataset_schema_impl(
         return "\n\n".join(context_parts)
 
     # --- Local Mode (Default) ---
+    query = (keywords or "").strip()
+    threshold = float(await ConfigService.get("ragflow_similarity_threshold") or 0.2)
+    top_k = int(await ConfigService.get("ragflow_metadata_top_k") or 5)
+
+    if query:
+        try:
+            from app.services.ai.embedding_client import EmbeddingClient
+            from app.services.ai.metadata_index_service import MetadataIndexService
+
+            authorized_ids = None if is_admin_eff else [
+                ds.id for ds in authorized_datasets if getattr(ds, "id", None) is not None
+            ]
+            query_embedding = await EmbeddingClient.embed_text(query, use_global=True)
+            redis_results = await MetadataIndexService.search_knn(
+                query_embedding=query_embedding,
+                authorized_dataset_ids=authorized_ids,
+                top_k=top_k,
+            )
+
+            context_parts = []
+            for item in redis_results:
+                try:
+                    similarity = float(item.get("similarity", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    similarity = 0.0
+                if similarity < threshold:
+                    continue
+                doc_name = item.get("doc_name", "unknown")
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    continue
+                context_parts.append(
+                    f"[置信度: {similarity:.2f}]\n--- Source: {doc_name} ---\n{content}"
+                )
+
+            if context_parts:
+                return "\n\n".join(context_parts)
+            return (
+                f"No relevant schema info found for '{query}'.\n"
+                f"Debug Logs: Redis Vector Search completed. Found {len(redis_results)} raw items; "
+                f"no hit above threshold {threshold}"
+            )
+        except Exception as ex:
+            logger.warning(
+                "[fetch_dataset_schema_core] Local Redis vector search failed: %s. Falling back to MySQL keyword search.",
+                ex,
+            )
+
+    if not query:
+        return "No relevant schema info found for ''.\nDebug Logs: local metadata query is empty"
+
+    found_datasets = await MetadataService.search_datasets(
+        session,
+        query=query,
+        user_id=user_id_eff,
+        is_admin=is_admin_eff,
+        status=1,
+    )
+    if not found_datasets:
+        return f"No relevant schema info found for '{query}'.\nDebug Logs: local MySQL keyword search returned 0 datasets"
+
     results = []
-    for ds in authorized_datasets:
+    for ds in found_datasets:
         yaml_text = await MetadataService.export_dataset_yaml(session, ds.id)
         results.append(f"--- Dataset: {ds.display_name} ({ds.name}) ---\n{yaml_text}")
 

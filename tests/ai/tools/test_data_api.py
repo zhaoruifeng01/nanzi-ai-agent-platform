@@ -1,7 +1,7 @@
 import pytest
 import json
 import httpx
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import ANY, MagicMock, AsyncMock, patch
 from app.services.ai.tools.data_api import (
     validate_sql, 
     call_external_sql_api, 
@@ -51,7 +51,7 @@ async def test_call_external_sql_api_success():
     
     with patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config, \
          patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-        
+
         mock_config.side_effect = lambda k, **kwargs: {
             "external_sql_api_url": "http://api/sql",
             "external_sql_api_key": "key123",
@@ -115,30 +115,95 @@ async def test_call_ragflow_api_success():
 # --- Tool Integration Tests ---
 
 @pytest.mark.asyncio
+@pytest.mark.no_infrastructure
 async def test_get_dataset_schema_tool():
-    """测试元数据查询工具 (使用 .invoke)"""
+    """local 模式优先走本地向量检索，而不是返回全量授权 YAML。"""
     mock_ds = MagicMock()
-    mock_ds.id = "ds_1"
+    mock_ds.id = 1
     mock_ds.display_name = "User Stats"
     mock_ds.name = "user_stats"
-    
+
     with patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock), \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config, \
          patch("app.services.metadata_service.MetadataService.search_datasets", new_callable=AsyncMock) as mock_search, \
-         patch("app.services.metadata_service.MetadataService.get_dataset_by_id", new_callable=AsyncMock) as mock_get_id, \
-         patch("app.services.metadata_service.MetadataService.export_dataset_yaml", new_callable=AsyncMock) as mock_export:
-        
-        # Force local provider
-        mock_config.return_value = "local"
-        
+         patch("app.services.metadata_service.MetadataService.export_dataset_yaml", new_callable=AsyncMock) as mock_export, \
+         patch("app.services.ai.embedding_client.EmbeddingClient.embed_text", new_callable=AsyncMock) as mock_embed, \
+         patch("app.services.ai.metadata_index_service.MetadataIndexService.search_knn", new_callable=AsyncMock) as mock_search_knn:
+
+        async def config_get(key, default=None):
+            return {
+                "metadata_provider": "local",
+                "ragflow_similarity_threshold": "0.2",
+                "ragflow_metadata_top_k": "5",
+            }.get(key, default)
+
+        mock_config.side_effect = config_get
         mock_search.return_value = [mock_ds]
-        mock_get_id.return_value = mock_ds
         mock_export.return_value = "tables: [users]"
+        mock_embed.return_value = [0.1] * 1536
+        mock_search_knn.return_value = [
+            {
+                "dataset_id": "1",
+                "doc_name": "user_stats.users.txt",
+                "content": "table users schema chunk",
+                "similarity": 0.86,
+            }
+        ]
         
-        # 使用 invoke 调用工具
         result = await get_dataset_schema.ainvoke({"keywords": "user_stats"})
-        assert "--- Dataset: User Stats (user_stats) ---" in result
-        assert "tables: [users]" in result
+
+        assert "[置信度: 0.86]" in result
+        assert "--- Source: user_stats.users.txt ---" in result
+        assert "table users schema chunk" in result
+        mock_embed.assert_awaited_once_with("user_stats", use_global=True)
+        mock_search_knn.assert_awaited_once_with(
+            query_embedding=[0.1] * 1536,
+            authorized_dataset_ids=[1],
+            top_k=5,
+        )
+        mock_export.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_get_dataset_schema_tool_local_falls_back_to_mysql_like_when_vector_fails():
+    """local 向量检索异常时，降级为 MySQL LIKE 命中数据集后导出 YAML。"""
+    authorized_ds = MagicMock()
+    authorized_ds.id = 1
+    authorized_ds.display_name = "User Stats"
+    authorized_ds.name = "user_stats"
+    matched_ds = MagicMock()
+    matched_ds.id = 2
+    matched_ds.display_name = "Order Stats"
+    matched_ds.name = "order_stats"
+
+    with patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock), \
+         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config, \
+         patch("app.services.metadata_service.MetadataService.search_datasets", new_callable=AsyncMock) as mock_search, \
+         patch("app.services.metadata_service.MetadataService.export_dataset_yaml", new_callable=AsyncMock) as mock_export, \
+         patch("app.services.ai.embedding_client.EmbeddingClient.embed_text", new_callable=AsyncMock) as mock_embed, \
+         patch("app.services.ai.metadata_index_service.MetadataIndexService.search_knn", new_callable=AsyncMock) as mock_search_knn:
+
+        async def config_get(key, default=None):
+            return {
+                "metadata_provider": "local",
+                "ragflow_similarity_threshold": "0.2",
+                "ragflow_metadata_top_k": "5",
+            }.get(key, default)
+
+        mock_config.side_effect = config_get
+        mock_search.side_effect = [[authorized_ds], [matched_ds]]
+        mock_embed.return_value = [0.1] * 1536
+        mock_search_knn.side_effect = RuntimeError("redis unavailable")
+        mock_export.return_value = "tables: [orders]"
+
+        result = await get_dataset_schema.ainvoke({"keywords": "order"})
+
+        assert "--- Dataset: Order Stats (order_stats) ---" in result
+        assert "tables: [orders]" in result
+        assert mock_search.await_args_list[0].kwargs["query"] is None
+        assert mock_search.await_args_list[1].kwargs["query"] == "order"
+        mock_export.assert_awaited_once_with(ANY, 2)
 
 @pytest.mark.asyncio
 async def test_execute_sql_query_tool_dry_run():
