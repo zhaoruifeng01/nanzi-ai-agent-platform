@@ -1753,6 +1753,8 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
     const payload = await fetchDatasetMenuNavigationPayload(true);
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    isProcessing.value = false;
+    showToast("数据门户刷新成功", "success");
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
