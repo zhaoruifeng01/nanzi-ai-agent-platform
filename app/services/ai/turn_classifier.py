@@ -17,6 +17,7 @@ from app.services.ai.intent_service import (
     looks_like_meta_action,
     looks_like_pure_result_followup,
     looks_like_skill_execution,
+    looks_like_web_search_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,16 @@ def classify_turn_heuristic(
             knowledge_preemption_allowed=True,
         )
 
+    # 联网/外部搜索：未绑定内部知识库时，交给通用助手（含 web_search 工具），
+    # 避免被当成知识库问答而因缺少 dataset 被终止。
+    if looks_like_web_search_query(q):
+        return TurnClassification(
+            turn_type=TurnType.GENERAL,
+            reasoning="检测到联网/外部公网搜索请求，交由通用助手联网检索（启发式短路）",
+            skip_intent_llm=True,
+            intent=IntentType.GENERAL,
+        )
+
     if looks_like_knowledge_query(q):
         return TurnClassification(
             turn_type=TurnType.KNOWLEDGE,
@@ -225,6 +236,17 @@ def classify_turn_from_intent(
 
     if intent_info.intent in (IntentType.KNOWLEDGE_BASE, IntentType.UNKNOWN):
         reasoning = intent_info.reasoning or ""
+        # 未绑定内部知识库时，若本轮其实是联网/外部搜索，纠正为通用助手处理，
+        # 避免知识库 executor 因缺少 dataset 直接终止。
+        if not has_knowledge_binding and looks_like_web_search_query(user_query):
+            return TurnClassification(
+                turn_type=TurnType.GENERAL,
+                reasoning=(
+                    f"{reasoning}（识别为联网/外部搜索，未绑定内部知识库，改由通用助手联网检索）"
+                ),
+                skip_intent_llm=False,
+                intent=IntentType.GENERAL,
+            )
         if (
             intent_info.intent == IntentType.KNOWLEDGE_BASE
             or "search_knowledge" in reasoning
