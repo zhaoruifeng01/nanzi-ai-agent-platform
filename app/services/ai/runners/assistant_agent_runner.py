@@ -15,7 +15,8 @@ from app.schemas.agent import ChatConfig, AgentExecutionStep
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.base import BaseExecutor
-from app.services.ai.intent_service import IntentType
+from app.services.ai.intent_service import IntentType, looks_like_business_data_request
+from app.services.ai.turn_classifier import TurnType
 from app.services.ai.executors.common import (
     convert_history_to_messages,
     extract_tokens_from_message,
@@ -119,6 +120,29 @@ class AssistantAgentRunner(BaseExecutor):
         )
         return runner
 
+    @staticmethod
+    def _extract_last_user_query(history: List[Dict[str, str]]) -> str:
+        for msg in reversed(history or []):
+            if msg.get("role") == "user":
+                return str(msg.get("content") or "")
+        return ""
+
+    def _should_run_data_hallucination_guard(self, user_query: str) -> bool:
+        """仅在用户确有查数类诉求时启用反幻觉拦截，避免问候语带表格引导被误杀。"""
+        if self.turn_classification is not None:
+            if self.turn_classification.turn_type == TurnType.DATA_QUERY_REQUEST:
+                return True
+            if self.turn_classification.intent == IntentType.DATA_QUERY:
+                return True
+            if (
+                self.turn_classification.turn_type == TurnType.GENERAL
+                and self.turn_classification.intent == IntentType.GENERAL
+            ):
+                return False
+        if self.intent_info is not None and self.intent_info.intent == IntentType.DATA_QUERY:
+            return True
+        return looks_like_business_data_request(user_query)
+
     def _is_hallucinated_data_reply(self, text: str) -> bool:
         text_clean = text.strip()
         if not text_clean:
@@ -137,10 +161,8 @@ class AssistantAgentRunner(BaseExecutor):
         self,
         history: List[Dict[str, str]]
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        is_downgraded_data_query = (
-            self.turn_classification is not None
-            and self.turn_classification.intent == IntentType.DATA_QUERY
-        )
+        user_query = self._extract_last_user_query(history)
+        run_data_guard = self._should_run_data_hallucination_guard(user_query)
 
         chunks_buffer = []
         full_text = ""
@@ -159,15 +181,13 @@ class AssistantAgentRunner(BaseExecutor):
                 yield chunk
 
         should_intercept = False
-        if is_downgraded_data_query:
-            should_intercept = self._is_hallucinated_data_reply(full_text)
-        elif not has_called_data_tool:
+        if run_data_guard and not has_called_data_tool:
             should_intercept = self._is_hallucinated_data_reply(full_text)
 
         if should_intercept:
             logger.warning(
                 f"[AssistantAgentRunner] Hallucination detected! "
-                f"is_downgraded={is_downgraded_data_query}, has_tool={has_called_data_tool}. "
+                f"run_data_guard={run_data_guard}, has_tool={has_called_data_tool}. "
                 f"Generated: {full_text[:200]}..."
             )
             yield {

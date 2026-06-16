@@ -194,8 +194,10 @@ class _DataRunState:
     schema_miss_count: int = 0           # 累计 schema_miss 次数（含 prefetch + ReAct 内）
     repair_attempts: dict[str, int] = field(default_factory=dict)
     last_schema_keywords: str = ""
+    last_schema_tool_keywords: str = ""  # 最近一次 get_dataset_schema 实际使用的 keywords（日志用）
     controlled_schema_retry_keywords: str = ""
     last_applied_schema_retry_keywords: str = ""
+    pending_schema_retry: bool = False   # 修复轮受控重试标记（不随 _reset_state_for_repair 清除）
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -256,6 +258,37 @@ class DataAgentRunner(BaseExecutor):
         self._fewshot_examples: List[Dict[str, Any]] = []
         self._standalone_query = ""
         self._schema_search_keywords = ""
+        self._schema_similarity_threshold: float | None = None
+
+    async def _ensure_schema_similarity_threshold(self) -> float:
+        """与 fetch_dataset_schema_core 共用 ragflow_similarity_threshold。"""
+        if self._schema_similarity_threshold is not None:
+            return self._schema_similarity_threshold
+        from app.services.config_service import ConfigService
+
+        try:
+            self._schema_similarity_threshold = float(
+                await ConfigService.get("ragflow_similarity_threshold") or 0.2
+            )
+        except (TypeError, ValueError):
+            self._schema_similarity_threshold = 0.2
+        return self._schema_similarity_threshold
+
+    @staticmethod
+    def _schema_strong_confidence_threshold(similarity_threshold: float) -> float:
+        """向量检索过线但低于此值视为弱命中，不可进入 SQL。"""
+        return max(float(similarity_threshold) + 0.12, 0.65)
+
+    @staticmethod
+    def _extract_schema_confidence_values(tool_output: Any) -> list[float]:
+        text = str(tool_output or "")
+        values: list[float] = []
+        for value in re.findall(r"置信度[:：]\s*([0-9]+(?:\.[0-9]+)?)", text):
+            try:
+                values.append(float(value))
+            except ValueError:
+                continue
+        return values
 
     def _runtime_agent_name(self) -> str:
         return self.config.agent_name or "DataAgent"
@@ -568,6 +601,7 @@ class DataAgentRunner(BaseExecutor):
             user_question,
         )
         state.controlled_schema_retry_keywords = retry_keywords
+        state.pending_schema_retry = bool(retry_keywords.strip())
 
     def _tool_call_made_progress(self, state: _DataRunState, tool_name: str) -> bool:
         if tool_name == "get_dataset_schema":
@@ -606,11 +640,18 @@ class DataAgentRunner(BaseExecutor):
 
                 async def invoke_schema_controlled(*, _original=original_callable, **kwargs: Any) -> Any:
                     controlled_keywords = str(state.controlled_schema_retry_keywords or "").strip()
-                    if state.schema_miss and controlled_keywords:
+                    use_controlled = bool(
+                        controlled_keywords
+                        and (state.pending_schema_retry or state.schema_miss)
+                    )
+                    if use_controlled:
                         kwargs["keywords"] = controlled_keywords
                         state.last_applied_schema_retry_keywords = controlled_keywords
+                        state.pending_schema_retry = False
                     else:
                         state.last_applied_schema_retry_keywords = ""
+                    applied_kw = kwargs.get("keywords") or kwargs.get("query")
+                    state.last_schema_tool_keywords = str(applied_kw or "").strip()
                     result = _original(**kwargs)
                     if inspect.isawaitable(result):
                         result = await result
@@ -887,6 +928,7 @@ class DataAgentRunner(BaseExecutor):
 
         prefetched_schema_output: str | None = None
         if turn_cls.requires_fresh_data:
+            await self._ensure_schema_similarity_threshold()
             schema_keywords = (
                 self._schema_search_keywords
                 or self._standalone_query
@@ -980,6 +1022,7 @@ class DataAgentRunner(BaseExecutor):
         turn_cls: Any,
         prefetched_schema_output: str | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        await self._ensure_schema_similarity_threshold()
         restored_state = None
         # 优化：新数据查询 (requires_fresh_data=True) 路径下，不从 Redis 恢复旧的 AgentState 内存，避免历史 DDL 等累积导致首个 Prompt Token 爆炸
         if not turn_cls.requires_fresh_data:
@@ -1494,6 +1537,7 @@ class DataAgentRunner(BaseExecutor):
 
         tool_id = f"schema_prefetch_{uuid.uuid4().hex[:8]}"
         started_at = time.time()
+        applied_keywords = str(keywords or "").strip()
         yield {
             "type": "log",
             "id": tool_id,
@@ -1515,6 +1559,7 @@ class DataAgentRunner(BaseExecutor):
             output = f"[TOOL_ERROR] 自动获取数据集定义失败: {exc}"
 
         preview_state = _DataRunState()
+        preview_state.last_schema_tool_keywords = applied_keywords
         self._apply_schema_tool_result(preview_state, output)
         yield {
             "type": "log",
@@ -2243,6 +2288,19 @@ class DataAgentRunner(BaseExecutor):
             return
         if self._is_schema_fatal(state):
             _, content = self._schema_fatal_response(state)
+        elif (
+            state.requires_fresh_data
+            and not state.sql_completed
+            and (
+                state.schema_miss_count >= 2
+                or (not state.schema_completed and state.schema_miss_count >= 1)
+            )
+        ):
+            content = (
+                DataQueryPrompts.SCHEMA_MISS_EXHAUSTED_CONTENT
+                if state.schema_miss_count >= 2
+                else DataQueryPrompts.SCHEMA_MISS_ABORT_CONTENT
+            )
         elif state.sql_before_schema:
             content = "为保证数据准确性，必须先调用 get_dataset_schema 获取数据集定义，再执行 SQL 查询。"
         elif state.sql_error:
@@ -2690,6 +2748,15 @@ class DataAgentRunner(BaseExecutor):
                         )
         else:
             details = truncate_for_context(str(output or ""), max_len=1000)
+        if tool_name == "get_dataset_schema":
+            keywords = (
+                self._schema_keywords_from_args(tool_args)
+                or state.last_schema_tool_keywords
+                or state.last_applied_schema_retry_keywords
+                or state.last_schema_keywords
+            )
+            if keywords:
+                details = f"[检索关键词] {keywords}\n\n{details}"
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
         if tool_name == "execute_sql_query" and self._is_sql_repeat_gate_block(output):
@@ -2713,7 +2780,12 @@ class DataAgentRunner(BaseExecutor):
                 f"{state.last_applied_schema_retry_keywords}"
             )
         if tool_name == "get_dataset_schema" and state.schema_needs_refinement:
-            details = f"{details}\n\n[系统检测] Schema 检索结果相关性不足，将换关键词重试。"
+            threshold = self._schema_similarity_threshold or 0.2
+            strong = self._schema_strong_confidence_threshold(threshold)
+            details = (
+                f"{details}\n\n[系统检测] Schema 检索结果相关性不足（最高置信度低于 {strong:.2f}，"
+                f"检索阈值 ragflow_similarity_threshold={threshold:.2f}），将换关键词重试。"
+            )
         if tool_name == "get_dataset_schema" and state.schema_ambiguous:
             details = f"{details}\n\n[系统检测] Schema 检索结果存在歧义，需要用户确认后再查数。"
         if tool_name == "get_dataset_schema" and state.no_authorized_schema:
@@ -2735,19 +2807,20 @@ class DataAgentRunner(BaseExecutor):
         return normalized.startswith("[Tool Error]") or normalized.startswith("[TOOL_ERROR]")
 
     def _apply_schema_tool_result(self, state: _DataRunState, output: Any) -> None:
+        threshold = self._schema_similarity_threshold or 0.2
         state.schema_service_unavailable = self._is_schema_service_unavailable(output)
         state.no_authorized_schema = self._is_no_authorized_schema(output)
         state.rag_not_synced = self._is_rag_not_synced(output)
         state.schema_miss = self._is_no_relevant_schema(output)
-        state.schema_needs_refinement = self._schema_needs_refinement(output)
+        state.schema_needs_refinement = self._schema_needs_refinement(output, similarity_threshold=threshold)
         state.schema_ambiguous, state.schema_ambiguous_reason = self._detect_schema_ambiguity(output)
-        if state.schema_miss:
+        weak_or_miss = state.schema_miss or state.schema_needs_refinement
+        if weak_or_miss:
             state.schema_miss_count += 1
         elif not (
             state.schema_service_unavailable
             or state.no_authorized_schema
             or state.rag_not_synced
-            or state.schema_needs_refinement
             or state.schema_ambiguous
             or not str(output or "").strip()
         ):
@@ -2851,18 +2924,20 @@ class DataAgentRunner(BaseExecutor):
             state.ratio_anomaly_reason = anomaly_reason
         return parsed_output, True
 
-    @staticmethod
-    def _schema_needs_refinement(tool_output: Any) -> bool:
+    def _schema_needs_refinement(self, tool_output: Any, *, similarity_threshold: float) -> bool:
         text = str(tool_output or "").strip()
         if not text:
             return False
+        if self._is_no_relevant_schema(tool_output):
+            return False
         if "Available Datasets (Please provide keywords" in text:
             return True
-        confidence_values = [
-            float(value)
-            for value in re.findall(r"置信度[:：]\s*([0-9]+(?:\.[0-9]+)?)", text)
-        ]
-        if confidence_values and max(confidence_values) < 0.45:
+        confidence_values = self._extract_schema_confidence_values(tool_output)
+        if not confidence_values:
+            return False
+        max_confidence = max(confidence_values)
+        strong_threshold = self._schema_strong_confidence_threshold(similarity_threshold)
+        if max_confidence < strong_threshold:
             return True
         return False
 

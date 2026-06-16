@@ -1793,6 +1793,7 @@ def test_low_confidence_schema_prefetch_requests_refinement(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-schema-refine", trace_buffer=[])
+    runner._schema_similarity_threshold = 0.2
     state = _DataRunState(requires_fresh_data=True)
 
     runner._apply_schema_tool_result(
@@ -1802,8 +1803,46 @@ def test_low_confidence_schema_prefetch_requests_refinement(data_config):
 
     assert state.schema_completed is False
     assert state.schema_needs_refinement is True
+    assert state.schema_miss_count == 1
     assert runner._build_repair_title(state) == "优化数据集定义检索"
     assert "相关性不足" in runner._build_repair_message(state)
+
+
+def test_marginal_schema_hit_below_strong_threshold_requests_refinement(data_config):
+    """向量刚过 ragflow_similarity_threshold 但低于 strong 阈值时视为弱命中。"""
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-marginal", trace_buffer=[])
+    runner._schema_similarity_threshold = 0.55
+    state = _DataRunState(requires_fresh_data=True)
+
+    runner._apply_schema_tool_result(
+        state,
+        "[置信度: 0.56]\n--- Source: ai_agent_scheduler_jobs.txt ---\n"
+        "table_name: ai_agent_scheduler_jobs\n",
+    )
+
+    assert state.schema_completed is False
+    assert state.schema_needs_refinement is True
+    assert state.schema_miss is False
+    assert state.schema_miss_count == 1
+
+
+def test_two_schema_misses_or_weak_hits_trigger_fatal(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-fatal-chain", trace_buffer=[])
+    runner._schema_similarity_threshold = 0.55
+    state = _DataRunState(requires_fresh_data=True)
+
+    runner._apply_schema_tool_result(state, "No relevant schema info found for '机房 列表'.")
+    runner._apply_schema_tool_result(
+        state,
+        "[置信度: 0.56]\n--- Source: ai_agent_scheduler_jobs.txt ---\n表: scheduler",
+    )
+
+    assert state.schema_miss_count == 2
+    assert runner._is_schema_fatal(state) is True
 
 
 def test_high_confidence_schema_candidates_require_clarification(data_config):
@@ -1830,6 +1869,7 @@ def test_schema_success_after_misses_recovers_schema_state(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-schema-recover", trace_buffer=[])
+    runner._schema_similarity_threshold = 0.2
     state = _DataRunState(requires_fresh_data=True)
 
     runner._apply_schema_tool_result(state, "No relevant schema info found for '用户 注册'.")
@@ -3863,6 +3903,44 @@ async def test_data_agent_runner_execute_retries_schema_miss_before_sql(
     assert any(event.get("title") == "重试检索数据集定义" for event in events if isinstance(event, dict))
 
 
+def test_format_tool_details_shows_schema_keywords(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-kw-log", trace_buffer=[])
+    state = _DataRunState(last_schema_tool_keywords="机房 列表")
+    details = runner._format_tool_details(
+        "get_dataset_schema",
+        "No relevant schema info found for '机房 列表'.",
+        state,
+        {"keywords": "机房 列表"},
+    )
+    assert "[检索关键词] 机房 列表" in details
+
+
+@pytest.mark.asyncio
+async def test_emit_final_guard_prefers_schema_miss_message(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.executors.prompts import DataQueryPrompts
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-guard-schema", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_miss_count=2,
+        blocked_content="这是被拦截的直接回答",
+    )
+
+    events = []
+    async for chunk in runner._emit_final_guard(state):
+        events.append(chunk)
+
+    assert any(event.get("title") == "阻止未查数回答" for event in events if isinstance(event, dict))
+    assert any(
+        DataQueryPrompts.SCHEMA_MISS_EXHAUSTED_CONTENT in str(event.get("content", ""))
+        for event in events
+        if event.get("content")
+    )
+
+
 @pytest.mark.asyncio
 async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords(
     data_config,
@@ -3886,7 +3964,7 @@ async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords
     )
     state = _DataRunState(
         requires_fresh_data=True,
-        schema_miss=True,
+        pending_schema_retry=True,
     )
     state.last_schema_keywords = "所有机房 列表"
     state.controlled_schema_retry_keywords = "机房 所有机房 机房列表"
@@ -3896,6 +3974,7 @@ async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords
     await wrapped.invoke({"keywords": "业务系统 告警"})
 
     assert observed_keywords == ["机房 所有机房 机房列表"]
+    assert state.pending_schema_retry is False
 
 
 @pytest.mark.asyncio

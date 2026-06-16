@@ -147,6 +147,14 @@ _DATA_QUERY_SIGNALS = [
 ]
 
 
+def looks_like_business_data_request(user_question: str) -> bool:
+    """轻量启发式：用户是否在请求结构化业务数据（供通用助手反幻觉门控兜底）。"""
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    return any(sig in q for sig in _DATA_QUERY_SIGNALS)
+
+
 def looks_like_knowledge_query(user_question: str) -> bool:
     """轻量启发式：用户是否在问 SOP/制度/操作指引（非结构化业务数据）。"""
     q = (user_question or "").strip().lower()
