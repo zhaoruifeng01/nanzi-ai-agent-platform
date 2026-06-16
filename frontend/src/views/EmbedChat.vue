@@ -2716,6 +2716,7 @@ const previewImage = (url: string) => {
   window.open(url, '_blank');
 };
 const isProcessing = ref(false);
+const datasetMenuLoading = ref(false);
 const isInitialLoading = ref(true);
 const messagesContainer = ref<HTMLDivElement | null>(null);
 // Scroll State
@@ -2873,6 +2874,7 @@ const connectionStatus = ref<"connected" | "disconnected" | "reconnecting">(
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
 let stallTimer: any = null;
+let datasetMenuThoughtTimer: ReturnType<typeof setInterval> | null = null;
 const showStalledPrompt = ref(false);
 const clearStallTimer = () => {
   if (stallTimer) {
@@ -3981,6 +3983,12 @@ const fetchConversationHistory = async (isLoadMore = false) => {
 };
 // --- Logic ---
 const showDatasetMenuNavigation = async () => {
+  if (datasetMenuLoading.value || isProcessing.value) {
+    return;
+  }
+  datasetMenuLoading.value = true;
+  isProcessing.value = true;
+
   if (!conversationId.value) {
     generateNewConversation();
   }
@@ -4008,6 +4016,14 @@ const showDatasetMenuNavigation = async () => {
     timestamp: new Date().toISOString(),
   });
   messages.value.push(navMsg.value);
+  datasetMenuThoughtTimer = setInterval(() => {
+    if (navMsg.value.thoughtStartTime) {
+      navMsg.value.thoughtDuration = (
+        (Date.now() - navMsg.value.thoughtStartTime) /
+        1000
+      ).toFixed(1);
+    }
+  }, 100);
   autoScrollEnabled.value = true;
   await nextTick();
   scrollToBottom(true);
@@ -4027,6 +4043,12 @@ const showDatasetMenuNavigation = async () => {
   } finally {
     navMsg.value.isThinking = false;
     navMsg.value.thinkingText = "";
+    if (datasetMenuThoughtTimer) {
+      clearInterval(datasetMenuThoughtTimer);
+      datasetMenuThoughtTimer = null;
+    }
+    datasetMenuLoading.value = false;
+    isProcessing.value = false;
     await nextTick();
     scrollToBottom(true);
   }

@@ -1557,11 +1557,13 @@ onUnmounted(() => {
 
 const userInput = ref("");
 const isProcessing = ref(false);
+const datasetMenuLoading = ref(false);
 const inputTextarea = ref<HTMLTextAreaElement | null>(null);
 const messagesContainer = ref<HTMLDivElement | null>(null);
 
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
+let datasetMenuThoughtTimer: ReturnType<typeof setInterval> | null = null;
 
 // Auto-scroll
 const isUserAtBottom = ref(true);
@@ -1591,6 +1593,12 @@ watch(
 );
 
 const showDatasetMenuNavigation = async () => {
+  if (datasetMenuLoading.value || isProcessing.value) {
+    return;
+  }
+  datasetMenuLoading.value = true;
+  isProcessing.value = true;
+
   if (!conversationId.value) {
     generateNewConversation();
   }
@@ -1618,6 +1626,14 @@ const showDatasetMenuNavigation = async () => {
     timestamp: new Date().toISOString(),
   });
   messages.value.push(navMsg.value);
+  datasetMenuThoughtTimer = setInterval(() => {
+    if (navMsg.value.thoughtStartTime) {
+      navMsg.value.thoughtDuration = (
+        (Date.now() - navMsg.value.thoughtStartTime) /
+        1000
+      ).toFixed(1);
+    }
+  }, 100);
   await nextTick();
   scrollToBottom(true);
 
@@ -1636,6 +1652,12 @@ const showDatasetMenuNavigation = async () => {
   } finally {
     navMsg.value.isThinking = false;
     navMsg.value.thinkingText = "";
+    if (datasetMenuThoughtTimer) {
+      clearInterval(datasetMenuThoughtTimer);
+      datasetMenuThoughtTimer = null;
+    }
+    datasetMenuLoading.value = false;
+    isProcessing.value = false;
     await nextTick();
     scrollToBottom(true);
   }

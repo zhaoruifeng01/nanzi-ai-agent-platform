@@ -47,22 +47,37 @@ def test_dataset_navigation_generation_prompt_uses_dataset_menu():
     prompt = DataQueryPrompts.dataset_navigation_generation_prompt(SAMPLE_MENU)
     assert "ai_agent_meta" in prompt
     assert "按 Dataset 逐个分组" in prompt
-    assert "至少 **8** 个按钮" in prompt
+    assert "| 表名 | 业务范围 | 示例问题 |" in prompt
+    assert "引用块" in prompt
     assert "{dataset_menu}" in prompt
 
 
 @pytest.mark.no_infrastructure
-def test_parse_dataset_blocks_and_fallback_buttons():
+def test_parse_dataset_blocks_captures_table_descriptions():
     blocks = DataQueryPrompts._parse_dataset_blocks(SAMPLE_MENU)
     assert len(blocks) == 2
     assert blocks[0]["name"] == "ai_agent_meta"
     assert blocks[0]["display_name"] == "智能体元数据"
     assert len(blocks[0]["tables"]) >= 4
+    first_table = blocks[0]["tables"][0]
+    assert first_table["term"] == "智能体访问日志"
+    assert first_table["desc"] == "记录 API 访问"
 
+
+@pytest.mark.no_infrastructure
+def test_build_dataset_navigation_fallback_uses_blockquote_and_table():
     markdown = DataQueryPrompts.build_dataset_navigation_fallback(SAMPLE_MENU)
     assert "#### 智能体元数据 (ai_agent_meta)" in markdown
-    assert markdown.count("(quick:") >= 8
+    # 概要与数据集介绍使用引用块
+    assert "> 您当前可访问 **2** 个数据集" in markdown
+    # 表名/业务范围/示例问题 表格
+    assert "| 表名 | 业务范围 | 示例问题 |" in markdown
+    assert "| --- | --- | --- |" in markdown
     assert "智能体访问日志" in markdown
+    assert "记录 API 访问" in markdown
+    # 示例问题列为内联 quick 按钮（无列表前缀）
+    assert "| 智能体访问日志 | 记录 API 访问 | [🙋" in markdown
+    assert "(quick:/dataset_menu)" in markdown
 
 
 @pytest.mark.no_infrastructure

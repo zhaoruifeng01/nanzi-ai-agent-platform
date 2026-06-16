@@ -80,6 +80,11 @@ class DataQueryPrompts:
     )
 
     @staticmethod
+    def quick_link_inline(label: str, target: str) -> str:
+        """内联 quick 追问按钮（无列表前缀，可放入表格单元格、引用块等行内场景）。"""
+        return f"[🙋 {label}](quick:{target.strip()})"
+
+    @staticmethod
     def quick_button(label: str, target: str) -> str:
         return f"- [🙋 {label}](quick:{target.strip()})"
 
@@ -147,32 +152,29 @@ class DataQueryPrompts:
 下方【可用数据集目录】与 ChatBI 智能体 system prompt 中的 `{{dataset_menu}}` **完全一致**，请仅基于其中信息生成导航，不要编造未列出的数据集、表或指标。
 
 任务：
-1. 用 1-2 句话概括用户当前可查询的数据范围（数据集数量、主要业务域）。
+1. 开头用**引用块**（`>` 开头）做整体概要：用 1-2 句话说明数据集数量、覆盖的主要业务域与整体能查询的能力范围。
 2. **按 Dataset 逐个分组展示**（每个 `- Dataset: xxx` 对应一个独立分组），**禁止**按 tags 合并多个数据集。
 3. 分组标题格式：`#### {{中文展示名}} ({{Dataset 英文名}})`；优先用 `Display Name`，无则用 Dataset 英文名。
-4. 每个分组内简要列出 Description；若有 `Table Details`，展示关键表的中文术语与备注摘要（可截断，不要整段粘贴所有表）。
-5. **为每个 Dataset 生成足够多的追问按钮**（见下方数量要求），必须结合该数据集的 Description、`Table Details` 中文备注、`Includes Tables` 业务术语与 `Metrics`。
-6. 文末提供全局快捷入口（含重新查看导航）。
-
-追问按钮数量要求（每个 Dataset 单独计算）：
-- 默认至少 **4** 个不同追问按钮。
-- `Includes Tables` 有 3-8 张表：至少 **6** 个按钮，尽量覆盖不同表术语。
-- `Includes Tables` 超过 8 张表：至少 **8** 个按钮，覆盖主要业务表（如访问日志、对话历史、执行链路、模型配置、权限等）。
-- 有 `Metrics` 时，至少 1 个按钮应围绕指标查询/趋势分析。
-- 每个按钮应指向**不同**业务对象或查询意图，避免重复。
+4. 标题下紧跟一段**引用块**（`>` 开头）介绍该数据集包含哪些内容、适合问哪类问题（结合 Description 与表业务范围）。
+5. 引用块之后用 **Markdown 表格**逐表展示该数据集的表，表头严格为：`| 表名 | 业务范围 | 示例问题 |`，并紧跟分隔行 `| --- | --- | --- |`。
+   - **表名**列：优先中文术语（`Table Details` 中的中文 term），无中文时才用物理表名。
+   - **业务范围**列：用一句话概括该表用途，来源于 `Table Details` 的中文备注（可适当精简，不要整段照抄）。
+   - **示例问题**列：放**一个内联 quick 追问按钮**，格式严格为 `[🙋 简短标签](quick:完整可发送问题)`，标签 6-12 字，`quick:` 内为引用真实表术语的完整中文问题。
+6. 有 `Metrics` 时，在该数据集表格下方补一行围绕指标的查询/趋势分析追问（同样用内联 quick 按钮）。
+7. 文末提供全局快捷入口（含重新查看导航）。
 
 命名与文案要求：
 - **有中文备注/术语时一律优先用中文**：Display Name、表 term、Table Details 中的中文描述。
-- 按钮标签用简短中文（6-12 字）；`quick:` 内为完整可发送的中文问题，引用真实表术语或指标名。
 - 不要输出英文物理表名，除非目录中没有中文术语。
 
 输出要求：
 - 只输出 Markdown，不要 JSON，不要用代码块包裹全文。
 - 以 `### 📚 数据能力导航` 开头，用 `---` 分隔区块。
-- 每个追问建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`。
-- 每个 Dataset 的追问按钮紧跟在该 Dataset 分组正文之后，再开始下一个 Dataset 分组。
-- 文末必须包含 `### 💬 您可能还想了解`，其中至少包含：`- [🙋 重新查看数据导航](quick:/dataset_menu)`。
-- quick 追问按钮区块必须放在整段回答最末尾。
+- 整体概要与每个数据集介绍必须使用引用块（`>` 开头）。
+- 表格的**示例问题**单元格内必须是内联 quick 按钮：`[🙋 简短标签](quick:完整可发送问题)`，**不要**在单元格内加 `- ` 列表前缀。
+- **严禁**在表格单元格（含 quick 问题）中出现竖线 `|`，以免破坏表格结构。
+- 文末必须包含 `### 💬 您可能还想了解`，其中至少包含一行列表项：`- [🙋 重新查看数据导航](quick:/dataset_menu)`。
+- quick 追问按钮（除表格内联示例外的“您可能还想了解”区块）必须放在整段回答最末尾。
 - 不要编造目录中未出现的具体数值、表名或指标名。
 
 【可用数据集目录】
@@ -208,15 +210,29 @@ class DataQueryPrompts:
                 current["description"] = line.split(":", 1)[1].strip()
             elif line.startswith("  Includes Tables:"):
                 tables_part = line.split(":", 1)[1].strip()
-                current["tables"] = [t.strip() for t in tables_part.split(",") if t.strip()]
+                current["tables"] = [
+                    {"term": t.strip(), "desc": ""}
+                    for t in tables_part.split(",")
+                    if t.strip()
+                ]
                 in_table_details = False
             elif line.strip() == "Table Details:":
                 in_table_details = True
             elif in_table_details and line.startswith("    - "):
                 detail = line[6:].strip()
-                term = detail.split(":", 1)[0].strip()
-                if term and term not in current["tables"]:
-                    current["tables"].append(term)
+                parts = detail.split(":", 1)
+                term = parts[0].strip()
+                desc = parts[1].strip() if len(parts) > 1 else ""
+                if not term:
+                    continue
+                existing = next(
+                    (t for t in current["tables"] if t.get("term") == term),
+                    None,
+                )
+                if existing is None:
+                    current["tables"].append({"term": term, "desc": desc})
+                elif desc and not existing.get("desc"):
+                    existing["desc"] = desc
             elif line.startswith("  Metrics:"):
                 metrics_part = line.split(":", 1)[1].strip()
                 current["metrics"] = [m.strip() for m in metrics_part.split(",") if m.strip()]
@@ -234,47 +250,65 @@ class DataQueryPrompts:
             return f"{display_name} ({name})"
         return name or "未命名数据集"
 
+    @staticmethod
+    def _sanitize_table_cell(text: str, *, max_len: int = 40) -> str:
+        """清洗内容用于 Markdown 表格单元格：折叠空白、转义竖线、限长。"""
+        cleaned = re.sub(r"\s+", " ", str(text or "").strip()).replace("|", "/")
+        if max_len and len(cleaned) > max_len:
+            cleaned = cleaned[:max_len] + "..."
+        return cleaned
+
     @classmethod
-    def _fallback_buttons_for_dataset(cls, block: dict[str, Any], *, max_buttons: int = 8) -> list[str]:
+    def _fallback_dataset_section(cls, block: dict[str, Any]) -> list[str]:
+        """单个数据集分组：标题 + 引用块介绍 + 表名/业务范围/示例问题 表格。"""
         heading = cls._dataset_heading(block)
-        buttons: list[str] = []
-        seen: set[str] = set()
+        lines: list[str] = [f"#### {heading}"]
 
-        def add_button(label: str, query: str) -> None:
-            target = query.strip()
-            if not target or target in seen or len(buttons) >= max_buttons:
-                return
-            seen.add(target)
-            buttons.append(cls.quick_button(label, target))
-
-        add_button(f"{heading}概览", f"查询{heading}的核心数据概览")
-
-        for metric in block.get("metrics") or []:
-            add_button(f"{metric}趋势", f"查询{heading}最近6个月的{metric}趋势")
-
-        table_count = len(block.get("tables") or [])
-        target_count = 4
-        if table_count > 8:
-            target_count = 8
-        elif table_count > 2:
-            target_count = 6
+        desc = re.sub(r"\s+", " ", str(block.get("description") or "").strip())
+        if desc and desc != "No description":
+            if len(desc) > 120:
+                desc = desc[:120] + "..."
+            lines.append(f"> {desc}")
+        else:
+            lines.append("> 暂无数据集描述，可点击下方示例问题快速查询。")
+        lines.append("")
 
         templates = (
-            ("最近记录", "查询{table}最近100条记录"),
+            ("查看明细", "查询{table}最近100条记录"),
             ("统计分析", "统计{table}的数据量和关键指标"),
             ("趋势变化", "分析{table}最近一个月的变化趋势"),
-            ("明细筛选", "查询{table}的明细数据并列出主要字段"),
+            ("字段概览", "查询{table}的主要字段与样例数据"),
         )
-        for table in block.get("tables") or []:
-            if len(buttons) >= target_count:
-                break
-            template = templates[len(buttons) % len(templates)]
-            add_button(
-                f"{table}{template[0]}",
-                template[1].format(table=table),
+        tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
+        if tables:
+            lines.append("| 表名 | 业务范围 | 示例问题 |")
+            lines.append("| --- | --- | --- |")
+            for idx, tbl in enumerate(tables):
+                term = str(tbl.get("term") or "").strip()
+                scope = cls._sanitize_table_cell(tbl.get("desc")) or "—"
+                label, query_tpl = templates[idx % len(templates)]
+                question = query_tpl.format(table=term).replace("|", "/")
+                example = cls.quick_link_inline(label, question)
+                lines.append(f"| {term} | {scope} | {example} |")
+
+        metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
+        if metrics:
+            metric = metrics[0]
+            short_name = (
+                str(block.get("display_name") or "").strip()
+                or str(block.get("name") or "").strip()
+                or "该数据集"
+            )
+            lines.append("")
+            lines.append(
+                "> 指标分析："
+                + cls.quick_link_inline(
+                    f"{metric}趋势",
+                    f"查询{short_name}最近6个月的{metric}趋势",
+                )
             )
 
-        return buttons
+        return lines
 
     @classmethod
     def build_dataset_navigation_fallback(cls, dataset_menu: str) -> str:
@@ -283,7 +317,7 @@ class DataQueryPrompts:
             return (
                 "### 📚 数据能力导航\n"
                 "---\n"
-                "当前账号暂无可查询的数据集。请联系管理员开通数据权限后，再使用 `/dataset_menu` 查看导航。\n\n"
+                "> 当前账号暂无可查询的数据集。请联系管理员开通数据权限后，再使用 `/dataset_menu` 查看导航。\n\n"
                 "### 💬 您可能还想了解\n"
                 "---\n"
                 f"{cls.quick_button('重新查看数据导航', '/dataset_menu')}\n"
@@ -294,19 +328,11 @@ class DataQueryPrompts:
             lines = [
                 "### 📚 数据能力导航",
                 "---",
-                f"您当前可访问 **{len(blocks)}** 个数据集。以下为基于目录自动整理的查询入口：",
+                f"> 您当前可访问 **{len(blocks)}** 个数据集，可通过下方各数据集表格中的示例问题快速发起查询。",
                 "",
             ]
             for block in blocks:
-                heading = cls._dataset_heading(block)
-                lines.append(f"#### {heading}")
-                desc = re.sub(r"\s+", " ", str(block.get("description") or "").strip())
-                if desc and desc != "No description":
-                    if len(desc) > 120:
-                        desc = desc[:120] + "..."
-                    lines.append(desc)
-                    lines.append("")
-                lines.extend(cls._fallback_buttons_for_dataset(block))
+                lines.extend(cls._fallback_dataset_section(block))
                 lines.append("")
 
             lines.extend(
