@@ -390,15 +390,38 @@ class AssistantAgentRunner(BaseExecutor):
     @staticmethod
     async def _create_tool_loop_detector() -> ToolLoopDetector:
         from app.services.config_service import ConfigService
+        from app.services.ai.runtime.tool_loop_detector import (
+            DEFAULT_GLOBAL_LIMIT,
+            DEFAULT_PING_PONG_THRESHOLD,
+        )
 
         enabled_raw = await ConfigService.get("agent_tool_loop_detection_enabled", "true")
         threshold_raw = await ConfigService.get("agent_tool_loop_fuse_threshold", "3")
+        ping_pong_raw = await ConfigService.get(
+            "agent_tool_loop_ping_pong_threshold", str(DEFAULT_PING_PONG_THRESHOLD)
+        )
+        global_limit_raw = await ConfigService.get(
+            "agent_tool_loop_global_limit", str(DEFAULT_GLOBAL_LIMIT)
+        )
         enabled = str(enabled_raw or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
             threshold = max(1, int(threshold_raw))
         except (TypeError, ValueError):
             threshold = 3
-        return ToolLoopDetector(threshold=threshold, enabled=enabled)
+        try:
+            ping_pong_threshold = max(0, int(ping_pong_raw))
+        except (TypeError, ValueError):
+            ping_pong_threshold = DEFAULT_PING_PONG_THRESHOLD
+        try:
+            global_limit = max(0, int(global_limit_raw))
+        except (TypeError, ValueError):
+            global_limit = DEFAULT_GLOBAL_LIMIT
+        return ToolLoopDetector(
+            threshold=threshold,
+            enabled=enabled,
+            ping_pong_threshold=ping_pong_threshold,
+            global_limit=global_limit,
+        )
 
     async def _execute_with_agentscope_native_agent(
         self,

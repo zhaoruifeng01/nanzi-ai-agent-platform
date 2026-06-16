@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOCK_TTL_SECONDS = 600
 DEFAULT_WAIT_SECONDS = 0.0
 DEFAULT_POLL_INTERVAL_SECONDS = 0.1
+# 追问等待模式（不是严格 FIFO 队列）：
+#   reject   —— 会话繁忙时立即拒绝（旧行为）。
+#   followup —— 有界等待当前 run 结束后再处理（改善"再搜一下"等连续追问体验）。
+DEFAULT_FOLLOWUP_WAIT_MODE = "followup"
+DEFAULT_FOLLOWUP_WAIT_SECONDS = 30.0
 
 
 class ConversationRunBusyError(RuntimeError):
@@ -49,6 +54,46 @@ class ConversationRunLane:
         except (TypeError, ValueError):
             return DEFAULT_WAIT_SECONDS
 
+    async def _followup_wait_mode(self) -> str:
+        from app.services.config_service import ConfigService
+
+        raw = await ConfigService.get("agent_session_followup_wait_mode", None)
+        if raw is None:
+            # Backward compatibility for configs created while this was named "queue mode".
+            raw = await ConfigService.get(
+                "agent_session_queue_mode",
+                DEFAULT_FOLLOWUP_WAIT_MODE,
+            )
+        mode = str(raw or "").strip().lower()
+        return mode if mode in {"reject", "followup"} else DEFAULT_FOLLOWUP_WAIT_MODE
+
+    async def _followup_wait_seconds(self) -> float:
+        from app.services.config_service import ConfigService
+
+        raw = await ConfigService.get("agent_session_followup_wait_seconds", None)
+        if raw is None:
+            raw = await ConfigService.get(
+                "agent_session_queue_followup_wait_seconds",
+                str(DEFAULT_FOLLOWUP_WAIT_SECONDS),
+            )
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return DEFAULT_FOLLOWUP_WAIT_SECONDS
+
+    async def _effective_wait_seconds(self) -> float:
+        """根据追问等待模式解析默认等待时长（未显式传入 wait_seconds 时使用）。
+
+        - 若显式配置 ``agent_session_run_lock_wait_seconds`` > 0，则优先采用（向后兼容/覆盖）。
+        - 否则按追问等待模式：reject → 0；followup → 有界等待当前 run 结束。
+        """
+        explicit = await self._wait_seconds()
+        if explicit > 0:
+            return explicit
+        if await self._followup_wait_mode() == "reject":
+            return 0.0
+        return await self._followup_wait_seconds()
+
     async def acquire(
         self,
         *,
@@ -71,7 +116,7 @@ class ConversationRunLane:
             return None
 
         ttl = ttl_seconds if ttl_seconds is not None else await self._ttl_seconds()
-        wait = wait_seconds if wait_seconds is not None else await self._wait_seconds()
+        wait = wait_seconds if wait_seconds is not None else await self._effective_wait_seconds()
         key = self._lock_key(user_id, conversation_id)
         token = trace_id or uuid.uuid4().hex
         deadline = asyncio.get_running_loop().time() + wait

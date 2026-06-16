@@ -2485,6 +2485,42 @@ def test_tool_loop_fuse_does_not_trigger_after_schema_progress(data_config):
     assert state.tool_call_signatures == {}
 
 
+def test_data_agent_runner_tool_loop_fuse_triggers_on_ping_pong(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-tool-loop-ping-pong", trace_buffer=[])
+    state = _DataRunState()
+
+    for tool_name, tool_args in (
+        ("get_dataset_schema", {"keywords": "机房"}),
+        ("execute_sql_query", {"sql": "select count(*) from room"}),
+        ("get_dataset_schema", {"keywords": "机房 资源"}),
+        ("execute_sql_query", {"sql": "select count(*) from room where status = 1"}),
+        ("get_dataset_schema", {"keywords": "机房 状态"}),
+        ("execute_sql_query", {"sql": "select status, count(*) from room group by status"}),
+    ):
+        runner._record_tool_call_signature(state, tool_name, tool_args)
+
+    assert state.tool_loop_fuse_triggered is True
+    assert state.halt_current_react is True
+    assert "交替调用" in state.tool_loop_fuse_reason
+    assert runner._current_repair_kind(state) == "tool_loop_fuse"
+
+
+def test_data_agent_runner_tool_loop_fuse_triggers_on_global_limit(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-tool-loop-global", trace_buffer=[])
+    state = _DataRunState()
+
+    for index in range(30):
+        runner._record_tool_call_signature(state, f"tool_{index}", {"n": index})
+
+    assert state.tool_loop_fuse_triggered is True
+    assert state.halt_current_react is True
+    assert "工具调用总数" in state.tool_loop_fuse_reason
+
+
 def test_data_agent_runner_detects_negative_duration_anomaly(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
@@ -2643,6 +2679,27 @@ async def test_data_agent_runner_syncs_data_run_state_before_interrupt(data_conf
     assert state.schema_completed is True
     assert captured_states
     assert captured_states[0]["data_run_state"]["schema_completed"] is True
+
+
+def test_data_agent_runner_restores_tool_loop_detector_from_pending_state(data_config):
+    from dataclasses import asdict
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
+
+    original = _DataRunState()
+    original.tool_loop_detector.record("get_dataset_schema", {"keywords": "机房"})
+    pending_state = {
+        "system_content": "system",
+        "max_steps": 5,
+        "data_run_state": asdict(original),
+    }
+
+    restored, stream_meta = DataAgentRunner._pending_state_to_data_run_state(pending_state)
+
+    assert isinstance(restored.tool_loop_detector, ToolLoopDetector)
+    assert restored.tool_loop_detector.total_calls == 1
+    assert stream_meta == {"system_content": "system", "max_steps": 5}
 
 
 @pytest.mark.asyncio

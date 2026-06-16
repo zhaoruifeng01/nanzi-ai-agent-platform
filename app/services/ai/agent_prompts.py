@@ -128,6 +128,11 @@ class AgentServicePrompts:
     # 固定错误/拒绝话术
     EMPTY_REQUEST = "请求内容不能为空。"
     NO_AGENT_CONFIG = "未找到匹配的智能体配置。"
+    # 模型本轮未产出任何可见文本时的兜底话术（避免前端出现空白回复）
+    EMPTY_RESPONSE_FALLBACK = (
+        "抱歉，本次我没有生成有效回复，可能是模型临时波动或上下文过长导致。"
+        "请重试一次，或把问题描述得更具体一些。"
+    )
 
     # 主动记忆回忆意图关键词
     RECALL_INTENT_KEYWORDS = [

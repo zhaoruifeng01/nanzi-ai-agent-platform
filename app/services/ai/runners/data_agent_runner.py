@@ -63,6 +63,7 @@ from app.services.ai.runtime.agentscope.tools import (
     build_toolkit,
     runtime_tool_spec_from_legacy_tool,
 )
+from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.config_service import ConfigService
 
@@ -189,6 +190,7 @@ class _DataRunState:
     duration_anomaly: bool = False       # 时延/时长/时间差字段结果明显反常，触发 SQL 复核
     duration_anomaly_reason: str = ""
     tool_call_signatures: dict[str, int] = field(default_factory=dict)
+    tool_loop_detector: ToolLoopDetector = field(default_factory=ToolLoopDetector)
     tool_loop_fuse_triggered: bool = False
     tool_loop_fuse_reason: str = ""
     schema_miss_count: int = 0           # 累计 schema_miss 次数（含 prefetch + ReAct 内）
@@ -458,6 +460,14 @@ class DataAgentRunner(BaseExecutor):
         signature = self._tool_call_signature(tool_name, tool_args)
         if self._tool_call_made_progress(state, tool_name):
             state.tool_call_signatures.pop(signature, None)
+            state.tool_loop_detector = ToolLoopDetector()
+            return
+        verdict = state.tool_loop_detector.record(tool_name, tool_args)
+        count = verdict.count
+        if verdict.fused:
+            state.tool_loop_fuse_triggered = True
+            state.halt_current_react = True
+            state.tool_loop_fuse_reason = verdict.message
             return
         count = state.tool_call_signatures.get(signature, 0) + 1
         state.tool_call_signatures[signature] = count
@@ -2006,6 +2016,15 @@ class DataAgentRunner(BaseExecutor):
         raw = pending_state.get("data_run_state") or {}
         valid_keys = {field.name for field in fields(_DataRunState)}
         kwargs = {key: raw[key] for key in valid_keys if key in raw}
+        detector_raw = kwargs.get("tool_loop_detector")
+        if isinstance(detector_raw, dict):
+            detector_keys = {field.name for field in fields(ToolLoopDetector)}
+            try:
+                kwargs["tool_loop_detector"] = ToolLoopDetector(
+                    **{key: detector_raw[key] for key in detector_keys if key in detector_raw}
+                )
+            except Exception:
+                kwargs["tool_loop_detector"] = ToolLoopDetector()
         data_state = _DataRunState(**kwargs)
         stream_meta = {
             key: pending_state[key]

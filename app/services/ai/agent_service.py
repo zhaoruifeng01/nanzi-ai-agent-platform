@@ -121,6 +121,9 @@ class AgentService:
                             max_context = 20
 
                         context_history = server_history[-max_context:] if server_history else []
+                        context_history = await self._maybe_compact_overflow(
+                            server_history, context_history
+                        )
                         messages = context_history + [user_msg]
                     else:
                         from app.services.config_service import ConfigService
@@ -129,7 +132,8 @@ class AgentService:
                             max_context = int(max_context)
                         except ValueError:
                             max_context = 20
-                        messages = server_history[-max_context:] if server_history else []
+                        window = server_history[-max_context:] if server_history else []
+                        messages = await self._maybe_compact_overflow(server_history, window)
 
                 from app.utils.skill_metadata import enrich_messages_with_skill_meta
 
@@ -177,6 +181,60 @@ class AgentService:
                 "content": "当前会话正在处理中，请稍后再试。",
             }
             return
+
+    @staticmethod
+    async def _maybe_compact_overflow(
+        full_history: List[Dict[str, Any]],
+        window: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """超出上下文窗口时，把被丢弃的旧消息压缩成一条 system 摘录注入窗口最前。
+
+        确定性、无额外 LLM 调用；由配置 ``agent_context_compaction_enabled`` 控制（默认开启）。
+        """
+        if not full_history or len(full_history) <= len(window):
+            return window
+        try:
+            from app.services.config_service import ConfigService
+
+            enabled_raw = await ConfigService.get("agent_context_compaction_enabled", "true")
+            if str(enabled_raw or "").strip().lower() not in {"1", "true", "yes", "on"}:
+                return window
+            max_chars_raw = await ConfigService.get("agent_context_compaction_max_chars", "1200")
+            try:
+                max_chars = max(200, int(max_chars_raw))
+            except (TypeError, ValueError):
+                max_chars = 1200
+
+            from app.services.ai.context_compaction import apply_context_compaction
+
+            compacted = apply_context_compaction(
+                full_history=full_history,
+                window=window,
+                max_chars=max_chars,
+            )
+            if len(compacted) != len(window):
+                logger.info(
+                    "[Compaction] Injected overflow digest: dropped=%d kept=%d",
+                    len(full_history) - len(window),
+                    len(window),
+                )
+            return compacted
+        except Exception as exc:
+            logger.warning("[Compaction] Failed to compact overflow history: %s", exc)
+            return window
+
+    @staticmethod
+    async def _maybe_empty_response_fallback() -> Optional[str]:
+        """模型本轮无可见文本时返回兜底话术；由配置开关控制（默认开启）。"""
+        try:
+            from app.services.config_service import ConfigService
+
+            enabled_raw = await ConfigService.get("agent_empty_response_fallback_enabled", "true")
+            if str(enabled_raw or "").strip().lower() not in {"1", "true", "yes", "on"}:
+                return None
+        except Exception:
+            pass
+        return AgentServicePrompts.EMPTY_RESPONSE_FALLBACK
 
     async def _run_chat_turn_stream(
         self,
@@ -742,6 +800,16 @@ class AgentService:
                     elif chunk.get("type") == "error" or chunk.get("status") == "error":
                         execution_status = "error"
                     yield chunk
+
+            # --- 空响应兜底：本轮成功但模型未产出任何可见文本时，发一条兜底话术，避免前端空白 ---
+            if (
+                execution_status == "success"
+                and not (full_response_content or "").strip()
+            ):
+                fallback_text = await self._maybe_empty_response_fallback()
+                if fallback_text:
+                    full_response_content = fallback_text
+                    yield {"content": fallback_text, "status": "success"}
 
             # 聚合本轮消耗的 Token 并 yield meta 给前端，同时传给 add_message
             p_tokens, c_tokens, t_tokens = 0, 0, 0
