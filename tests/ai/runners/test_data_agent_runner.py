@@ -709,7 +709,9 @@ async def test_data_agent_runner_reports_missing_reusable_result(data_config, mo
         events.append(chunk)
 
     assert any(chunk.get("title") == "缺少可复用查询结果" for chunk in events)
-    assert any(chunk.get("content") == DataQueryPrompts.NO_REUSABLE_RESULT for chunk in events)
+    content_chunks = [chunk.get("content", "") for chunk in events if chunk.get("content")]
+    assert any("quick:" in content for content in content_chunks)
+    assert any("结构化查询结果" in content for content in content_chunks)
 
 
 @pytest.mark.asyncio
@@ -740,6 +742,18 @@ async def test_data_agent_runner_clarifies_non_data_request_without_native_agent
         "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
         fake_resolve,
     )
+    async def fake_clarification(self, **kwargs):
+        return (
+            "我可以帮您查询业务数据。\n\n"
+            "### 💬 您可以这样继续\n"
+            "- [🙋 查询 PUE](quick:查询本月各机房 PUE 趋势)"
+        )
+
+    monkeypatch.setattr(
+        DataAgentRunner,
+        "_generate_clarification_content",
+        fake_clarification,
+    )
     runner = DataAgentRunner(
         config=data_config,
         trace_id="trace-clarify",
@@ -755,7 +769,7 @@ async def test_data_agent_runner_clarifies_non_data_request_without_native_agent
 
     assert any(chunk.get("title") == "ChatBI 请求类别分析结果" for chunk in events)
     assert any(chunk.get("title") == "需要补充查数信息" for chunk in events)
-    assert any("请告诉我想查询的业务数据" in chunk.get("content", "") for chunk in events)
+    assert any("quick:" in chunk.get("content", "") for chunk in events)
 
 
 @pytest.mark.asyncio

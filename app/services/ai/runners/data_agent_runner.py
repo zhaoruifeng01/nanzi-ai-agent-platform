@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ from app.schemas.agent import AgentExecutionStep, ChatConfig
 from app.services.ai.data_query_turn_classifier import (
     DataQueryTurnType,
     data_query_turn_type_label,
+    history_shows_recent_data_result,
     resolve_data_query_turn_classification,
 )
 from app.services.ai.config import AgentConfigProvider
@@ -33,9 +35,11 @@ from app.services.ai.multimodal_support import (
     resolve_runtime_model_name,
 )
 from app.services.ai.runtime.agentscope.chat import (
+    chat_client_from_handle,
     compat_to_runtime_messages,
     to_agentscope_messages,
 )
+from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
 from app.services.ai.runtime.agentscope.agent_runtime import (
     build_model_config,
     build_tools_fingerprint,
@@ -46,7 +50,7 @@ from app.services.ai.runtime.agentscope.event_stream import (
     map_standard_agentscope_event,
 )
 from app.services.ai.runtime.agentscope.stream_reconcile import (
-    collapse_repeated_reply,
+    finalize_visible_reply,
     truncate_for_context,
 )
 from app.services.ai.runtime.agentscope.session_lock import (
@@ -374,12 +378,48 @@ class DataAgentRunner(BaseExecutor):
             logger.warning("[DataAgentRunner] Failed to load last data result: %s", e)
             return None
 
+    async def _load_last_data_result_with_retry(
+        self,
+        *,
+        attempts: int = 3,
+        delay_seconds: float = 0.15,
+    ) -> Optional[Dict[str, Any]]:
+        for attempt in range(attempts):
+            result = await self._load_last_data_result()
+            if result:
+                return result
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay_seconds)
+        return None
+
+    @staticmethod
+    def _normalize_rows_for_followup_save(parsed_tool_output: Any) -> Any:
+        if isinstance(parsed_tool_output, list):
+            return parsed_tool_output
+        if isinstance(parsed_tool_output, dict):
+            return parsed_tool_output
+        return None
+
+    @staticmethod
+    def _latest_data_assistant_excerpt(history: List[Dict[str, str]], *, max_chars: int = 12000) -> str:
+        for msg in reversed(history[:-1] or history):
+            if msg.get("role") != "assistant":
+                continue
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            if len(content) > max_chars:
+                return content[:max_chars] + "\n... [对话展示过长已截断]"
+            return content
+        return ""
+
     async def _save_last_data_result_for_followups(
         self,
         tool_args: Dict[str, Any],
         parsed_tool_output: Any,
     ) -> None:
-        if not self.conversation_id or not isinstance(parsed_tool_output, (list, dict)):
+        normalized = self._normalize_rows_for_followup_save(parsed_tool_output)
+        if not self.conversation_id or normalized is None:
             return
         user_id = self._current_user_id()
         if not user_id:
@@ -389,7 +429,7 @@ class DataAgentRunner(BaseExecutor):
             "sql": tool_args.get("sql") or tool_args.get("query"),
             "data_source": tool_args.get("data_source"),
             "dataset_name": tool_args.get("dataset_name"),
-            "rows": parsed_tool_output,
+            "rows": normalized,
             "saved_at": datetime.now().isoformat(),
             "trace_id": self.trace_id,
         }
@@ -809,7 +849,7 @@ class DataAgentRunner(BaseExecutor):
             (str(getattr(message, "content", "")) for message in reversed(runtime_messages)),
             "",
         )
-        last_data_result_for_turn = await self._load_last_data_result()
+        last_data_result_for_turn = await self._load_last_data_result_with_retry()
         turn_cls, turn_intent_info, turn_elapsed_ms = await resolve_data_query_turn_classification(
             user_question,
             history,
@@ -833,6 +873,8 @@ class DataAgentRunner(BaseExecutor):
         }
 
         if turn_cls.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT:
+            if not last_data_result_for_turn:
+                last_data_result_for_turn = await self._load_last_data_result_with_retry()
             if last_data_result_for_turn:
                 async for chunk in self._synthesize_from_last_data_result(
                     runtime_messages,
@@ -841,30 +883,26 @@ class DataAgentRunner(BaseExecutor):
                     last_data_result_for_turn,
                 ):
                     yield chunk
+            elif history_shows_recent_data_result(history):
+                async for chunk in self._synthesize_from_history_data_result(
+                    runtime_messages,
+                    self.config.system_prompt or "",
+                    user_question,
+                    history,
+                ):
+                    yield chunk
             else:
-                yield {
-                    "type": "log",
-                    "id": f"reuse_miss_{uuid.uuid4().hex[:8]}",
-                    "title": "缺少可复用查询结果",
-                    "details": "检测到本轮是基于上一轮结果的分析/可视化请求，但当前会话没有保存的结构化查询结果。",
-                    "status": "error",
-                }
-                yield {"content": DataQueryPrompts.NO_REUSABLE_RESULT}
+                async for chunk in self._yield_missing_reusable_result_clarification(history):
+                    yield chunk
             return
 
         if turn_cls.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA:
-            yield {
-                "type": "log",
-                "id": f"clarify_{uuid.uuid4().hex[:8]}",
-                "title": "需要补充查数信息",
-                "details": turn_cls.reasoning,
-                "status": "warning",
-                "category": "intent",
-            }
-            yield {
-                "content": DataQueryPrompts.CLARIFICATION_OR_NON_DATA,
-                "status": "success",
-            }
+            async for chunk in self._yield_contextual_clarification(
+                user_question=user_question,
+                history=history,
+                reasoning=turn_cls.reasoning,
+            ):
+                yield chunk
             return
 
         tools = await self._resolve_runtime_tools_from_config()
@@ -1150,7 +1188,7 @@ class DataAgentRunner(BaseExecutor):
             ):
                 yield chunk
         if state.full_content:
-            deduped = collapse_repeated_reply(state.full_content)
+            deduped = finalize_visible_reply(state.full_content)
             if deduped != state.full_content:
                 logger.warning(
                     "[DataAgentRunner] Collapsed duplicated main-loop content (%d -> %d chars)",
@@ -1242,7 +1280,7 @@ class DataAgentRunner(BaseExecutor):
                 ):
                     yield chunk
             if state.full_content:
-                deduped = collapse_repeated_reply(state.full_content)
+                deduped = finalize_visible_reply(state.full_content)
                 if deduped != state.full_content:
                     logger.warning(
                         "[DataAgentRunner] Collapsed duplicated repair-loop content (%d -> %d chars)",
@@ -1709,6 +1747,88 @@ class DataAgentRunner(BaseExecutor):
             logger.warning("[DataAgentRunner] Failed to rewrite standalone data query: %s", e)
             return q
 
+    async def _generate_clarification_content(
+        self,
+        *,
+        user_question: str,
+        history: List[Dict[str, str]],
+        reasoning: str,
+    ) -> str:
+        history_excerpt = DataQueryPrompts.format_clarification_history(history)
+        fallback = DataQueryPrompts.build_clarification_fallback(
+            user_question,
+            reasoning,
+            history_excerpt,
+        )
+        try:
+            llm = await AgentConfigProvider.get_configured_llm(
+                streaming=False,
+                config=self.config,
+            )
+            chat_client = chat_client_from_handle(llm)
+            content = await chat_client.generate_text(
+                [
+                    RuntimeMessage(
+                        role="system",
+                        content=[
+                            RuntimeContentBlock(
+                                type="text",
+                                text=DataQueryPrompts.clarification_generation_prompt(
+                                    user_question,
+                                    reasoning,
+                                    history_excerpt,
+                                ),
+                            )
+                        ],
+                    )
+                ]
+            )
+            cleaned = str(content or "").strip()
+            if cleaned and DataQueryPrompts.has_quick_suggestions(cleaned):
+                return finalize_visible_reply(cleaned, collapse_duplicates=False)
+        except Exception as e:
+            logger.warning("[DataAgentRunner] Contextual clarification generation failed: %s", e)
+        return finalize_visible_reply(fallback, collapse_duplicates=False)
+
+    async def _yield_contextual_clarification(
+        self,
+        *,
+        user_question: str,
+        history: List[Dict[str, str]],
+        reasoning: str,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        yield {
+            "type": "log",
+            "id": f"clarify_{uuid.uuid4().hex[:8]}",
+            "title": "需要补充查数信息",
+            "details": reasoning,
+            "status": "warning",
+            "category": "intent",
+        }
+        content = await self._generate_clarification_content(
+            user_question=user_question,
+            history=history,
+            reasoning=reasoning,
+        )
+        yield {"content": content, "status": "success"}
+
+    async def _yield_missing_reusable_result_clarification(
+        self,
+        history: List[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        history_excerpt = DataQueryPrompts.format_clarification_history(history)
+        yield {
+            "type": "log",
+            "id": f"reuse_miss_{uuid.uuid4().hex[:8]}",
+            "title": "缺少可复用查询结果",
+            "details": "检测到本轮是基于上一轮结果的分析/可视化请求，但当前会话没有保存的结构化查询结果。",
+            "status": "error",
+        }
+        yield {
+            "content": DataQueryPrompts.build_missing_reusable_result_fallback(history_excerpt),
+            "status": "success",
+        }
+
     async def _synthesize_from_last_data_result(
         self,
         runtime_messages: List[Any],
@@ -1797,7 +1917,7 @@ class DataAgentRunner(BaseExecutor):
             }
             yield {"content": fallback}
 
-        deduped_synthesis = collapse_repeated_reply(full_synthesis_content)
+        deduped_synthesis = finalize_visible_reply(full_synthesis_content)
         if deduped_synthesis != full_synthesis_content:
             logger.warning(
                 "[DataAgentRunner] Collapsed duplicated follow-up synthesis output (len %s -> %s)",
@@ -1818,6 +1938,119 @@ class DataAgentRunner(BaseExecutor):
                 model=str(getattr(final_llm, "model_name", self.config.synthesis_model_name or self.config.model_name)),
                 temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
                 tool_output={"content": full_synthesis_content, "reused_last_data_result": True},
+                raw_log=full_synthesis_content,
+                prompt_tokens=synthesis_tokens["prompt_tokens"],
+                completion_tokens=synthesis_tokens["completion_tokens"],
+                total_tokens=synthesis_tokens["total_tokens"],
+                execution_time_ms=(time.time() - start_synthesis) * 1000,
+                timestamp=datetime.fromtimestamp(start_synthesis),
+            )
+        )
+
+    async def _synthesize_from_history_data_result(
+        self,
+        runtime_messages: List[Any],
+        system_prompt: str,
+        user_question: str,
+        history: List[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        start_synthesis = time.time()
+        yield {
+            "type": "log",
+            "id": f"reuse_hist_{uuid.uuid4().hex[:8]}",
+            "title": "复用上一轮查询结果",
+            "details": (
+                "检测到本轮是基于上一轮结果的分析/可视化请求；结构化缓存暂不可用，"
+                "已基于最近对话中的查数展示继续处理。"
+            ),
+            "status": "success",
+        }
+        yield {"type": "thinking", "status": "continuing"}
+
+        history_excerpt = self._latest_data_assistant_excerpt(history)
+        prompt_without_menu = (system_prompt or "").replace(
+            "{dataset_menu}",
+            DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER,
+        )
+
+        from app.services.ai.runtime.agentscope.compat import HumanMessage
+
+        synthesis_messages = [SystemMessage(content=prompt_without_menu)]
+        synthesis_messages.extend(
+            message
+            for message in runtime_messages[-6:-1]
+            if isinstance(message, HumanMessage) and getattr(message, "content", None)
+        )
+        synthesis_messages.append(
+            HumanMessage(
+                content=DataQueryPrompts.followup_synthesis_from_history_user_message(
+                    user_question,
+                    history_excerpt,
+                )
+            )
+        )
+
+        final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+        full_synthesis_content = ""
+        content_emitted = False
+        generation_start = None
+        gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
+        last_synthesis_chunk = None
+        try:
+            async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
+                last_synthesis_chunk = chunk
+                content = str(getattr(chunk, "content", "") or "")
+                if not content:
+                    continue
+                if not content_emitted:
+                    generation_start = time.time()
+                    content_emitted = True
+                    yield {
+                        "type": "log",
+                        "id": gen_log_id,
+                        "title": "✨ 开始生成回复",
+                        "status": "pending",
+                        "started_at": int(generation_start * 1000),
+                    }
+                full_synthesis_content += content
+                yield {"content": content}
+            if generation_start:
+                yield {
+                    "type": "log",
+                    "id": gen_log_id,
+                    "title": "✨ 生成回复完成",
+                    "status": "success",
+                    "execution_time_ms": (time.time() - generation_start) * 1000,
+                }
+        except Exception as syn_err:
+            logger.error("[DataAgentRunner] History follow-up synthesis failed: %s", syn_err)
+            fallback = DataQueryPrompts.FOLLOWUP_SYNTHESIS_FALLBACK
+            full_synthesis_content = fallback
+            yield {
+                "type": "log",
+                "id": f"syn_err_{uuid.uuid4().hex[:6]}",
+                "title": "⚠️ 总结生成失败",
+                "details": str(syn_err),
+                "status": "error",
+            }
+            yield {"content": fallback}
+
+        deduped_synthesis = finalize_visible_reply(full_synthesis_content)
+        if deduped_synthesis != full_synthesis_content:
+            full_synthesis_content = deduped_synthesis
+            if content_emitted:
+                yield {"type": "retraction", "content": full_synthesis_content}
+
+        synthesis_tokens = extract_tokens_from_message(last_synthesis_chunk)
+        self._increment_step()
+        self.trace_buffer.append(
+            AgentExecutionStep(
+                step_number=self.step_counter,
+                event_type="synthesis",
+                agent_name=self.config.agent_name,
+                model=str(getattr(final_llm, "model_name", self.config.synthesis_model_name or self.config.model_name)),
+                temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
+                tool_output={"content": full_synthesis_content, "reused_history_data_result": True},
                 raw_log=full_synthesis_content,
                 prompt_tokens=synthesis_tokens["prompt_tokens"],
                 completion_tokens=synthesis_tokens["completion_tokens"],
@@ -1916,7 +2149,7 @@ class DataAgentRunner(BaseExecutor):
             }
             yield {"content": fallback}
 
-        deduped_synthesis = collapse_repeated_reply(full_synthesis_content)
+        deduped_synthesis = finalize_visible_reply(full_synthesis_content)
         if deduped_synthesis != full_synthesis_content:
             logger.warning(
                 "[DataAgentRunner] Collapsed duplicated cached SQL synthesis output (len %s -> %s)",
@@ -2874,7 +3107,7 @@ class DataAgentRunner(BaseExecutor):
                 cached_text = parts[1]
             state.last_successful_sql_output = cached_text
             parsed = self._try_parse_json_output(cached_text)
-            return parsed, False
+            return parsed, bool(self._is_structured_sql_result(parsed))
         if self._is_sql_static_gate_block(output):
             state.sql_static_risk = True
             state.sql_error = False
@@ -2934,7 +3167,7 @@ class DataAgentRunner(BaseExecutor):
         if duration_anomaly:
             state.duration_anomaly = True
             state.duration_anomaly_reason = duration_reason
-            return parsed_output, False
+            return parsed_output, True
         state.duration_anomaly = False
         state.duration_anomaly_reason = ""
         ratio_anomaly, anomaly_reason = self._detect_ratio_anomaly(parsed_output)

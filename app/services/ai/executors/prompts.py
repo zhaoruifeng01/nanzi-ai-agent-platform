@@ -13,6 +13,9 @@
 """
 from __future__ import annotations
 
+import re
+from typing import Dict, List, Optional
+
 
 class SharedPrompts:
     """多个执行器复用的提示词片段。"""
@@ -23,6 +26,13 @@ class SharedPrompts:
         "分隔行每列至少使用三个连字符（例如 `| ID | 名称 |\\n| --- | --- |`）。"
         "禁止把整张表压成一行，禁止使用 `||` 连接单元格。"
         "若数据行较多或移动端阅读不友好，请优先使用分组列表/要点列表，只展示关键字段与摘要。"
+    )
+
+    QUICK_SUGGESTIONS_PLACEMENT = (
+        "【Quick 追问建议位置 (MUST)】\n"
+        "凡输出 `quick:` 协议追问按钮（如「您可能还想了解」「您可以这样继续」），"
+        "该区块必须放在**整段回答的最后**，位于所有正文、表格、```chart``` 图表与数据来源说明之后。\n"
+        "禁止在图表或后续分析段落之前提前输出 quick 按钮。"
     )
 
     # 非图片附件信息块的标题（紧跟在用户消息后）
@@ -63,11 +73,189 @@ class DataQueryPrompts:
     # 缺少可复用查询结果时的回复
     NO_REUSABLE_RESULT = "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"
 
-    # ChatBI 入口没有足够查数意图时的回复
+    # ChatBI 入口没有足够查数意图时的回复（仅作 LLM/规则生成失败兜底）
     CLARIFICATION_OR_NON_DATA = (
         "请告诉我想查询的业务数据、指标、维度或时间范围。"
         "例如：查询本月各机房 PUE 趋势、统计最近一周告警记录，或基于刚才的查询结果继续分析。"
     )
+
+    @staticmethod
+    def quick_button(label: str, target: str) -> str:
+        return f"- [🙋 {label}](quick:{target.strip()})"
+
+    @staticmethod
+    def has_quick_suggestions(text: str) -> bool:
+        return bool(re.search(r"\(quick:", str(text or ""), flags=re.IGNORECASE))
+
+    @staticmethod
+    def format_clarification_history(history: Optional[List[Dict[str, str]]], *, max_chars: int = 1800) -> str:
+        if not history:
+            return "无"
+        lines: list[str] = []
+        for msg in history[-8:]:
+            role = msg.get("role") or ""
+            if role not in ("user", "assistant"):
+                continue
+            content = re.sub(r"\s+", " ", str(msg.get("content") or "")).strip()
+            if not content:
+                continue
+            if len(content) > 320:
+                content = content[:320] + "..."
+            role_name = "用户" if role == "user" else "助手"
+            lines.append(f"{role_name}: {content}")
+        excerpt = "\n".join(lines) if lines else "无"
+        if len(excerpt) > max_chars:
+            return excerpt[:max_chars] + "\n... [对话过长已截断]"
+        return excerpt
+
+    @staticmethod
+    def clarification_generation_prompt(
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str,
+    ) -> str:
+        return f"""你是 ChatBI 数据查询助手的澄清引导模块。
+
+用户当前问题还不足以直接查数，或无法安全复用上一轮结果。请结合最近对话和系统判断原因：
+1. 用 1-2 句话说明**具体还缺什么信息**或**为什么需要用户补充**（不要泛泛而谈）。
+2. 给出 2-3 个结合上下文的追问建议，供用户一键点击发送。
+
+输出要求：
+- 只输出 Markdown，不要 JSON，不要代码块包裹全文。
+- 正文后必须包含标题 `### 💬 您可以这样继续`。
+- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`。
+- `quick:` 括号内必须是完整、可直接发送的中文问题，可包含具体业务对象/指标/时间范围。
+- 优先结合最近对话中的业务对象、指标、时间范围定制建议；没有上下文时再给通用查数示例。
+- 不要编造对话中未出现的具体数值。
+- quick 追问按钮区块必须放在整段回答最末尾，位于所有图表之后。
+
+【系统判断原因】
+{reasoning or "需要用户补充查数信息"}
+
+【最近对话】
+{history_excerpt}
+
+【当前用户问题】
+{user_question}
+"""
+
+    @classmethod
+    def build_clarification_fallback(
+        cls,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str = "",
+    ) -> str:
+        reasoning_text = str(reasoning or "")
+        history_text = str(history_excerpt or "")
+        last_user_topic = cls._extract_last_user_topic(history_text, user_question)
+        buttons: list[str] = []
+
+        if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
+            lead = (
+                "我还不太确定您想基于哪份数据继续分析或可视化。"
+                "您可以补充具体指标/图表类型，或直接选择下面的建议："
+            )
+            if last_user_topic:
+                buttons.append(
+                    cls.quick_button(
+                        f"基于刚才关于「{last_user_topic}」的结果可视化",
+                        f"对刚才关于{last_user_topic}的查询结果做可视化分析",
+                    )
+                )
+            buttons.extend([
+                cls.quick_button("基于刚才的查询结果继续分析", "基于刚才的查询结果继续分析"),
+                cls.quick_button("查询本月业务指标趋势", "查询本月核心业务指标趋势"),
+            ])
+        elif any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
+            lead = (
+                "最近对话里暂时没有足够明确的数据结果上下文，"
+                "请告诉我您想继续分析的对象，或重新发起一次查询："
+            )
+            if last_user_topic:
+                buttons.append(
+                    cls.quick_button(
+                        f"重新查询「{last_user_topic}」",
+                        f"查询{last_user_topic}",
+                    )
+                )
+            buttons.extend([
+                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
+                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
+            ])
+        elif any(keyword in reasoning_text for keyword in ("不是明确", "打招呼", "查数请求")):
+            lead = (
+                "我可以帮您查询业务数据、统计分析或基于结果做可视化。"
+                "请告诉我您想看的数据对象、指标和时间范围："
+            )
+            buttons.extend([
+                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
+                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
+                cls.quick_button("查看部门收入与回款对比", "查询各部门本季度收入与回款对比"),
+            ])
+        else:
+            lead = cls.CLARIFICATION_OR_NON_DATA
+            buttons.extend([
+                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
+                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
+                cls.quick_button("基于刚才的查询结果继续分析", "基于刚才的查询结果继续分析"),
+            ])
+
+        unique_buttons: list[str] = []
+        seen_targets: set[str] = set()
+        for button in buttons:
+            match = re.search(r"\(quick:([^)]+)\)", button)
+            target = match.group(1).strip() if match else button
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            unique_buttons.append(button)
+
+        suggestions = "\n".join(unique_buttons[:3])
+        return f"{lead}\n\n### 💬 您可以这样继续\n{suggestions}"
+
+    @staticmethod
+    def build_missing_reusable_result_fallback(history_excerpt: str = "") -> str:
+        last_topic = DataQueryPrompts._extract_last_user_topic(history_excerpt, "")
+        buttons = [
+            DataQueryPrompts.quick_button(
+                "基于刚才的查询结果继续分析",
+                "基于刚才的查询结果继续分析",
+            ),
+            DataQueryPrompts.quick_button(
+                "对刚才的结果做可视化",
+                "对刚刚的查询结果做可视化分析",
+            ),
+        ]
+        if last_topic:
+            buttons.insert(
+                0,
+                DataQueryPrompts.quick_button(
+                    f"重新查询「{last_topic}」",
+                    f"查询{last_topic}",
+                ),
+            )
+        lead = (
+            "当前会话还没有可复用的结构化查询结果，无法直接基于上一轮数据出图或分析。"
+            "您可以先完成一次查询，或选择下面的建议："
+        )
+        return f"{lead}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons[:3])
+
+    @staticmethod
+    def _extract_last_user_topic(history_excerpt: str, current_question: str) -> str:
+        candidates: list[str] = []
+        for line in str(history_excerpt or "").splitlines():
+            if not line.startswith("用户:"):
+                continue
+            text = line.split(":", 1)[-1].strip()
+            if text and text != current_question.strip():
+                candidates.append(text)
+        if candidates:
+            topic = candidates[-1]
+            topic = re.sub(r"[？?！!。；;]+$", "", topic).strip()
+            return topic[:40] + ("..." if len(topic) > 40 else "")
+        cleaned = re.sub(r"[？?！!。；;]+$", "", str(current_question or "")).strip()
+        return cleaned[:40] + ("..." if len(cleaned) > 40 else "") if cleaned else ""
 
     # 旧版曾要求模型在 SQL 前输出结构化计划，现已关闭该流程；保留常量供历史兼容/测试引用。
     SQL_PLAN_ENFORCEMENT = (
@@ -349,7 +537,23 @@ class DataQueryPrompts:
             "这是基于已有结果的追问：不要重复上一轮已展示过的图表、表格或核心结论，只输出本轮追问的新增分析或可视化。\n"
             "整段回答只输出一次，禁止将相同内容重复输出两遍。\n"
             "如果适合可视化，请输出 markdown 结论并附带 ```chart JSON``` 图表配置。\n\n"
-            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}\n\n"
+            f"{SharedPrompts.QUICK_SUGGESTIONS_PLACEMENT}"
+        )
+
+    @staticmethod
+    def followup_synthesis_from_history_user_message(user_question: str, history_excerpt: str) -> str:
+        """结构化结果缓存缺失时，基于最近对话中的查数展示做追问合成。"""
+        return (
+            f"【当前追问】：{user_question}\n\n"
+            "【上一轮对话中的查数展示（结构化缓存暂不可用，请以此为准）】\n"
+            f"{history_excerpt}\n\n"
+            "请只基于上述已有查数展示完成分析或可视化，不要声称已重新查询数据库。\n"
+            "这是基于已有结果的追问：不要重复上一轮已展示过的图表、表格或核心结论，只输出本轮追问的新增分析或可视化。\n"
+            "整段回答只输出一次，禁止将相同内容重复输出两遍。\n"
+            "如果适合可视化，请输出 markdown 结论并附带 ```chart JSON``` 图表配置。\n\n"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}\n\n"
+            f"{SharedPrompts.QUICK_SUGGESTIONS_PLACEMENT}"
         )
 
     @staticmethod
@@ -360,7 +564,8 @@ class DataQueryPrompts:
             f"{execution_review}\n\n"
             "请结合上述【执行过程回顾】和查询结果，为用户提供连贯且专业的最终回答。\n"
             "注：如果执行过程主要是执行了一个外部动作（如发送消息、启动/暂停任务等），请直接简洁地告知执行结果即可，无需赘述。\n\n"
-            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}"
+            f"{SharedPrompts.MARKDOWN_OUTPUT_FORMAT}\n\n"
+            f"{SharedPrompts.QUICK_SUGGESTIONS_PLACEMENT}"
         )
 
 

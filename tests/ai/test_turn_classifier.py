@@ -376,20 +376,56 @@ def test_classify_turn_heuristic_formatting_correction_to_data_query_request():
 
 @pytest.mark.asyncio
 async def test_data_query_turn_classifier_owns_reuse_previous_result_semantics():
-    llm = object()
-    chat_client = _mock_chat_client('{"turn_type":"reuse_previous_result","reasoning":"用户要求基于上一轮结果做可视化"}')
-
-    with patch("app.services.ai.config.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=llm)), \
-         patch("app.services.ai.data_query_turn_classifier.chat_client_from_handle", return_value=chat_client):
-        classification, _, _ = await resolve_data_query_turn_classification(
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("reuse follow-up should short-circuit before classifier LLM")),
+    ):
+        classification, _, elapsed_ms = await resolve_data_query_turn_classification(
             "可视化分析一下",
-            [{"role": "user", "content": "可视化分析一下"}],
+            [
+                {"role": "user", "content": "查询算力SU回款"},
+                {"role": "assistant", "content": "| 月份 | 回款率 |\n| --- | --- |\n| 2026-01 | 85.5% |"},
+                {"role": "user", "content": "可视化分析一下"},
+            ],
             has_last_data_result=True,
         )
 
     assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
     assert classification.requires_fresh_data is False
     assert classification.requires_few_shot is False
+    assert classification.skip_intent_llm is True
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_reuses_from_history_when_redis_missing():
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("history reuse should short-circuit before classifier LLM")),
+    ):
+        classification, _, elapsed_ms = await resolve_data_query_turn_classification(
+            "可视化分析一下",
+            [
+                {"role": "user", "content": "查询算力SU回款"},
+                {
+                    "role": "assistant",
+                    "content": (
+                        "| 月份 | 总应收款(万元) | 回款率 |\n"
+                        "| --- | --- | --- |\n"
+                        "| 2026-01 | 1027.32 | 85.55% |\n"
+                        "### 分析解读\n回款率在 3 月超过 100%。"
+                    ),
+                },
+                {"role": "user", "content": "可视化分析一下"},
+            ],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+    assert classification.requires_fresh_data is False
+    assert classification.skip_intent_llm is True
+    assert "查数展示" in classification.reasoning or "结构化查询结果" in classification.reasoning
+    assert elapsed_ms == 0.0
 
 
 @pytest.mark.asyncio
@@ -432,7 +468,7 @@ async def test_data_query_turn_classifier_rejects_reuse_without_reusable_result(
     assert classification.turn_type == DataQueryTurnType.CLARIFICATION_OR_NON_DATA
     assert classification.requires_fresh_data is False
     assert classification.requires_few_shot is False
-    assert "没有可复用" in classification.reasoning
+    assert "可信" in classification.reasoning or "没有可复用" in classification.reasoning
 
 
 @pytest.mark.asyncio

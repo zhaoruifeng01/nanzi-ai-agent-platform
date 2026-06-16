@@ -114,3 +114,37 @@ def collapse_repeated_reply(text: str, *, min_half_len: int = 200) -> str:
             return stripped[:repeat_at].rstrip()
 
     return raw
+
+
+_QUICK_SECTION_BLOCK = re.compile(
+    r"(###\s*[^\n]*(?:您可能还想了解|您可以这样继续)[^\n]*\s*"
+    r"(?:---\s*)?"
+    r"(?:\n\s*- \[[^\]]+\]\(quick:[^)]+\))+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def move_quick_suggestions_to_end(text: str) -> str:
+    """将 quick 追问建议区块移动到全文末尾（位于图表、数据来源说明之后）。"""
+    raw = text or ""
+    match = _QUICK_SECTION_BLOCK.search(raw)
+    if not match:
+        return raw
+
+    quick_block = match.group(1).strip()
+    quick_start, quick_end = match.span(1)
+    tail_after_quick = raw[quick_end:].strip()
+    if not tail_after_quick:
+        return raw
+    if not re.search(r"```chart|###\s|[^\s]", tail_after_quick, flags=re.IGNORECASE):
+        return raw
+
+    without_quick = (raw[:quick_start] + raw[quick_end:]).strip()
+    without_quick = re.sub(r"\n{3,}", "\n\n", without_quick)
+    return f"{without_quick}\n\n{quick_block}\n"
+
+
+def finalize_visible_reply(text: str, *, collapse_duplicates: bool = True) -> str:
+    """统一整理用户可见正文：去重后确保 quick 建议位于最后。"""
+    normalized = collapse_repeated_reply(text) if collapse_duplicates else (text or "")
+    return move_quick_suggestions_to_end(normalized)
