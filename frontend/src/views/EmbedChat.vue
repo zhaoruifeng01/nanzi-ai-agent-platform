@@ -1134,6 +1134,7 @@
         @select-knowledge-base="showKnowledgeBaseSelector = true"
         @select-local-fs="showFileBrowserModal = true"
         @select-memory="openMemorySelector"
+        @system-command="handleSystemCommand"
       >
       </ChatInput>
     </div>
@@ -2185,6 +2186,90 @@
         </div>
       </div>
     </div>
+    <!-- 数据门户右侧抽屉 Drawer -->
+    <div
+      v-show="showPortalDrawer"
+      class="fixed inset-0 z-50 overflow-hidden"
+    >
+      <!-- 背景遮罩 (Overlay) -->
+      <transition
+        enter-active-class="ease-out duration-300"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="ease-in duration-200"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <div 
+          v-show="showPortalDrawer"
+          class="absolute inset-0 bg-gray-500/30 backdrop-blur-xs transition-opacity" 
+          @click="showPortalDrawer = false"
+        ></div>
+      </transition>
+
+      <!-- 抽屉面板 (Drawer Panel) -->
+      <div class="absolute inset-y-0 right-0 pl-10 max-w-full flex">
+        <transition
+          enter-active-class="transform transition ease-in-out duration-300"
+          enter-from-class="translate-x-full"
+          enter-to-class="translate-x-0"
+          leave-active-class="transform transition ease-in-out duration-300"
+          leave-from-class="translate-x-0"
+          leave-to-class="translate-x-full"
+        >
+          <div 
+            v-show="showPortalDrawer"
+            class="w-screen max-w-md bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col h-full relative z-10"
+          >
+            <!-- 抽屉头部 -->
+            <div class="px-4 py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between">
+              <span class="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-1.5 select-none">
+                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z" />
+                </svg>
+                数据门户导航
+              </span>
+              <button 
+                type="button" 
+                class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
+                @click="showPortalDrawer = false"
+              >
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <!-- 抽屉内容 -->
+            <div class="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900/60">
+              <DatasetCapabilityMenu
+                v-slot="{ payload: navPayload }"
+                v-if="portalNavigationPayload"
+                :payload="portalNavigationPayload"
+                @quick-question="handlePortalQuickQuestion"
+                @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
+                @refresh="refreshPortalNavigation"
+              />
+              <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs p-6 text-center select-none">
+                <!-- 旋转菊花 -->
+                <div class="flex items-center space-x-2 mb-3">
+                  <svg class="w-4 h-4 animate-spin text-primary" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span class="font-medium text-gray-600 dark:text-gray-300">正在努力初始化数据门户...</span>
+                </div>
+                <!-- 轮换温馨提示词（带位移淡入淡出动画） -->
+                <transition name="slide-fade" mode="out-in">
+                  <span :key="currentPortalLoadingTip" class="text-[11px] text-gray-400 dark:text-gray-500 max-w-[240px] leading-normal h-8 block">
+                    {{ currentPortalLoadingTip }}
+                  </span>
+                </transition>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </div>
+    </div>
     </div>
 </template>
 <script setup lang="ts">
@@ -2279,10 +2364,12 @@ interface DatasetNavigationPayload {
       display_name?: string;
       tables?: string[];
       table_descriptions?: Array<{ name: string; description?: string }>;
+      table_physical_names?: Record<string, string>;
     }>;
     followups?: DatasetCapabilityQuestion[];
   }>;
   markdown?: string;
+  is_fallback?: boolean;
 }
 interface Message {
   id: number;
@@ -2311,6 +2398,7 @@ interface Message {
   pendingExternalExecution?: PendingExternalExecution;
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
+  _hasSilentlyRefreshed?: boolean;
 }
 // Helper: Check Role
 const checkRole = (msg: Message, role: string): boolean => {
@@ -4077,15 +4165,129 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
     const payload = await fetchDatasetMenuNavigationPayload(true);
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    isProcessing.value = false;
+    showToast("数据门户刷新成功", "success");
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
     console.warn("Failed to refresh dataset menu navigation", error);
     showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
   } finally {
     datasetMenuLoading.value = false;
     isProcessing.value = false;
   }
+};
+
+const showPortalDrawer = ref(false);
+const portalNavigationPayload = ref<any>(null);
+const portalLoading = ref(false);
+const hasSilentlyRefreshed = ref(false);
+let silentRefreshTimer: any = null;
+
+// 数据门户初始化加载温馨提示词轮播
+const portalLoadingTips = [
+  "正在为数据集唤醒大模型并进行资源初始化... 🧠",
+  "AI 正在深度解析物理表的业务语义与指标口径... 📊",
+  "首次加载需探索物理库表，耗时稍长（约15-30秒），请耐心稍候喔 ✨",
+  "正在基于大模型智构最适合该数据集的场景分析提问... 🚀",
+  "云枢大模型正在努力推理计算中，马上就好... 🔄"
+];
+const currentPortalLoadingTip = ref(portalLoadingTips[0]);
+let portalLoadingTipTimer: any = null;
+
+const startPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) clearInterval(portalLoadingTipTimer);
+  let index = 0;
+  currentPortalLoadingTip.value = portalLoadingTips[0];
+  portalLoadingTipTimer = setInterval(() => {
+    index = (index + 1) % portalLoadingTips.length;
+    currentPortalLoadingTip.value = portalLoadingTips[index];
+  }, 4000);
+};
+
+const stopPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) {
+    clearInterval(portalLoadingTipTimer);
+    portalLoadingTipTimer = null;
+  }
+};
+
+const openPortalDrawer = async () => {
+  showPortalDrawer.value = true;
+  hasSilentlyRefreshed.value = false;
+  if (silentRefreshTimer) {
+    clearTimeout(silentRefreshTimer);
+    silentRefreshTimer = null;
+  }
+  await lockToDataQueryAgentForDatasetMenu();
+  if (!portalNavigationPayload.value) {
+    await fetchPortalNavigationData();
+  } else if (portalNavigationPayload.value.is_fallback) {
+    // 如果已有本地缓存但它是 fallback 兜底数据，也可以立即触发一次静默刷新
+    await fetchPortalNavigationData(false, false);
+  }
+};
+
+const fetchPortalNavigationData = async (refresh = false, silent = false) => {
+  if (!silent) {
+    if (portalLoading.value) return;
+    portalLoading.value = true;
+    startPortalLoadingTips();
+  }
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(refresh);
+    portalNavigationPayload.value = payload;
+    
+    // 如果获取的数据为降级兜底数据，且当前不是主动刷新、也不是静默刷新，且本轮还未发生过静默刷新
+    if (payload?.is_fallback && !refresh && !silent && !hasSilentlyRefreshed.value) {
+      hasSilentlyRefreshed.value = true;
+      if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
+      silentRefreshTimer = setTimeout(async () => {
+        if (showPortalDrawer.value) {
+          await fetchPortalNavigationData(true, true);
+        }
+      }, 3000);
+    }
+    
+    if (refresh && !silent) {
+      showToast("数据门户刷新成功", "success");
+    }
+  } catch (error) {
+    console.warn("Failed to load portal navigation data", error);
+    if (!silent) {
+      showToast(refresh ? "刷新数据门户失败，请稍后重试" : "加载数据门户失败，请稍后重试", "error");
+    }
+    if (refresh && portalNavigationPayload.value) {
+      portalNavigationPayload.value = { ...portalNavigationPayload.value, _failed_at: new Date().toISOString() };
+    }
+  } finally {
+    if (!silent) {
+      portalLoading.value = false;
+      stopPortalLoadingTips();
+    }
+  }
+};
+
+watch(showPortalDrawer, (val) => {
+  if (!val) {
+    if (silentRefreshTimer) {
+      clearTimeout(silentRefreshTimer);
+      silentRefreshTimer = null;
+    }
+    stopPortalLoadingTips();
+  }
+});
+
+const refreshPortalNavigation = async () => {
+  await fetchPortalNavigationData(true);
+};
+
+const handlePortalQuickQuestion = (query: string) => {
+  showPortalDrawer.value = false;
+  handleQuickQuestion(query);
 };
 
 const showDatasetMenuNavigation = async () => {
@@ -4163,16 +4365,20 @@ const showDatasetMenuNavigation = async () => {
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   switch (cmd) {
     case "/dataset_menu":
-      await showDatasetMenuNavigation();
+      userInput.value = "";
+      await openPortalDrawer();
       return true;
     case "/history":
+      userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;
       return true;
     case "/settings":
+      userInput.value = "";
       showSettings.value = true;
       return true;
     case "/new":
     case "/clear": // legacy alias
+      userInput.value = "";
       showConfirmModal.value = true;
       return true;
   }

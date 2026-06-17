@@ -155,8 +155,14 @@ class MetadataRagService:
                 "unit": m.unit or "",
                 "sql": m.calculation_logic
             })
-            
-        return yaml.dump(data, allow_unicode=True, sort_keys=False)
+
+        note = (
+            "# 说明：本文件仅为指标计算口径参考，不包含任何表结构。\n"
+            "# metrics_scope 是数据集名称，并非物理表名；下方 sql 仅为指标的计算表达式片段。\n"
+            "# 实际查询请以对应表文件中的 table_name（物理表名）作为 FROM 表，\n"
+            "# 严禁将本文件、metrics_scope 或指标名当作可查询的表。\n"
+        )
+        return note + yaml.dump(data, allow_unicode=True, sort_keys=False)
 
     @staticmethod
     async def sync_dataset(db: AsyncSession, dataset_id: int):

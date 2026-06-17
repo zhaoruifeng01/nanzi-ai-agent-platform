@@ -77,11 +77,15 @@ class DatasetNavigationService:
         return None
 
     @staticmethod
-    async def _save_cached_navigation(cache_key: str, markdown: str) -> None:
+    async def _save_cached_navigation(
+        cache_key: str,
+        markdown: str,
+        ttl: int = _NAV_CACHE_TTL_SECONDS,
+    ) -> None:
         try:
             redis = await get_redis()
             if redis:
-                await redis.set(cache_key, markdown, ex=_NAV_CACHE_TTL_SECONDS)
+                await redis.set(cache_key, markdown, ex=ttl)
         except Exception as e:
             logger.warning("Dataset navigation cache write failed: %s", e)
 
@@ -256,6 +260,149 @@ class DatasetNavigationService:
             logger.warning("Dataset navigation click stats write failed: %s", e)
 
     @staticmethod
+    def parse_groups_from_markdown(
+        markdown: str,
+        static_groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """从 LLM 生成的 markdown 文本中，动态解析出各个场景下的推荐问题和继续追问，
+        并与静态分析的 static_groups 进行合并。
+        """
+        if not markdown or not static_groups:
+            return static_groups
+
+        import copy
+        groups = copy.deepcopy(static_groups)
+
+        parts = markdown.split("#### ")
+        if len(parts) <= 1:
+            return groups
+
+        def clean_str(s: str) -> str:
+            return re.sub(r"[^\w]", "", s).lower()
+
+        pattern = r"-\s*\[(?:[^\]]*🙋\s*)?([^\]]+)\]\(quick:([^\)]+)\)"
+
+        for part in parts[1:]:
+            lines = part.splitlines()
+            if not lines:
+                continue
+            title = lines[0].strip()
+            if not title:
+                continue
+
+            matched_group = None
+            clean_title = clean_str(title)
+            for g in groups:
+                clean_g_title = clean_str(g.get("title") or "")
+                if clean_title == clean_g_title or clean_title in clean_g_title or clean_g_title in clean_title:
+                    matched_group = g
+                    break
+
+            if not matched_group:
+                continue
+
+            lower_part = part.lower()
+            split_term = "**继续追问：**".lower()
+            split_idx = lower_part.find(split_term)
+
+            if split_idx != -1:
+                questions_part = part[:split_idx]
+                followups_part = part[split_idx:]
+            else:
+                questions_part = part
+                followups_part = ""
+
+            dynamic_questions = []
+            for match in re.finditer(pattern, questions_part):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                dynamic_questions.append({
+                    "label": label,
+                    "query": query,
+                    "type": "dynamic",
+                })
+
+            dynamic_followups = []
+            for match in re.finditer(pattern, followups_part):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                dynamic_followups.append({
+                    "label": label,
+                    "query": query,
+                })
+
+            summary_lines = []
+            for line in lines[1:]:
+                stripped = line.strip()
+                if stripped.startswith(">"):
+                    summary_lines.append(stripped.lstrip(">").strip())
+
+            if dynamic_questions:
+                matched_group["questions"] = dynamic_questions
+            if dynamic_followups:
+                matched_group["followups"] = dynamic_followups
+            if summary_lines:
+                matched_group["summary"] = "\n".join(summary_lines)
+
+        return groups
+
+    @staticmethod
+    async def _fetch_columns_for_groups(
+        db: AsyncSession,
+        groups: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """为所有 groups 中的表术语 (table term) 批量拉取字段数据字典定义"""
+        table_terms = []
+        for g in groups:
+            for r in g.get("related_data") or []:
+                for t in r.get("tables") or []:
+                    if t:
+                        table_terms.append(str(t).strip())
+
+        if not table_terms:
+            return {}
+
+        from sqlalchemy import select
+        from app.models.metadata import MetaTable, MetaColumn
+
+        try:
+            stmt = (
+                select(
+                    MetaTable.term.label("table_term"),
+                    MetaColumn.physical_name,
+                    MetaColumn.term.label("column_term"),
+                    MetaColumn.type,
+                    MetaColumn.description,
+                )
+                .join(MetaColumn, MetaTable.id == MetaColumn.table_id)
+                .where(MetaTable.term.in_(table_terms))
+                .where(MetaTable.status == 1)
+                .order_by(MetaColumn.id.asc())
+            )
+            res = await db.execute(stmt)
+            rows = res.all()
+
+            table_to_columns = {}
+            for row in rows:
+                t_term = str(row.table_term).strip()
+                if t_term not in table_to_columns:
+                    table_to_columns[t_term] = []
+                table_to_columns[t_term].append({
+                    "name": row.physical_name,
+                    "term": row.column_term,
+                    "type": row.type or "",
+                    "description": row.description or "",
+                })
+            return table_to_columns
+        except Exception as e:
+            logger.warning("Failed to fetch metadata columns for navigation: %s", e)
+            return {}
+
+    @staticmethod
     async def build_navigation_for_user(
         db: AsyncSession,
         *,
@@ -263,7 +410,6 @@ class DatasetNavigationService:
         is_admin: bool,
         force_refresh: bool = False,
     ) -> Dict[str, Any]:
-        del db  # 与 ChatBI 一致，数据集目录来自 AgentConfigProvider.get_dataset_menu
         dataset_menu = await DatasetNavigationService._get_dataset_menu(
             user_id=user_id,
             is_admin=is_admin,
@@ -273,17 +419,72 @@ class DatasetNavigationService:
         menu_hash = hashlib.md5(dataset_menu.encode("utf-8")).hexdigest()[:12]
         user_key = _user_cache_key(user_id=user_id, is_admin=is_admin)
         groups = DataQueryPrompts.build_dataset_navigation_groups(dataset_menu)
-        click_stats = await DatasetNavigationService._load_question_click_stats(
-            user_key=user_key,
-            dataset_menu_hash=menu_hash,
-        )
-        groups = DatasetNavigationService._apply_question_click_stats(groups, click_stats)
         cache_key = f"agent:dataset_navigation:{user_key}:{menu_hash}:{_NAV_PROMPT_VERSION}"
 
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if not markdown:
             markdown = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
-            await DatasetNavigationService._save_cached_navigation(cache_key, markdown)
+            
+            # 检测是否因大模型报错或生成失败而降级到了兜底模板
+            fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+            fallback_md = finalize_visible_reply(fallback_raw, collapse_duplicates=False)
+            is_fallback = (markdown == fallback_md)
+            has_datasets = menu_has_authorized_datasets(dataset_menu)
+            
+            # 如果是异常兜底（有授权数据集但生成了兜底文本），只缓存 15 秒，避免长期卡在兜底状态；如果是正常情况则缓存 10 分钟
+            ttl = 15 if (is_fallback and has_datasets) else _NAV_CACHE_TTL_SECONDS
+            await DatasetNavigationService._save_cached_navigation(cache_key, markdown, ttl=ttl)
+
+        # 始终检测当前是否为降级兜底状态
+        fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+        fallback_md = finalize_visible_reply(fallback_raw, collapse_duplicates=False)
+        is_fallback = (markdown == fallback_md)
+
+        # 动态解析 markdown 中的场景和推荐问题
+        groups = DatasetNavigationService.parse_groups_from_markdown(markdown, groups)
+
+        # 批量拉取数据表下的列名字典释义
+        table_to_columns = await DatasetNavigationService._fetch_columns_for_groups(db, groups)
+
+        # 批量拉取物理表名映射
+        table_physical_names = {}
+        try:
+            from sqlalchemy import select
+            from app.models.metadata import MetaTable
+            all_table_terms = []
+            for g in groups:
+                for r in g.get("related_data") or []:
+                    for t in r.get("tables") or []:
+                        if t:
+                            all_table_terms.append(str(t).strip())
+            if all_table_terms:
+                t_stmt = select(MetaTable.term, MetaTable.physical_name).where(
+                    MetaTable.term.in_(all_table_terms),
+                    MetaTable.status == 1
+                )
+                t_res = await db.execute(t_stmt)
+                for t_row in t_res.all():
+                    table_physical_names[str(t_row.term).strip()] = str(t_row.physical_name).strip()
+        except Exception as e:
+            logger.warning("Failed to fetch table physical names: %s", e)
+
+        for g in groups:
+            for r in g.get("related_data") or []:
+                r["table_columns"] = {
+                    t: table_to_columns.get(t, [])
+                    for t in r.get("tables") or []
+                }
+                r["table_physical_names"] = {
+                    t: table_physical_names.get(t, "")
+                    for t in r.get("tables") or []
+                }
+
+        # 应用用户点击的偏好排序
+        click_stats = await DatasetNavigationService._load_question_click_stats(
+            user_key=user_key,
+            dataset_menu_hash=menu_hash,
+        )
+        groups = DatasetNavigationService._apply_question_click_stats(groups, click_stats)
 
         return {
             "dataset_count": dataset_count,
@@ -291,4 +492,105 @@ class DatasetNavigationService:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "groups": groups,
             "markdown": markdown,
+            "is_fallback": is_fallback,
         }
+
+    @staticmethod
+    async def refresh_group_questions(
+        db: AsyncSession,
+        *,
+        group_title: str,
+        tables: list[str],
+    ) -> list[dict[str, Any]]:
+        """针对特定的卡片场景 (group_title) 和关联表列表 (tables)，在线实时调用大模型生成 3 个新问题"""
+        table_physical_names = {}
+        table_to_columns = {}
+
+        if tables:
+            try:
+                from sqlalchemy import select
+                from app.models.metadata import MetaTable, MetaColumn
+
+                # 1. 批量拉取物理表名映射
+                t_stmt = select(MetaTable.term, MetaTable.physical_name).where(
+                    MetaTable.term.in_(tables),
+                    MetaTable.status == 1
+                )
+                t_res = await db.execute(t_stmt)
+                for t_row in t_res.all():
+                    table_physical_names[str(t_row.term).strip()] = str(t_row.physical_name).strip()
+
+                # 2. 批量拉取列定义
+                stmt = (
+                    select(
+                        MetaTable.term.label("table_term"),
+                        MetaColumn.physical_name,
+                        MetaColumn.term.label("column_term"),
+                        MetaColumn.type,
+                        MetaColumn.description,
+                    )
+                    .join(MetaColumn, MetaTable.id == MetaColumn.table_id)
+                    .where(MetaTable.term.in_(tables))
+                    .where(MetaTable.status == 1)
+                    .order_by(MetaColumn.id.asc())
+                )
+                res = await db.execute(stmt)
+                rows = res.all()
+
+                for row in rows:
+                    t_term = str(row.table_term).strip()
+                    if t_term not in table_to_columns:
+                        table_to_columns[t_term] = []
+                    table_to_columns[t_term].append({
+                        "name": row.physical_name,
+                        "term": row.column_term,
+                        "type": row.type or "",
+                        "description": row.description or "",
+                    })
+            except Exception as e:
+                logger.warning("Failed to fetch metadata columns or table physical names for refresh: %s", e)
+
+        # 3. 构造 prompt 并调用大模型
+        prompt = DataQueryPrompts.build_group_questions_refresh_prompt(
+            group_title=group_title,
+            tables=tables,
+            table_to_columns=table_to_columns,
+            table_physical_names=table_physical_names,
+        )
+
+        questions = []
+        try:
+            llm = await AgentConfigProvider.get_configured_llm(streaming=False)
+            chat_client = chat_client_from_handle(llm)
+            content = await chat_client.generate_text(
+                [
+                    RuntimeMessage(
+                        role="system",
+                        content=[
+                            RuntimeContentBlock(
+                                type="text",
+                                text=prompt,
+                            )
+                        ],
+                    )
+                ]
+            )
+            cleaned = str(content or "").strip()
+
+            # 从返回结果解析问题
+            pattern = r"-\s*\[(?:[^\]]*🙋\s*)?([^\]]+)\]\(quick:([^\)]+)\)"
+            for match in re.finditer(pattern, cleaned):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                questions.append({
+                    "label": label,
+                    "query": query,
+                    "type": "dynamic",
+                })
+        except Exception as e:
+            logger.warning("Failed to refresh group questions via LLM: %s", e)
+
+        return questions
+

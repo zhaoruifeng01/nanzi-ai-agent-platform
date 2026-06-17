@@ -53,6 +53,7 @@ const emit = defineEmits<{
   (e: 'update:selectedModel', val: string): void;
   (e: 'send'): void;
   (e: 'stop'): void;
+  (e: 'system-command', cmd: string): void;
   (e: 'toggle-shortcuts'): void;
   (e: 'open-command-manager'): void;
   (e: 'upload-image'): void;
@@ -206,10 +207,16 @@ const handleKeydown = (e: KeyboardEvent) => {
 };
 
 const selectCommand = (cmd: any) => {
-  if (props.isProcessing) return;
-  emit('update:modelValue', cmd.command);
-  showCommandMenu.value = false;
-  emit('send');
+  if (props.isProcessing || !cmd) return;
+  if (String(cmd.id).startsWith('sys_')) {
+    emit('system-command', cmd.command);
+    emit('update:modelValue', '');
+    showCommandMenu.value = false;
+  } else {
+    emit('update:modelValue', cmd.command);
+    showCommandMenu.value = false;
+    emit('send');
+  }
 };
 
 const handleMentionSelect = (agent: any) => {
@@ -230,8 +237,13 @@ const handleMentionSelect = (agent: any) => {
 
 const handleShortcutClick = (cmd: any) => {
     if (props.isProcessing || !cmd) return;
-    emit('update:modelValue', cmd.command);
-    emit('send');
+    if (String(cmd.id).startsWith('sys_')) {
+        emit('system-command', cmd.command);
+        emit('update:modelValue', '');
+    } else {
+        emit('update:modelValue', cmd.command);
+        emit('send');
+    }
 };
 
 import axios from "@/utils/axios";
@@ -479,8 +491,8 @@ defineExpose({
                         <div v-if="!isDrawerExpanded" class="flex items-center space-x-2">
                             <div class="flex flex-1 items-center space-x-2 overflow-x-auto no-scrollbar scroll-smooth pr-12">
                                 <template v-if="windowWidth < 640">
-                                    <button @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_history'))" class="px-3 py-1 text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 rounded-full whitespace-nowrap">🕒 历史</button>
-                                    <button @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_clear'))" class="px-3 py-1 text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 rounded-full whitespace-nowrap">💬 新会话</button>
+                                    <button v-if="filteredSystemCommands.some(c => c.id === 'sys_dataset_menu')" @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_dataset_menu'))" class="px-3 py-1 text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border border-blue-100/50 dark:border-blue-800 rounded-full whitespace-nowrap">📚 数据门户</button>
+                                    <button v-if="filteredSystemCommands.some(c => c.id === 'sys_clear')" @click="handleShortcutClick(filteredSystemCommands.find(c => c.id === 'sys_clear'))" class="px-3 py-1 text-[10px] font-bold bg-gray-100 dark:bg-gray-800 text-gray-600 rounded-full whitespace-nowrap">💬 新会话</button>
                                 </template>
                                 <template v-else>
                                     <template v-for="cmd in filteredSystemCommands" :key="'row-sys-'+cmd.id">

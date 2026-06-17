@@ -64,7 +64,10 @@ class DataQueryPrompts:
         "6. 用户只是要求基于上一轮结果做解释、可视化、保存、导出时，可复用上一轮结构化结果，不强制重新查数。\n"
         "7. 长期记忆中的业务别名、组织别名、地点别名可用于用户意图归一化；"
         "若记忆指出“用户称呼 A = 数据标准名 B”，生成 SQL 的筛选值应优先使用 B，并在回答中说明已按标准名 B 查询。"
-        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。"
+        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。\n"
+        "8. SQL 的 FROM/JOIN 只能使用 get_dataset_schema 返回的 table_name（物理表名）；"
+        "schema 中的 table_desc、列 term、metrics_scope、数据集中文名等均为业务说明，严禁直接当作表名；"
+        "指标块（metrics）仅提供计算口径参考，不含表结构，禁止把指标块或 metrics_scope 当作可查询的表。"
     )
 
     # 追问复用合成失败兜底
@@ -259,6 +262,39 @@ class DataQueryPrompts:
         return cleaned
 
     @staticmethod
+    def build_group_questions_refresh_prompt(
+        *,
+        group_title: str,
+        tables: list[str],
+        table_to_columns: dict[str, list[dict[str, Any]]],
+        table_physical_names: dict[str, str]
+    ) -> str:
+        ctx = ""
+        for t in tables:
+            physical = table_physical_names.get(t)
+            cols = table_to_columns.get(t, [])
+            physical_str = f"（物理表名：{physical}）" if physical else ""
+            ctx += f"- 数据表 '{t}'{physical_str}:\n"
+            if cols:
+                for c in cols:
+                    desc_str = f" ({c['description']})" if c['description'] else ""
+                    ctx += f"  * {c['name']} ({c['term']}){desc_str} - 类型: {c['type']}\n"
+            else:
+                ctx += "  * (暂无字段定义)\n"
+            ctx += "\n"
+
+        return (
+            f"你是一个专业的 ChatBI 数据分析专家。\n"
+            f"请针对以下业务分析场景，推荐 3 个最适合的高频业务分析提问：\n\n"
+            f"【业务场景】：'{group_title}'\n"
+            f"【关联数据表结构】：\n{ctx}\n"
+            f"【输出格式要求】：\n"
+            f"生成的问题要具体、贴合上述字段设计。以 `- [🙋 推荐问题描述](quick:提问具体指令)` 的格式输出这 3 个问题，以便我一键点击触发提问。例如：\n"
+            f"- [🙋 统计最近7天的每日请求次数趋势](quick:请展示最近7天各智能体的每日请求次数趋势)\n\n"
+            f"不要输出任何前言、总结或无关的 Markdown 标题，只输出这 3 行问题格式。"
+        )
+
+    @staticmethod
     def _slugify_scene_id(text: str) -> str:
         slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", str(text or "").strip()).strip("_")
         return slug[:48] or "dataset_scene"
@@ -322,7 +358,7 @@ class DataQueryPrompts:
             },
             {
                 "label": "查询明细",
-                "query": f"查询{primary}最近100条明细记录",
+                "query": f"查询{primary}最近10条明细记录",
                 "type": "detail",
             },
             {

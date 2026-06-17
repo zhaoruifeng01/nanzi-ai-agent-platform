@@ -97,6 +97,7 @@ class DatasetNavigationResponse(BaseModel):
     generated_at: str = Field(..., description="本次导航生成时间")
     groups: List[Dict[str, Any]] = Field(default_factory=list, description="按标签分组的数据集导航")
     markdown: str = Field(..., description="含 quick 按钮的 Markdown 导航内容")
+    is_fallback: bool = Field(..., description="标记当前是否是降级到兜底模板的数据")
 
 
 class DatasetMenuClickRequest(BaseModel):
@@ -104,6 +105,22 @@ class DatasetMenuClickRequest(BaseModel):
     query: str = Field(..., description="用户点击的完整 quick 问题")
     label: Optional[str] = Field(default=None, description="按钮短标签")
     group_id: Optional[str] = Field(default=None, description="业务场景卡片 ID")
+
+
+class DatasetGroupRefreshRequest(BaseModel):
+    group_title: str = Field(..., description="业务场景卡片标题")
+    tables: List[str] = Field(..., description="关联的数据表术语列表")
+
+
+class DatasetGroupQuestion(BaseModel):
+    label: str = Field(..., description="问题短标签")
+    query: str = Field(..., description="点击触发的完整查询指令")
+    type: str = Field(default="dynamic", description="类型，固定为 dynamic")
+
+
+class DatasetGroupRefreshResponse(BaseModel):
+    questions: List[DatasetGroupQuestion] = Field(..., description="重新生成的推荐问题列表")
+
 
 
 @router.get("/greeting", 
@@ -171,7 +188,29 @@ async def record_dataset_menu_question_click(
     return StandardResponse(data={"success": True})
 
 
+@router.post(
+    "/dataset-menu/refresh-group-questions",
+    response_model=StandardResponse[DatasetGroupRefreshResponse],
+    summary="局部刷新当前数据门户场景卡片下的推荐问题",
+    description="针对单个数据门户场景卡片，调用大模型在线实时生成 3 个推荐问题并返回。",
+)
+async def refresh_group_questions(
+    request: DatasetGroupRefreshRequest,
+    db: AsyncSession = Depends(get_db_session),
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    from app.services.dataset_navigation_service import DatasetNavigationService
+
+    questions = await DatasetNavigationService.refresh_group_questions(
+        db,
+        group_title=request.group_title,
+        tables=request.tables,
+    )
+    return StandardResponse(data=DatasetGroupRefreshResponse(questions=questions))
+
+
 class ConversationHistoryResponse(BaseModel):
+
     conversation_id: str = Field(..., description="会话ID")
     messages: List[Dict[str, Any]] = Field(..., description="消息列表")
 
