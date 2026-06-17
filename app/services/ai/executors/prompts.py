@@ -64,7 +64,10 @@ class DataQueryPrompts:
         "6. 用户只是要求基于上一轮结果做解释、可视化、保存、导出时，可复用上一轮结构化结果，不强制重新查数。\n"
         "7. 长期记忆中的业务别名、组织别名、地点别名可用于用户意图归一化；"
         "若记忆指出“用户称呼 A = 数据标准名 B”，生成 SQL 的筛选值应优先使用 B，并在回答中说明已按标准名 B 查询。"
-        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。"
+        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。\n"
+        "8. SQL 的 FROM/JOIN 只能使用 get_dataset_schema 返回的 table_name（物理表名）；"
+        "schema 中的 table_desc、列 term、metrics_scope、数据集中文名等均为业务说明，严禁直接当作表名；"
+        "指标块（metrics）仅提供计算口径参考，不含表结构，禁止把指标块或 metrics_scope 当作可查询的表。"
     )
 
     # 追问复用合成失败兜底

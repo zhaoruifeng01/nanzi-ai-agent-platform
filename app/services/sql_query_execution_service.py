@@ -264,16 +264,38 @@ async def execute_sql_query_core(
             if err_ref:
                 return f"[Validation Failed] {err_ref}"
             if refs:
-                t_stmt = select(MetaTable.physical_name).where(
+                t_stmt = select(MetaTable.physical_name, MetaTable.term).where(
                     MetaTable.dataset_id == ds.id,
                     MetaTable.status == 1
                 )
                 t_res = await session.execute(t_stmt)
-                dataset_tables = {str(x).lower() for x in t_res.scalars().all() if x}
-
+                rows = list(t_res.all())
+                dataset_tables = {str(p).lower() for p, _ in rows if p}
+                term_to_physical = {
+                    str(t).lower(): str(p) for p, t in rows if p and t and str(t).strip()
+                }
+                dataset_alias_lowers = {
+                    str(x).lower()
+                    for x in (getattr(ds, "display_name", None), getattr(ds, "name", None))
+                    if x
+                }
                 for lk, display in refs.items():
-                    if lk not in dataset_tables:
-                        return f"[Validation Failed] 表 '{display}' 不属于当前指定的数据集 '{dataset_name}'。请重新通过 get_dataset_schema 确认该数据集下的有效表定义，严禁跨数据集或凭空猜表！"
+                    if lk in dataset_tables:
+                        continue
+                    if lk in term_to_physical:
+                        return (
+                            f"[Validation Failed] '{display}' 是业务术语，并非物理表名，不能直接用于 SQL。"
+                            f"请改用 get_dataset_schema 返回的物理表名 '{term_to_physical[lk]}'。"
+                        )
+                    if lk in dataset_alias_lowers:
+                        return (
+                            f"[Validation Failed] '{display}' 是数据集名称，并非物理表名，不能直接用于 SQL 的 FROM/JOIN。"
+                            f"请使用 get_dataset_schema 返回的 table_name（物理表名）进行查询。"
+                        )
+                    return (
+                        f"[Validation Failed] 表 '{display}' 不属于当前指定的数据集 '{dataset_name}'，"
+                        f"严禁跨数据集或凭空猜表。请通过 get_dataset_schema 重新确认该数据集下相关表的 table_name（物理表名）后再查询。"
+                    )
 
         # 2. 物理表全局可访问权限校验
         perm_err = await enforce_physical_table_permissions_for_select(
