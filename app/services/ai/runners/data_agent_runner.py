@@ -287,14 +287,8 @@ class DataAgentRunner(BaseExecutor):
 
     @staticmethod
     def _extract_schema_confidence_values(tool_output: Any) -> list[float]:
-        text = str(tool_output or "")
-        values: list[float] = []
-        for value in re.findall(r"置信度[:：]\s*([0-9]+(?:\.[0-9]+)?)", text):
-            try:
-                values.append(float(value))
-            except ValueError:
-                continue
-        return values
+        from app.services.schema_chunk_format import extract_schema_confidence_values
+        return extract_schema_confidence_values(tool_output)
 
     def _runtime_agent_name(self) -> str:
         return self.config.agent_name or "DataAgent"
@@ -3027,14 +3021,22 @@ class DataAgentRunner(BaseExecutor):
         else:
             details = truncate_for_context(str(output or ""), max_len=1000)
         if tool_name == "get_dataset_schema":
+            from app.services.schema_chunk_format import format_schema_hit_summary
+
             keywords = (
                 self._schema_keywords_from_args(tool_args)
                 or state.last_schema_tool_keywords
                 or state.last_applied_schema_retry_keywords
                 or state.last_schema_keywords
             )
+            prefix_lines: list[str] = []
             if keywords:
-                details = f"[检索关键词] {keywords}\n\n{details}"
+                prefix_lines.append(f"[检索关键词] {keywords}")
+            summary = format_schema_hit_summary(output)
+            if summary:
+                prefix_lines.append(summary)
+            if prefix_lines:
+                details = "\n\n".join(prefix_lines) + "\n\n" + details
         if tool_name == "execute_sql_query" and self._is_schema_gate_block(output):
             details = f"{details}\n\n[系统检测] 已拦截：未先获取数据集定义，SQL 未执行。"
         if tool_name == "execute_sql_query" and self._is_sql_repeat_gate_block(output):
@@ -3221,37 +3223,8 @@ class DataAgentRunner(BaseExecutor):
 
     @staticmethod
     def _detect_schema_ambiguity(tool_output: Any) -> tuple[bool, str]:
-        text = str(tool_output or "").strip()
-        if not text:
-            return False, ""
-        candidates: list[tuple[float, str]] = []
-        pattern = re.compile(
-            r"\[置信度[:：]\s*([0-9]+(?:\.[0-9]+)?)\]\s*"
-            r"(?:\n|\r\n)--- Source:\s*([^\n\r]+?)\s*---",
-            re.IGNORECASE,
-        )
-        for score_text, source in pattern.findall(text):
-            try:
-                score = float(score_text)
-            except ValueError:
-                continue
-            source_norm = source.strip().lower()
-            if source_norm:
-                candidates.append((score, source_norm))
-        if len(candidates) < 2:
-            return False, ""
-
-        candidates.sort(reverse=True)
-        top_score, top_source = candidates[0]
-        close_candidates = [
-            (score, source)
-            for score, source in candidates[1:]
-            if score >= 0.75 and top_score - score <= 0.08 and source != top_source
-        ]
-        if top_score >= 0.75 and close_candidates:
-            display = ", ".join([top_source, *[source for _, source in close_candidates[:2]]])
-            return True, f"多个高置信度 Schema 候选分数接近：{display}"
-        return False, ""
+        from app.services.schema_chunk_format import detect_schema_ambiguity
+        return detect_schema_ambiguity(tool_output)
 
     @staticmethod
     def _is_diagnostic_sql(sql: str) -> bool:

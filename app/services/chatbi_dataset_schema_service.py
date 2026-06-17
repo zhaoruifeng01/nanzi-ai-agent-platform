@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.auth_service import AuthService
 from app.services.config_service import ConfigService
 from app.services.metadata_service import MetadataService
+from app.services.schema_chunk_format import format_schema_chunk, format_schema_hits
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,19 @@ async def fetch_dataset_schema_core(
     except Exception as e:
         logger.error("[fetch_dataset_schema_core] Schema retrieval failed: %s", e, exc_info=True)
         return f"[Tool Error] Failed to retrieve metadata: {str(e)}"
+
+
+async def _format_fallback_dataset_chunks(session: AsyncSession, dataset_id: int, start_index: int) -> tuple[list[str], int]:
+    """MySQL 兜底：导出与向量索引一致的单表/指标 YAML 块。"""
+    raw_chunks = await MetadataService.build_dataset_schema_chunk_contents(session, dataset_id)
+    formatted: list[str] = []
+    index = start_index
+    for content in raw_chunks:
+        piece = format_schema_chunk(index, content)
+        if piece:
+            formatted.append(piece)
+            index += 1
+    return formatted, index
 
 
 async def _fetch_dataset_schema_impl(
@@ -124,12 +138,26 @@ async def _fetch_dataset_schema_impl(
         if not chunks:
             return f"No relevant schema info found for '{query}'.\nDebug Logs: {'; '.join(trace_logs)}"
 
-        context_parts = []
+        filtered_hits = []
         for chunk in chunks:
-            similarity = chunk.get("similarity", 0)
-            context_parts.append(f"[置信度: {similarity:.2f}]\n--- Source: {chunk['doc_name']} ---\n{chunk['content']}")
+            try:
+                similarity = float(chunk.get("similarity", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                similarity = 0.0
+            if similarity < threshold:
+                continue
+            content = str(chunk.get("content") or "").strip()
+            if not content:
+                continue
+            filtered_hits.append({
+                "content": content,
+                "similarity": similarity,
+                "doc_name": chunk.get("doc_name", "unknown"),
+            })
 
-        return "\n\n".join(context_parts)
+        if filtered_hits:
+            return format_schema_hits(filtered_hits)
+        return f"No relevant schema info found for '{query}'.\nDebug Logs: {'; '.join(trace_logs)}"
 
     # --- Local Mode (Default) ---
     query = (keywords or "").strip()
@@ -151,7 +179,7 @@ async def _fetch_dataset_schema_impl(
                 top_k=top_k,
             )
 
-            context_parts = []
+            filtered_hits = []
             for item in redis_results:
                 try:
                     similarity = float(item.get("similarity", 0.0) or 0.0)
@@ -159,16 +187,17 @@ async def _fetch_dataset_schema_impl(
                     similarity = 0.0
                 if similarity < threshold:
                     continue
-                doc_name = item.get("doc_name", "unknown")
                 content = str(item.get("content") or "").strip()
                 if not content:
                     continue
-                context_parts.append(
-                    f"[置信度: {similarity:.2f}]\n--- Source: {doc_name} ---\n{content}"
-                )
+                filtered_hits.append({
+                    "content": content,
+                    "similarity": similarity,
+                    "doc_name": item.get("doc_name", "unknown"),
+                })
 
-            if context_parts:
-                return "\n\n".join(context_parts)
+            if filtered_hits:
+                return format_schema_hits(filtered_hits)
             return (
                 f"No relevant schema info found for '{query}'.\n"
                 f"Debug Logs: Redis Vector Search completed. Found {len(redis_results)} raw items; "
@@ -193,9 +222,10 @@ async def _fetch_dataset_schema_impl(
     if not found_datasets:
         return f"No relevant schema info found for '{query}'.\nDebug Logs: local MySQL keyword search returned 0 datasets"
 
-    results = []
+    results: list[str] = []
+    next_index = 1
     for ds in found_datasets:
-        yaml_text = await MetadataService.export_dataset_yaml(session, ds.id)
-        results.append(f"--- Dataset: {ds.display_name} ({ds.name}) ---\n{yaml_text}")
+        chunks, next_index = await _format_fallback_dataset_chunks(session, ds.id, next_index)
+        results.extend(chunks)
 
     return "\n\n".join(results)

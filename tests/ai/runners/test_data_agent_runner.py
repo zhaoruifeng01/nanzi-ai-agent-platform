@@ -3986,6 +3986,30 @@ def test_format_tool_details_shows_schema_keywords(data_config):
         {"keywords": "机房 列表"},
     )
     assert "[检索关键词] 机房 列表" in details
+    assert "[命中摘要]" not in details
+
+
+def test_format_tool_details_shows_schema_hit_summary(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-summary-log", trace_buffer=[])
+    output = (
+        "--- [Schema:1] type=table dataset=ai_agent_meta table=ai_agent_access_logs score=0.75 ---\n"
+        "table_name: ai_agent_access_logs\n"
+        "columns:\n"
+        + "  - name: col\n    type: String\n" * 80
+    )
+    details = runner._format_tool_details(
+        "get_dataset_schema",
+        output,
+        _DataRunState(),
+        {"keywords": "AI 代理 访问日志"},
+    )
+    assert "[检索关键词] AI 代理 访问日志" in details
+    assert "[命中摘要] 共命中 1 条元数据记录，占用约" in details
+    assert "token" in details
+    assert details.index("[命中摘要]") < details.index("--- [Schema:1]")
+    assert "… [输出已截断]" in details
 
 
 @pytest.mark.asyncio

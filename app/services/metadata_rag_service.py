@@ -84,45 +84,46 @@ class MetadataRagService:
         return base
 
     @staticmethod
-    def generate_table_content(dataset: MetaDataset, table: MetaTable, relationships: List[Any] = []) -> str:
-        """
-        Generate SQL-optimized YAML for a table (One Table per Chunk).
-        Ensures strict schema definition for LLM.
-        """
-        # Construct dict structure
-        data = {
+    def build_table_schema_dict(
+        dataset: MetaDataset,
+        table: MetaTable,
+        relationships: Optional[List[Any]] = None,
+        *,
+        data_source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """构建单表 Schema 字典（ChatBI 工具输出 canonical 格式）。"""
+        relationships = relationships or []
+        data: Dict[str, Any] = {
             "table_name": table.physical_name,
             "table_desc": table.term,
             "dataset": dataset.name,
             "meta_name": dataset.display_name or dataset.name,
-            "data_source": dataset.data_source,
+            "data_source": data_source if data_source is not None else dataset.data_source,
             "description": table.description or "",
             "columns": [],
-            "relationships": []
+            "relationships": [],
         }
-        
-        # Columns
+
         for col in table.columns:
-            col_data = {
+            col_data: Dict[str, Any] = {
                 "name": col.physical_name,
                 "type": col.type,
                 "term": col.term,
-                "desc": col.description or ""
+                "desc": col.description or "",
             }
             if col.enums:
                 col_data["enums"] = col.enums
+            if hasattr(col, "is_primary") and col.is_primary == 1:
+                col_data["pk"] = True
             data["columns"].append(col_data)
-            
-        # Synonyms
+
         if table.synonyms:
             data["synonyms"] = table.synonyms
 
-        # Relationships
         related_rels = [
-            r for r in relationships 
+            r for r in relationships
             if r.source_table_id == table.id or r.target_table_id == table.id
         ]
-        
         for r in related_rels:
             is_source = r.source_table_id == table.id
             other_table = r.target_table.physical_name if is_source else r.source_table.physical_name
@@ -130,39 +131,71 @@ class MetadataRagService:
                 "target": other_table,
                 "direction": "->" if is_source else "<-",
                 "type": r.join_type,
-                "condition": r.join_condition
+                "condition": r.join_condition,
             })
-            
-        # Dump to YAML
+        return data
+
+    @staticmethod
+    def build_metrics_schema_dict(dataset: MetaDataset) -> Dict[str, Any]:
+        """构建指标块 Schema 字典。"""
+        return {
+            "metrics_scope": dataset.display_name or dataset.name,
+            "metrics": [
+                {
+                    "name": m.name,
+                    "display": m.display_name,
+                    "desc": m.description or "",
+                    "unit": m.unit or "",
+                    "sql": m.calculation_logic,
+                }
+                for m in (dataset.metrics or [])
+            ],
+        }
+
+    @staticmethod
+    def render_table_schema_yaml(
+        dataset: MetaDataset,
+        table: MetaTable,
+        relationships: Optional[List[Any]] = None,
+        *,
+        data_source: Optional[str] = None,
+    ) -> str:
+        data = MetadataRagService.build_table_schema_dict(
+            dataset,
+            table,
+            relationships,
+            data_source=data_source,
+        )
         return yaml.dump(data, allow_unicode=True, sort_keys=False)
 
     @staticmethod
-    def generate_metrics_content(dataset: MetaDataset) -> str:
-        """Generate YAML for Dataset Metrics"""
+    def render_metrics_schema_yaml(dataset: MetaDataset) -> str:
         if not dataset.metrics:
             return ""
-            
-        data = {
-            "metrics_scope": dataset.display_name,
-            "metrics": []
-        }
-        
-        for m in dataset.metrics:
-            data["metrics"].append({
-                "name": m.name,
-                "display": m.display_name,
-                "desc": m.description or "",
-                "unit": m.unit or "",
-                "sql": m.calculation_logic
-            })
-
         note = (
             "# 说明：本文件仅为指标计算口径参考，不包含任何表结构。\n"
             "# metrics_scope 是数据集名称，并非物理表名；下方 sql 仅为指标的计算表达式片段。\n"
             "# 实际查询请以对应表文件中的 table_name（物理表名）作为 FROM 表，\n"
             "# 严禁将本文件、metrics_scope 或指标名当作可查询的表。\n"
         )
-        return note + yaml.dump(data, allow_unicode=True, sort_keys=False)
+        return note + yaml.dump(
+            MetadataRagService.build_metrics_schema_dict(dataset),
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+    @staticmethod
+    def generate_table_content(dataset: MetaDataset, table: MetaTable, relationships: List[Any] = []) -> str:
+        """
+        Generate SQL-optimized YAML for a table (One Table per Chunk).
+        Ensures strict schema definition for LLM.
+        """
+        return MetadataRagService.render_table_schema_yaml(dataset, table, relationships)
+
+    @staticmethod
+    def generate_metrics_content(dataset: MetaDataset) -> str:
+        """Generate YAML for Dataset Metrics"""
+        return MetadataRagService.render_metrics_schema_yaml(dataset)
 
     @staticmethod
     async def sync_dataset(db: AsyncSession, dataset_id: int):

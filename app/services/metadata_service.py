@@ -4,7 +4,6 @@ from sqlalchemy import select, delete, update, or_, cast, String, Integer, func
 from sqlalchemy.orm import selectinload
 from typing import List, Optional, Dict, Any
 import asyncio
-import yaml
 import logging
 from app.models.metadata import MetaDataset, MetaTable, MetaColumn, MetaMetric, MetaRelationship
 from app.services.ai.config import AgentConfigProvider
@@ -916,123 +915,49 @@ class MetadataService:
     # --- YAML Export Logic ---
 
     @staticmethod
-    async def export_dataset_yaml(db: AsyncSession, dataset_id: int) -> str:
-        """
-        Export the entire dataset as a YAML string formatted for LLM/RAG.
-        """
+    async def build_dataset_schema_chunk_contents(db: AsyncSession, dataset_id: int) -> List[str]:
+        """按单表/指标块生成与向量索引一致的 YAML 正文列表。"""
         from app.services.config_service import ConfigService
+        from app.services.metadata_rag_service import MetadataRagService
 
         dataset = await MetadataService.get_dataset_by_id(db, dataset_id, is_admin=True)
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
-            
-        # Determine Data Source ID
-        # 1. Use dataset specific source
-        # 2. Fallback to system default
+
         ds_source = dataset.data_source
         if not ds_source:
             ds_source = await ConfigService.get("external_sql_data_source", default="default_clickhouse")
 
-        # Transform to Dict structure
-        data_out = {
-            "dataset": dataset.name,
-            "data_source": ds_source, # Explicitly tell LLM which DB ID to use
-            "description": dataset.description or "",
-            "tables": []
-        }
-        
+        relationships = await MetadataService.get_relationships_by_dataset(db, dataset_id)
+        chunks: List[str] = []
         for table in dataset.tables:
-            # Skip disabled tables
             if hasattr(table, "status") and table.status != 1:
                 continue
+            chunks.append(
+                MetadataRagService.render_table_schema_yaml(
+                    dataset,
+                    table,
+                    relationships,
+                    data_source=ds_source,
+                )
+            )
 
-            tbl_out = {
-                "name": table.physical_name,
-                "term": table.term,
-                "description": table.description or "",
-                "synonyms": table.synonyms or [],
-                "columns": []
-            }
-            
-            for col in table.columns:
-                col_out = {
-                    "name": col.physical_name,
-                    "term": col.term,
-                    "description": col.description or "",
-                    "type": col.type
-                }
-                if col.enums:
-                    col_out["enums"] = col.enums
-                
-                # Add Primary Key indicator
-                if hasattr(col, "is_primary") and col.is_primary == 1:
-                    col_out["pk"] = True
+        metrics_yaml = MetadataRagService.render_metrics_schema_yaml(dataset)
+        if metrics_yaml:
+            chunks.append(metrics_yaml)
+        return chunks
 
-                # Only add if important
-                tbl_out["columns"].append(col_out)
-                
-            data_out["tables"].append(tbl_out)
-            
-        # Add Metrics
-        if hasattr(dataset, 'metrics') and dataset.metrics:
-            data_out["metrics"] = []
-            for m in dataset.metrics:
-                data_out["metrics"].append({
-                    "name": m.name,
-                    "display_name": m.display_name,
-                    "description": m.description or "",
-                    "calculation": m.calculation_logic,
-                    "unit": m.unit or ""
-                })
+    @staticmethod
+    async def export_dataset_yaml(db: AsyncSession, dataset_id: int) -> str:
+        """
+        Export the entire dataset as formatted schema chunks for LLM/RAG (canonical table YAML).
+        """
+        from app.services.schema_chunk_format import format_schema_chunk
 
-        # Add Relationships
-        if hasattr(dataset, 'relationships') and dataset.relationships:
-             data_out["relationships"] = []
-             # Need to resolve table names for better readability in YAML? 
-             # Or just IDs? LLM prefers names usually.
-             # The relationship object loaded via selectinload might have table objects if defined in model.
-             # Let's check model... Relationship has `source_table` and `target_table` relationships.
-             # We need to make sure they are loaded.
-             pass 
-             
-             # Actually, simpler approach:
-             # get_dataset_by_id loads (dataset.metrics) and (dataset.relationships).
-             # But dataset.relationships isn't a direct relationship on MetaDataset model?
-             # Wait, app/models/metadata.py: "dataset = relationship('MetaDataset', back_populates='metrics')" on Metric.
-             # Does Dataset have `relationships`? 
-             # Let's check `app/models/metadata.py` content from previous step.
-             # `MetaRelationship` links Tables. `MetaDataset` does NOT typically have a direct `relationships` field unless added.
-             # So `dataset.relationships` above might fail if model isn't updated.
-             
-             # CORRECTION: We should fetch relationships separately or assume they are not on dataset object directly.
-             # Let's fetch them using the logic we just wrote `get_relationships_by_dataset`.
-             # But here we are inside `export_dataset_yaml`.
-             
-             # Correct Logic:
-             # Fetch all relationships involving tables in this dataset.
-             # Since we have `dataset.tables`, we can collect table IDs.
-             table_ids = [t.id for t in dataset.tables]
-             if table_ids:
-                 stmt = select(MetaRelationship).options(
-                     selectinload(MetaRelationship.source_table),
-                     selectinload(MetaRelationship.target_table)
-                 ).where(
-                     (MetaRelationship.source_table_id.in_(table_ids)) | 
-                     (MetaRelationship.target_table_id.in_(table_ids))
-                 )
-                 rel_res = await db.execute(stmt)
-                 rels = rel_res.scalars().all()
-                 
-                 if rels:
-                     data_out["relationships"] = []
-                     for r in rels:
-                         data_out["relationships"].append({
-                             "source": r.source_table.physical_name if r.source_table else str(r.source_table_id),
-                             "target": r.target_table.physical_name if r.target_table else str(r.target_table_id),
-                             "type": r.join_type,
-                             "condition": r.join_condition,
-                             "description": r.description or ""
-                         })
-            
-        # Dump to YAML
-        return yaml.dump(data_out, allow_unicode=True, sort_keys=False)
+        raw_chunks = await MetadataService.build_dataset_schema_chunk_contents(db, dataset_id)
+        formatted: List[str] = []
+        for index, content in enumerate(raw_chunks, start=1):
+            piece = format_schema_chunk(index, content)
+            if piece:
+                formatted.append(piece)
+        return "\n\n".join(formatted)

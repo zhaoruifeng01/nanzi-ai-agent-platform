@@ -145,16 +145,17 @@ async def test_get_dataset_schema_tool():
             {
                 "dataset_id": "1",
                 "doc_name": "user_stats.users.txt",
-                "content": "table users schema chunk",
+                "content": "table_name: users\ndataset: user_stats\n",
                 "similarity": 0.86,
             }
         ]
         
         result = await get_dataset_schema.ainvoke({"keywords": "user_stats"})
 
-        assert "[置信度: 0.86]" in result
-        assert "--- Source: user_stats.users.txt ---" in result
-        assert "table users schema chunk" in result
+        assert "--- [Schema:1]" in result
+        assert "score=0.86" in result
+        assert "table=user_stats" in result or "table=users" in result
+        assert "table_name: users" in result
         mock_embed.assert_awaited_once_with("user_stats", use_global=True)
         mock_search_knn.assert_awaited_once_with(
             query_embedding=[0.1] * 1536,
@@ -180,7 +181,7 @@ async def test_get_dataset_schema_tool_local_falls_back_to_mysql_like_when_vecto
     with patch("app.core.orm.AsyncSessionLocal", new_callable=MagicMock), \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config, \
          patch("app.services.metadata_service.MetadataService.search_datasets", new_callable=AsyncMock) as mock_search, \
-         patch("app.services.metadata_service.MetadataService.export_dataset_yaml", new_callable=AsyncMock) as mock_export, \
+         patch("app.services.metadata_service.MetadataService.build_dataset_schema_chunk_contents", new_callable=AsyncMock) as mock_build_chunks, \
          patch("app.services.ai.embedding_client.EmbeddingClient.embed_text", new_callable=AsyncMock) as mock_embed, \
          patch("app.services.ai.metadata_index_service.MetadataIndexService.search_knn", new_callable=AsyncMock) as mock_search_knn:
 
@@ -195,15 +196,15 @@ async def test_get_dataset_schema_tool_local_falls_back_to_mysql_like_when_vecto
         mock_search.side_effect = [[authorized_ds], [matched_ds]]
         mock_embed.return_value = [0.1] * 1536
         mock_search_knn.side_effect = RuntimeError("redis unavailable")
-        mock_export.return_value = "tables: [orders]"
+        mock_build_chunks.return_value = ["table_name: orders\ndataset: order_stats\n"]
 
         result = await get_dataset_schema.ainvoke({"keywords": "order"})
 
-        assert "--- Dataset: Order Stats (order_stats) ---" in result
-        assert "tables: [orders]" in result
+        assert "--- [Schema:1]" in result
+        assert "table_name: orders" in result
         assert mock_search.await_args_list[0].kwargs["query"] is None
         assert mock_search.await_args_list[1].kwargs["query"] == "order"
-        mock_export.assert_awaited_once_with(ANY, 2)
+        mock_build_chunks.assert_awaited_once_with(ANY, 2)
 
 @pytest.mark.asyncio
 async def test_execute_sql_query_tool_dry_run():

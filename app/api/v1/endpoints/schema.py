@@ -154,15 +154,31 @@ async def get_database_schema(
             
         # C. Format result
         trace_logs.append(f"RAGFlow returned {len(chunks)} chunks.")
-        context_parts = []
-        for i, chunk in enumerate(chunks):
-            sim = chunk.get('similarity', 0)
-            doc_name = chunk.get('doc_name', 'unknown')
-            trace_logs.append(f"Hit #{i+1}: {doc_name} (Sim: {sim:.2f})")
-            context_parts.append(f"--- Source: {doc_name} (Sim: {sim:.2f}) ---\n{chunk['content']}")
+        from app.services.schema_chunk_format import format_schema_hits
+
+        filtered_hits = []
+        for chunk in chunks:
+            try:
+                sim = float(chunk.get("similarity", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                sim = 0.0
+            if sim < threshold:
+                continue
+            content = str(chunk.get("content") or "").strip()
+            if not content:
+                continue
+            doc_name = chunk.get("doc_name", "unknown")
+            trace_logs.append(f"Hit: {doc_name} (Sim: {sim:.2f})")
+            filtered_hits.append({
+                "content": content,
+                "similarity": sim,
+                "doc_name": doc_name,
+            })
+
+        schema_context = format_schema_hits(filtered_hits) if filtered_hits else "[System] No relevant knowledge found in RAGFlow metadata."
             
         return StandardResponse(data=SchemaResponse(
-            schema_context="\n\n".join(context_parts),
+            schema_context=schema_context,
             hits=[SchemaHit(id=0, name="rag_hit", display_name="RAG Results")],
             provider="ragflow",
             logs=trace_logs
@@ -227,9 +243,11 @@ async def get_database_schema(
 
     if vector_search_success:
         hits = []
-        context_parts = []
+        from app.services.schema_chunk_format import format_schema_hits
+
         dataset_id_to_obj = {ds.id: ds for ds in authorized_datasets}
         unique_hit_datasets = {}
+        filtered_hits = []
         
         for item in redis_results:
             sim = item.get("similarity", 0.0)
@@ -242,14 +260,18 @@ async def get_database_schema(
             ds_id = int(item.get("dataset_id", 0))
             
             trace_logs.append(f"Hit: {doc_name} (Sim: {sim:.2f})")
-            context_parts.append(f"--- Source: {doc_name} (Sim: {sim:.2f}) ---\n{content}")
+            filtered_hits.append({
+                "content": content,
+                "similarity": sim,
+                "doc_name": doc_name,
+            })
             
             if ds_id and ds_id not in unique_hit_datasets:
                 if ds_id in dataset_id_to_obj:
                     ds = dataset_id_to_obj[ds_id]
                     unique_hit_datasets[ds_id] = SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name)
                     
-        schema_context = "\n\n".join(context_parts) if context_parts else "[System] No relevant metadata found above the similarity threshold."
+        schema_context = format_schema_hits(filtered_hits) if filtered_hits else "[System] No relevant metadata found above the similarity threshold."
         
         return StandardResponse(data=SchemaResponse(
             schema_context=schema_context,
@@ -280,12 +302,15 @@ async def get_database_schema(
             
         yaml_outputs = []
         hits = []
+        from app.services.chatbi_dataset_schema_service import _format_fallback_dataset_chunks
+
+        next_index = 1
         for ds in found_datasets:
-            yaml_text = await MetadataService.export_dataset_yaml(conn, ds.id)
-            yaml_outputs.append(yaml_text)
+            chunks, next_index = await _format_fallback_dataset_chunks(conn, ds.id, next_index)
+            yaml_outputs.extend(chunks)
             hits.append(SchemaHit(id=ds.id, name=ds.name, display_name=ds.display_name))
             
-        final_context = "\n---\n".join(yaml_outputs)
+        final_context = "\n\n".join(yaml_outputs)
         return StandardResponse(data=SchemaResponse(
             schema_context=final_context,
             hits=hits,
