@@ -246,6 +246,13 @@ const handleShortcutClick = (cmd: any) => {
     }
 };
 
+const openDataPortalFromPlusMenu = () => {
+    if (props.isProcessing) return;
+    showPlusMenu.value = false;
+    const cmd = filteredSystemCommands.value.find((c) => c.id === 'sys_dataset_menu');
+    handleShortcutClick(cmd);
+};
+
 import axios from "@/utils/axios";
 
 // 附件上传状态
@@ -691,6 +698,16 @@ defineExpose({
                       leave-to-class="transform opacity-0 scale-95"
                     >
                         <div v-if="showPlusMenu" class="absolute bottom-full left-0 mb-2 w-52 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/50 dark:border-gray-700/50 py-1.5 z-50 animate-fade-in-up">
+                            <!-- Data Portal -->
+                            <button
+                              v-if="filteredSystemCommands.some(c => c.id === 'sys_dataset_menu')"
+                              @click="openDataPortalFromPlusMenu"
+                              class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
+                            >
+                                <span class="text-lg">📊</span>
+                                <span class="font-medium text-left">打开数据门户</span>
+                            </button>
+
                             <!-- Upload File (Active) -->
                             <button @click="triggerFileInput" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
                                 <span class="text-lg">📁</span>

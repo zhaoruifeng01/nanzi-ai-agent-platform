@@ -1783,6 +1783,21 @@ def test_resolve_initial_tool_choice_skips_without_fresh_data_or_schema(data_con
     ) is None
 
 
+def test_resolve_has_data_output_requires_saved_followup_and_visible_content(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-has-data-output", trace_buffer=[])
+
+    runner._last_run_state = _DataRunState(requires_fresh_data=True, followup_data_saved=True, full_content="| a | b |")
+    assert runner.resolve_has_data_output() is True
+
+    runner._last_run_state = _DataRunState(requires_fresh_data=True, followup_data_saved=False)
+    assert runner.resolve_has_data_output() is False
+
+    runner._last_run_state = _DataRunState(requires_fresh_data=False, followup_data_saved=True, full_content="chart")
+    assert runner.resolve_has_data_output() is False
+
+
 def test_resolve_repair_tool_choice_forces_schema_when_missing(data_config):
     from agentscope.tool import ToolChoice
 

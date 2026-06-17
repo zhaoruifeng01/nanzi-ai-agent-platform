@@ -76,10 +76,10 @@ class DataQueryPrompts:
     # 缺少可复用查询结果时的回复
     NO_REUSABLE_RESULT = "当前会话没有可复用的上一轮查询结果，请先完成一次数据查询后再进行可视化或分析。"
 
-    # ChatBI 入口没有足够查数意图时的回复（仅作 LLM/规则生成失败兜底）
-    CLARIFICATION_OR_NON_DATA = (
-        "请告诉我想查询的业务数据、指标、维度或时间范围。"
-        "例如：查询本月各机房 PUE 趋势、统计最近一周告警记录，或基于刚才的查询结果继续分析。"
+    # 纯寒暄/能力咨询时的兜底引导（仅当用户未提出具体业务问题时使用）
+    CLARIFICATION_CAPABILITY_ONBOARDING = (
+        "我可以帮您查询业务数据、统计分析，或基于查询结果做可视化。"
+        "请告诉我您想看的数据对象、指标和时间范围："
     )
 
     @staticmethod
@@ -125,15 +125,20 @@ class DataQueryPrompts:
         return f"""你是 ChatBI 数据查询助手的澄清引导模块。
 
 用户当前问题还不足以直接查数，或无法安全复用上一轮结果。请结合最近对话和系统判断原因：
-1. 用 1-2 句话说明**具体还缺什么信息**或**为什么需要用户补充**（不要泛泛而谈）。
-2. 给出 2-3 个结合上下文的追问建议，供用户一键点击发送。
+1. **必须先输出** `### ℹ️ 为什么需要补充信息` 区块，用 3 条列表说明：
+   - **触发原因：** 一句话说明系统为何没有直接查数（例如：非明确查数、缺少可复用结果、时间/指代模糊等）。
+   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。
+   - **您可以这样改：** 告诉用户应在原问题中补充哪些信息。
+2. 再用 1 句话引导用户选择下方建议或补充说明。
+3. 给出 2-3 个**围绕当前用户问题**的追问建议，供用户一键点击发送。
 
 输出要求：
 - 只输出 Markdown，不要 JSON，不要代码块包裹全文。
-- 正文后必须包含标题 `### 💬 您可以这样继续`。
+- 必须以 `### ℹ️ 为什么需要补充信息` 开头，然后再写引导语与 `### 💬 您可以这样继续`。
 - 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`。
-- `quick:` 括号内必须是完整、可直接发送的中文问题，可包含具体业务对象/指标/时间范围。
-- 优先结合最近对话中的业务对象、指标、时间范围定制建议；没有上下文时再给通用查数示例。
+- `quick:` 括号内必须是完整、可直接发送的中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
+- **禁止**输出与用户当前问题无关的其他业务域示例（例如用户问 Token 时不得推荐 PUE/告警等无关问题）。
+- 优先结合最近对话中的业务对象、指标、时间范围定制建议；仅当用户只是寒暄且未提出具体问题时，才可给通用查数能力示例。
 - 不要编造对话中未出现的具体数值。
 - quick 追问按钮区块必须放在整段回答最末尾，位于所有图表之后。
 
@@ -262,6 +267,39 @@ class DataQueryPrompts:
         return cleaned
 
     @staticmethod
+    def build_table_questions_recommend_prompt(
+        *,
+        table: str,
+        columns: list[dict[str, Any]],
+        physical_table_name: str = "",
+        dataset_name: str = "",
+    ) -> str:
+        physical_str = f"（物理表名：{physical_table_name}）" if physical_table_name else ""
+        dataset_line = f"【所属数据集】：{dataset_name}\n" if dataset_name else ""
+        ctx = ""
+        for col in columns:
+            desc_str = f" ({col['description']})" if col.get("description") else ""
+            ctx += (
+                f"  * {col.get('name', '')} ({col.get('term', '')}){desc_str}"
+                f" - 类型: {col.get('type', '')}\n"
+            )
+        if not ctx.strip():
+            ctx = "  * (暂无字段定义)\n"
+
+        return (
+            "你是一个专业的 ChatBI 数据分析专家。\n"
+            "请仅根据以下数据表的字段定义，推荐 3 个最适合的业务分析提问。\n"
+            "禁止执行 SQL、禁止编造真实数据值；只基于字段语义构思用户可一键发起的查数问题。\n\n"
+            f"{dataset_line}"
+            f"【数据表】：'{table}'{physical_str}\n"
+            f"【字段定义】：\n{ctx}\n"
+            "【输出格式要求】：\n"
+            "生成的问题要具体、贴合上述字段设计。以 `- [🙋 推荐问题描述](quick:提问具体指令)` 的格式输出这 3 个问题，以便我一键点击触发提问。例如：\n"
+            "- [🙋 统计最近7天的每日请求次数趋势](quick:请展示最近7天各智能体的每日请求次数趋势)\n\n"
+            "不要输出任何前言、总结或无关的 Markdown 标题，只输出这 3 行问题格式。"
+        )
+
+    @staticmethod
     def build_group_questions_refresh_prompt(
         *,
         group_title: str,
@@ -381,50 +419,84 @@ class DataQueryPrompts:
 
     @classmethod
     def build_dataset_navigation_groups(cls, dataset_menu: str) -> list[dict[str, Any]]:
-        groups: list[dict[str, Any]] = []
+        """按业务场景标题合并数据集，避免多个数据集命中同一场景时出现重复卡片。"""
+        grouped_blocks: dict[str, list[dict[str, Any]]] = {}
+        group_order: list[str] = []
+
         for block in cls._parse_dataset_blocks(dataset_menu):
-            tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
-            metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
-            scene = cls._infer_dataset_scene(block)
-            name = str(block.get("name") or "").strip()
-            display_name = str(block.get("display_name") or "").strip() or name or "未命名数据集"
-            scene_id = cls._slugify_scene_id(f"{name}_{scene['title']}")
-            table_terms = [str(t.get("term") or "").strip() for t in tables if str(t.get("term") or "").strip()]
-            table_descriptions = [
-                {
-                    "name": str(t.get("term") or "").strip(),
-                    "description": str(t.get("desc") or "").strip(),
-                }
-                for t in tables
-                if str(t.get("term") or "").strip()
-            ]
+            scene_title = cls._infer_dataset_scene(block)["title"]
+            if scene_title not in grouped_blocks:
+                grouped_blocks[scene_title] = []
+                group_order.append(scene_title)
+            grouped_blocks[scene_title].append(block)
+
+        groups: list[dict[str, Any]] = []
+        for scene_title in group_order:
+            blocks = grouped_blocks[scene_title]
+            scene = cls._infer_dataset_scene(blocks[0])
+
+            merged_tables: list[dict[str, Any]] = []
+            seen_table_terms: set[str] = set()
+            merged_metrics: list[str] = []
+            seen_metrics: set[str] = set()
+            related_data: list[dict[str, Any]] = []
+
+            for block in blocks:
+                name = str(block.get("name") or "").strip()
+                display_name = str(block.get("display_name") or "").strip() or name or "未命名数据集"
+                tables = [t for t in (block.get("tables") or []) if str(t.get("term") or "").strip()]
+                metrics = [str(m).strip() for m in (block.get("metrics") or []) if str(m).strip()]
+
+                table_terms: list[str] = []
+                table_descriptions: list[dict[str, str]] = []
+                for table in tables:
+                    term = str(table.get("term") or "").strip()
+                    if not term or term in seen_table_terms:
+                        continue
+                    seen_table_terms.add(term)
+                    merged_tables.append(table)
+                    table_terms.append(term)
+                    table_descriptions.append(
+                        {
+                            "name": term,
+                            "description": str(table.get("desc") or "").strip(),
+                        }
+                    )
+
+                for metric in metrics:
+                    if metric not in seen_metrics:
+                        seen_metrics.add(metric)
+                        merged_metrics.append(metric)
+
+                related_data.append(
+                    {
+                        "dataset": name,
+                        "display_name": display_name,
+                        "tables": table_terms,
+                        "table_descriptions": table_descriptions,
+                    }
+                )
+
             groups.append(
                 {
-                    "id": scene_id,
-                    "title": scene["title"],
+                    "id": cls._slugify_scene_id(scene_title),
+                    "title": scene_title,
                     "summary": scene["summary"],
                     "tags": scene["tags"],
                     "questions": cls._question_templates_for_group(
-                        scene_title=scene["title"],
-                        tables=tables,
-                        metrics=metrics,
+                        scene_title=scene_title,
+                        tables=merged_tables,
+                        metrics=merged_metrics,
                     ),
-                    "related_data": [
-                        {
-                            "dataset": name,
-                            "display_name": display_name,
-                            "tables": table_terms,
-                            "table_descriptions": table_descriptions,
-                        }
-                    ],
+                    "related_data": related_data,
                     "followups": [
                         {
                             "label": "更多问题",
-                            "query": f"围绕{scene['title']}，推荐我还能问哪些数据问题",
+                            "query": f"围绕{scene_title}，推荐我还能问哪些数据问题",
                         },
                         {
                             "label": "字段说明",
-                            "query": f"说明{display_name}里有哪些可查询字段和适合的分析口径",
+                            "query": f"说明{scene_title}相关数据里有哪些可查询字段和适合的分析口径",
                         },
                     ],
                 }
@@ -432,33 +504,8 @@ class DataQueryPrompts:
         return groups
 
     @classmethod
-    def _fallback_dataset_section(cls, block: dict[str, Any]) -> list[str]:
+    def _render_group_fallback_section(cls, group: dict[str, Any]) -> list[str]:
         """单个业务场景卡片：标题 + 示例问题 + 相关数据 + 继续追问。"""
-        groups = cls.build_dataset_navigation_groups(
-            "\n".join(
-                [
-                    f"- Dataset: {block.get('name') or ''}",
-                    f"  Display Name: {block.get('display_name') or ''}",
-                    f"  Description: {block.get('description') or ''}",
-                    "  Includes Tables: "
-                    + ", ".join(str(t.get("term") or "") for t in block.get("tables") or []),
-                    "  Table Details:",
-                    *[
-                        f"    - {t.get('term')}: {t.get('desc')}"
-                        for t in block.get("tables") or []
-                        if str(t.get("term") or "").strip()
-                    ],
-                    "  Metrics: " + ", ".join(str(m) for m in block.get("metrics") or []),
-                ]
-            )
-        )
-        if not groups:
-            return []
-        group = groups[0]
-        related = group["related_data"][0]
-        related_name = related.get("display_name") or related.get("dataset") or "相关数据"
-        dataset_name = related.get("dataset") or ""
-        tables = related.get("tables") or []
         lines: list[str] = [f"#### {group['title']}"]
         lines.append(f"> {group['summary']}")
         if group.get("tags"):
@@ -468,14 +515,25 @@ class DataQueryPrompts:
         for question in group.get("questions") or []:
             lines.append(cls.quick_button(question.get("label") or "提问", question.get("query") or ""))
         lines.append("")
-        related_title = f"{related_name} ({dataset_name})" if dataset_name and dataset_name != related_name else related_name
-        lines.append(f"**相关数据：** {related_title}")
-        for table in related.get("table_descriptions") or []:
-            desc = str(table.get("description") or "").strip()
-            suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
-            lines.append(f"- {table.get('name')}{suffix}")
-        if not tables:
+        lines.append("**相关数据：**")
+        related_items = group.get("related_data") or []
+        if not related_items:
             lines.append("- 暂无表信息")
+        for related in related_items:
+            related_name = related.get("display_name") or related.get("dataset") or "相关数据"
+            dataset_name = related.get("dataset") or ""
+            related_title = (
+                f"{related_name} ({dataset_name})"
+                if dataset_name and dataset_name != related_name
+                else related_name
+            )
+            lines.append(f"- {related_title}")
+            for table in related.get("table_descriptions") or []:
+                desc = str(table.get("description") or "").strip()
+                suffix = f"：{cls._sanitize_table_cell(desc, max_len=80)}" if desc else ""
+                lines.append(f"  - {table.get('name')}{suffix}")
+            if not related.get("tables"):
+                lines.append("  - 暂无表信息")
         lines.append("")
         lines.append("**继续追问：**")
         for followup in group.get("followups") or []:
@@ -506,8 +564,8 @@ class DataQueryPrompts:
                 + (f"主要覆盖：{scene_titles}。" if scene_titles else ""),
                 "",
             ]
-            for block in blocks:
-                lines.extend(cls._fallback_dataset_section(block))
+            for group in groups:
+                lines.extend(cls._render_group_fallback_section(group))
                 lines.append("")
 
             lines.extend(
@@ -537,6 +595,315 @@ class DataQueryPrompts:
             f"{cls.quick_button('重新查看数据门户', '/dataset_menu')}\n"
         )
 
+    @staticmethod
+    def _sanitize_reasoning_for_user(reasoning: str) -> str:
+        text = re.sub(r"\s+", " ", str(reasoning or "")).strip()
+        for prefix in (
+            "请求类别 LLM 未返回有效结果；",
+            "ChatBI 请求类别由大模型兜底识别",
+        ):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        return text
+
+    @classmethod
+    def _explain_clarification_trigger(cls, user_question: str, reasoning: str) -> dict[str, str]:
+        q = str(user_question or "").strip()
+        reasoning_text = cls._sanitize_reasoning_for_user(reasoning)
+        gaps = cls._infer_clarification_gaps(q, reasoning_text)
+        gap_text = "、".join(gaps)
+        topic = cls._truncate_for_display(q, 40)
+
+        trigger_rules: list[tuple[tuple[str, ...], dict[str, str]]] = [
+            (
+                ("不是明确", "查数请求", "打招呼"),
+                {
+                    "title": "尚未识别为明确的数据查询",
+                    "detail": (
+                        "您的问题更接近闲聊或能力咨询，尚未包含可直接查数的"
+                        "业务对象、指标和时间范围。"
+                    ),
+                    "fix": "请在问题中写明要查什么数据、看什么指标、覆盖哪段时间。",
+                },
+            ),
+            (
+                ("可复用", "结构化查询结果", "结果追问"),
+                {
+                    "title": "想基于上一轮结果继续，但会话中没有可复用的查询结果",
+                    "detail": (
+                        "您像是在对上一轮数据做可视化、分析或总结，"
+                        "但当前会话尚未保存或展示可供复用的结构化查数结果。"
+                    ),
+                    "fix": "先完成一次数据查询，或明确说明要基于哪一次查询的结果继续。",
+                },
+            ),
+            (
+                ("最近对话", "上下文"),
+                {
+                    "title": "对话上下文不足以安全复用上一轮结果",
+                    "detail": (
+                        "最近几轮对话里没有足够清晰的数据查询结果，"
+                        "系统无法判断应基于哪份数据继续。"
+                    ),
+                    "fix": "请重新说明要分析的对象和时间范围，或先发一次完整的数据查询。",
+                },
+            ),
+        ]
+
+        for keywords, payload in trigger_rules:
+            if any(keyword in reasoning_text for keyword in keywords):
+                result = dict(payload)
+                if gap_text and gap_text not in result["detail"]:
+                    result["detail"] = f"{result['detail']}此外，当前表述还缺少：{gap_text}。"
+                return result
+
+        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+            return {
+                "title": "尚未识别为明确的数据查询",
+                "detail": "您还没有说明要查询的业务数据、指标或时间范围。",
+                "fix": "请直接描述想查的对象、指标和时间段，例如「查询本月某指标趋势」。",
+            }
+
+        if reasoning_text and reasoning_text not in {"需要用户补充查数信息"}:
+            return {
+                "title": "系统判断当前问题尚不足以直接执行查数",
+                "detail": (
+                    f"{reasoning_text}"
+                    + (f" 当前还缺少：{gap_text}。" if gap_text else "")
+                ),
+                "fix": (
+                    f"请在原问题「{topic}」中补充上述缺失信息，"
+                    "或点选下方已根据您的问题生成的改写建议。"
+                    if topic
+                    else "请补充统计对象、指标口径和时间范围，或点选下方建议。"
+                ),
+            }
+
+        return {
+            "title": "问题信息尚不完整，无法安全执行查数",
+            "detail": f"当前表述还缺少：{gap_text}。" if gap_text else "当前问题缺少执行查数所需的关键信息。",
+            "fix": (
+                f"请在原问题「{topic}」中补充上述信息；下方按钮已根据您的问题生成可一键发送的改写版本。"
+                if topic
+                else "请补充统计对象、指标口径和时间范围，或点选下方建议。"
+            ),
+        }
+
+    @classmethod
+    def _format_clarification_reason_block(cls, user_question: str, reasoning: str) -> str:
+        expl = cls._explain_clarification_trigger(user_question, reasoning)
+        return (
+            "### ℹ️ 为什么需要补充信息\n"
+            f"- **触发原因：** {expl['title']}\n"
+            f"- **具体情况：** {expl['detail']}\n"
+            f"- **您可以这样改：** {expl['fix']}\n"
+        )
+
+    @classmethod
+    def ensure_clarification_reason_block(
+        cls,
+        content: str,
+        user_question: str,
+        reasoning: str,
+    ) -> str:
+        body = str(content or "").strip()
+        if "### ℹ️ 为什么需要补充信息" in body:
+            return body
+        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
+        if not body:
+            return reason_block.strip()
+        return f"{reason_block}\n{body}"
+
+    @staticmethod
+    def _truncate_for_display(text: str, max_len: int = 48) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not cleaned:
+            return ""
+        if len(cleaned) <= max_len:
+            return cleaned
+        return cleaned[: max_len - 1] + "…"
+
+    @classmethod
+    def _looks_like_greeting_or_capability_question(cls, user_question: str, reasoning: str) -> bool:
+        q = str(user_question or "").strip()
+        q_lower = q.lower()
+        if not q_lower:
+            return True
+        greeting_signals = ["你好", "您好", "你是谁", "你能做什么", "谢谢", "感谢", "辛苦了"]
+        if any(signal in q_lower for signal in greeting_signals) and len(q_lower) <= 16:
+            return True
+        reasoning_text = str(reasoning or "")
+        if any(keyword in reasoning_text for keyword in ("打招呼", "不是明确", "查数请求")):
+            return len(q_lower) <= 12
+        return False
+
+    @classmethod
+    def _infer_clarification_gaps(cls, user_question: str, reasoning: str) -> list[str]:
+        q = str(user_question or "").strip().lower()
+        reasoning_text = str(reasoning or "")
+        gaps: list[str] = []
+
+        if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
+            gaps.append("要基于哪一份查询结果继续分析")
+        if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
+            gaps.append("要继续分析的业务对象")
+
+        vague_time_signals = ("最近", "上次", "上一次", "近期", "这段时间", "刚才", "刚刚")
+        concrete_time_signals = (
+            "今天", "昨天", "本周", "上周", "本月", "上月", "今年", "去年",
+            "天内", "月内", "季度", "年度", "20", "19",
+        )
+        if any(signal in q for signal in vague_time_signals) and not any(
+            signal in q for signal in concrete_time_signals
+        ):
+            gaps.append("时间范围")
+
+        vague_ref_signals = ("这个", "那个", "这些", "那些", "上面", "前述", "最近一次")
+        if any(signal in q for signal in vague_ref_signals):
+            gaps.append("具体对象或指代范围")
+
+        metric_signals = ("多少", "趋势", "占比", "排名", "对比", "统计", "汇总", "消耗", "用量")
+        object_signals = ("各", "每", "所有", "全部", "部门", "机房", "用户", "智能体", "对话")
+        if any(signal in q for signal in metric_signals) and not any(
+            signal in q for signal in object_signals
+        ):
+            gaps.append("统计对象或指标口径")
+
+        if not gaps:
+            gaps = ["统计对象", "指标口径", "时间范围"]
+        deduped: list[str] = []
+        for gap in gaps:
+            if gap not in deduped:
+                deduped.append(gap)
+        return deduped[:3]
+
+    @classmethod
+    def _build_contextual_clarification_lead(cls, user_question: str, reasoning: str) -> str:
+        q = str(user_question or "").strip()
+        topic = cls._truncate_for_display(q, 56)
+        reasoning_text = str(reasoning or "")
+
+        if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
+            if topic:
+                return (
+                    f"您提到「{topic}」，但当前会话里还没有可复用的查询结果。"
+                    "请说明要基于哪份数据继续，或先完成一次查询："
+                )
+            return "当前还不确定要基于哪一份查询结果继续分析，请补充说明或先完成一次数据查询："
+
+        if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
+            if topic:
+                return (
+                    f"关于「{topic}」，最近对话里暂时没有足够明确的数据上下文。"
+                    "请补充要分析的对象或时间范围："
+                )
+            return "最近对话里暂时没有足够明确的数据上下文，请补充您想分析的对象或时间范围："
+
+        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+            return cls.CLARIFICATION_CAPABILITY_ONBOARDING
+
+        gap_text = "、".join(cls._infer_clarification_gaps(q, reasoning_text))
+        if topic:
+            return (
+                f"关于「{topic}」，还需要确认{gap_text}后才能继续。"
+                "您可以补充说明，或直接点选下面的建议："
+            )
+        return f"还需要确认{gap_text}后才能继续。您可以补充说明，或直接点选下面的建议："
+
+    @classmethod
+    def _build_contextual_clarification_quick_variants(
+        cls,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str,
+    ) -> list[tuple[str, str]]:
+        q = str(user_question or "").strip()
+        reasoning_text = str(reasoning or "")
+        last_topic = cls._extract_last_user_topic(history_excerpt, q)
+        topic_label = cls._truncate_for_display(q, 24) or "当前问题"
+        variants: list[tuple[str, str]] = []
+
+        def add(label: str, target: str) -> None:
+            target = str(target or "").strip()
+            if not target:
+                return
+            label = cls._truncate_for_display(label, 32)
+            if any(existing == target for _, existing in variants):
+                return
+            variants.append((label, target))
+
+        if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
+            if last_topic:
+                add(
+                    f"基于「{cls._truncate_for_display(last_topic, 16)}」继续",
+                    f"基于刚才关于{last_topic}的查询结果，{q or '继续分析'}",
+                )
+            add("基于上一轮查询结果", f"基于刚才的查询结果，{q or '继续分析'}")
+            if q:
+                add(f"先查数再分析：{topic_label}", f"请先完成一次数据查询，再{q}")
+            return variants[:3]
+
+        if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
+            if last_topic:
+                add(
+                    f"重新查询「{cls._truncate_for_display(last_topic, 16)}」",
+                    f"查询{last_topic}",
+                )
+            if q:
+                add(f"明确对象后重问：{topic_label}", f"请明确要分析的对象和时间范围：{q}")
+                add(f"按原问题继续：{topic_label}", q)
+            return variants[:3]
+
+        if cls._looks_like_greeting_or_capability_question(q, reasoning_text):
+            add("查询本月业务指标趋势", "查询本月核心业务指标趋势")
+            add("统计最近一周关键记录", "统计最近一周关键业务记录")
+            add("查看数据门户", "/dataset_menu")
+            return variants[:3]
+
+        if not q:
+            add("打开数据门户选表提问", "/dataset_menu")
+            return variants[:3]
+
+        gaps = cls._infer_clarification_gaps(q, reasoning_text)
+        if "时间范围" in gaps:
+            add(f"补充时间：{topic_label}", f"{q}（时间范围：本月）")
+        if "具体对象或指代范围" in gaps:
+            add(f"补充指代范围：{topic_label}", f"请明确「{q}」中的对象范围和时间范围")
+        if "要基于哪一份查询结果继续分析" in gaps and last_topic:
+            add(
+                f"基于「{cls._truncate_for_display(last_topic, 16)}」",
+                f"基于刚才关于{last_topic}的查询结果，{q}",
+            )
+        if "统计对象或指标口径" in gaps or "指标口径" in gaps:
+            add(f"补充指标口径：{topic_label}", f"请补充具体指标和统计口径后回答：{q}")
+        if "统计对象" in gaps:
+            add(f"补充统计对象：{topic_label}", f"请明确统计对象后回答：{q}")
+        add(f"按原问题重试：{topic_label}", q)
+        return variants[:3]
+
+    @classmethod
+    def append_contextual_quick_suggestions(
+        cls,
+        text: str,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str = "",
+    ) -> str:
+        body = str(text or "").strip()
+        if cls.has_quick_suggestions(body):
+            return body
+        variants = cls._build_contextual_clarification_quick_variants(
+            user_question,
+            reasoning,
+            history_excerpt,
+        )
+        if not variants:
+            return body
+        buttons = [cls.quick_button(label, target) for label, target in variants]
+        if "### 💬" in body:
+            return f"{body}\n" + "\n".join(buttons)
+        return f"{body}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons)
+
     @classmethod
     def build_clarification_fallback(
         cls,
@@ -544,83 +911,34 @@ class DataQueryPrompts:
         reasoning: str,
         history_excerpt: str = "",
     ) -> str:
-        reasoning_text = str(reasoning or "")
-        history_text = str(history_excerpt or "")
-        last_user_topic = cls._extract_last_user_topic(history_text, user_question)
-        buttons: list[str] = []
+        lead = cls._build_contextual_clarification_lead(user_question, reasoning)
+        variants = cls._build_contextual_clarification_quick_variants(
+            user_question,
+            reasoning,
+            history_excerpt,
+        )
+        buttons = [cls.quick_button(label, target) for label, target in variants]
+        suggestions = "\n".join(buttons[:3])
+        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
+        return f"{reason_block}\n{lead}\n\n### 💬 您可以这样继续\n{suggestions}"
 
-        if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
-            lead = (
-                "我还不太确定您想基于哪份数据继续分析或可视化。"
-                "您可以补充具体指标/图表类型，或直接选择下面的建议："
-            )
-            if last_user_topic:
-                buttons.append(
-                    cls.quick_button(
-                        f"基于刚才关于「{last_user_topic}」的结果可视化",
-                        f"对刚才关于{last_user_topic}的查询结果做可视化分析",
-                    )
-                )
-            buttons.extend([
-                cls.quick_button("基于刚才的查询结果继续分析", "基于刚才的查询结果继续分析"),
-                cls.quick_button("查询本月业务指标趋势", "查询本月核心业务指标趋势"),
-            ])
-        elif any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
-            lead = (
-                "最近对话里暂时没有足够明确的数据结果上下文，"
-                "请告诉我您想继续分析的对象，或重新发起一次查询："
-            )
-            if last_user_topic:
-                buttons.append(
-                    cls.quick_button(
-                        f"重新查询「{last_user_topic}」",
-                        f"查询{last_user_topic}",
-                    )
-                )
-            buttons.extend([
-                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
-                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
-            ])
-        elif any(keyword in reasoning_text for keyword in ("不是明确", "打招呼", "查数请求")):
-            lead = (
-                "我可以帮您查询业务数据、统计分析或基于结果做可视化。"
-                "请告诉我您想看的数据对象、指标和时间范围："
-            )
-            buttons.extend([
-                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
-                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
-                cls.quick_button("查看部门收入与回款对比", "查询各部门本季度收入与回款对比"),
-            ])
-        else:
-            lead = cls.CLARIFICATION_OR_NON_DATA
-            buttons.extend([
-                cls.quick_button("查询本月各机房 PUE 趋势", "查询本月各机房 PUE 趋势"),
-                cls.quick_button("统计最近一周告警记录", "统计最近一周告警记录"),
-                cls.quick_button("基于刚才的查询结果继续分析", "基于刚才的查询结果继续分析"),
-            ])
-
-        unique_buttons: list[str] = []
-        seen_targets: set[str] = set()
-        for button in buttons:
-            match = re.search(r"\(quick:([^)]+)\)", button)
-            target = match.group(1).strip() if match else button
-            if target in seen_targets:
-                continue
-            seen_targets.add(target)
-            unique_buttons.append(button)
-
-        suggestions = "\n".join(unique_buttons[:3])
-        return f"{lead}\n\n### 💬 您可以这样继续\n{suggestions}"
-
-    @staticmethod
-    def build_missing_reusable_result_fallback(history_excerpt: str = "") -> str:
-        last_topic = DataQueryPrompts._extract_last_user_topic(history_excerpt, "")
+    @classmethod
+    def build_missing_reusable_result_fallback(
+        cls,
+        history_excerpt: str = "",
+        user_question: str = "",
+    ) -> str:
+        last_topic = cls._extract_last_user_topic(history_excerpt, user_question)
+        reasoning = (
+            "检测到本轮是基于上一轮结果的分析/可视化请求，"
+            "但当前会话没有保存的结构化查询结果。"
+        )
         buttons = [
-            DataQueryPrompts.quick_button(
+            cls.quick_button(
                 "基于刚才的查询结果继续分析",
                 "基于刚才的查询结果继续分析",
             ),
-            DataQueryPrompts.quick_button(
+            cls.quick_button(
                 "对刚才的结果做可视化",
                 "对刚刚的查询结果做可视化分析",
             ),
@@ -628,7 +946,7 @@ class DataQueryPrompts:
         if last_topic:
             buttons.insert(
                 0,
-                DataQueryPrompts.quick_button(
+                cls.quick_button(
                     f"重新查询「{last_topic}」",
                     f"查询{last_topic}",
                 ),
@@ -637,7 +955,8 @@ class DataQueryPrompts:
             "当前会话还没有可复用的结构化查询结果，无法直接基于上一轮数据出图或分析。"
             "您可以先完成一次查询，或选择下面的建议："
         )
-        return f"{lead}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons[:3])
+        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
+        return f"{reason_block}\n{lead}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons[:3])
 
     @staticmethod
     def _extract_last_user_topic(history_excerpt: str, current_question: str) -> str:

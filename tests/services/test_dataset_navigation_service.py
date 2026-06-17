@@ -66,6 +66,48 @@ def test_parse_dataset_blocks_captures_table_descriptions():
 
 
 @pytest.mark.no_infrastructure
+def test_build_dataset_navigation_groups_merges_same_scene_title():
+    menu = """Available Datasets:
+- Dataset: ops_alerts
+  Display Name: 机房告警
+  Includes Tables: 机房告警表
+  Table Details:
+    - 机房告警表: 告警记录
+
+- Dataset: ops_devices
+  Display Name: 设备监控
+  Includes Tables: 设备状态表
+  Table Details:
+    - 设备状态表: 设备运行状态
+"""
+    groups = DataQueryPrompts.build_dataset_navigation_groups(menu)
+    assert len(groups) == 1
+    assert groups[0]["title"] == "运维监控分析"
+    assert len(groups[0]["related_data"]) == 2
+    assert groups[0]["related_data"][0]["dataset"] == "ops_alerts"
+    assert groups[0]["related_data"][1]["dataset"] == "ops_devices"
+    assert "机房告警表" in groups[0]["related_data"][0]["tables"]
+    assert "设备状态表" in groups[0]["related_data"][1]["tables"]
+
+
+@pytest.mark.no_infrastructure
+def test_build_dataset_navigation_fallback_deduplicates_scene_cards():
+    menu = """Available Datasets:
+- Dataset: ops_alerts
+  Display Name: 机房告警
+  Includes Tables: 机房告警表
+
+- Dataset: ops_devices
+  Display Name: 设备监控
+  Includes Tables: 设备状态表
+"""
+    markdown = DataQueryPrompts.build_dataset_navigation_fallback(menu)
+    assert markdown.count("#### 运维监控分析") == 1
+    assert "机房告警 (ops_alerts)" in markdown
+    assert "设备监控 (ops_devices)" in markdown
+
+
+@pytest.mark.no_infrastructure
 def test_build_dataset_navigation_groups_from_dataset_menu():
     groups = DataQueryPrompts.build_dataset_navigation_groups(SAMPLE_MENU)
     assert len(groups) == 2
@@ -429,4 +471,44 @@ async def test_refresh_group_questions_success():
     assert questions[1]["query"] == "说明响应最长的前10个请求"
     assert questions[2]["label"] == "失败原因分布"
     assert questions[2]["query"] == "统计最近24小时的失败原因分布"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_recommend_table_questions_uses_frontend_columns_without_db_lookup():
+    llm_output = (
+        "- [🙋 用户增长趋势](quick:统计最近30天每日新增用户数)\n"
+        "- [🙋 角色分布](quick:按角色统计当前用户数量分布)\n"
+        "- [🙋 最近登录](quick:查询最近7天登录过的用户数量)"
+    )
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(return_value=llm_output)
+    mock_db = AsyncMock()
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        questions = await DatasetNavigationService.recommend_table_questions(
+            mock_db,
+            table="智能体用户表",
+            physical_table_name="ai_agent_users",
+            dataset_name="智能体数据集",
+            columns=[
+                {
+                    "name": "id",
+                    "term": "用户ID",
+                    "type": "bigint",
+                    "description": "主键",
+                }
+            ],
+        )
+
+    assert len(questions) == 3
+    assert questions[0]["label"] == "用户增长趋势"
+    assert questions[0]["query"] == "统计最近30天每日新增用户数"
+    mock_db.execute.assert_not_called()
 

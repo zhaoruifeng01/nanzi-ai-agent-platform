@@ -48,6 +48,25 @@ const bar = mergeChartDefaults({
 assert.equal("xAxis" in bar, true);
 assert.equal("yAxis" in bar, true);
 assert.equal("grid" in bar, true);
+assert.equal(bar.xAxis.axisLabel.color, "#6b7280");
+
+const lightAxis = mergeChartDefaults({
+  xAxis: {
+    data: ["2026-06-11"],
+    axisLabel: { color: "#f3f4f6" },
+  },
+  series: [{ type: "line", data: [1] }],
+});
+assert.equal(lightAxis.xAxis.axisLabel.color, "#6b7280");
+
+const nestedTextStyle = mergeChartDefaults({
+  xAxis: {
+    data: ["A"],
+    axisLabel: { textStyle: { color: "#eeeeee" } },
+  },
+  series: [{ type: "line", data: [1] }],
+});
+assert.equal(nestedTextStyle.xAxis.axisLabel.textStyle.color, "#6b7280");
 
 const parseSse = createSseLineParser();
 assert.deepEqual(parseSse.feed("data: {\"content\":\"hel"), []);

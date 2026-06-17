@@ -86,7 +86,7 @@ DATA_REPAIR_BUDGETS = {
     "schema_ambiguous": 1,
     "sql_plan_missing": 1,
     "sql_static_risk": 1,
-    "sql_error": 2,
+    "sql_error": 5,
     "empty_sql_result": 1,
     "ratio_anomaly": 1,
     "duration_anomaly": 1,
@@ -204,6 +204,7 @@ class _DataRunState:
     controlled_schema_retry_keywords: str = ""
     last_applied_schema_retry_keywords: str = ""
     pending_schema_retry: bool = False   # 修复轮受控重试标记（不随 _reset_state_for_repair 清除）
+    followup_data_saved: bool = False    # 本轮是否已将结构化 SQL 结果写入 last_data_result
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -431,8 +432,18 @@ class DataAgentRunner(BaseExecutor):
             from app.services.ai.memory_service import memory_service
 
             await memory_service.set_last_data_result(user_id, self.conversation_id, payload)
+            state = self._last_run_state
+            if state is not None:
+                state.followup_data_saved = True
         except Exception as e:
             logger.warning("[DataAgentRunner] Failed to save last data result: %s", e)
+
+    def resolve_has_data_output(self) -> bool:
+        """本轮 ChatBI 是否产出了可复用的结构化查数结果（供前端展示「可视化分析」入口）。"""
+        state = self._last_run_state
+        if not state or not state.requires_fresh_data:
+            return False
+        return bool(state.followup_data_saved)
 
     async def _resolve_runtime_tools_from_config(self) -> list[RuntimeToolSpec]:
         _, specs = await build_chatbi_toolkit(self.config.tools)
@@ -886,7 +897,10 @@ class DataAgentRunner(BaseExecutor):
                 ):
                     yield chunk
             else:
-                async for chunk in self._yield_missing_reusable_result_clarification(history):
+                async for chunk in self._yield_missing_reusable_result_clarification(
+                    history,
+                    user_question=user_question,
+                ):
                     yield chunk
             return
 
@@ -1779,10 +1793,40 @@ class DataAgentRunner(BaseExecutor):
             )
             cleaned = str(content or "").strip()
             if cleaned and DataQueryPrompts.has_quick_suggestions(cleaned):
-                return finalize_visible_reply(cleaned, collapse_duplicates=False)
+                return finalize_visible_reply(
+                    DataQueryPrompts.ensure_clarification_reason_block(
+                        cleaned,
+                        user_question,
+                        reasoning,
+                    ),
+                    collapse_duplicates=False,
+                )
+            if cleaned:
+                merged = DataQueryPrompts.append_contextual_quick_suggestions(
+                    cleaned,
+                    user_question,
+                    reasoning,
+                    history_excerpt,
+                )
+                if DataQueryPrompts.has_quick_suggestions(merged):
+                    return finalize_visible_reply(
+                        DataQueryPrompts.ensure_clarification_reason_block(
+                            merged,
+                            user_question,
+                            reasoning,
+                        ),
+                        collapse_duplicates=False,
+                    )
         except Exception as e:
             logger.warning("[DataAgentRunner] Contextual clarification generation failed: %s", e)
-        return finalize_visible_reply(fallback, collapse_duplicates=False)
+        return finalize_visible_reply(
+            DataQueryPrompts.ensure_clarification_reason_block(
+                fallback,
+                user_question,
+                reasoning,
+            ),
+            collapse_duplicates=False,
+        )
 
     async def _yield_contextual_clarification(
         self,
@@ -1809,17 +1853,26 @@ class DataAgentRunner(BaseExecutor):
     async def _yield_missing_reusable_result_clarification(
         self,
         history: List[Dict[str, str]],
+        *,
+        user_question: str = "",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         history_excerpt = DataQueryPrompts.format_clarification_history(history)
+        reasoning = (
+            "检测到本轮是基于上一轮结果的分析/可视化请求，"
+            "但当前会话没有保存的结构化查询结果。"
+        )
         yield {
             "type": "log",
             "id": f"reuse_miss_{uuid.uuid4().hex[:8]}",
             "title": "缺少可复用查询结果",
-            "details": "检测到本轮是基于上一轮结果的分析/可视化请求，但当前会话没有保存的结构化查询结果。",
+            "details": reasoning,
             "status": "error",
         }
         yield {
-            "content": DataQueryPrompts.build_missing_reusable_result_fallback(history_excerpt),
+            "content": DataQueryPrompts.build_missing_reusable_result_fallback(
+                history_excerpt,
+                user_question=user_question,
+            ),
             "status": "success",
         }
 
