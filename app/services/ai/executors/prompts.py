@@ -259,6 +259,39 @@ class DataQueryPrompts:
         return cleaned
 
     @staticmethod
+    def build_group_questions_refresh_prompt(
+        *,
+        group_title: str,
+        tables: list[str],
+        table_to_columns: dict[str, list[dict[str, Any]]],
+        table_physical_names: dict[str, str]
+    ) -> str:
+        ctx = ""
+        for t in tables:
+            physical = table_physical_names.get(t)
+            cols = table_to_columns.get(t, [])
+            physical_str = f"（物理表名：{physical}）" if physical else ""
+            ctx += f"- 数据表 '{t}'{physical_str}:\n"
+            if cols:
+                for c in cols:
+                    desc_str = f" ({c['description']})" if c['description'] else ""
+                    ctx += f"  * {c['name']} ({c['term']}){desc_str} - 类型: {c['type']}\n"
+            else:
+                ctx += "  * (暂无字段定义)\n"
+            ctx += "\n"
+
+        return (
+            f"你是一个专业的 ChatBI 数据分析专家。\n"
+            f"请针对以下业务分析场景，推荐 3 个最适合的高频业务分析提问：\n\n"
+            f"【业务场景】：'{group_title}'\n"
+            f"【关联数据表结构】：\n{ctx}\n"
+            f"【输出格式要求】：\n"
+            f"生成的问题要具体、贴合上述字段设计。以 `- [🙋 推荐问题描述](quick:提问具体指令)` 的格式输出这 3 个问题，以便我一键点击触发提问。例如：\n"
+            f"- [🙋 统计最近7天的每日请求次数趋势](quick:请展示最近7天各智能体的每日请求次数趋势)\n\n"
+            f"不要输出任何前言、总结或无关的 Markdown 标题，只输出这 3 行问题格式。"
+        )
+
+    @staticmethod
     def _slugify_scene_id(text: str) -> str:
         slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", str(text or "").strip()).strip("_")
         return slug[:48] or "dataset_scene"
@@ -322,7 +355,7 @@ class DataQueryPrompts:
             },
             {
                 "label": "查询明细",
-                "query": f"查询{primary}最近100条明细记录",
+                "query": f"查询{primary}最近10条明细记录",
                 "type": "detail",
             },
             {

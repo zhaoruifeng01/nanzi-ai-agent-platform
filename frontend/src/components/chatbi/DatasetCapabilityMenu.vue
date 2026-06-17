@@ -168,13 +168,34 @@
 
           <!-- You Can Ask Section -->
           <div v-if="group.questions?.length" class="mt-4">
-            <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
-              <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-              </svg>
-              你可以这样问
+            <div class="mb-2 flex items-center justify-between select-none">
+              <span class="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                你可以这样问
+              </span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-all duration-200 cursor-pointer active:scale-95 bg-blue-50/50 hover:bg-blue-50 dark:bg-blue-950/20 dark:hover:bg-blue-950/40 px-2 py-0.5 rounded-md border border-blue-100/30 dark:border-blue-900/30 disabled:opacity-50"
+                :disabled="refreshingGroupIds[group.id || group.title]"
+                @click.stop="handleRefreshGroupQuestions(group)"
+              >
+                <svg
+                  class="w-3 h-3 text-blue-500/80 group-hover:text-blue-600 dark:text-blue-400/60 dark:group-hover:text-blue-300"
+                  :class="{ 'animate-spin': refreshingGroupIds[group.id || group.title] }"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span>换一批</span>
+              </button>
             </div>
-            <div class="flex flex-wrap gap-2">
+
+            <div v-if="refreshingGroupIds[group.id || group.title]" class="flex flex-wrap gap-2 animate-pulse-slow">
+              <div v-for="i in 3" :key="i" class="inline-flex items-center h-8 w-32 bg-blue-50/30 dark:bg-blue-950/10 border border-blue-100/10 dark:border-blue-900/10 rounded-lg"></div>
+            </div>
+            <div v-else class="flex flex-wrap gap-2">
               <button
                 v-for="question in group.questions"
                 :key="question.query"
@@ -186,8 +207,8 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                 </svg>
                 <span>{{ question.label }}</span>
-                <span 
-                  v-if="question.click_count" 
+                <span
+                  v-if="question.click_count"
                   class="ml-1 inline-flex items-center px-1 py-0.5 rounded bg-amber-500/10 text-[9px] font-bold text-amber-600 border border-amber-500/20 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30 shadow-sm"
                 >
                   🔥 常用 {{ question.click_count }}
@@ -195,6 +216,7 @@
               </button>
             </div>
           </div>
+
 
           <!-- Related Data Section -->
           <div v-if="group.related_data?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
@@ -377,6 +399,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onUnmounted } from "vue";
+import axios from "@/utils/axios";
 
 interface DatasetCapabilityQuestion {
   label: string;
@@ -433,6 +456,7 @@ const emit = defineEmits<{
 const menuContainer = ref<HTMLElement | null>(null);
 const isRefreshing = ref(false);
 const expandedGroups = ref<Record<string, boolean>>({});
+const refreshingGroupIds = ref<Record<string, boolean>>({});
 const activeTableDictionary = ref<string | null>(null);
 const pinnedTableDictionary = ref<string | null>(null);
 const popoverStyles = ref<Record<string, Record<string, string>>>({});
@@ -609,6 +633,41 @@ const handleRefreshClick = () => {
   }, 30000);
 };
 
+const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
+  const uniqueId = group.id || group.title;
+  if (refreshingGroupIds.value[uniqueId]) return;
+
+  const tables: string[] = [];
+  if (group.related_data) {
+    for (const related of group.related_data) {
+      if (related.tables) {
+        for (const t of related.tables) {
+          if (t && !tables.includes(t)) {
+            tables.push(t);
+          }
+        }
+      }
+    }
+  }
+
+  refreshingGroupIds.value[uniqueId] = true;
+  try {
+    const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
+      group_title: group.title,
+      tables: tables,
+    });
+    if (res.data?.code === 200 && res.data?.data?.questions) {
+      group.questions = res.data.data.questions;
+    } else {
+      console.warn("Invalid refresh questions response:", res.data);
+    }
+  } catch (error) {
+    console.error("Failed to refresh group questions:", error);
+  } finally {
+    refreshingGroupIds.value[uniqueId] = false;
+  }
+};
+
 // 监听 payload 的变化重置刷新动画与过滤状态
 watch(
   () => props.payload,
@@ -618,6 +677,7 @@ watch(
     selectedTag.value = "All";
     activeTableDictionary.value = null;
     pinnedTableDictionary.value = null;
+    refreshingGroupIds.value = {};
   },
   { deep: true }
 );

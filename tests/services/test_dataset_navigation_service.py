@@ -242,7 +242,7 @@ async def test_build_navigation_for_user_refresh_skips_cached_markdown():
 @pytest.mark.no_infrastructure
 async def test_build_navigation_for_user_sorts_questions_by_redis_click_stats():
     click_stats = {
-        "查询智能体访问日志最近100条明细记录": {
+        "查询智能体访问日志最近10条明细记录": {
             "count": 5,
             "last_clicked_at": "2026-06-16T10:00:00+00:00",
         }
@@ -267,7 +267,7 @@ async def test_build_navigation_for_user_sorts_questions_by_redis_click_stats():
         )
 
     questions = payload["groups"][0]["questions"]
-    assert questions[0]["query"] == "查询智能体访问日志最近100条明细记录"
+    assert questions[0]["query"] == "查询智能体访问日志最近10条明细记录"
     assert questions[0]["click_count"] == 5
     assert questions[0]["last_clicked_at"] == "2026-06-16T10:00:00+00:00"
 
@@ -281,7 +281,7 @@ async def test_record_question_click_stores_redis_rank_and_metadata():
             user_id=7,
             is_admin=False,
             dataset_menu_hash="abc123",
-            query="查询智能体访问日志最近100条明细记录",
+            query="查询智能体访问日志最近10条明细记录",
             label="查询明细",
             group_id="ai_agent_meta_智能体运行分析",
         )
@@ -381,3 +381,52 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
     
     assert payload["is_fallback"] is True
     save_cache.assert_awaited_once_with(ANY, fallback_markdown, ttl=15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_refresh_group_questions_success():
+    llm_output = (
+        "- [🙋 访问量统计](quick:分析最近一周的智能体访问量)\n"
+        "- [🙋 耗时分析](quick:说明响应最长的前10个请求)\n"
+        "- [🙋 失败原因分布](quick:统计最近24小时的失败原因分布)"
+    )
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(return_value=llm_output)
+
+    mock_db = AsyncMock()
+    # Mock row models for physical names and column terms
+    mock_res_physical = MagicMock()
+    mock_res_physical.all = MagicMock(return_value=[
+        MagicMock(term="智能体访问日志", physical_name="ai_agent_execution_history")
+    ])
+
+    mock_res_columns = MagicMock()
+    mock_res_columns.all = MagicMock(return_value=[
+        MagicMock(table_term="智能体访问日志", physical_name="request_count", column_term="访问量", type="int", description="总访问量")
+    ])
+
+    mock_db.execute = AsyncMock(side_effect=[mock_res_physical, mock_res_columns])
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        questions = await DatasetNavigationService.refresh_group_questions(
+            mock_db,
+            group_title="智能体运行分析",
+            tables=["智能体访问日志"]
+        )
+
+    assert len(questions) == 3
+    assert questions[0]["label"] == "访问量统计"
+    assert questions[0]["query"] == "分析最近一周的智能体访问量"
+    assert questions[0]["type"] == "dynamic"
+    assert questions[1]["label"] == "耗时分析"
+    assert questions[1]["query"] == "说明响应最长的前10个请求"
+    assert questions[2]["label"] == "失败原因分布"
+    assert questions[2]["query"] == "统计最近24小时的失败原因分布"
+

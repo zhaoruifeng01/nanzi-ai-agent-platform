@@ -494,3 +494,103 @@ class DatasetNavigationService:
             "markdown": markdown,
             "is_fallback": is_fallback,
         }
+
+    @staticmethod
+    async def refresh_group_questions(
+        db: AsyncSession,
+        *,
+        group_title: str,
+        tables: list[str],
+    ) -> list[dict[str, Any]]:
+        """针对特定的卡片场景 (group_title) 和关联表列表 (tables)，在线实时调用大模型生成 3 个新问题"""
+        table_physical_names = {}
+        table_to_columns = {}
+
+        if tables:
+            try:
+                from sqlalchemy import select
+                from app.models.metadata import MetaTable, MetaColumn
+
+                # 1. 批量拉取物理表名映射
+                t_stmt = select(MetaTable.term, MetaTable.physical_name).where(
+                    MetaTable.term.in_(tables),
+                    MetaTable.status == 1
+                )
+                t_res = await db.execute(t_stmt)
+                for t_row in t_res.all():
+                    table_physical_names[str(t_row.term).strip()] = str(t_row.physical_name).strip()
+
+                # 2. 批量拉取列定义
+                stmt = (
+                    select(
+                        MetaTable.term.label("table_term"),
+                        MetaColumn.physical_name,
+                        MetaColumn.term.label("column_term"),
+                        MetaColumn.type,
+                        MetaColumn.description,
+                    )
+                    .join(MetaColumn, MetaTable.id == MetaColumn.table_id)
+                    .where(MetaTable.term.in_(tables))
+                    .where(MetaTable.status == 1)
+                    .order_by(MetaColumn.id.asc())
+                )
+                res = await db.execute(stmt)
+                rows = res.all()
+
+                for row in rows:
+                    t_term = str(row.table_term).strip()
+                    if t_term not in table_to_columns:
+                        table_to_columns[t_term] = []
+                    table_to_columns[t_term].append({
+                        "name": row.physical_name,
+                        "term": row.column_term,
+                        "type": row.type or "",
+                        "description": row.description or "",
+                    })
+            except Exception as e:
+                logger.warning("Failed to fetch metadata columns or table physical names for refresh: %s", e)
+
+        # 3. 构造 prompt 并调用大模型
+        prompt = DataQueryPrompts.build_group_questions_refresh_prompt(
+            group_title=group_title,
+            tables=tables,
+            table_to_columns=table_to_columns,
+            table_physical_names=table_physical_names,
+        )
+
+        questions = []
+        try:
+            llm = await AgentConfigProvider.get_configured_llm(streaming=False)
+            chat_client = chat_client_from_handle(llm)
+            content = await chat_client.generate_text(
+                [
+                    RuntimeMessage(
+                        role="system",
+                        content=[
+                            RuntimeContentBlock(
+                                type="text",
+                                text=prompt,
+                            )
+                        ],
+                    )
+                ]
+            )
+            cleaned = str(content or "").strip()
+
+            # 从返回结果解析问题
+            pattern = r"-\s*\[(?:[^\]]*🙋\s*)?([^\]]+)\]\(quick:([^\)]+)\)"
+            for match in re.finditer(pattern, cleaned):
+                label = match.group(1).strip()
+                query = match.group(2).strip()
+                if "/dataset_menu" in query or "重新查看" in label:
+                    continue
+                questions.append({
+                    "label": label,
+                    "query": query,
+                    "type": "dynamic",
+                })
+        except Exception as e:
+            logger.warning("Failed to refresh group questions via LLM: %s", e)
+
+        return questions
+
