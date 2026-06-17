@@ -502,6 +502,7 @@ class DataQueryPrompts:
                     "title": scene_title,
                     "summary": scene["summary"],
                     "tags": scene["tags"],
+                    "metrics": metrics,
                     "questions": cls._question_templates_for_group(
                         scene_title=scene_title,
                         tables=tables,

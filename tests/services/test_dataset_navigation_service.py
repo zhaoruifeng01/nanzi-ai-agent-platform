@@ -103,6 +103,7 @@ def test_build_dataset_navigation_groups_prefers_metrics_as_tags():
     assert len(groups) == 1
     assert groups[0]["title"] == "销售指标"
     assert groups[0]["tags"] == ["收入", "回款率"]
+    assert groups[0]["metrics"] == ["收入", "回款率"]
 
 
 @pytest.mark.no_infrastructure

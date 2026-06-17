@@ -7,6 +7,8 @@ import DebugConfigPanel from "@/components/DebugConfigPanel.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
+import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
+import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
@@ -1661,20 +1663,6 @@ const toggleFullScreen = () => {
   isFullScreen.value = !isFullScreen.value;
 };
 
-const handleEscKey = (e: KeyboardEvent) => {
-  if (e.key === "Escape" && isFullScreen.value) {
-    isFullScreen.value = false;
-  }
-};
-
-onMounted(() => {
-  window.addEventListener("keydown", handleEscKey);
-});
-
-onUnmounted(() => {
-  window.removeEventListener("keydown", handleEscKey);
-});
-
 const userInput = ref("");
 const isProcessing = ref(false);
 const datasetMenuLoading = ref(false);
@@ -1835,7 +1823,7 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   switch (cmd) {
     case "/dataset_menu":
       userInput.value = "";
-      await showDatasetMenuNavigation();
+      await openPortalDrawer();
       return true;
     case "/history":
       userInput.value = "";
@@ -1860,6 +1848,46 @@ const handleQuickQuestion = async (question: string) => {
   userInput.value = question;
   sendMessage();
 };
+
+const {
+  showPortalDrawer,
+  portalNavigationPayload,
+  portalLoading,
+  portalBackgroundRefreshing,
+  portalKeepOpenOnQuestion,
+  openPortalDrawer,
+  refreshPortalNavigation,
+  handlePortalQuickQuestion,
+  recordDatasetMenuQuestionClick: recordPortalQuestionClick,
+  clearDatasetMenuQuestionClick: clearPortalQuestionClick,
+  disposePortalTimers,
+} = useDatasetPortal({
+  getAuthHeaders: () => debugAuthHeaders() || {},
+  showToast,
+  lockToDataQueryAgentForDatasetMenu,
+  onQuickQuestion: handleQuickQuestion,
+  findDataQueryAgent,
+  keepOpenStorageKey: "debug_portal_keep_open",
+});
+
+const handleEscKey = (e: KeyboardEvent) => {
+  if (e.key === "Escape" && showPortalDrawer.value) {
+    showPortalDrawer.value = false;
+    return;
+  }
+  if (e.key === "Escape" && isFullScreen.value) {
+    isFullScreen.value = false;
+  }
+};
+
+onMounted(() => {
+  window.addEventListener("keydown", handleEscKey);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleEscKey);
+  disposePortalTimers();
+});
 
 const citationPopover = ref<{
   visible: boolean;
@@ -4965,6 +4993,18 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <DatasetPortalDrawer
+    v-model="showPortalDrawer"
+    v-model:keep-open-on-question="portalKeepOpenOnQuestion"
+    :payload="portalNavigationPayload"
+    :initial-loading="portalLoading && !portalNavigationPayload"
+    :background-refreshing="portalBackgroundRefreshing"
+    @quick-question="handlePortalQuickQuestion"
+    @record-question-click="(payload) => recordPortalQuestionClick(portalNavigationPayload, payload)"
+    @clear-question-click="(payload) => clearPortalQuestionClick(portalNavigationPayload, payload)"
+    @refresh="refreshPortalNavigation"
+  />
 </template>
 
 <style scoped>

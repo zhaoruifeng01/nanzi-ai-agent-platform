@@ -241,6 +241,31 @@
               :style="{ '--summary-strong': visuals.strongColor }"
               v-html="formatGroupSummary(group.summary)"
             />
+
+            <div v-if="group.metrics?.length" class="relative mt-2.5">
+              <div class="mb-1.5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 select-none" :class="visuals.sectionLabel">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                </svg>
+                核心指标
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="metric in group.metrics"
+                  :key="`${group.id || group.title}-${metric}`"
+                  type="button"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-lg border transition-all active:scale-95"
+                  :class="visuals.questionBtn"
+                  :title="`点击查询「${metric}」趋势`"
+                  @click.stop="handleMetricClick(metric, group)"
+                >
+                  <span>{{ metric }}</span>
+                  <svg class="w-2.5 h-2.5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 5l7 7-7 7"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- You Can Ask Section -->
@@ -594,6 +619,9 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onUnmounted, nextTick } from "vue";
 import axios from "@/utils/axios";
+import { useToast } from "@/composables/useToast";
+
+const { showToast } = useToast();
 
 interface DatasetCapabilityQuestion {
   label: string;
@@ -624,6 +652,7 @@ interface DatasetCapabilityGroup {
   title: string;
   summary: string;
   tags?: string[];
+  metrics?: string[];
   questions?: DatasetCapabilityQuestion[];
   related_data?: DatasetCapabilityRelatedData[];
   followups?: DatasetCapabilityQuestion[];
@@ -1192,13 +1221,15 @@ const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
       tables,
       purpose: "questions",
     });
-    if (res.data?.code === 200 && res.data?.data?.questions) {
+    if (res.data?.code === 200 && res.data?.data?.questions?.length) {
       group.questions = res.data.data.questions;
     } else {
       console.warn("Invalid refresh questions response:", res.data);
+      showToast("换一批推荐问题失败，请稍后重试", "error");
     }
   } catch (error) {
     console.error("Failed to refresh group questions:", error);
+    showToast("换一批推荐问题失败，请稍后重试", "error");
   } finally {
     refreshingGroupIds.value[uniqueId] = false;
   }
@@ -1220,9 +1251,11 @@ const handleRefreshGroupFollowups = async (group: DatasetCapabilityGroup) => {
       group.followups = res.data.data.questions;
     } else {
       console.warn("Invalid refresh followups response:", res.data);
+      showToast("换一批继续追问失败，请稍后重试", "error");
     }
   } catch (error) {
     console.error("Failed to refresh group followups:", error);
+    showToast("换一批继续追问失败，请稍后重试", "error");
   } finally {
     refreshingFollowupGroupIds.value[uniqueId] = false;
   }
@@ -1289,6 +1322,13 @@ const handleFollowupClick = (followup: DatasetCapabilityQuestion, group: Dataset
   const query = String(followup.query || "").trim();
   if (!query) return;
   emitQuickQuestion(query);
+};
+
+const handleMetricClick = (metric: string, group: DatasetCapabilityGroup) => {
+  const metricName = String(metric || "").trim();
+  const sceneTitle = String(group.title || "").trim();
+  if (!metricName || !sceneTitle) return;
+  emitQuickQuestion(`查询${sceneTitle}最近6个月的${metricName}趋势`);
 };
 
 // 数据表数据字典快捷提问处理器
