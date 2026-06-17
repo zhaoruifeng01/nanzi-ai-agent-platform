@@ -2249,12 +2249,31 @@
                 @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
                 @refresh="refreshPortalNavigation"
               />
-              <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs">
-                <svg class="w-8 h-8 animate-spin text-primary mb-3" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>正在初始化数据门户，请稍候...</span>
+              <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs p-6 text-center select-none">
+                <!-- ASCII 动画 / 呼吸图腾 -->
+                <div class="mb-5 font-mono text-[9px] leading-relaxed text-primary/70 animate-pulse bg-gray-50 dark:bg-gray-800/40 p-4 rounded-lg border border-gray-100 dark:border-gray-800/60 shadow-inner">
+                  <pre class="m-0 text-left block w-fit mx-auto">
+   __  __                 _
+   \ \/ /___ _   _____  // /_
+    \  // __ \ | / / _ \/ / __/
+    / // /_/ / |/ /  __/ / /_
+   /_/ \____/|___/\___/_/\__/
+                  </pre>
+                </div>
+                <!-- 旋转菊花 -->
+                <div class="flex items-center space-x-2 mb-3">
+                  <svg class="w-4 h-4 animate-spin text-primary" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span class="font-medium text-gray-600 dark:text-gray-300">正在努力初始化数据门户...</span>
+                </div>
+                <!-- 轮换温馨提示词（带位移淡入淡出动画） -->
+                <transition name="slide-fade" mode="out-in">
+                  <span :key="currentPortalLoadingTip" class="text-[11px] text-gray-400 dark:text-gray-500 max-w-[240px] leading-normal h-8 block">
+                    {{ currentPortalLoadingTip }}
+                  </span>
+                </transition>
               </div>
             </div>
           </div>
@@ -4178,6 +4197,34 @@ const portalLoading = ref(false);
 const hasSilentlyRefreshed = ref(false);
 let silentRefreshTimer: any = null;
 
+// 数据门户初始化加载温馨提示词轮播
+const portalLoadingTips = [
+  "正在为数据集唤醒大模型并进行资源初始化... 🧠",
+  "AI 正在深度解析物理表的业务语义与指标口径... 📊",
+  "首次加载需探索物理库表，耗时稍长（约15-30秒），请耐心稍候喔 ✨",
+  "正在基于大模型智构最适合该数据集的场景分析提问... 🚀",
+  "云枢大模型正在努力推理计算中，马上就好... 🔄"
+];
+const currentPortalLoadingTip = ref(portalLoadingTips[0]);
+let portalLoadingTipTimer: any = null;
+
+const startPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) clearInterval(portalLoadingTipTimer);
+  let index = 0;
+  currentPortalLoadingTip.value = portalLoadingTips[0];
+  portalLoadingTipTimer = setInterval(() => {
+    index = (index + 1) % portalLoadingTips.length;
+    currentPortalLoadingTip.value = portalLoadingTips[index];
+  }, 4000);
+};
+
+const stopPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) {
+    clearInterval(portalLoadingTipTimer);
+    portalLoadingTipTimer = null;
+  }
+};
+
 const openPortalDrawer = async () => {
   showPortalDrawer.value = true;
   hasSilentlyRefreshed.value = false;
@@ -4198,6 +4245,7 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
   if (!silent) {
     if (portalLoading.value) return;
     portalLoading.value = true;
+    startPortalLoadingTips();
   }
   try {
     const payload = await fetchDatasetMenuNavigationPayload(refresh);
@@ -4228,14 +4276,18 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
   } finally {
     if (!silent) {
       portalLoading.value = false;
+      stopPortalLoadingTips();
     }
   }
 };
 
 watch(showPortalDrawer, (val) => {
-  if (!val && silentRefreshTimer) {
-    clearTimeout(silentRefreshTimer);
-    silentRefreshTimer = null;
+  if (!val) {
+    if (silentRefreshTimer) {
+      clearTimeout(silentRefreshTimer);
+      silentRefreshTimer = null;
+    }
+    stopPortalLoadingTips();
   }
 });
 
