@@ -4,7 +4,7 @@
   1. 复制下方 <section> 内全部内容，粘贴到微信公众平台编辑器「HTML」模式（或 135/秀米 等工具）
   2. 封面图 image.png 需在编辑器中重新上传并替换下方占位图 src（或与发布包同目录引用）
   3. 外链在发布前预览确认；部分链接需绑定公众号域名白名单
-  4. 不支持 <style>、<script>、class/id 选择器，全部采用内联 style
+  4. 不支持 <style>、<script>、class/id 选择器，全部采用内联 style；避免 flex/grid，使用 section + p 块级卡片布局
 -->
 
 <section style="box-sizing:border-box;font-size:16px;color:#3f3f3f;line-height:1.8;letter-spacing:0.5px;text-align:justify;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
@@ -41,122 +41,61 @@
 
   <section style="margin:28px 0;height:1px;background:#e5e7eb;"></section>
 
-  <!-- ========== Key Features ========== -->
-  <section style="margin:0 0 8px 0;">
-    <p style="margin:0 0 20px 0;font-size:20px;font-weight:bold;color:#111827;border-left:5px solid #2563eb;padding-left:12px;line-height:1.4;">🚀 Key Features</p>
+  <!-- ========== Key Features（卡片底色风格，公众号兼容） ========== -->
+  <section style="margin:0 0 20px 0;">
+    <p style="margin:0 0 16px 0;font-size:20px;font-weight:bold;color:#111827;border-left:5px solid #2563eb;padding-left:12px;line-height:1.4;">🚀 Key Features</p>
   </section>
 
-  <!-- Feature 1 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">1. 🏠 数据门户（Data Portal）全面体验升级</p>
-    <section style="margin:0;padding:0;">
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>「我的数据门户」个性化导航</strong>：记录用户点击偏好，按使用习惯排序展示数据集入口；全面美化 UI/UX，解决气泡复制与刷新按钮重合冲突。</p>
-      </section>
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>场景卡片推荐问题换一批</strong>：支持场景卡片推荐问题实时刷新，并优化兜底条数。</p>
-      </section>
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>快捷提问隐式携带物理表名</strong>：数据门户快捷提问自动附带物理表名上下文，提升首轮查数命中率。</p>
-      </section>
-      <section style="display:flex;margin:0 0 0 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>超时降级静默自愈刷新</strong>：数据门户超时后自动静默刷新恢复；刷新成功 Toast 提示，加载态温馨提示轮播。</p>
-      </section>
-    </section>
+  <!-- Feature Card 01 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#eef6ff;border:1px solid #cfe3ff;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#1e40af;line-height:1.5;">01 🏠 数据门户（Data Portal）全面体验升级</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#3b82f6;font-weight:bold;">●</span> <strong>「我的数据门户」个性化导航</strong>：记录用户点击偏好，按使用习惯排序展示数据集入口；全面美化 UI/UX，解决气泡复制与刷新按钮重合冲突。</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#3b82f6;font-weight:bold;">●</span> <strong>场景卡片推荐问题换一批</strong>：支持场景卡片推荐问题实时刷新，并优化兜底条数。</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#3b82f6;font-weight:bold;">●</span> <strong>快捷提问隐式携带物理表名</strong>：数据门户快捷提问自动附带物理表名上下文，提升首轮查数命中率。</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#3b82f6;font-weight:bold;">●</span> <strong>超时降级静默自愈刷新</strong>：数据门户超时后自动静默刷新恢复；刷新成功 Toast 提示，加载态温馨提示轮播。</p>
   </section>
 
-  <!-- Feature 2 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">2. 🧭 /dataset_menu 系统级数据能力导航</p>
-    <section style="margin:0;padding:0;">
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>系统指令入口</strong>：新增 <code style="font-size:13px;background:#f3f4f6;padding:1px 5px;border-radius:3px;">/dataset_menu</code>，由 LLM 按数据集生成中文导航与 quick 追问按钮。</p>
-      </section>
-      <section style="display:flex;margin:0 0 0 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>引用块 + 表格样式</strong>：以「表名 / 业务范围 / 示例问题」三列表格展示，示例问题内嵌可点击 quick 按钮；明确展示「系统 · 数据导航」身份。</p>
-      </section>
-    </section>
+  <!-- Feature Card 02 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#0369a1;line-height:1.5;">02 🧭 /dataset_menu 系统级数据能力导航</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#0ea5e9;font-weight:bold;">●</span> <strong>系统指令入口</strong>：新增 <code style="font-size:13px;background:#ffffff;padding:1px 5px;border-radius:3px;border:1px solid #e5e7eb;">/dataset_menu</code>，由 LLM 按数据集生成中文导航与 quick 追问按钮。</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#0ea5e9;font-weight:bold;">●</span> <strong>引用块 + 表格样式</strong>：以「表名 / 业务范围 / 示例问题」三列表格展示，示例问题内嵌可点击 quick 按钮；明确展示「系统 · 数据导航」身份。</p>
   </section>
 
-  <!-- Feature 3 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">3. 🛡️ ChatBI 查数安全与准确性强化</p>
-    <section style="margin:0;padding:0;">
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>物理表防猜表与强一致性校验</strong>：防止模型将业务术语、指标块或中文表名误当作物理表名执行 SQL。</p>
-      </section>
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Schema 检索输出格式统一</strong>：对齐向量检索、MySQL 兜底、RAGFlow 与 HTTP API；工具日志显示命中条数与 token 估算。</p>
-      </section>
-      <section style="display:flex;margin:0 0 0 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>业务友好拦截文案</strong>：将技术术语改为业务友好提示；约束 quick 追问区块必须位于图表之后。</p>
-      </section>
-    </section>
+  <!-- Feature Card 03 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#047857;line-height:1.5;">03 🛡️ ChatBI 查数安全与准确性强化</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#10b981;font-weight:bold;">●</span> <strong>物理表防猜表与强一致性校验</strong>：防止模型将业务术语、指标块或中文表名误当作物理表名执行 SQL。</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#10b981;font-weight:bold;">●</span> <strong>Schema 检索输出格式统一</strong>：对齐向量检索、MySQL 兜底、RAGFlow 与 HTTP API；工具日志显示命中条数与 token 估算。</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#10b981;font-weight:bold;">●</span> <strong>业务友好拦截文案</strong>：将技术术语改为业务友好提示；约束 quick 追问区块必须位于图表之后。</p>
   </section>
 
-  <!-- Feature 4 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">4. ⚙️ OpenClaw 借鉴：会话运行时增强</p>
-    <section style="margin:0;padding:0;">
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>会话串行（Session Lane）</strong>：防止同一会话并发请求互相干扰，避免状态污染。</p>
-      </section>
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>工具循环熔断</strong>：新增 ping-pong / 全局熔断检测，防止工具调用陷入死循环。</p>
-      </section>
-      <section style="display:flex;margin:0 0 0 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>上下文压缩与 followup 队列</strong>：超长历史注入确定性摘录；受控重试与内容撤回改善连续追问体验。</p>
-      </section>
-    </section>
+  <!-- Feature Card 04 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#334155;line-height:1.5;">04 ⚙️ OpenClaw 借鉴：会话运行时增强</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#64748b;font-weight:bold;">●</span> <strong>会话串行（Session Lane）</strong>：防止同一会话并发请求互相干扰，避免状态污染。</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#64748b;font-weight:bold;">●</span> <strong>工具循环熔断</strong>：新增 ping-pong / 全局熔断检测，防止工具调用陷入死循环。</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#64748b;font-weight:bold;">●</span> <strong>上下文压缩与 followup 队列</strong>：超长历史注入确定性摘录；受控重试与内容撤回改善连续追问体验。</p>
   </section>
 
-  <!-- Feature 5 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">5. 🎯 意图识别与路由优化</p>
-    <section style="margin:0;padding:0;">
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>问候场景短路路由</strong>：纯寒暄直接走通用助手并跳过分类 LLM，显著降低响应延迟。</p>
-      </section>
-      <section style="display:flex;margin:0 0 8px 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>联网搜索与知识库区分</strong>：实时信息走通用助手，防止未绑定知识库时误走知识库路径失败。</p>
-      </section>
-      <section style="display:flex;margin:0 0 0 0;">
-        <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-        <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>问候误拦截修复</strong>：反幻觉门控按意图触发，避免「你好」被误杀；Schema 弱命中友好兜底。</p>
-      </section>
-    </section>
+  <!-- Feature Card 05 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#15803d;line-height:1.5;">05 🎯 意图识别与路由优化</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#22c55e;font-weight:bold;">●</span> <strong>问候场景短路路由</strong>：纯寒暄直接走通用助手并跳过分类 LLM，显著降低响应延迟。</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#22c55e;font-weight:bold;">●</span> <strong>联网搜索与知识库区分</strong>：实时信息走通用助手，防止未绑定知识库时误走知识库路径失败。</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#22c55e;font-weight:bold;">●</span> <strong>问候误拦截修复</strong>：反幻觉门控按意图触发，避免「你好」被误杀；Schema 弱命中友好兜底。</p>
   </section>
 
-  <!-- Feature 6 -->
-  <section style="margin:0 0 24px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">6. 🎨 管理界面与前端体验优化</p>
-    <section style="display:flex;margin:0 0 0 0;">
-      <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;">优化 Agent 管理、元数据管理、系统参数配置等界面交互与提示；修复记忆管理中心 <code style="font-size:13px;background:#f3f4f6;padding:1px 5px;border-radius:3px;">FT.INFO</code> NaN 序列化报错。</p>
-    </section>
+  <!-- Feature Card 06 -->
+  <section style="margin:0 0 16px 0;padding:16px 14px;background-color:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#7e22ce;line-height:1.5;">06 🎨 管理界面与前端体验优化</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#a855f7;font-weight:bold;">●</span> 优化 Agent 管理、元数据管理、系统参数配置等界面交互与提示；修复记忆管理中心 <code style="font-size:13px;background:#ffffff;padding:1px 5px;border-radius:3px;border:1px solid #e5e7eb;">FT.INFO</code> NaN 序列化报错。</p>
   </section>
 
-  <!-- Feature 7 -->
-  <section style="margin:0 0 28px 0;">
-    <p style="margin:0 0 12px 0;font-size:17px;font-weight:bold;color:#1e40af;line-height:1.5;">7. 📄 开源许可</p>
-    <section style="display:flex;margin:0 0 0 0;">
-      <span style="flex-shrink:0;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin:9px 10px 0 4px;"></span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;">项目正式添加 <strong>MIT License</strong> 开源许可证。</p>
-    </section>
+  <!-- Feature Card 07 -->
+  <section style="margin:0 0 28px 0;padding:16px 14px;background-color:#fffbeb;border:1px solid #fde68a;border-radius:10px;">
+    <p style="margin:0 0 12px 0;font-size:16px;font-weight:bold;color:#b45309;line-height:1.5;">07 📄 开源许可</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.85;text-align:justify;"><span style="color:#f59e0b;font-weight:bold;">●</span> 项目正式添加 <strong>MIT License</strong> 开源许可证。</p>
   </section>
 
   <section style="margin:28px 0;height:1px;background:#e5e7eb;"></section>
@@ -252,7 +191,7 @@
     <p style="margin:0 0 16px 0;font-size:20px;font-weight:bold;color:#111827;border-left:5px solid #0891b2;padding-left:12px;line-height:1.4;">✅ Test Checklist</p>
     <p style="margin:0 0 12px 0;font-size:15px;color:#374151;">升级后建议验证以下核心场景：</p>
   </section>
-  <section style="margin:0 0 28px 0;padding:14px 16px;background:#f0f9ff;border-radius:8px;">
+  <section style="margin:0 0 28px 0;padding:14px 16px;background-color:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;">
     <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">☐ <strong>数据门户导航</strong>：点击偏好排序、场景卡片换一批、快捷提问携带物理表名</p>
     <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">☐ <strong>/dataset_menu 导航</strong>：引用块 + 表格样式、quick 按钮可点击、加载态防重复</p>
     <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">☐ <strong>物理表防猜表</strong>：中文表名 / 业务术语写 SQL 被拦截并引导回 Schema</p>
@@ -269,27 +208,12 @@
     <p style="margin:0 0 12px 0;font-size:20px;font-weight:bold;color:#111827;border-left:5px solid #d97706;padding-left:12px;line-height:1.4;">💾 Downloads / Assets</p>
     <p style="margin:0 0 16px 0;font-size:15px;color:#374151;line-height:1.8;">本项目 v1.0.3 发布版本关联的源码、Docker 镜像资产归档包及配置文件如下：</p>
   </section>
-  <section style="margin:0 0 16px 0;">
-    <section style="display:flex;margin:0 0 8px 0;">
-      <span style="flex-shrink:0;margin-right:8px;">📦</span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Source Code (zip)</strong>：yunshu-ai-agent-platform-1.0.3.zip</p>
-    </section>
-    <section style="display:flex;margin:0 0 8px 0;">
-      <span style="flex-shrink:0;margin-right:8px;">📦</span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Source Code (tar.gz)</strong>：yunshu-ai-agent-platform-1.0.3.tar.gz</p>
-    </section>
-    <section style="display:flex;margin:0 0 8px 0;">
-      <span style="flex-shrink:0;margin-right:8px;">🐳</span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Docker Image for Linux amd64 (x86_64)</strong>：yunshu-ai-agent_1.0.3_linux-amd64_*.tar</p>
-    </section>
-    <section style="display:flex;margin:0 0 8px 0;">
-      <span style="flex-shrink:0;margin-right:8px;">🐳</span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Docker Image for Linux arm64 (aarch64)</strong>：yunshu-ai-agent_1.0.3_linux-arm64_*.tar</p>
-    </section>
-    <section style="display:flex;margin:0 0 0 0;">
-      <span style="flex-shrink:0;margin-right:8px;">⚙️</span>
-      <p style="margin:0;flex:1;font-size:15px;color:#374151;line-height:1.8;"><strong>Docker Compose YAML file</strong>：docker-compose.yml</p>
-    </section>
+  <section style="margin:0 0 16px 0;padding:14px 16px;background-color:#fffbeb;border:1px solid #fde68a;border-radius:10px;">
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">📦 <strong>Source Code (zip)</strong>：yunshu-ai-agent-platform-1.0.3.zip</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">📦 <strong>Source Code (tar.gz)</strong>：yunshu-ai-agent-platform-1.0.3.tar.gz</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">🐳 <strong>Docker Image for Linux amd64 (x86_64)</strong>：yunshu-ai-agent_1.0.3_linux-amd64_*.tar</p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#374151;line-height:1.8;">🐳 <strong>Docker Image for Linux arm64 (aarch64)</strong>：yunshu-ai-agent_1.0.3_linux-arm64_*.tar</p>
+    <p style="margin:0;font-size:14px;color:#374151;line-height:1.8;">⚙️ <strong>Docker Compose YAML file</strong>：docker-compose.yml</p>
   </section>
   <section style="margin:0 0 20px 0;padding:12px 16px;background:#fffbeb;border-radius:8px;text-align:center;">
     <p style="margin:0;font-size:15px;color:#92400e;line-height:1.7;">
