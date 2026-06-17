@@ -978,6 +978,20 @@
                 </svg>
                 <span>导出</span>
               </button>
+              <!-- ChatBI 可视化分析 -->
+              <button
+                v-if="msg.hasDataOutput && checkRole(msg, 'agent') && !msg.isThinking"
+                type="button"
+                @click="handleVisualAnalysis()"
+                class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-primary border border-primary/25 bg-primary/5 hover:bg-primary/10 transition-colors rounded"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="基于本轮查询结果进行可视化深度分析"
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                <span class="hidden sm:inline">可视化分析</span>
+              </button>
               <!-- Time -->
               <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none mr-1">{{ formatBubbleTime(msg.timestamp) }}</span>
               <button
@@ -2208,7 +2222,7 @@
       </transition>
 
       <!-- 抽屉面板 (Drawer Panel) -->
-      <div class="absolute inset-y-0 right-0 pl-10 max-w-full flex">
+      <div class="absolute inset-y-0 right-0 pl-0 sm:pl-10 max-w-full flex">
         <transition
           enter-active-class="transform transition ease-in-out duration-300"
           enter-from-class="translate-x-full"
@@ -2219,52 +2233,51 @@
         >
           <div 
             v-show="showPortalDrawer"
-            class="w-screen max-w-md bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col h-full relative z-10"
+            class="w-screen max-w-[min(100vw,28rem)] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col h-full relative z-10 pb-[env(safe-area-inset-bottom,0px)]"
           >
             <!-- 抽屉头部 -->
-            <div class="px-4 py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between">
-              <span class="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-1.5 select-none">
-                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="px-4 py-3 sm:py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between gap-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
+              <span class="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-1.5 select-none min-w-0">
+                <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z" />
                 </svg>
-                数据门户导航
+                <span class="truncate">数据门户导航</span>
               </span>
-              <button 
-                type="button" 
-                class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
-                @click="showPortalDrawer = false"
-              >
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <label
+                  class="hidden sm:flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400 cursor-pointer select-none whitespace-nowrap"
+                  title="开启后点击问题不会关闭抽屉，可连续提问"
+                >
+                  <input
+                    v-model="portalKeepOpenOnQuestion"
+                    type="checkbox"
+                    class="rounded border-gray-300 text-primary focus:ring-primary/30"
+                  />
+                  提问后保持
+                </label>
+                <button 
+                  type="button" 
+                  class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
+                  title="关闭 (Esc)"
+                  @click="showPortalDrawer = false"
+                >
+                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
             <!-- 抽屉内容 -->
-            <div class="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900/60">
+            <div class="flex-1 overflow-y-auto p-3 sm:p-4 bg-white dark:bg-gray-900/60">
               <DatasetCapabilityMenu
-                v-slot="{ payload: navPayload }"
-                v-if="portalNavigationPayload"
-                :payload="portalNavigationPayload"
+                ref="portalMenuRef"
+                :payload="portalNavigationPayload || { groups: [] }"
+                :initial-loading="portalLoading && !portalNavigationPayload"
+                :background-refreshing="portalBackgroundRefreshing"
                 @quick-question="handlePortalQuickQuestion"
                 @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
                 @refresh="refreshPortalNavigation"
               />
-              <div v-else class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 text-xs p-6 text-center select-none">
-                <!-- 旋转菊花 -->
-                <div class="flex items-center space-x-2 mb-3">
-                  <svg class="w-4 h-4 animate-spin text-primary" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  <span class="font-medium text-gray-600 dark:text-gray-300">正在努力初始化数据门户...</span>
-                </div>
-                <!-- 轮换温馨提示词（带位移淡入淡出动画） -->
-                <transition name="slide-fade" mode="out-in">
-                  <span :key="currentPortalLoadingTip" class="text-[11px] text-gray-400 dark:text-gray-500 max-w-[240px] leading-normal h-8 block">
-                    {{ currentPortalLoadingTip }}
-                  </span>
-                </transition>
-              </div>
             </div>
           </div>
         </transition>
@@ -2388,6 +2401,7 @@ interface Message {
   agentName?: string;
   agentDisplayName?: string;
   turnType?: TurnType | string;
+  hasDataOutput?: boolean;
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
@@ -2958,6 +2972,7 @@ const fetchAllowedAgents = async (force = false) => {
             allowedAgents.value = res.data; // Already filtered by backend
             hasFetchedAgents.value = true;
             console.log(`[LifeCycle] Successfully fetched ${res.data.length} allowed agents.`);
+            void prefetchPortalNavigationIfEligible();
         }
     } catch (e) {
         console.warn("Mention feature disabled: Cannot fetch allowed agents", e);
@@ -4184,8 +4199,17 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
 const showPortalDrawer = ref(false);
 const portalNavigationPayload = ref<any>(null);
 const portalLoading = ref(false);
+const portalSilentRefreshing = ref(false);
+const portalPrefetchInFlight = ref(false);
+const portalMenuRef = ref<InstanceType<typeof DatasetCapabilityMenu> | null>(null);
 const hasSilentlyRefreshed = ref(false);
 let silentRefreshTimer: any = null;
+
+const PORTAL_KEEP_OPEN_KEY = "embed_portal_keep_open";
+const portalKeepOpenOnQuestion = ref(localStorage.getItem(PORTAL_KEEP_OPEN_KEY) === "1");
+watch(portalKeepOpenOnQuestion, (val) => {
+  localStorage.setItem(PORTAL_KEEP_OPEN_KEY, val ? "1" : "0");
+});
 
 // 数据门户初始化加载温馨提示词轮播
 const portalLoadingTips = [
@@ -4215,6 +4239,23 @@ const stopPortalLoadingTips = () => {
   }
 };
 
+const prefetchPortalNavigationIfEligible = async () => {
+  if (portalNavigationPayload.value || portalPrefetchInFlight.value || portalLoading.value) return;
+  if (!findDataQueryAgent()) return;
+  portalPrefetchInFlight.value = true;
+  try {
+    await fetchPortalNavigationData(false, true);
+  } catch {
+    // 静默预加载失败不影响主流程
+  } finally {
+    portalPrefetchInFlight.value = false;
+  }
+};
+
+const portalBackgroundRefreshing = computed(
+  () => portalSilentRefreshing.value || (portalLoading.value && !!portalNavigationPayload.value),
+);
+
 const openPortalDrawer = async () => {
   showPortalDrawer.value = true;
   hasSilentlyRefreshed.value = false;
@@ -4226,9 +4267,10 @@ const openPortalDrawer = async () => {
   if (!portalNavigationPayload.value) {
     await fetchPortalNavigationData();
   } else if (portalNavigationPayload.value.is_fallback) {
-    // 如果已有本地缓存但它是 fallback 兜底数据，也可以立即触发一次静默刷新
     await fetchPortalNavigationData(false, false);
   }
+  await nextTick();
+  portalMenuRef.value?.focusSearch();
 };
 
 const fetchPortalNavigationData = async (refresh = false, silent = false) => {
@@ -4236,6 +4278,8 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
     if (portalLoading.value) return;
     portalLoading.value = true;
     startPortalLoadingTips();
+  } else if (refresh) {
+    portalSilentRefreshing.value = true;
   }
   try {
     const payload = await fetchDatasetMenuNavigationPayload(refresh);
@@ -4246,7 +4290,7 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
       hasSilentlyRefreshed.value = true;
       if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
       silentRefreshTimer = setTimeout(async () => {
-        if (showPortalDrawer.value) {
+        if (showPortalDrawer.value || portalNavigationPayload.value) {
           await fetchPortalNavigationData(true, true);
         }
       }, 3000);
@@ -4267,7 +4311,15 @@ const fetchPortalNavigationData = async (refresh = false, silent = false) => {
     if (!silent) {
       portalLoading.value = false;
       stopPortalLoadingTips();
+    } else if (refresh) {
+      portalSilentRefreshing.value = false;
     }
+  }
+};
+
+const handlePortalDrawerKeydown = (event: KeyboardEvent) => {
+  if (event.key === "Escape" && showPortalDrawer.value) {
+    showPortalDrawer.value = false;
   }
 };
 
@@ -4278,6 +4330,8 @@ watch(showPortalDrawer, (val) => {
       silentRefreshTimer = null;
     }
     stopPortalLoadingTips();
+  } else {
+    nextTick(() => portalMenuRef.value?.focusSearch());
   }
 });
 
@@ -4286,7 +4340,9 @@ const refreshPortalNavigation = async () => {
 };
 
 const handlePortalQuickQuestion = (query: string) => {
-  showPortalDrawer.value = false;
+  if (!portalKeepOpenOnQuestion.value) {
+    showPortalDrawer.value = false;
+  }
   handleQuickQuestion(query);
 };
 
@@ -4626,6 +4682,10 @@ const handleQuickQuestion = async (content: string) => {
   sendMessage();
 };
 
+const handleVisualAnalysis = async () => {
+  await handleQuickQuestion("可视化分析一下");
+};
+
 const addEmbedLogFromStream = (msg: Message, data: any) => {
   if (!msg.logs) msg.logs = [];
   const logId = data.id || Date.now() + Math.random();
@@ -4718,6 +4778,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (data.turn_type) msg.turnType = data.turn_type;
     if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
     if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
+    if (data.has_data_output) msg.hasDataOutput = true;
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -5104,6 +5165,9 @@ const sendMessage = async () => {
             if (data.completion_tokens !== undefined) {
               agentMsg.value.completion_tokens = data.completion_tokens;
             }
+            if (data.has_data_output) {
+              agentMsg.value.hasDataOutput = true;
+            }
           } else if (data.type === "retraction") {
             agentMsg.value.content = data.content;
             if (data.final !== false) {
@@ -5247,6 +5311,7 @@ const onUnmountHandlers = ref<{
   onOnline?: () => void;
   onOffline?: () => void;
   onWindowClick?: () => void;
+  onPortalDrawerKeydown?: (e: KeyboardEvent) => void;
 } | null>(null);
 // Lifecycle
 onMounted(() => {
@@ -5274,6 +5339,7 @@ onMounted(() => {
   window.addEventListener("fullscreenchange", updateFullScreenStatus);
   // Close agent selector on global click
   window.addEventListener("click", onWindowClick);
+  document.addEventListener("keydown", handlePortalDrawerKeydown);
   // Initialize or Retrieve Conversation ID
   const savedId = localStorage.getItem("yovole_embed_conv_id");
   if (savedId) {
@@ -5320,7 +5386,7 @@ onMounted(() => {
   }
 
   // Attach cleanup handlers to component instance scope
-  (onUnmountHandlers as any).value = { onMessage, onOnline, onOffline, onWindowClick };
+  (onUnmountHandlers as any).value = { onMessage, onOnline, onOffline, onWindowClick, onPortalDrawerKeydown: handlePortalDrawerKeydown };
 });
 onUnmounted(() => {
   window.removeEventListener("resize", updateWidth);
@@ -5330,6 +5396,7 @@ onUnmounted(() => {
   if (handlers?.onOnline) window.removeEventListener("online", handlers.onOnline);
   if (handlers?.onOffline) window.removeEventListener("offline", handlers.onOffline);
   if (handlers?.onWindowClick) window.removeEventListener("click", handlers.onWindowClick);
+  if (handlers?.onPortalDrawerKeydown) document.removeEventListener("keydown", handlers.onPortalDrawerKeydown);
   if (thoughtTimer) clearInterval(thoughtTimer);
 });
 // --- Typewriter Effect ---

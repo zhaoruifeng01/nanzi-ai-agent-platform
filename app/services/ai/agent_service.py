@@ -259,6 +259,8 @@ class AgentService:
         agent_config = None
         full_response_content = ""
         execution_status = "success"
+        has_data_output = False
+        executor = None
 
         try:
             # 2. Context Preparation (Loading Config)
@@ -801,6 +803,10 @@ class AgentService:
                         execution_status = "error"
                     yield chunk
 
+                resolve_has_data_output = getattr(executor, "resolve_has_data_output", None)
+                if callable(resolve_has_data_output):
+                    has_data_output = bool(resolve_has_data_output())
+
             # --- 空响应兜底：本轮成功但模型未产出任何可见文本时，发一条兜底话术，避免前端空白 ---
             if (
                 execution_status == "success"
@@ -827,6 +833,9 @@ class AgentService:
                     "total_tokens": t_tokens
                 }
 
+            if has_data_output and execution_status == "success":
+                yield {"type": "meta", "has_data_output": True}
+
             # 5. Save Assistant Response to Memory
             if conversation_id and full_response_content:
                 u_id = user_info.get("user_id") if user_info else None
@@ -840,7 +849,8 @@ class AgentService:
                     trace_id=trace_id, 
                     agent_name=handled_by,
                     prompt_tokens=p_tokens,
-                    completion_tokens=c_tokens
+                    completion_tokens=c_tokens,
+                    has_data_output=has_data_output or None,
                 ))
 
         except Exception as e:

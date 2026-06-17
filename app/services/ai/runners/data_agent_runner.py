@@ -204,6 +204,7 @@ class _DataRunState:
     controlled_schema_retry_keywords: str = ""
     last_applied_schema_retry_keywords: str = ""
     pending_schema_retry: bool = False   # 修复轮受控重试标记（不随 _reset_state_for_repair 清除）
+    followup_data_saved: bool = False    # 本轮是否已将结构化 SQL 结果写入 last_data_result
 
     @property
     def has_successful_nonempty_sql(self) -> bool:
@@ -431,8 +432,18 @@ class DataAgentRunner(BaseExecutor):
             from app.services.ai.memory_service import memory_service
 
             await memory_service.set_last_data_result(user_id, self.conversation_id, payload)
+            state = self._last_run_state
+            if state is not None:
+                state.followup_data_saved = True
         except Exception as e:
             logger.warning("[DataAgentRunner] Failed to save last data result: %s", e)
+
+    def resolve_has_data_output(self) -> bool:
+        """本轮 ChatBI 是否产出了可复用的结构化查数结果（供前端展示「可视化分析」入口）。"""
+        state = self._last_run_state
+        if not state or not state.requires_fresh_data:
+            return False
+        return bool(state.followup_data_saved)
 
     async def _resolve_runtime_tools_from_config(self) -> list[RuntimeToolSpec]:
         _, specs = await build_chatbi_toolkit(self.config.tools)
