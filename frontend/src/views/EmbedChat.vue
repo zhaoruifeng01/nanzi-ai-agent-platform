@@ -292,6 +292,9 @@
         :welcome-message="config.welcomeMessage"
         :slash-commands="slashCommands"
         @quick-question="handleQuickQuestion"
+        @open-data-portal="openPortalDrawer"
+        @select-knowledge-base="showKnowledgeBaseSelector = true"
+        @select-skill="openSkillSelector"
       />
       <!-- Start of Conversation Indicator -->
       <div v-if="!hasMoreHistory && messages.length > 0" class="w-full flex flex-col items-center py-8 opacity-60">
