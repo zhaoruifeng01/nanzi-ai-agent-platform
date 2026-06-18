@@ -288,7 +288,7 @@
                 type="button"
                 class="inline-flex items-center gap-1 text-[10px] font-bold transition-all duration-200 cursor-pointer active:scale-95 px-2 py-0.5 rounded-md border disabled:opacity-50"
                 :class="visuals.refreshBtn"
-                :disabled="refreshingGroupIds[group.id || group.title]"
+                :disabled="isQuestionsRefreshDisabled(group)"
                 @click.stop="handleRefreshGroupQuestions(group)"
               >
                 <svg
@@ -528,7 +528,7 @@
               <button
                 type="button"
                 class="inline-flex items-center gap-1 text-[10px] font-bold text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 transition-all px-2 py-0.5 rounded-md border border-gray-200/80 dark:border-gray-700 disabled:opacity-50"
-                :disabled="refreshingFollowupGroupIds[group.id || group.title]"
+                :disabled="isFollowupsRefreshDisabled(group)"
                 @click.stop="handleRefreshGroupFollowups(group)"
               >
                 <svg
@@ -719,6 +719,11 @@ const clearRefreshBusy = () => {
 const expandedGroups = ref<Record<string, boolean>>({});
 const refreshingGroupIds = ref<Record<string, boolean>>({});
 const refreshingFollowupGroupIds = ref<Record<string, boolean>>({});
+const GROUP_REFRESH_COOLDOWN_MS = 4000;
+type GroupRefreshScope = "questions" | "followups";
+const groupRefreshCooldownUntil = ref<Record<string, number>>({});
+const groupRefreshCooldownTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const groupRefreshCooldownTick = ref(0);
 const pinnedTableDictionary = ref<string | null>(null);
 const popoverStyles = ref<Record<string, Record<string, string>>>({});
 const tableRecommendState = ref<Record<string, {
@@ -812,6 +817,9 @@ onUnmounted(() => {
   if (upgradedBannerTimer) {
     clearTimeout(upgradedBannerTimer);
     upgradedBannerTimer = null;
+  }
+  for (const timer of Object.values(groupRefreshCooldownTimers)) {
+    clearTimeout(timer);
   }
 });
 
@@ -1187,6 +1195,50 @@ const visibleDisplayGroups = computed(() => {
   return displayGroups.value.slice(0, PORTAL_DEFAULT_VISIBLE_CARDS);
 });
 
+const getGroupRefreshKey = (scope: GroupRefreshScope, uniqueId: string) => `${scope}:${uniqueId}`;
+
+const isGroupRefreshOnCooldown = (scope: GroupRefreshScope, uniqueId: string): boolean => {
+  void groupRefreshCooldownTick.value;
+  const until = groupRefreshCooldownUntil.value[getGroupRefreshKey(scope, uniqueId)] || 0;
+  return Date.now() < until;
+};
+
+const startGroupRefreshCooldown = (scope: GroupRefreshScope, uniqueId: string) => {
+  const key = getGroupRefreshKey(scope, uniqueId);
+  groupRefreshCooldownUntil.value = {
+    ...groupRefreshCooldownUntil.value,
+    [key]: Date.now() + GROUP_REFRESH_COOLDOWN_MS,
+  };
+  if (groupRefreshCooldownTimers[key]) {
+    clearTimeout(groupRefreshCooldownTimers[key]);
+  }
+  groupRefreshCooldownTimers[key] = setTimeout(() => {
+    delete groupRefreshCooldownTimers[key];
+    groupRefreshCooldownTick.value += 1;
+  }, GROUP_REFRESH_COOLDOWN_MS);
+};
+
+const clearGroupRefreshCooldowns = () => {
+  for (const timer of Object.values(groupRefreshCooldownTimers)) {
+    clearTimeout(timer);
+  }
+  for (const key of Object.keys(groupRefreshCooldownTimers)) {
+    delete groupRefreshCooldownTimers[key];
+  }
+  groupRefreshCooldownUntil.value = {};
+  groupRefreshCooldownTick.value += 1;
+};
+
+const isQuestionsRefreshDisabled = (group: DatasetCapabilityGroup): boolean => {
+  const uniqueId = group.id || group.title;
+  return !!refreshingGroupIds.value[uniqueId] || isGroupRefreshOnCooldown("questions", uniqueId);
+};
+
+const isFollowupsRefreshDisabled = (group: DatasetCapabilityGroup): boolean => {
+  const uniqueId = group.id || group.title;
+  return !!refreshingFollowupGroupIds.value[uniqueId] || isGroupRefreshOnCooldown("followups", uniqueId);
+};
+
 const collectGroupTables = (group: DatasetCapabilityGroup): string[] => {
   const tables: string[] = [];
   for (const related of group.related_data || []) {
@@ -1222,9 +1274,14 @@ watch(
 const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
   const uniqueId = group.id || group.title;
   if (refreshingGroupIds.value[uniqueId]) return;
+  if (isGroupRefreshOnCooldown("questions", uniqueId)) {
+    showToast("换一批太频繁，请稍后再试", "warning");
+    return;
+  }
 
   const tables = collectGroupTables(group);
 
+  startGroupRefreshCooldown("questions", uniqueId);
   refreshingGroupIds.value[uniqueId] = true;
   try {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
@@ -1249,8 +1306,13 @@ const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
 const handleRefreshGroupFollowups = async (group: DatasetCapabilityGroup) => {
   const uniqueId = group.id || group.title;
   if (refreshingFollowupGroupIds.value[uniqueId]) return;
+  if (isGroupRefreshOnCooldown("followups", uniqueId)) {
+    showToast("换一批太频繁，请稍后再试", "warning");
+    return;
+  }
 
   const tables = collectGroupTables(group);
+  startGroupRefreshCooldown("followups", uniqueId);
   refreshingFollowupGroupIds.value[uniqueId] = true;
   try {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
@@ -1289,6 +1351,7 @@ watch(
     pinnedTableDictionary.value = null;
     refreshingGroupIds.value = {};
     refreshingFollowupGroupIds.value = {};
+    clearGroupRefreshCooldowns();
     tableRecommendState.value = {};
     portalCardsExpanded.value = false;
   },

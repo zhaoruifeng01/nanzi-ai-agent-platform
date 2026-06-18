@@ -62,3 +62,6 @@ def test_dataset_capability_menu_component_contract():
     assert "group.questions" in source
     assert "group.followups" in source
     assert "related_data" in source
+    assert "GROUP_REFRESH_COOLDOWN_MS" in source
+    assert "startGroupRefreshCooldown" in source
+    assert "换一批太频繁，请稍后再试" in source
