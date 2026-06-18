@@ -28,6 +28,7 @@ from app.services.ai.executors.common import (
     extract_tokens_from_message,
     normalize_messages_for_llm,
 )
+from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
 from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.time_anchor import build_data_query_time_anchor_block
 from app.services.ai.multimodal_support import (
@@ -176,6 +177,7 @@ class _DataRunState:
     sql_error_message: str = ""
     sql_fatal_error: bool = False
     sql_fatal_message: str = ""
+    sql_fatal_emitted: bool = False
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
     sql_repeat_gate_block: bool = False
@@ -1357,6 +1359,8 @@ class DataAgentRunner(BaseExecutor):
                     yield chunk
                 return
             if state.sql_fatal_error:
+                async for chunk in self._yield_sql_fatal_abort(state):
+                    yield chunk
                 return
             if state.full_content and self._current_repair_kind(state):
                 async for chunk in self._retract_provisional_content_before_repair(
@@ -1403,6 +1407,21 @@ class DataAgentRunner(BaseExecutor):
                         state=agent.state,
                     )
                 return
+
+        if state.sql_fatal_error:
+            async for chunk in self._yield_sql_fatal_abort(state):
+                yield chunk
+            if self.conversation_id and not interrupted:
+                await agent_state_store.save(
+                    user_id=self._runtime_user_id(),
+                    conversation_id=self.conversation_id,
+                    agent_name=agent_name,
+                    agent_version=self.config.agent_version,
+                    tools_fingerprint=tools_fingerprint,
+                    model_name=str(model_name) if model_name else None,
+                    state=agent.state,
+                )
+            return
 
         async for chunk in self._emit_final_guard(state):
             yield chunk
@@ -2545,17 +2564,8 @@ class DataAgentRunner(BaseExecutor):
                     return
             if state.sql_fatal_error:
                 logger.info("[DataAgentRunner] Fatal SQL error detected during ReAct. Terminating execution immediately.")
-                yield {
-                    "type": "log",
-                    "id": f"fatal_sql_{uuid.uuid4().hex[:8]}",
-                    "title": "SQL 执行致命错误",
-                    "details": state.sql_fatal_message,
-                    "status": "error",
-                }
-                yield {
-                    "content": f"数据查询发生致命错误，已终止：\n\n{state.sql_fatal_message}",
-                    "status": "error",
-                }
+                async for chunk in self._yield_sql_fatal_abort(state):
+                    yield chunk
                 return
             if state.halt_current_react:
                 logger.info("[DataAgentRunner] SQL result requires repair. Stopping current ReAct stream.")
@@ -2620,6 +2630,27 @@ class DataAgentRunner(BaseExecutor):
             DataQueryPrompts.SCHEMA_SERVICE_UNAVAILABLE_CONTENT,
         )
 
+    async def _yield_sql_fatal_abort(
+        self,
+        state: _DataRunState,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        if state.sql_fatal_emitted:
+            return
+        presentation = map_sql_tool_error_for_user(state.sql_fatal_message)
+        state.sql_fatal_emitted = True
+        yield {
+            "type": "log",
+            "id": f"fatal_sql_{uuid.uuid4().hex[:8]}",
+            "title": presentation.title,
+            "details": truncate_for_context(str(state.sql_fatal_message or ""), max_len=1000)
+            or presentation.title,
+            "status": "error",
+        }
+        yield {
+            "content": presentation.content,
+            "status": "error",
+        }
+
     async def _yield_schema_fatal_abort(
         self,
         state: _DataRunState,
@@ -2674,12 +2705,9 @@ class DataAgentRunner(BaseExecutor):
         elif state.sql_before_schema:
             content = "为保证数据准确性，请先检索数据集定义后再执行数据查询。"
         elif state.sql_error:
-            content = (
-                "数据查询遇到了一些技术问题，暂时无法获取结果。\n\n"
-                "💡 **建议您可以尝试**：\n"
-                "1. 稍微修改提问的表述，避免过于复杂的交叉分析或含糊的口径。\n"
-                "2. 若多次尝试依然失败，可能是底层服务正在维护，请稍后重试或联系管理员。"
-            )
+            error_text = (state.last_sql_error_summary or state.sql_error_message or "").strip()
+            presentation = map_sql_tool_error_for_user(error_text)
+            content = presentation.content
         elif state.diagnostic_sql_pending_final:
             content = (
                 "诊断查询已返回样本数据，但尚未完成最终业务 SQL 复核，暂时无法生成结论。\n\n"
