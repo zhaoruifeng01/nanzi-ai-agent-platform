@@ -2680,6 +2680,13 @@ class DataAgentRunner(BaseExecutor):
                 "1. 稍微修改提问的表述，避免过于复杂的交叉分析或含糊的口径。\n"
                 "2. 若多次尝试依然失败，可能是底层服务正在维护，请稍后重试或联系管理员。"
             )
+        elif state.diagnostic_sql_pending_final:
+            content = (
+                "诊断查询已返回样本数据，但尚未完成最终业务 SQL 复核，暂时无法生成结论。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                "1. 稍微调整筛选条件或时间范围后重新提问。\n"
+                "2. 若问题较复杂，可拆成更具体的单指标/单表问题。"
+            )
         elif state.empty_sql_result:
             content = (
                 "抱歉，系统在当前数据集中未查询到符合条件的数据。\n\n"
@@ -2709,8 +2716,6 @@ class DataAgentRunner(BaseExecutor):
                 "1. 重新检查提问中涉及的时间字段方向、时区或单位定义。\n"
                 "2. 重新核对提问内容并以简化的表述重新提问。"
             )
-        elif state.diagnostic_sql_pending_final:
-            content = "诊断查询已完成，但未能成功获取到最终的结论数据，请尝试重新提问。"
         elif state.tool_loop_fuse_triggered:
             content = f"检测到工具调用出现循环，已被系统安全中止。{state.tool_loop_fuse_reason}"
         else:
@@ -3368,8 +3373,15 @@ class DataAgentRunner(BaseExecutor):
         state.empty_sql_reason = ""
         state.empty_sql_result = False
         if is_diag and state.expecting_final_sql_after_diagnostic:
-            state.diagnostic_sql_pending_final = True
-            return parsed_output, False
+            if (
+                state.diagnostic_sql_pending_final
+                and self._result_has_data_rows(parsed_output)
+            ):
+                state.expecting_final_sql_after_diagnostic = False
+                state.diagnostic_sql_pending_final = False
+            else:
+                state.diagnostic_sql_pending_final = True
+                return parsed_output, False
 
         state.expecting_final_sql_after_diagnostic = False
         state.diagnostic_sql_pending_final = False
@@ -3433,16 +3445,6 @@ class DataAgentRunner(BaseExecutor):
         # 3. 包含 COUNT 查询且没有 GROUP BY (即只查表行数)
         if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
             return True
-        # 4. 包含小 LIMIT 限制 (小于等于 10) 的自由采样数据
-        import re
-        match = re.search(r"LIMIT\s+(\d+)", sql_upper)
-        if match:
-            try:
-                limit_val = int(match.group(1))
-                if limit_val <= 10:
-                    return True
-            except Exception:
-                pass
         return False
 
     @staticmethod
@@ -3512,13 +3514,21 @@ class DataAgentRunner(BaseExecutor):
                 row_lists.extend(self._extract_result_row_lists(value, depth + 1))
         return row_lists
 
+    def _result_has_data_rows(self, parsed: Any) -> bool:
+        row_lists = self._extract_result_row_lists(parsed)
+        return bool(row_lists and any(len(rows) > 0 for rows in row_lists))
+
     def _detect_empty_result(self, parsed: Any) -> str | None:
         row_lists = self._extract_result_row_lists(parsed)
         if row_lists and not any(len(rows) > 0 for rows in row_lists):
             return "SQL 返回的行容器为空，未命中任何数据行"
         if isinstance(parsed, dict):
             total_like_keys = ("total", "count", "total_count")
-            if any(parsed.get(k) == 0 for k in total_like_keys) and row_lists:
+            if (
+                any(parsed.get(k) == 0 for k in total_like_keys)
+                and row_lists
+                and not self._result_has_data_rows(parsed)
+            ):
                 return "SQL 返回 total/count=0，且未命中任何数据行"
         return None
 
