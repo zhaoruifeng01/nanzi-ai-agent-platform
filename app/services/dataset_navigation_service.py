@@ -113,11 +113,18 @@ class DatasetNavigationService:
             logger.warning("Dataset navigation cache write failed: %s", e)
 
     @staticmethod
-    async def _generate_navigation_markdown(dataset_menu: str) -> str:
+    async def _generate_navigation_markdown(dataset_menu: str) -> tuple[str, str | None]:
         if not menu_has_authorized_datasets(dataset_menu):
-            return DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+            return (
+                finalize_visible_reply(
+                    DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu),
+                    collapse_duplicates=False,
+                ),
+                None,
+            )
 
         fallback = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+        fallback_md = finalize_visible_reply(fallback, collapse_duplicates=False)
         try:
             llm = await AgentConfigProvider.get_configured_llm(streaming=False)
             chat_client = chat_client_from_handle(llm)
@@ -129,10 +136,12 @@ class DatasetNavigationService:
             )
             cleaned = str(content or "").strip()
             if cleaned and DataQueryPrompts.has_quick_suggestions(cleaned):
-                return finalize_visible_reply(cleaned, collapse_duplicates=False)
+                return finalize_visible_reply(cleaned, collapse_duplicates=False), None
+            return fallback_md, "模型返回内容无效或未包含推荐问题"
         except Exception as e:
             logger.warning("Dataset navigation LLM generation failed: %s", e)
-        return finalize_visible_reply(fallback, collapse_duplicates=False)
+            err = str(e).strip() or "模型调用失败"
+            return fallback_md, err[:240]
 
     @staticmethod
     def _click_rank_key(*, user_key: str, dataset_menu_hash: str) -> str:
@@ -493,14 +502,21 @@ class DatasetNavigationService:
                 "is_fallback": False,
                 "has_datasets": False,
                 "from_cache": False,
+                "llm_generation_failed": False,
+                "llm_error_message": None,
             }
 
         from_cache = False
+        llm_generation_failed = False
+        llm_error_message: str | None = None
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if markdown:
             from_cache = True
         if not markdown:
-            markdown = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
+            markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
+            if llm_err:
+                llm_generation_failed = True
+                llm_error_message = llm_err
             
             # 检测是否因大模型报错或生成失败而降级到了兜底模板
             fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
@@ -571,6 +587,8 @@ class DatasetNavigationService:
             "is_fallback": is_fallback,
             "has_datasets": has_datasets,
             "from_cache": from_cache,
+            "llm_generation_failed": llm_generation_failed,
+            "llm_error_message": llm_error_message,
         }
 
     @staticmethod

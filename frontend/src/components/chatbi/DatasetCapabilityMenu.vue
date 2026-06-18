@@ -704,6 +704,8 @@ interface DatasetNavigationPayload {
   is_fallback?: boolean;
   from_cache?: boolean;
   has_datasets?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
 }
 
 const props = withDefaults(defineProps<{
@@ -887,6 +889,7 @@ const portalStatus = computed(() => {
   if (props.initialLoading) return "loading";
   if (props.backgroundRefreshing) return "refreshing";
   if (props.payload?.has_datasets === false) return "no_permission";
+  if (props.payload?.llm_generation_failed && props.payload?.is_fallback) return "llm_failed";
   if (props.payload?.is_fallback) return "fallback";
   return "ready";
 });
@@ -956,6 +959,8 @@ const statusBannerClass = computed(() => {
       return "border-blue-100 bg-blue-50/70 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-200";
     case "refreshing":
       return "border-blue-100 bg-blue-50/50 text-blue-600 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300";
+    case "llm_failed":
+      return "border-red-100 bg-red-50/70 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200";
     case "fallback":
       return "border-amber-100 bg-amber-50/70 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200";
     default:
@@ -965,6 +970,7 @@ const statusBannerClass = computed(() => {
 
 const statusBannerIcon = computed(() => {
   if (portalStatus.value === "fallback") return "⚠️";
+  if (portalStatus.value === "llm_failed") return "⚠️";
   if (portalStatus.value === "ready") return "✓";
   return "…";
 });
@@ -978,8 +984,13 @@ const statusBannerText = computed(() => {
       return "正在生成数据门户，首次加载约需 15–30 秒，请稍候…";
     case "refreshing":
       return "正在后台刷新完整门户内容…";
+    case "llm_failed": {
+      const detail = String(props.payload.llm_error_message || "").trim();
+      const suffix = detail ? `（${detail}）` : "";
+      return `AI 模型暂不可用，已展示基础场景目录${suffix}。请检查模型配置与网络，或点击右上角刷新重试。`;
+    }
     case "fallback":
-      return "当前为基础场景目录，完整 AI 场景卡片正在后台生成，可先点击问题开始查数。";
+      return "正在生成完整 AI 场景卡片，可先点击问题开始查数。";
     default: {
       const parts = ["门户已就绪"];
       if (cacheAgeLabel.value) parts.push(cacheAgeLabel.value);

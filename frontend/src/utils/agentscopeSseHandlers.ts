@@ -272,6 +272,32 @@ export function finalizeAllPendingStreamLogs(
   }
 }
 
+const STALE_PENDING_CATEGORIES = new Set(["model", "agent", "tool", "sql", "knowledge", "default"]);
+
+/** 长时间无响应的挂起步骤标为失败，避免一直显示「进行中」 */
+export function markStalePendingStreamLogs(
+  msg: AgentStreamMessage,
+  now = Date.now(),
+  staleMs = 120_000,
+): boolean {
+  let changed = false;
+  for (const log of msg.logs || []) {
+    if (log.status !== "pending") continue;
+    if (log.category && NON_LIVE_TIMER_CATEGORIES.has(log.category)) continue;
+    if (log.category && !STALE_PENDING_CATEGORIES.has(log.category)) continue;
+    if (!log.started_at || now - log.started_at < staleMs) continue;
+    log.status = "error";
+    const durationMs = resolveStreamLogDurationMs(log, undefined, now);
+    if (durationMs !== undefined) {
+      log.execution_time_ms = durationMs;
+    }
+    const suffix = "（超过 120 秒无响应，可能模型或工具调用超时）";
+    log.details = log.details ? `${log.details}\n${suffix}` : suffix;
+    changed = true;
+  }
+  return changed;
+}
+
 export function handleModelCallEvent<T extends AgentStreamMessage>(
   msg: T,
   data: Record<string, unknown>,

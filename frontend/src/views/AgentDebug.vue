@@ -19,6 +19,7 @@ import {
   formatExternalExecutionStatus,
   formatPermissionStatus,
   handlePermissionRequired as applyPermissionRequiredEvent,
+  markStalePendingStreamLogs,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
   type PendingToolPermission,
@@ -754,6 +755,11 @@ interface DatasetNavigationPayload {
   }>;
   markdown?: string;
   is_fallback?: boolean;
+  has_datasets?: boolean;
+  from_cache?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
+  _failed_at?: string;
 }
 
 interface Message {
@@ -1754,16 +1760,22 @@ const showDatasetMenuNavigation = async () => {
     navMsg.value.content = markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
 
     // 静默自愈刷新：若获取到的是兜底数据，且该消息未曾静默刷新过，则 3 秒后静默触发一次大模型刷新
-    if (payload?.is_fallback && payload?.has_datasets !== false && !navMsg.value._hasSilentlyRefreshed) {
+    if (payload?.is_fallback && payload?.has_datasets !== false && !payload?.llm_generation_failed && !navMsg.value._hasSilentlyRefreshed) {
       navMsg.value._hasSilentlyRefreshed = true;
       setTimeout(async () => {
         if (
           navMsg.value.datasetNavigation?.is_fallback
           && navMsg.value.datasetNavigation?.has_datasets !== false
+          && !navMsg.value.datasetNavigation?.llm_generation_failed
         ) {
           await silentlyRefreshDatasetMenuNavigation(navMsg.value);
         }
       }, 3000);
+    }
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，已展示基础场景目录${hint}`, "error");
     }
   } catch (error) {
     console.warn("Failed to load dataset menu navigation", error);
@@ -1790,6 +1802,11 @@ const silentlyRefreshDatasetMenuNavigation = async (msg: Message) => {
     const payload = await fetchDatasetMenuNavigationPayload(true);
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    }
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
@@ -1808,7 +1825,13 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
     isProcessing.value = false;
-    showToast("数据门户刷新成功", "success");
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    } else {
+      showToast("数据门户刷新成功", "success");
+    }
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
@@ -2100,6 +2123,11 @@ const sendMessage = async () => {
       const msgIndex = (ticks / 30) % THINKING_MESSAGES.length;
       agentMsg.value.thinkingText = THINKING_MESSAGES[msgIndex];
     }
+    if (ticks % 100 === 0) {
+      if (markStalePendingStreamLogs(agentMsg.value)) {
+        agentMsg.value.isThinking = false;
+      }
+    }
   }, 100);
 
   // 3. Call Real API with SSE
@@ -2343,6 +2371,8 @@ const sendMessage = async () => {
                 clearInterval(thoughtTimer);
                 thoughtTimer = null;
               }
+              const errText = String(data.content || data.message || "未知错误").trim();
+              agentMsg.value.content += `\n\n> ❌ **服务异常**: ${errText}`;
             }
             if (data.intent) {
               agentMsg.value.intent = data.intent;
@@ -2514,7 +2544,11 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
       }
     }
     if (data.status === "generating" && msg.content) msg.isThinking = false;
-    else if (data.status === "error") msg.isThinking = false;
+    else if (data.status === "error") {
+      msg.isThinking = false;
+      const errText = String(data.content || data.message || "未知错误").trim();
+      msg.content += `\n\n> ❌ **服务异常**: ${errText}`;
+    }
     if (data.intent) msg.intent = data.intent;
     return;
   }
@@ -2595,6 +2629,8 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     msg.isThinking = false;
   } else if (data.status === "error") {
     msg.isThinking = false;
+    const errText = String(data.content || data.message || "未知错误").trim();
+    msg.content += `\n\n> ❌ **服务异常**: ${errText}`;
   }
   if (data.intent) msg.intent = data.intent;
 };

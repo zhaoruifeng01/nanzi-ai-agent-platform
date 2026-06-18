@@ -10,6 +10,8 @@ export interface DatasetPortalPayload {
   is_fallback?: boolean;
   from_cache?: boolean;
   has_datasets?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
   _failed_at?: string;
 }
 
@@ -163,6 +165,7 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
         && !refresh
         && !silent
         && !hasSilentlyRefreshed.value
+        && !payload?.llm_generation_failed
       ) {
         hasSilentlyRefreshed.value = true;
         if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
@@ -177,7 +180,16 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
         options.showToast("数据门户已更新为完整 AI 推荐", "success");
       }
 
-      if (refresh && !silent) {
+      if (payload?.llm_generation_failed) {
+        const detail = String(payload.llm_error_message || "").trim();
+        const hint = detail ? `：${detail}` : "";
+        options.showToast(
+          silent
+            ? `AI 模型暂不可用，仍为基础场景目录${hint}`
+            : `AI 模型暂不可用，已展示基础场景目录${hint}`,
+          "error",
+        );
+      } else if (refresh && !silent) {
         options.showToast("数据门户刷新成功", "success");
       }
     } catch (error) {

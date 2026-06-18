@@ -98,6 +98,16 @@ class DatasetNavigationResponse(BaseModel):
     groups: List[Dict[str, Any]] = Field(default_factory=list, description="按标签分组的数据集导航")
     markdown: str = Field(..., description="含 quick 按钮的 Markdown 导航内容")
     is_fallback: bool = Field(..., description="标记当前是否是降级到兜底模板的数据")
+    has_datasets: bool = Field(default=True, description="当前用户是否有可用数据集")
+    from_cache: bool = Field(default=False, description="本次结果是否来自缓存")
+    llm_generation_failed: bool = Field(
+        default=False,
+        description="本次生成是否因 LLM 调用失败而降级到兜底模板",
+    )
+    llm_error_message: Optional[str] = Field(
+        default=None,
+        description="LLM 生成失败时的简要错误信息（供前端提示）",
+    )
 
 
 class DatasetMenuClickRequest(BaseModel):

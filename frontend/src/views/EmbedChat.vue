@@ -2277,6 +2277,7 @@ import {
   isLiveThoughtStepTimer,
   resolveStreamLogDurationMs,
   finalizeAllPendingStreamLogs,
+  markStalePendingStreamLogs,
   handlePermissionRequired as applyPermissionRequiredEvent,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
@@ -2986,7 +2987,26 @@ const connectionStatus = ref<"connected" | "disconnected" | "reconnecting">(
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
 let stallTimer: any = null;
+let stalePendingTimer: ReturnType<typeof setInterval> | null = null;
 const showStalledPrompt = ref(false);
+const clearStalePendingTimer = () => {
+  if (stalePendingTimer) {
+    clearInterval(stalePendingTimer);
+    stalePendingTimer = null;
+  }
+};
+const startStalePendingTimer = (msg: Message) => {
+  clearStalePendingTimer();
+  stalePendingTimer = setInterval(() => {
+    if (!isProcessing.value) {
+      clearStalePendingTimer();
+      return;
+    }
+    if (markStalePendingStreamLogs(msg)) {
+      msg.isThinking = false;
+    }
+  }, 10_000);
+};
 const clearStallTimer = () => {
   if (stallTimer) {
     clearTimeout(stallTimer);
@@ -4428,7 +4448,13 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
     isProcessing.value = false;
-    showToast("数据门户刷新成功", "success");
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    } else {
+      showToast("数据门户刷新成功", "success");
+    }
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
@@ -4729,6 +4755,7 @@ const sendMessage = async () => {
     timestamp: new Date().toISOString(),
   });
   messages.value.push(agentMsg.value);
+  startStalePendingTimer(agentMsg.value);
   // 新一轮发送：恢复自动跟随（避免上一轮「向上滚动」导致本轮仍不跟底）
   autoScrollEnabled.value = true;
   showNewMessageHint.value = false;
@@ -4922,8 +4949,8 @@ const sendMessage = async () => {
             }
           } else if (data.status === "error") {
             agentMsg.value.isThinking = false;
-            agentMsg.value.content +=
-              "\n[Error: " + (data.message || "Unknown error") + "]";
+            const errText = String(data.content || data.message || "未知错误").trim();
+            agentMsg.value.content += `\n\n> ❌ **服务异常**: ${errText}`;
           }
           scrollToBottom();
         } catch (e) {
@@ -4941,6 +4968,7 @@ const sendMessage = async () => {
     isProcessing.value = false;
     agentMsg.value.isThinking = false;
     clearStallTimer();
+    clearStalePendingTimer();
     showStalledPrompt.value = false;
     if (thoughtTimer) clearInterval(thoughtTimer);
     // Final cleanup: stop any remaining log spinners

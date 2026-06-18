@@ -3,6 +3,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
 from app.services.dataset_navigation_service import (
     DatasetNavigationService,
     count_datasets_in_menu,
@@ -192,8 +193,9 @@ async def test_generate_navigation_markdown_uses_llm():
         "app.services.dataset_navigation_service.chat_client_from_handle",
         return_value=mock_client,
     ):
-        markdown = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
 
+    assert llm_err is None
     assert "我的数据门户" in markdown
     assert "(quick:统计最近一周机房告警记录)" in markdown
     mock_client.generate_text.assert_awaited_once()
@@ -239,8 +241,9 @@ async def test_generate_navigation_markdown_falls_back_when_llm_invalid():
         "app.services.dataset_navigation_service.chat_client_from_handle",
         return_value=mock_client,
     ):
-        markdown = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
 
+    assert llm_err == "模型返回内容无效或未包含推荐问题"
     assert "ai_agent_meta" in markdown
     assert "(quick:/dataset_menu)" in markdown
 
@@ -306,7 +309,7 @@ async def test_build_navigation_for_user_refresh_skips_cached_markdown():
     ) as load_cache, patch.object(
         DatasetNavigationService,
         "_generate_navigation_markdown",
-        AsyncMock(return_value="fresh"),
+        AsyncMock(return_value=("fresh", None)),
     ) as generate_markdown, patch.object(
         DatasetNavigationService,
         "_save_cached_navigation",
@@ -473,7 +476,7 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
     ), patch.object(
         DatasetNavigationService,
         "_generate_navigation_markdown",
-        AsyncMock(return_value=fallback_markdown),
+        AsyncMock(return_value=(fallback_markdown, "模型调用失败")),
     ), patch.object(
         DatasetNavigationService,
         "_save_cached_navigation",
@@ -486,7 +489,62 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
         )
     
     assert payload["is_fallback"] is True
+    assert payload["llm_generation_failed"] is True
+    assert payload["llm_error_message"] == "模型调用失败"
     save_cache.assert_awaited_once_with(ANY, fallback_markdown, ttl=15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_generate_navigation_markdown_returns_error_when_llm_raises():
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(side_effect=RuntimeError("Qwen 400"))
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+
+    assert llm_err == "Qwen 400"
+    assert "ai_agent_meta" in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_build_navigation_for_user_sets_llm_generation_failed():
+    fallback_markdown = DataQueryPrompts.build_dataset_navigation_fallback(SAMPLE_MENU)
+    fallback_md = finalize_visible_reply(fallback_markdown, collapse_duplicates=False)
+
+    with patch.object(
+        DatasetNavigationService,
+        "_get_dataset_menu",
+        AsyncMock(return_value=SAMPLE_MENU),
+    ), patch.object(
+        DatasetNavigationService,
+        "_load_cached_navigation",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        DatasetNavigationService,
+        "_generate_navigation_markdown",
+        AsyncMock(return_value=(fallback_md, "模型不可用")),
+    ), patch.object(
+        DatasetNavigationService,
+        "_save_cached_navigation",
+        AsyncMock(),
+    ):
+        payload = await DatasetNavigationService.build_navigation_for_user(
+            AsyncMock(),
+            user_id=7,
+            is_admin=False,
+        )
+
+    assert payload["is_fallback"] is True
+    assert payload["llm_generation_failed"] is True
+    assert payload["llm_error_message"] == "模型不可用"
 
 
 @pytest.mark.asyncio
