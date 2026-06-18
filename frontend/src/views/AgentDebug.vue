@@ -18,6 +18,7 @@ import CitationPopover from "@/components/CitationPopover.vue";
 import MentionList from "@/components/agent/MentionList.vue"; // New Import
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
+import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { createSseLineParser } from "@/utils/chartRenderer";
 import {
   dispatchAgentscopeStreamEvent,
@@ -1860,6 +1861,12 @@ const handleFeedback = async (msg: Message, type: "up" | "down") => {
 
 
 const stopGeneration = () => {
+  const lastMsg = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null;
+  if (conversationId.value) {
+    void cancelConversationRun(conversationId.value, {
+      traceId: lastMsg?.trace_id,
+    });
+  }
   if (abortController) {
     abortController.abort();
     abortController = null;
@@ -1873,7 +1880,6 @@ const stopGeneration = () => {
   }
 
   // Update last message status if needed
-  const lastMsg = messages.value[messages.value.length - 1];
   if (lastMsg && lastMsg.role === 'agent' && lastMsg.isThinking) {
     lastMsg.isThinking = false;
     lastMsg.content += "\n[用户终止生成]";

@@ -2236,6 +2236,7 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
+import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { useToast } from "../composables/useToast";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import {
@@ -4283,6 +4284,13 @@ const openModelCallStats = async (msg: any) => {
 };
 
 const stopGeneration = () => {
+  const lastMsg = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null;
+  if (conversationId.value) {
+    void cancelConversationRun(conversationId.value, {
+      traceId: lastMsg?.trace_id,
+      headers: embedAuthHeaders(),
+    });
+  }
   if (abortController) {
     abortController.abort();
     abortController = null;
@@ -4293,15 +4301,12 @@ const stopGeneration = () => {
     thoughtTimer = null;
   }
   // Mark last thinking message as stopped
-  if (messages.value.length > 0) {
-    const lastMsg = messages.value[messages.value.length - 1];
-    if (lastMsg && lastMsg.isThinking) {
-      lastMsg.isThinking = false;
-      if (!lastMsg.content) {
-        lastMsg.content = "[已停止生成]";
-      } else {
-        lastMsg.content += "\n\n[用户终止生成]";
-      }
+  if (lastMsg && lastMsg.isThinking) {
+    lastMsg.isThinking = false;
+    if (!lastMsg.content) {
+      lastMsg.content = "[已停止生成]";
+    } else {
+      lastMsg.content += "\n\n[用户终止生成]";
     }
   }
 };
