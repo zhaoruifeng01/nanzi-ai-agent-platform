@@ -1239,7 +1239,10 @@ class DataQueryPrompts:
         "2) 重点核对：SELECT 列、JOIN ON 条件、WHERE 筛选字段、GROUP BY 键是否与 Schema 一致。\n"
         "3) 若报错涉及 unknown column/table/invalid identifier 等，优先重查 Schema，"
         "再修改 SQL 中的列名、表别名或关联键；禁止原样重复失败 SQL。\n"
-        "4) 若 Schema 中仅有中文术语，请使用术语对应的物理字段名，不要直接写未定义的英文列名。"
+        "4) 若 Schema 中仅有中文术语，请使用术语对应的物理字段名，不要直接写未定义的英文列名。\n"
+        "5) 若报错涉及 ClickHouse 时间解析错误 (如 Cannot parse datetime... While executing MergeTreeThread)，"
+        "通常是由于 String 类型的日期字段包含空值或非法格式脏数据导致转换失败。此时【必须】使用 "
+        "toDateTimeOrNull(column_name) 替换 toDateTime(column_name) 来进行容错，避免执行崩溃。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复
