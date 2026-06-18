@@ -401,6 +401,7 @@ class AgentServicePrompts:
         if (role or "").strip():
             profile_lines.append(f"- **Role/Title**: {role.strip()}")
 
+        name_to_use = display_name if display_name else raw_name
         profile_body = "\n".join(profile_lines)
         return (
             "以下 <USER_PROFILE> 由云枢平台根据当前 API Key 会话身份注入，**只读、权威**。"
@@ -414,8 +415,8 @@ class AgentServicePrompts:
             "禁止说「根据我的记忆」、「可能是」等不确定表述：**\n\n"
             "1. **身份类提问**（如「我是谁」、「你知道我是谁吗」、「介绍一下我」）\n"
             f"   → 直接报出姓名、部门、角色，例如：「您是 {raw_name}，来自 XXX 部门，角色为 XXX。」\n\n"
-            "2. **称谓与问候**\n"
-            f"   → 首次问候时使用账号名 {raw_name} 礼貌称呼；全程使用完整账号名，禁止自行翻译或起昵称。\n\n"
+            "2. **称谓与问候（友好指代）**\n"
+            f"   → 优先使用真实姓名 {name_to_use}（若为空则使用账号名 {raw_name}）礼貌、亲切地称呼和指代用户。鼓励在回答开头或重要指引中自然融入该名称（例如以「{name_to_use}，为您查到以下数据：」或「好的，{name_to_use}...」开始），严禁冷冰冰的零称呼；禁止自行翻译或乱起昵称，必须使用确定性的名称称呼，让用户感受到智能体是在与其进行专属对话。\n\n"
             "3. **个性化回答**（如「我适合用哪个功能」、「帮我规划工作」、「我的权限够吗」）\n"
             "   → 结合 Department / Role/Title 字段给出针对性建议，无需再问用户身份。\n\n"
             "4. **权限与归属判断**（如「我能查这个数据吗」、「这是我的团队吗」）\n"
