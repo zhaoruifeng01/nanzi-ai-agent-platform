@@ -3871,7 +3871,9 @@ const handleConfirmClearSession = () => {
   resetSession();
   showConfirmModal.value = false;
   nextTick(() => {
-    chatInputRef.value?.focus();
+    if (!isMobile.value) {
+      chatInputRef.value?.focus();
+    }
   });
 };
 const fetchSlashCommands = async () => {
@@ -4709,7 +4711,9 @@ const submitPendingExternalExecution = async (msg: Message) => {
       });
     }
     scrollToBottom();
-    nextTick(() => chatInputRef.value?.focus());
+    nextTick(() => {
+      if (!isMobile.value) chatInputRef.value?.focus();
+    });
   }
 };
 
@@ -4773,7 +4777,9 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
       });
     }
     scrollToBottom();
-    nextTick(() => chatInputRef.value?.focus());
+    nextTick(() => {
+      if (!isMobile.value) chatInputRef.value?.focus();
+    });
   }
 };
 
@@ -5044,7 +5050,9 @@ const sendMessage = async () => {
     finalizeAllPendingStreamLogs(agentMsg.value);
     scrollToBottom();
     nextTick(() => {
-      chatInputRef.value?.focus();
+      if (!isMobile.value) {
+        chatInputRef.value?.focus();
+      }
     });
   }
 };

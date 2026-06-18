@@ -263,10 +263,10 @@ class AgentConfigProvider:
         # 2. Cache Miss: Fetch from DB
         content = await AgentConfigProvider._generate_dataset_menu_content(user_id, is_admin)
 
-        # 3. Save to Cache (TTL: 10 mins)
+        # 3. Save to Cache (TTL: 7 days)
         try:
             if redis:
-                await redis.set(cache_key, content, ex=600)
+                await redis.set(cache_key, content, ex=604800)
         except Exception as e:
             logger.warning(f"Redis set error: {e}")
         

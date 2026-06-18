@@ -2273,7 +2273,7 @@ const sendMessage = async () => {
   } finally {
     isProcessing.value = false;
     nextTick(() => {
-      if (chatInputRef.value) chatInputRef.value.focus();
+      if (!isMobile.value && chatInputRef.value) chatInputRef.value.focus();
     });
   }
 };
@@ -2544,7 +2544,7 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
       });
     }
     nextTick(() => {
-      if (chatInputRef.value) chatInputRef.value.focus();
+      if (!isMobile.value && chatInputRef.value) chatInputRef.value.focus();
     });
   }
 };

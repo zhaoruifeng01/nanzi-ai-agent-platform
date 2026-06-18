@@ -19,7 +19,7 @@ from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible
 
 logger = logging.getLogger(__name__)
 
-_NAV_CACHE_TTL_SECONDS = 600
+_NAV_CACHE_TTL_SECONDS = 604800  # 7 days
 _NAV_PROMPT_VERSION = "v5"
 _NAV_CACHE_GEN_KEY = "agent:dataset_navigation:cache_generation"
 _CLICK_STATS_TTL_SECONDS = 90 * 24 * 60 * 60

@@ -1768,6 +1768,20 @@ def test_resolve_initial_tool_choice_forces_sql_after_prefetched_schema(data_con
     assert choice.mode == "execute_sql_query"
 
 
+def test_resolve_initial_tool_choice_skips_sql_for_metadata_query(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-metadata-no-force-sql", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        requires_sql_query=False,
+        schema_completed=True,
+    )
+
+    assert state.ready_to_answer is True
+    assert runner._resolve_initial_tool_choice(state) is None
+
+
 def test_resolve_initial_tool_choice_skips_without_fresh_data_or_schema(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
@@ -2201,7 +2215,7 @@ async def test_execute_sql_wrapper_blocks_order_by_and_rownum_antipattern(data_c
 
 
 @pytest.mark.asyncio
-async def test_execute_sql_wrapper_allows_unbounded_join_detail_before_tool_call(data_config):
+async def test_execute_sql_wrapper_allows_join_detail_without_limit_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (
         DataAgentRunner,
         RuntimeToolSpec,

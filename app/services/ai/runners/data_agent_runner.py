@@ -182,6 +182,7 @@ class _DataRunState:
     sql_static_risk_reason: str = ""
     sql_repeat_gate_block: bool = False
     requires_sql_plan: bool = False
+    requires_sql_query: bool = True
     sql_plan_seen: bool = False
     sql_plan_missing: bool = False
     requires_fresh_data: bool = True
@@ -234,6 +235,14 @@ class _DataRunState:
             return False
         if not self.requires_fresh_data:
             return True
+        if not self.requires_sql_query:
+            return (
+                self.schema_completed
+                and not self.schema_service_unavailable
+                and not self.no_authorized_schema
+                and not self.rag_not_synced
+                and self.schema_miss_count < 2
+            )
         if self.sql_fatal_error:
             return True
         if self.schema_ambiguous and not self.sql_before_schema and not self.sql_error:
@@ -276,6 +285,7 @@ class DataAgentRunner(BaseExecutor):
         self._standalone_query = ""
         self._schema_search_keywords = ""
         self._schema_similarity_threshold: float | None = None
+        self._requires_sql_query = True
 
     async def _ensure_schema_similarity_threshold(self) -> float:
         """与 fetch_dataset_schema_core 共用 ragflow_similarity_threshold。"""
@@ -319,6 +329,7 @@ class DataAgentRunner(BaseExecutor):
             "standalone_query": self._standalone_query,
             "schema_search_keywords": self._schema_search_keywords,
             "requires_fresh_data": self._requires_fresh_data,
+            "requires_sql_query": bool(getattr(self, "_requires_sql_query", True)),
         }
 
     @classmethod
@@ -344,6 +355,7 @@ class DataAgentRunner(BaseExecutor):
         runner._standalone_query = str(runner_context.get("standalone_query") or "")
         runner._schema_search_keywords = str(runner_context.get("schema_search_keywords") or "")
         runner._requires_fresh_data = bool(runner_context.get("requires_fresh_data", True))
+        runner._requires_sql_query = bool(runner_context.get("requires_sql_query", True))
         return runner
 
     @staticmethod
@@ -945,6 +957,7 @@ class DataAgentRunner(BaseExecutor):
         self.intent_info = turn_intent_info
         self.intent_elapsed_ms = turn_elapsed_ms
         self._requires_fresh_data = turn_cls.requires_fresh_data
+        self._requires_sql_query = bool(getattr(turn_cls, "requires_sql_query", True))
         yield {
             "type": "log",
             "id": f"chatbi_turn_{uuid.uuid4().hex[:8]}",
@@ -1193,6 +1206,7 @@ class DataAgentRunner(BaseExecutor):
 
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
+        state.requires_sql_query = bool(getattr(turn_cls, "requires_sql_query", True))
         state.requires_sql_plan = False
         if prefetched_schema_output is not None:
             state.last_schema_keywords = (
@@ -2713,6 +2727,7 @@ class DataAgentRunner(BaseExecutor):
             _, content = self._schema_fatal_response(state)
         elif (
             state.requires_fresh_data
+            and state.requires_sql_query
             and not state.sql_completed
             and (
                 state.schema_miss_count >= 2
@@ -2833,6 +2848,7 @@ class DataAgentRunner(BaseExecutor):
             return "diagnostic_sql_pending_final"
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.schema_completed
             and state.sql_plan_seen
             and not state.sql_completed
@@ -2846,7 +2862,7 @@ class DataAgentRunner(BaseExecutor):
         ):
             if not state.schema_completed:
                 return "missing_schema"
-            if not state.sql_completed:
+            if state.requires_sql_query and not state.sql_completed:
                 return "missing_sql"
         return ""
 
@@ -2962,6 +2978,7 @@ class DataAgentRunner(BaseExecutor):
             )
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.schema_completed
             and state.sql_plan_seen
             and not state.sql_completed
@@ -2984,7 +3001,7 @@ class DataAgentRunner(BaseExecutor):
                     f"{DataQueryPrompts.MUST_FETCH_SCHEMA}\n"
                     "请先调用 get_dataset_schema 获取数据集定义，再调用 execute_sql_query 查数。"
                 )
-            if not state.sql_completed:
+            if state.requires_sql_query and not state.sql_completed:
                 return (
                     "【查数顺序要求】你已获取数据集 Schema，但尚未执行 execute_sql_query。\n"
                     f"{DataQueryPrompts.FORCE_SQL_AFTER_SCHEMA}\n"
@@ -3035,6 +3052,7 @@ class DataAgentRunner(BaseExecutor):
 
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.schema_completed
             and not self._is_schema_fatal(state)
             and not state.sql_completed
@@ -3069,6 +3087,7 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="required")
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.schema_completed
             and state.sql_plan_seen
             and not state.sql_completed
@@ -3077,6 +3096,7 @@ class DataAgentRunner(BaseExecutor):
             return self._resolve_force_execute_sql_tool_choice(state)
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.blocked_content.strip()
             and not state.ready_to_answer
         ):
@@ -3113,10 +3133,11 @@ class DataAgentRunner(BaseExecutor):
         ):
             if not state.schema_completed:
                 return "必须先完成查数流程"
-            if not state.sql_completed:
+            if state.requires_sql_query and not state.sql_completed:
                 return "必须先执行 SQL 查数"
         if (
             state.requires_fresh_data
+            and state.requires_sql_query
             and state.schema_completed
             and state.sql_plan_seen
             and not state.sql_completed
