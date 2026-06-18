@@ -3,6 +3,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
 from app.services.dataset_navigation_service import (
     DatasetNavigationService,
     count_datasets_in_menu,
@@ -43,7 +44,7 @@ def test_menu_has_authorized_datasets():
 
 
 @pytest.mark.no_infrastructure
-def test_dataset_navigation_generation_prompt_uses_dataset_menu():
+def test_dataset_navigation_generation_prompt_uses_dataset_portal_command():
     prompt = DataQueryPrompts.dataset_navigation_generation_prompt(SAMPLE_MENU)
     assert "ai_agent_meta" in prompt
     assert "业务场景卡片" in prompt
@@ -51,6 +52,7 @@ def test_dataset_navigation_generation_prompt_uses_dataset_menu():
     assert "示例问题" in prompt
     assert "继续追问" in prompt
     assert "{dataset_menu}" in prompt
+    assert "/dataset_portal" in prompt
 
 
 @pytest.mark.no_infrastructure
@@ -152,7 +154,7 @@ def test_build_dataset_navigation_fallback_uses_business_scene_cards():
     assert "**继续追问：**" in markdown
     assert "智能体访问日志" in markdown
     assert "记录 API 访问" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.no_infrastructure
@@ -161,14 +163,14 @@ def test_build_dataset_navigation_fallback_empty():
         "Available Datasets\n  (No authorized datasets available)"
     )
     assert "暂无可查询的数据集" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.no_infrastructure
 def test_build_dataset_navigation_fallback_shows_raw_menu():
     markdown = DataQueryPrompts.build_dataset_navigation_fallback("plain text without dataset blocks")
     assert "plain text" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.asyncio
@@ -180,7 +182,7 @@ async def test_generate_navigation_markdown_uses_llm():
         "#### 运维监控\n"
         "- [🙋 查机房告警](quick:统计最近一周机房告警记录)\n\n"
         "### 💬 您可能还想了解\n---\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
     mock_client = MagicMock()
     mock_client.generate_text = AsyncMock(return_value=llm_output)
@@ -192,11 +194,39 @@ async def test_generate_navigation_markdown_uses_llm():
         "app.services.dataset_navigation_service.chat_client_from_handle",
         return_value=mock_client,
     ):
-        markdown = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
 
+    assert llm_err is None
     assert "我的数据门户" in markdown
     assert "(quick:统计最近一周机房告警记录)" in markdown
     mock_client.generate_text.assert_awaited_once()
+    messages = mock_client.generate_text.await_args.args[0]
+    assert len(messages) == 2
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_generate_questions_via_llm_includes_user_message():
+    llm_output = "- [🙋 测试问题](quick:统计最近7天的访问量)"
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(return_value=llm_output)
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        questions = await DatasetNavigationService._generate_questions_via_llm("system prompt")
+
+    assert len(questions) == 1
+    messages = mock_client.generate_text.await_args.args[0]
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+    assert "推荐问题" in messages[1].content[0].text
 
 
 @pytest.mark.asyncio
@@ -212,10 +242,11 @@ async def test_generate_navigation_markdown_falls_back_when_llm_invalid():
         "app.services.dataset_navigation_service.chat_client_from_handle",
         return_value=mock_client,
     ):
-        markdown = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
 
+    assert llm_err == "模型返回内容无效或未包含推荐问题"
     assert "ai_agent_meta" in markdown
-    assert "(quick:/dataset_menu)" in markdown
+    assert "(quick:/dataset_portal)" in markdown
 
 
 @pytest.mark.asyncio
@@ -225,7 +256,7 @@ async def test_build_navigation_for_user_uses_dataset_menu_and_cache():
         "### 📚 我的数据门户\n---\n"
         "- [🙋 查告警](quick:统计最近一周机房告警记录)\n\n"
         "### 💬 您可能还想了解\n---\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
     mock_client = MagicMock()
     mock_client.generate_text = AsyncMock(return_value=llm_output)
@@ -279,7 +310,7 @@ async def test_build_navigation_for_user_refresh_skips_cached_markdown():
     ) as load_cache, patch.object(
         DatasetNavigationService,
         "_generate_navigation_markdown",
-        AsyncMock(return_value="fresh"),
+        AsyncMock(return_value=("fresh", None)),
     ) as generate_markdown, patch.object(
         DatasetNavigationService,
         "_save_cached_navigation",
@@ -398,7 +429,7 @@ def test_parse_groups_from_markdown_success():
         "\n"
         "**继续追问：**\n"
         "- [🙋 性能分析](quick:说明智能体响应时长的分布)\n"
-        "- [🙋 重新查看数据门户](quick:/dataset_menu)\n"
+        "- [🙋 重新查看数据门户](quick:/dataset_portal)\n"
     )
 
     parsed = DatasetNavigationService.parse_groups_from_markdown(markdown, static_groups)
@@ -446,7 +477,7 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
     ), patch.object(
         DatasetNavigationService,
         "_generate_navigation_markdown",
-        AsyncMock(return_value=fallback_markdown),
+        AsyncMock(return_value=(fallback_markdown, "模型调用失败")),
     ), patch.object(
         DatasetNavigationService,
         "_save_cached_navigation",
@@ -459,7 +490,62 @@ async def test_build_navigation_for_user_uses_short_ttl_on_fallback():
         )
     
     assert payload["is_fallback"] is True
+    assert payload["llm_generation_failed"] is True
+    assert payload["llm_error_message"] == "模型调用失败"
     save_cache.assert_awaited_once_with(ANY, fallback_markdown, ttl=15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_generate_navigation_markdown_returns_error_when_llm_raises():
+    mock_client = MagicMock()
+    mock_client.generate_text = AsyncMock(side_effect=RuntimeError("Qwen 400"))
+
+    with patch(
+        "app.services.dataset_navigation_service.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.dataset_navigation_service.chat_client_from_handle",
+        return_value=mock_client,
+    ):
+        markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(SAMPLE_MENU)
+
+    assert llm_err == "Qwen 400"
+    assert "ai_agent_meta" in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_build_navigation_for_user_sets_llm_generation_failed():
+    fallback_markdown = DataQueryPrompts.build_dataset_navigation_fallback(SAMPLE_MENU)
+    fallback_md = finalize_visible_reply(fallback_markdown, collapse_duplicates=False)
+
+    with patch.object(
+        DatasetNavigationService,
+        "_get_dataset_menu",
+        AsyncMock(return_value=SAMPLE_MENU),
+    ), patch.object(
+        DatasetNavigationService,
+        "_load_cached_navigation",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        DatasetNavigationService,
+        "_generate_navigation_markdown",
+        AsyncMock(return_value=(fallback_md, "模型不可用")),
+    ), patch.object(
+        DatasetNavigationService,
+        "_save_cached_navigation",
+        AsyncMock(),
+    ):
+        payload = await DatasetNavigationService.build_navigation_for_user(
+            AsyncMock(),
+            user_id=7,
+            is_admin=False,
+        )
+
+    assert payload["is_fallback"] is True
+    assert payload["llm_generation_failed"] is True
+    assert payload["llm_error_message"] == "模型不可用"
 
 
 @pytest.mark.asyncio
@@ -608,4 +694,43 @@ async def test_recommend_table_questions_uses_frontend_columns_without_db_lookup
     assert questions[0]["label"] == "用户增长趋势"
     assert questions[0]["query"] == "统计最近30天每日新增用户数"
     mock_db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_build_navigation_for_user_skips_llm_when_no_authorized_datasets():
+    empty_menu = "Available Datasets\n  (No authorized datasets available)"
+
+    with patch.object(
+        DatasetNavigationService,
+        "_get_dataset_menu",
+        AsyncMock(return_value=empty_menu),
+    ), patch.object(
+        DatasetNavigationService,
+        "_load_cached_navigation",
+        AsyncMock(return_value=None),
+    ) as load_cache, patch.object(
+        DatasetNavigationService,
+        "_generate_navigation_markdown",
+        AsyncMock(),
+    ) as generate_markdown, patch.object(
+        DatasetNavigationService,
+        "_save_cached_navigation",
+        AsyncMock(),
+    ) as save_cache:
+        payload = await DatasetNavigationService.build_navigation_for_user(
+            AsyncMock(),
+            user_id=7,
+            is_admin=False,
+        )
+
+    assert payload["dataset_count"] == 0
+    assert payload["has_datasets"] is False
+    assert payload["is_fallback"] is False
+    assert payload["groups"] == []
+    assert payload["from_cache"] is False
+    assert "开通" in payload["markdown"] or "权限" in payload["markdown"]
+    load_cache.assert_not_awaited()
+    generate_markdown.assert_not_awaited()
+    save_cache.assert_not_awaited()
 

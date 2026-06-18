@@ -860,6 +860,7 @@ class AgentService:
 
             model_name = getattr(agent_config, "model_name", None) if agent_config else None
             yield {
+                "type": "error",
                 "content": format_execution_error(str(e), model_name=model_name),
                 "status": "error",
             }

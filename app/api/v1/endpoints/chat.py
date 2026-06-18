@@ -98,6 +98,16 @@ class DatasetNavigationResponse(BaseModel):
     groups: List[Dict[str, Any]] = Field(default_factory=list, description="按标签分组的数据集导航")
     markdown: str = Field(..., description="含 quick 按钮的 Markdown 导航内容")
     is_fallback: bool = Field(..., description="标记当前是否是降级到兜底模板的数据")
+    has_datasets: bool = Field(default=True, description="当前用户是否有可用数据集")
+    from_cache: bool = Field(default=False, description="本次结果是否来自缓存")
+    llm_generation_failed: bool = Field(
+        default=False,
+        description="本次生成是否因 LLM 调用失败而降级到兜底模板",
+    )
+    llm_error_message: Optional[str] = Field(
+        default=None,
+        description="LLM 生成失败时的简要错误信息（供前端提示）",
+    )
 
 
 class DatasetMenuClickRequest(BaseModel):
@@ -159,7 +169,7 @@ async def get_greeting():
     "/dataset-menu",
     response_model=StandardResponse[DatasetNavigationResponse],
     summary="获取我的数据门户",
-    description="基于当前用户授权的 {dataset_menu} 目录，由 LLM 生成我的数据门户与 quick 追问建议，供 /dataset_menu 系统指令使用。",
+    description="基于当前用户授权的 {dataset_menu} 目录，由 LLM 生成我的数据门户与 quick 追问建议，供 /dataset_portal 系统指令使用。",
 )
 async def get_dataset_menu_navigation(
     refresh: bool = False,
@@ -184,7 +194,7 @@ async def get_dataset_menu_navigation(
     "/dataset-menu/click",
     response_model=StandardResponse[Dict[str, bool]],
     summary="记录我的数据门户点击偏好",
-    description="记录用户在 /dataset_menu 中点击的 quick 问题，用于同一数据目录下的个性化排序。",
+    description="记录用户在 /dataset_portal 中点击的 quick 问题，用于同一数据目录下的个性化排序。",
 )
 async def record_dataset_menu_question_click(
     request: DatasetMenuClickRequest,

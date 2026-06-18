@@ -12,15 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.redis import get_redis
 from app.services.ai.config import AgentConfigProvider
-from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.executors.prompts import DataQueryPrompts, is_dataset_portal_slash_query
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
-from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+from app.services.ai.runtime.agentscope.messages import system_user_prompt_messages
 from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
 
 logger = logging.getLogger(__name__)
 
 _NAV_CACHE_TTL_SECONDS = 600
-_NAV_PROMPT_VERSION = "v4"
+_NAV_PROMPT_VERSION = "v5"
 _NAV_CACHE_GEN_KEY = "agent:dataset_navigation:cache_generation"
 _CLICK_STATS_TTL_SECONDS = 90 * 24 * 60 * 60
 
@@ -113,33 +113,35 @@ class DatasetNavigationService:
             logger.warning("Dataset navigation cache write failed: %s", e)
 
     @staticmethod
-    async def _generate_navigation_markdown(dataset_menu: str) -> str:
+    async def _generate_navigation_markdown(dataset_menu: str) -> tuple[str, str | None]:
         if not menu_has_authorized_datasets(dataset_menu):
-            return DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+            return (
+                finalize_visible_reply(
+                    DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu),
+                    collapse_duplicates=False,
+                ),
+                None,
+            )
 
         fallback = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
+        fallback_md = finalize_visible_reply(fallback, collapse_duplicates=False)
         try:
             llm = await AgentConfigProvider.get_configured_llm(streaming=False)
             chat_client = chat_client_from_handle(llm)
             content = await chat_client.generate_text(
-                [
-                    RuntimeMessage(
-                        role="system",
-                        content=[
-                            RuntimeContentBlock(
-                                type="text",
-                                text=DataQueryPrompts.dataset_navigation_generation_prompt(dataset_menu),
-                            )
-                        ],
-                    )
-                ]
+                system_user_prompt_messages(
+                    DataQueryPrompts.dataset_navigation_generation_prompt(dataset_menu),
+                    user_prompt="请生成完整的数据门户 Markdown。",
+                )
             )
             cleaned = str(content or "").strip()
             if cleaned and DataQueryPrompts.has_quick_suggestions(cleaned):
-                return finalize_visible_reply(cleaned, collapse_duplicates=False)
+                return finalize_visible_reply(cleaned, collapse_duplicates=False), None
+            return fallback_md, "模型返回内容无效或未包含推荐问题"
         except Exception as e:
             logger.warning("Dataset navigation LLM generation failed: %s", e)
-        return finalize_visible_reply(fallback, collapse_duplicates=False)
+            err = str(e).strip() or "模型调用失败"
+            return fallback_md, err[:240]
 
     @staticmethod
     def _click_rank_key(*, user_key: str, dataset_menu_hash: str) -> str:
@@ -377,7 +379,7 @@ class DatasetNavigationService:
             for match in re.finditer(pattern, questions_part):
                 label = match.group(1).strip()
                 query = match.group(2).strip()
-                if "/dataset_menu" in query or "重新查看" in label:
+                if is_dataset_portal_slash_query(query) or "重新查看" in label:
                     continue
                 dynamic_questions.append({
                     "label": label,
@@ -389,7 +391,7 @@ class DatasetNavigationService:
             for match in re.finditer(pattern, followups_part):
                 label = match.group(1).strip()
                 query = match.group(2).strip()
-                if "/dataset_menu" in query or "重新查看" in label:
+                if is_dataset_portal_slash_query(query) or "重新查看" in label:
                     continue
                 dynamic_followups.append({
                     "label": label,
@@ -486,12 +488,35 @@ class DatasetNavigationService:
         )
         has_datasets = menu_has_authorized_datasets(dataset_menu)
 
+        if not has_datasets:
+            markdown = finalize_visible_reply(
+                DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu),
+                collapse_duplicates=False,
+            )
+            return {
+                "dataset_count": 0,
+                "dataset_menu_hash": menu_hash,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "groups": [],
+                "markdown": markdown,
+                "is_fallback": False,
+                "has_datasets": False,
+                "from_cache": False,
+                "llm_generation_failed": False,
+                "llm_error_message": None,
+            }
+
         from_cache = False
+        llm_generation_failed = False
+        llm_error_message: str | None = None
         markdown = None if force_refresh else await DatasetNavigationService._load_cached_navigation(cache_key)
         if markdown:
             from_cache = True
         if not markdown:
-            markdown = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
+            markdown, llm_err = await DatasetNavigationService._generate_navigation_markdown(dataset_menu)
+            if llm_err:
+                llm_generation_failed = True
+                llm_error_message = llm_err
             
             # 检测是否因大模型报错或生成失败而降级到了兜底模板
             fallback_raw = DataQueryPrompts.build_dataset_navigation_fallback(dataset_menu)
@@ -562,6 +587,8 @@ class DatasetNavigationService:
             "is_fallback": is_fallback,
             "has_datasets": has_datasets,
             "from_cache": from_cache,
+            "llm_generation_failed": llm_generation_failed,
+            "llm_error_message": llm_error_message,
         }
 
     @staticmethod
@@ -608,7 +635,7 @@ class DatasetNavigationService:
         for match in re.finditer(pattern, cleaned):
             label = match.group(1).strip()
             query = match.group(2).strip()
-            if "/dataset_menu" in query or "重新查看" in label:
+            if is_dataset_portal_slash_query(query) or "重新查看" in label:
                 continue
             questions.append({
                 "label": label,
@@ -623,12 +650,10 @@ class DatasetNavigationService:
             llm = await AgentConfigProvider.get_configured_llm(streaming=False)
             chat_client = chat_client_from_handle(llm)
             content = await chat_client.generate_text(
-                [
-                    RuntimeMessage(
-                        role="system",
-                        content=[RuntimeContentBlock(type="text", text=prompt)],
-                    )
-                ]
+                system_user_prompt_messages(
+                    prompt,
+                    user_prompt="请生成推荐问题。",
+                )
             )
             return DatasetNavigationService._parse_quick_questions_from_llm(content)
         except Exception as e:

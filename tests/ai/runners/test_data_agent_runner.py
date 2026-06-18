@@ -2047,6 +2047,74 @@ def test_final_empty_sql_after_diagnostic_can_answer_no_data(data_config):
     assert state.ready_to_answer is True
 
 
+def test_detect_empty_result_ignores_total_zero_when_rows_exist(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-total-zero-rows", trace_buffer=[])
+    parsed = {
+        "rows": [{"region": "华东", "order_cnt": 12840}],
+        "total": 0,
+    }
+
+    assert runner._detect_empty_result(parsed) is None
+    assert runner._result_has_data_rows(parsed) is True
+
+
+def test_is_diagnostic_sql_does_not_flag_limit_only_queries(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-limit-not-diag", trace_buffer=[])
+    assert runner._is_diagnostic_sql("SELECT metric FROM demo LIMIT 10") is False
+    assert runner._is_diagnostic_sql("SELECT DISTINCT room_name FROM demo LIMIT 10") is True
+
+
+def test_final_sql_limit_10_with_data_after_diagnostic_allows_answer(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-limit10", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT room_name, count(*) AS total_count FROM demo GROUP BY room_name LIMIT 10"},
+        output={"rows": [{"room_name": "A101", "total_count": 3}], "total": 0},
+    )
+
+    assert should_save is True
+    assert parsed["rows"][0]["room_name"] == "A101"
+    assert state.empty_sql_result is False
+    assert state.diagnostic_sql_pending_final is False
+    assert state.expecting_final_sql_after_diagnostic is False
+    assert state.ready_to_answer is True
+
+
+def test_expecting_final_sql_accepts_non_diagnostic_limit_10_with_data(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-direct-final-limit10", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+    )
+
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT room_name, count(*) AS total_count FROM demo GROUP BY room_name LIMIT 10"},
+        output={"items": [{"room_name": "A101", "total_count": 3}], "total": 0},
+    )
+
+    assert should_save is True
+    assert state.diagnostic_sql_pending_final is False
+    assert state.empty_sql_result is False
+    assert state.ready_to_answer is True
+
+
 @pytest.mark.asyncio
 async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (

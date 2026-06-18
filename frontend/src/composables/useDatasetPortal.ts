@@ -10,6 +10,8 @@ export interface DatasetPortalPayload {
   is_fallback?: boolean;
   from_cache?: boolean;
   has_datasets?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
   _failed_at?: string;
 }
 
@@ -57,8 +59,27 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   });
 
   const pinStorageKey = options.pinStorageKey || "dataset_portal_pinned";
-  const portalPinned = ref(localStorage.getItem(pinStorageKey) === "1");
+
+  const readDesktopPortalPinned = () =>
+    localStorage.getItem(pinStorageKey) === "1";
+
+  const portalPinned = ref(
+    !isMobileViewport() && readDesktopPortalPinned(),
+  );
+
+  let portalViewportMq: MediaQueryList | null = null;
+
+  const applyPortalViewportLayout = () => {
+    const mobile = portalViewportMq?.matches ?? isMobileViewport();
+    if (mobile) {
+      portalPinned.value = false;
+      return;
+    }
+    portalPinned.value = readDesktopPortalPinned();
+  };
+
   watch(portalPinned, (val) => {
+    if (isMobileViewport()) return;
     localStorage.setItem(pinStorageKey, val ? "1" : "0");
   });
 
@@ -157,7 +178,14 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
       const payload = await fetchDatasetMenuNavigationPayload(refresh);
       portalNavigationPayload.value = payload;
 
-      if (payload?.is_fallback && !refresh && !silent && !hasSilentlyRefreshed.value) {
+      if (
+        payload?.is_fallback
+        && payload?.has_datasets !== false
+        && !refresh
+        && !silent
+        && !hasSilentlyRefreshed.value
+        && !payload?.llm_generation_failed
+      ) {
         hasSilentlyRefreshed.value = true;
         if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
         silentRefreshTimer = setTimeout(async () => {
@@ -171,7 +199,16 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
         options.showToast("数据门户已更新为完整 AI 推荐", "success");
       }
 
-      if (refresh && !silent) {
+      if (payload?.llm_generation_failed) {
+        const detail = String(payload.llm_error_message || "").trim();
+        const hint = detail ? `：${detail}` : "";
+        options.showToast(
+          silent
+            ? `AI 模型暂不可用，仍为基础场景目录${hint}`
+            : `AI 模型暂不可用，已展示基础场景目录${hint}`,
+          "error",
+        );
+      } else if (refresh && !silent) {
         options.showToast("数据门户刷新成功", "success");
       }
     } catch (error) {
@@ -211,6 +248,9 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   };
 
   const openPortalDrawer = async () => {
+    if (isMobileViewport()) {
+      portalPinned.value = false;
+    }
     showPortalDrawer.value = true;
     hasSilentlyRefreshed.value = false;
     if (silentRefreshTimer) {
@@ -220,7 +260,10 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
     await options.lockToDataQueryAgentForDatasetMenu();
     if (!portalNavigationPayload.value) {
       await fetchPortalNavigationData();
-    } else if (portalNavigationPayload.value.is_fallback) {
+    } else if (
+      portalNavigationPayload.value.is_fallback
+      && portalNavigationPayload.value.has_datasets !== false
+    ) {
       await fetchPortalNavigationData(false, false);
     }
   };
@@ -267,10 +310,14 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
   };
 
   onMounted(() => {
+    portalViewportMq = window.matchMedia("(max-width: 639px)");
+    applyPortalViewportLayout();
+    portalViewportMq.addEventListener("change", applyPortalViewportLayout);
     document.addEventListener("keydown", handlePortalDrawerKeydown);
   });
 
   onUnmounted(() => {
+    portalViewportMq?.removeEventListener("change", applyPortalViewportLayout);
     document.removeEventListener("keydown", handlePortalDrawerKeydown);
     disposePortalTimers();
   });

@@ -28,6 +28,7 @@ from app.services.ai.executors.common import (
     extract_tokens_from_message,
     normalize_messages_for_llm,
 )
+from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
 from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.time_anchor import build_data_query_time_anchor_block
 from app.services.ai.multimodal_support import (
@@ -39,7 +40,7 @@ from app.services.ai.runtime.agentscope.chat import (
     compat_to_runtime_messages,
     to_agentscope_messages,
 )
-from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage, system_user_prompt_messages
 from app.services.ai.runtime.agentscope.agent_runtime import (
     build_model_config,
     build_tools_fingerprint,
@@ -176,6 +177,7 @@ class _DataRunState:
     sql_error_message: str = ""
     sql_fatal_error: bool = False
     sql_fatal_message: str = ""
+    sql_fatal_emitted: bool = False
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
     sql_repeat_gate_block: bool = False
@@ -1357,6 +1359,8 @@ class DataAgentRunner(BaseExecutor):
                     yield chunk
                 return
             if state.sql_fatal_error:
+                async for chunk in self._yield_sql_fatal_abort(state):
+                    yield chunk
                 return
             if state.full_content and self._current_repair_kind(state):
                 async for chunk in self._retract_provisional_content_before_repair(
@@ -1403,6 +1407,21 @@ class DataAgentRunner(BaseExecutor):
                         state=agent.state,
                     )
                 return
+
+        if state.sql_fatal_error:
+            async for chunk in self._yield_sql_fatal_abort(state):
+                yield chunk
+            if self.conversation_id and not interrupted:
+                await agent_state_store.save(
+                    user_id=self._runtime_user_id(),
+                    conversation_id=self.conversation_id,
+                    agent_name=agent_name,
+                    agent_version=self.config.agent_version,
+                    tools_fingerprint=tools_fingerprint,
+                    model_name=str(model_name) if model_name else None,
+                    state=agent.state,
+                )
+            return
 
         async for chunk in self._emit_final_guard(state):
             yield chunk
@@ -1852,21 +1871,14 @@ class DataAgentRunner(BaseExecutor):
             )
             chat_client = chat_client_from_handle(llm)
             content = await chat_client.generate_text(
-                [
-                    RuntimeMessage(
-                        role="system",
-                        content=[
-                            RuntimeContentBlock(
-                                type="text",
-                                text=DataQueryPrompts.clarification_generation_prompt(
-                                    user_question,
-                                    reasoning,
-                                    history_excerpt,
-                                ),
-                            )
-                        ],
-                    )
-                ]
+                system_user_prompt_messages(
+                    DataQueryPrompts.clarification_generation_prompt(
+                        user_question,
+                        reasoning,
+                        history_excerpt,
+                    ),
+                    user_prompt=user_question,
+                )
             )
             cleaned = str(content or "").strip()
             if cleaned and DataQueryPrompts.has_quick_suggestions(cleaned):
@@ -2552,17 +2564,8 @@ class DataAgentRunner(BaseExecutor):
                     return
             if state.sql_fatal_error:
                 logger.info("[DataAgentRunner] Fatal SQL error detected during ReAct. Terminating execution immediately.")
-                yield {
-                    "type": "log",
-                    "id": f"fatal_sql_{uuid.uuid4().hex[:8]}",
-                    "title": "SQL 执行致命错误",
-                    "details": state.sql_fatal_message,
-                    "status": "error",
-                }
-                yield {
-                    "content": f"数据查询发生致命错误，已终止：\n\n{state.sql_fatal_message}",
-                    "status": "error",
-                }
+                async for chunk in self._yield_sql_fatal_abort(state):
+                    yield chunk
                 return
             if state.halt_current_react:
                 logger.info("[DataAgentRunner] SQL result requires repair. Stopping current ReAct stream.")
@@ -2627,6 +2630,27 @@ class DataAgentRunner(BaseExecutor):
             DataQueryPrompts.SCHEMA_SERVICE_UNAVAILABLE_CONTENT,
         )
 
+    async def _yield_sql_fatal_abort(
+        self,
+        state: _DataRunState,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        if state.sql_fatal_emitted:
+            return
+        presentation = map_sql_tool_error_for_user(state.sql_fatal_message)
+        state.sql_fatal_emitted = True
+        yield {
+            "type": "log",
+            "id": f"fatal_sql_{uuid.uuid4().hex[:8]}",
+            "title": presentation.title,
+            "details": truncate_for_context(str(state.sql_fatal_message or ""), max_len=1000)
+            or presentation.title,
+            "status": "error",
+        }
+        yield {
+            "content": presentation.content,
+            "status": "error",
+        }
+
     async def _yield_schema_fatal_abort(
         self,
         state: _DataRunState,
@@ -2681,11 +2705,15 @@ class DataAgentRunner(BaseExecutor):
         elif state.sql_before_schema:
             content = "为保证数据准确性，请先检索数据集定义后再执行数据查询。"
         elif state.sql_error:
+            error_text = (state.last_sql_error_summary or state.sql_error_message or "").strip()
+            presentation = map_sql_tool_error_for_user(error_text)
+            content = presentation.content
+        elif state.diagnostic_sql_pending_final:
             content = (
-                "数据查询遇到了一些技术问题，暂时无法获取结果。\n\n"
+                "诊断查询已返回样本数据，但尚未完成最终业务 SQL 复核，暂时无法生成结论。\n\n"
                 "💡 **建议您可以尝试**：\n"
-                "1. 稍微修改提问的表述，避免过于复杂的交叉分析或含糊的口径。\n"
-                "2. 若多次尝试依然失败，可能是底层服务正在维护，请稍后重试或联系管理员。"
+                "1. 稍微调整筛选条件或时间范围后重新提问。\n"
+                "2. 若问题较复杂，可拆成更具体的单指标/单表问题。"
             )
         elif state.empty_sql_result:
             content = (
@@ -2716,8 +2744,6 @@ class DataAgentRunner(BaseExecutor):
                 "1. 重新检查提问中涉及的时间字段方向、时区或单位定义。\n"
                 "2. 重新核对提问内容并以简化的表述重新提问。"
             )
-        elif state.diagnostic_sql_pending_final:
-            content = "诊断查询已完成，但未能成功获取到最终的结论数据，请尝试重新提问。"
         elif state.tool_loop_fuse_triggered:
             content = f"检测到工具调用出现循环，已被系统安全中止。{state.tool_loop_fuse_reason}"
         else:
@@ -3375,8 +3401,15 @@ class DataAgentRunner(BaseExecutor):
         state.empty_sql_reason = ""
         state.empty_sql_result = False
         if is_diag and state.expecting_final_sql_after_diagnostic:
-            state.diagnostic_sql_pending_final = True
-            return parsed_output, False
+            if (
+                state.diagnostic_sql_pending_final
+                and self._result_has_data_rows(parsed_output)
+            ):
+                state.expecting_final_sql_after_diagnostic = False
+                state.diagnostic_sql_pending_final = False
+            else:
+                state.diagnostic_sql_pending_final = True
+                return parsed_output, False
 
         state.expecting_final_sql_after_diagnostic = False
         state.diagnostic_sql_pending_final = False
@@ -3440,16 +3473,6 @@ class DataAgentRunner(BaseExecutor):
         # 3. 包含 COUNT 查询且没有 GROUP BY (即只查表行数)
         if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
             return True
-        # 4. 包含小 LIMIT 限制 (小于等于 10) 的自由采样数据
-        import re
-        match = re.search(r"LIMIT\s+(\d+)", sql_upper)
-        if match:
-            try:
-                limit_val = int(match.group(1))
-                if limit_val <= 10:
-                    return True
-            except Exception:
-                pass
         return False
 
     @staticmethod
@@ -3519,13 +3542,21 @@ class DataAgentRunner(BaseExecutor):
                 row_lists.extend(self._extract_result_row_lists(value, depth + 1))
         return row_lists
 
+    def _result_has_data_rows(self, parsed: Any) -> bool:
+        row_lists = self._extract_result_row_lists(parsed)
+        return bool(row_lists and any(len(rows) > 0 for rows in row_lists))
+
     def _detect_empty_result(self, parsed: Any) -> str | None:
         row_lists = self._extract_result_row_lists(parsed)
         if row_lists and not any(len(rows) > 0 for rows in row_lists):
             return "SQL 返回的行容器为空，未命中任何数据行"
         if isinstance(parsed, dict):
             total_like_keys = ("total", "count", "total_count")
-            if any(parsed.get(k) == 0 for k in total_like_keys) and row_lists:
+            if (
+                any(parsed.get(k) == 0 for k in total_like_keys)
+                and row_lists
+                and not self._result_has_data_rows(parsed)
+            ):
                 return "SQL 返回 total/count=0，且未命中任何数据行"
         return None
 

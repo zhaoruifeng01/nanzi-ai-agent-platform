@@ -35,7 +35,7 @@
 
     <div
       class="flex-1 flex flex-col h-full relative z-10 min-w-0 transition-[margin] duration-300"
-      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned && !isMobile }"
     >
       <!-- Dynamic Header Status (New) -->
       <div 
@@ -1740,9 +1740,9 @@
                   <div>
                     <div class="text-[11px] font-black text-gray-800 dark:text-gray-200 uppercase mb-0.5">快捷指令</div>
                     <p class="text-[10px] text-gray-500 mb-2">Web 端支持<b>直接点击</b>快捷按钮；移动端输入斜杠 <span class="font-mono text-blue-500">/</span> 即可快速唤起。</p>
-                    <p class="text-[10px] text-gray-500 mb-2"><span class="font-mono text-blue-500">/dataset_menu</span> 会基于与 ChatBI 相同的数据集目录，由 AI 生成我的数据门户与可点击追问按钮。</p>
+                    <p class="text-[10px] text-gray-500 mb-2"><span class="font-mono text-blue-500">{{ DATASET_PORTAL_SLASH_COMMAND }}</span> 会基于与 ChatBI 相同的数据集目录，由 AI 生成我的数据门户与可点击追问按钮。</p>
                     <div class="flex flex-wrap gap-1.5">
-                      <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/dataset_menu</span>
+                      <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">{{ DATASET_PORTAL_SLASH_COMMAND }}</span>
                       <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/new</span>
                       <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/history</span>
                     </div>
@@ -2238,6 +2238,11 @@ import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { useToast } from "../composables/useToast";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
+import {
+  DATASET_PORTAL_SLASH_COMMAND,
+  DATASET_PORTAL_SYSTEM_COMMAND_ID,
+  isDatasetPortalSlashCommand,
+} from "@/constants/datasetPortalCommand";
 
 const toast = useToast();
 const showToast = toast.showToast;
@@ -2277,6 +2282,7 @@ import {
   isLiveThoughtStepTimer,
   resolveStreamLogDurationMs,
   finalizeAllPendingStreamLogs,
+  markStalePendingStreamLogs,
   handlePermissionRequired as applyPermissionRequiredEvent,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
@@ -2986,7 +2992,26 @@ const connectionStatus = ref<"connected" | "disconnected" | "reconnecting">(
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
 let stallTimer: any = null;
+let stalePendingTimer: ReturnType<typeof setInterval> | null = null;
 const showStalledPrompt = ref(false);
+const clearStalePendingTimer = () => {
+  if (stalePendingTimer) {
+    clearInterval(stalePendingTimer);
+    stalePendingTimer = null;
+  }
+};
+const startStalePendingTimer = (msg: Message) => {
+  clearStalePendingTimer();
+  stalePendingTimer = setInterval(() => {
+    if (!isProcessing.value) {
+      clearStalePendingTimer();
+      return;
+    }
+    if (markStalePendingStreamLogs(msg)) {
+      msg.isThinking = false;
+    }
+  }, 10_000);
+};
 const clearStallTimer = () => {
   if (stallTimer) {
     clearTimeout(stallTimer);
@@ -3007,7 +3032,7 @@ const resetStallTimer = () => {
 };
 // Slash Commands
 const SYSTEM_SLASH_COMMANDS = [
-  { id: "sys_dataset_menu", command: "/dataset_menu", label: "📚 数据门户", sort_order: -35 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
@@ -4094,11 +4119,12 @@ const fetchConversationHistory = async (isLoadMore = false) => {
 };
 // --- Logic ---
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
+  if (isDatasetPortalSlashCommand(cmd)) {
+    userInput.value = "";
+    await openPortalDrawer();
+    return true;
+  }
   switch (cmd) {
-    case "/dataset_menu":
-      userInput.value = "";
-      await openPortalDrawer();
-      return true;
     case "/history":
       userInput.value = "";
       showHistorySidebar.value = !showHistorySidebar.value;
@@ -4428,7 +4454,13 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
     msg.datasetNavigation = payload;
     msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
     isProcessing.value = false;
-    showToast("数据门户刷新成功", "success");
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    } else {
+      showToast("数据门户刷新成功", "success");
+    }
     await nextTick();
     scrollToBottom(true);
   } catch (error) {
@@ -4729,6 +4761,7 @@ const sendMessage = async () => {
     timestamp: new Date().toISOString(),
   });
   messages.value.push(agentMsg.value);
+  startStalePendingTimer(agentMsg.value);
   // 新一轮发送：恢复自动跟随（避免上一轮「向上滚动」导致本轮仍不跟底）
   autoScrollEnabled.value = true;
   showNewMessageHint.value = false;
@@ -4922,8 +4955,8 @@ const sendMessage = async () => {
             }
           } else if (data.status === "error") {
             agentMsg.value.isThinking = false;
-            agentMsg.value.content +=
-              "\n[Error: " + (data.message || "Unknown error") + "]";
+            const errText = String(data.content || data.message || "未知错误").trim();
+            agentMsg.value.content += `\n\n> ❌ **服务异常**: ${errText}`;
           }
           scrollToBottom();
         } catch (e) {
@@ -4941,6 +4974,7 @@ const sendMessage = async () => {
     isProcessing.value = false;
     agentMsg.value.isThinking = false;
     clearStallTimer();
+    clearStalePendingTimer();
     showStalledPrompt.value = false;
     if (thoughtTimer) clearInterval(thoughtTimer);
     // Final cleanup: stop any remaining log spinners

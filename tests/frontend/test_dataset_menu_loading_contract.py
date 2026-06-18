@@ -15,7 +15,8 @@ def _assert_embed_portal_contract(source: str) -> None:
     assert "useDatasetPortal" in source
     assert "DatasetPortalDrawer" in source
     assert "const datasetMenuLoading = ref(false);" in source
-    assert "case \"/dataset_menu\":" in source
+    assert "DATASET_PORTAL_SLASH_COMMAND" in source
+    assert "isDatasetPortalSlashCommand" in source
     assert "await openPortalDrawer();" in source
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
@@ -27,19 +28,20 @@ def _assert_embed_portal_contract(source: str) -> None:
     assert "📚 数据门户" in source
     assert "embed_portal_keep_open" in source
     assert "onPortalLoadingChange" in source
+    assert "applyPortalViewportLayout" in _source("frontend/src/composables/useDatasetPortal.ts")
 
 
 def _assert_agent_debug_portal_contract(source: str) -> None:
     assert "useDatasetPortal" in source
     assert "DatasetPortalDrawer" in source
-    assert "const datasetMenuLoading = ref(false);" in source
-    assert "case \"/dataset_menu\":" in source
+    assert "DATASET_PORTAL_SLASH_COMMAND" in source
+    assert "isDatasetPortalSlashCommand" in source
     assert "await openPortalDrawer();" in source
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
     assert "lockToDataQueryAgentForDatasetMenu" in source
     assert "refreshDatasetMenuNavigation" in source
-    assert "recordDatasetMenuQuestionClick" in source
+    assert "recordPortalQuestionClick" in source
 
 
 def test_embed_chat_locks_input_while_dataset_menu_loads():
@@ -61,7 +63,8 @@ def test_dataset_capability_menu_component_contract():
     assert "payload.from_cache" in source
     assert "payload.has_datasets" in source
     assert "isNoPermissionEmpty" in source
-    assert "联系系统管理员" in source
+    assert "showStatusBanner" in source
+    assert "has_datasets === false" in source
     assert "cacheAgeLabel" in source
     assert "我的数据门户" in source
     assert "click_count" in source
@@ -86,8 +89,7 @@ def test_dataset_portal_composable_contract():
     assert "readStoredBoolean" in source
     assert "!isMobileViewport()" in source
     assert "from_cache" in source
-    assert "has_datasets" in source
-    assert "refresh: true" in source
+    assert "has_datasets !== false" in source
     assert "/api/v1/chat/dataset-menu/click" in source
 
 
@@ -119,6 +121,9 @@ def test_dataset_portal_drawer_pin_contract():
     assert "已钉住" in source
     assert "translate-y-full" in source
     assert "isMobile" in source
+    assert 'teleport to="body"' in source
+    assert "max-h-[92%]" in source
+    assert "portal-drawer-scroll" in source
 
 
 def test_portal_prompt_time_anchor_contract():
