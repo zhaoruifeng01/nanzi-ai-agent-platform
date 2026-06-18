@@ -509,6 +509,10 @@ class DataAgentRunner(BaseExecutor):
         return str(output or "").startswith(FAILED_SQL_REPEAT_GATE_PREFIX)
 
     @staticmethod
+    def _is_sql_plan_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(SQL_PLAN_GATE_PREFIX)
+
+    @staticmethod
     def _is_sql_schema_preflight_error(output: Any) -> bool:
         return str(output or "").startswith("[TOOL_ERROR] SQL 预检失败")
 
@@ -1046,6 +1050,7 @@ class DataAgentRunner(BaseExecutor):
                 state.sql_completed
                 and not state.sql_error
                 and not state.empty_sql_result
+                and not state.sql_plan_missing
                 and not state.sql_static_risk
                 and not state.sql_repeat_gate_block
                 and not state.failed_sql_repeat_gate_block
