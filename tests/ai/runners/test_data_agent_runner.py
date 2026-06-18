@@ -1863,13 +1863,37 @@ def test_schema_hit_above_configured_threshold_is_accepted(data_config):
     runner._apply_schema_tool_result(
         state,
         "[置信度: 0.56]\n--- Source: ai_agent_scheduler_jobs.txt ---\n"
-        "table_name: ai_agent_scheduler_jobs\n",
+        "table_name: ai_agent_scheduler_jobs\n"
+        "columns:\n"
+        "- name: id\n"
+        "- name: job_name\n",
     )
 
     assert state.schema_completed is True
     assert state.schema_needs_refinement is False
     assert state.schema_miss is False
     assert state.schema_miss_count == 0
+    assert state.schema_table_columns["ai_agent_scheduler_jobs"] == ["id", "job_name"]
+
+
+def test_schema_binding_summary_lists_physical_tables_and_columns(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-binding-summary", trace_buffer=[])
+    schema_output = (
+        "table_name: HRMRESOURCE\n"
+        "columns:\n"
+        "- name: SUPDEPID\n"
+        "- name: BELONGTO\n"
+        "- name: MANAGERID\n"
+    )
+
+    summary = runner._build_schema_binding_summary(schema_output)
+
+    assert "Schema Binding 摘要" in summary
+    assert "HRMRESOURCE" in summary
+    assert "SUPDEPID" in summary
+    assert "禁止使用未列出的字段" in summary
 
 
 def test_two_schema_misses_or_weak_hits_trigger_fatal(data_config):
@@ -2630,7 +2654,7 @@ async def test_data_agent_runner_synthesizes_after_repeated_sql_gate(
         return handle
 
     async def fake_schema(keywords=None):
-        return "table_name: demo\ncolumns: id"
+        return "table_name: demo\ncolumns: id, room, used, total"
 
     sql_calls = 0
 
@@ -2800,6 +2824,130 @@ async def test_failed_sql_repeat_gate_blocks_second_identical_attempt(data_confi
     assert "禁止原样重复" in str(result)
 
 
+@pytest.mark.asyncio
+async def test_sql_preflight_blocks_unknown_alias_column_before_execution(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return "should not run"
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-preflight-column", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    runner._apply_schema_tool_result(
+        state,
+        "table_name: HRMRESOURCE\ncolumns: SUPDEPID, BELONGTO, MANAGERID",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({
+        "sql": "SELECT r.SUPDEPID, r.SSFB FROM HRMRESOURCE r",
+    })
+
+    assert invoked is False
+    assert str(result).startswith("[TOOL_ERROR] SQL 预检失败")
+    assert '"R"."SSFB": invalid identifier' in str(result)
+    assert "HRMRESOURCE" in str(result)
+    assert "SUPDEPID" in str(result)
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT r.SUPDEPID, r.SSFB FROM HRMRESOURCE r"},
+        output=result,
+    )
+    assert state.schema_refresh_required is False
+    assert runner._current_repair_kind(state) == "sql_error"
+    repair = runner._build_repair_message(state)
+    assert "SSFB" in repair
+    assert "不得继续使用" in repair
+
+
+@pytest.mark.asyncio
+async def test_sql_preflight_allows_known_alias_columns(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return '{"columns": [{"name": "SUPDEPID"}], "items": [[1]]}'
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-preflight-allow", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    runner._apply_schema_tool_result(
+        state,
+        "table_name: HRMRESOURCE\ncolumns:\n- name: SUPDEPID\n- name: BELONGTO\n",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({
+        "sql": "SELECT r.SUPDEPID FROM HRMRESOURCE r WHERE r.BELONGTO = 1",
+    })
+
+    assert invoked is True
+    assert str(result).startswith('{"columns"')
+
+
+@pytest.mark.asyncio
+async def test_sql_preflight_blocks_unknown_unqualified_column_for_single_table(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return "should not run"
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-preflight-single-table", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    runner._apply_schema_tool_result(
+        state,
+        "table_name: HRMRESOURCE\ncolumns: SUPDEPID, BELONGTO, MANAGERID",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({
+        "sql": "SELECT SUPDEPID, SSFB FROM HRMRESOURCE WHERE BELONGTO = 1",
+    })
+
+    assert invoked is False
+    assert str(result).startswith("[TOOL_ERROR] SQL 预检失败")
+    assert '"SSFB": invalid identifier' in str(result)
+    assert "HRMRESOURCE" in str(result)
+
+
 def test_schema_reference_sql_error_requires_schema_refresh(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
@@ -2819,6 +2967,24 @@ def test_schema_reference_sql_error_requires_schema_refresh(data_config):
     assert "get_dataset_schema" in repair
     assert "禁止原样重复失败 SQL" in repair
     assert runner._is_schema_reference_sql_error(state.last_sql_error_summary)
+
+
+def test_schema_reference_repair_message_names_invalid_identifier(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-invalid-id", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT r.SSFB FROM HRMRESOURCE r"},
+        output='[TOOL_ERROR] 本地执行 SQL 失败，错误信息：ORA-00904: "R"."SSFB": invalid identifier',
+    )
+
+    repair = runner._build_repair_message(state)
+    assert "无效标识符" in repair
+    assert "SSFB" in repair
+    assert "不得继续使用" in repair
 
 
 @pytest.mark.asyncio
@@ -2875,6 +3041,40 @@ def test_repair_resets_tool_loop_detector_without_clearing_failed_sql_memory(dat
     assert state.sql_error is False
 
 
+def test_failed_sql_repeat_gate_preserves_original_error_summary(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-repeat-preserve-summary", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    original_error = "[TOOL_ERROR] 本地执行 SQL 失败，错误信息：ORA-01861: literal does not match format string"
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT lifecycle_date FROM VIEW_AI_CABINET_BILL_LC"},
+        output=original_error,
+    )
+    repeat_output = (
+        "[FAILED_SQL_REPEAT_GATE] 该 SQL 已在上一轮执行失败，禁止原样重复提交。"
+        "请根据错误信息修正字段名、表名、JOIN 条件、筛选条件或聚合逻辑后再调用 execute_sql_query。"
+        f"\n上次错误摘要：{state.last_sql_error_summary}"
+    )
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT lifecycle_date FROM VIEW_AI_CABINET_BILL_LC"},
+        output=repeat_output,
+    )
+
+    assert state.last_sql_error_summary == original_error
+    assert state.sql_error_message == original_error
+    assert runner._current_repair_kind(state) == "failed_sql_repeat"
+    assert "[FAILED_SQL_REPEAT_GATE]" not in state.last_sql_error_summary
+    assert runner._repair_budget_exhausted(state) is False
+
+    runner._record_repair_attempt(state)
+    assert runner._repair_budget_exhausted(state) is True
+
+
 def test_sql_error_repair_message_for_schema_reference_includes_column_guidance(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
@@ -2892,6 +3092,27 @@ def test_sql_error_repair_message_for_schema_reference_includes_column_guidance(
     repair = runner._build_repair_message(state)
     assert "禁止原样重复" in repair
     assert "字段/表引用修正指引" in repair
+
+
+def test_sql_error_repair_message_for_date_format_error_includes_date_guidance(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-date-repair", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_error=True,
+        sql_error_message="[TOOL_ERROR] ORA-01861: literal does not match format string",
+        last_sql_error_summary="[TOOL_ERROR] ORA-01861: literal does not match format string",
+        last_failed_sql_normalized="select lifecycle_date from bill",
+    )
+
+    repair = runner._build_repair_message(state)
+
+    assert "日期/时间格式修正指引" in repair
+    assert "ORA-01861" in repair
+    assert "TO_DATE" in repair
+    assert "TO_CHAR" in repair
 
 
 def test_failed_sql_repeat_fuses_at_two_after_prior_failure(data_config):
@@ -3764,7 +3985,7 @@ async def test_data_agent_runner_execute_repairs_sql_error_before_final_answer(
     )
 
     async def fake_schema(keywords=None):
-        return "table_name: demo\ncolumns: id"
+        return "table_name: demo\ncolumns: id, bad_col"
 
     async def fake_sql(sql, data_source, dataset_name):
         if "bad_col" in sql:
@@ -3888,7 +4109,7 @@ async def test_data_agent_runner_double_repair_when_model_skips_sql_twice(
     )
 
     async def fake_schema(keywords=None):
-        return "table_name: demo\ncolumns: id"
+        return "table_name: demo\ncolumns: id, room, used, total"
 
     async def fake_sql(sql, data_source, dataset_name):
         return [{"id": 1}]
@@ -4036,7 +4257,7 @@ async def test_data_agent_runner_execute_rechecks_empty_sql_before_final_answer(
     )
 
     async def fake_schema(keywords=None):
-        return "table_name: demo\ncolumns: id"
+        return "table_name: demo\ncolumns: id, room, used, total"
 
     async def fake_sql(sql, data_source, dataset_name):
         if "id=-1" in sql:

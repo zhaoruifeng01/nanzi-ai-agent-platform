@@ -289,5 +289,8 @@ class AgentConfigProvider:
                 await redis.delete("agent:dataset_menu")
             await DatasetNavigationService.bump_navigation_cache_generation()
             logger.info("Dataset menu and navigation caches invalidated.")
+            # 异步启动后台预热任务，温和预热最近活跃用户的门户缓存
+            import asyncio
+            asyncio.create_task(DatasetNavigationService.warm_up_navigation_caches_background())
         except Exception as e:
             logger.error(f"Failed to refresh dataset menu cache: {e}")

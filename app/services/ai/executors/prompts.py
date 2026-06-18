@@ -1245,6 +1245,18 @@ class DataQueryPrompts:
         "toDateTimeOrNull(column_name) 替换 toDateTime(column_name) 来进行容错，避免执行崩溃。"
     )
 
+    DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE = (
+        "【日期/时间格式修正指引】\n"
+        "1) 报错如 ORA-01861 / ORA-01830 / literal does not match format string 时，"
+        "优先检查日期字段真实类型与 SQL 中 TO_DATE、TO_CHAR、日期字面量格式是否一致。\n"
+        "2) 若字段本身是 DATE/TIMESTAMP，禁止再用 TO_DATE(date_column, 'YYYY-MM-DD') 包裹；"
+        "应直接比较日期字段，或用 TO_CHAR(date_column, 'YYYY-MM-DD') 仅用于展示/分组。\n"
+        "3) 若字段是字符串日期，TO_DATE 的格式掩码必须与字段真实字符串格式一致；"
+        "不要把 'YYYY-MM-DD' 用在实际包含时间、斜杠或中文格式的字段上。\n"
+        "4) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
+        "不要顺手更换无关表字段。"
+    )
+
     # 元数据服务（RAGFlow）不可用时的硬终止回复
     METADATA_UNAVAILABLE = (
         "⚠️ 元数据检索服务（RAGFlow）当前不可用，暂时无法获取数据集结构信息，"
