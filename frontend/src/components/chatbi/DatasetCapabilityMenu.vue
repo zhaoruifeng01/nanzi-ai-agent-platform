@@ -120,7 +120,7 @@
       <button
         type="button"
         class="flex items-center justify-between w-full text-left text-[11px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wider hover:text-blue-800 dark:hover:text-blue-300 transition-colors select-none"
-        @click="showSavedReportsCollapse = !showSavedReportsCollapse"
+        @click="showSavedReportsCollapse = !showSavedReportsCollapse; if (!showSavedReportsCollapse) fetchSavedReports();"
       >
         <span class="flex items-center gap-1.5">
           <span>📌</span> 我的黄金报表
@@ -132,8 +132,22 @@
           </span>
         </span>
         <div class="flex items-center space-x-2">
+          <button
+            type="button"
+            class="p-1 rounded hover:bg-blue-100/80 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400 transition-colors cursor-pointer flex items-center justify-center"
+            title="刷新黄金报表"
+            @click.stop="fetchSavedReports"
+          >
+            <svg
+              class="w-3.5 h-3.5"
+              :class="{ 'animate-spin': loadingReports }"
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" />
+            </svg>
+          </button>
           <svg
-            class="w-3.5 h-3.5 transform transition-transform duration-300"
+            class="w-3.5 h-3.5 transform transition-transform duration-300 pointer-events-none"
             :class="{ 'rotate-180': !showSavedReportsCollapse }"
             fill="none" stroke="currentColor" viewBox="0 0 24 24"
           >

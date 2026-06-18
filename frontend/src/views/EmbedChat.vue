@@ -3623,9 +3623,14 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     }
   }
 
+  let cleanSql = sql || '';
+  if (cleanSql.includes('[Executed SQL]:')) {
+    cleanSql = cleanSql.replace(/\[Executed\s+SQL\]:\s*/i, '').trim();
+  }
+
   saveReportForm.value = {
     title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
-    sql_content: sql || '',
+    sql_content: cleanSql,
     dataset_id: null,
     data_source: 'default_clickhouse',
     original_query: originalQuery,
@@ -3635,7 +3640,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
 
 const submitSaveReport = async () => {
   if (!saveReportForm.value.title.trim()) {
-    toast.error("请输入报表标题");
+    showToast("请输入报表标题", "error");
     return;
   }
   isSavingReport.value = true;
@@ -3648,12 +3653,12 @@ const submitSaveReport = async () => {
       original_query: saveReportForm.value.original_query,
     };
     await axios.post("/api/portal/saved-reports", payload);
-    toast.success("报表暂存成功！您可以在我的数据门户中查看。");
+    showToast("报表暂存成功！您可以在我的数据门户中查看。", "success");
     showSaveReportModal.value = false;
   } catch (error: any) {
     console.error("Failed to save report:", error);
     const detail = error.response?.data?.detail || "暂存失败，请重试";
-    toast.error(typeof detail === 'object' ? JSON.stringify(detail) : detail);
+    showToast(typeof detail === 'object' ? JSON.stringify(detail) : detail, "error");
   } finally {
     isSavingReport.value = false;
   }

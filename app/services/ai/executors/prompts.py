@@ -1091,12 +1091,17 @@ class DataQueryPrompts:
         cleaned = re.sub(r"[？?！!。；;]+$", "", str(current_question or "")).strip()
         return cleaned[:40] + ("..." if len(cleaned) > 40 else "") if cleaned else ""
 
-    # 旧版曾要求模型在 SQL 前输出结构化计划，现已关闭该流程；保留常量供历史兼容/测试引用。
     SQL_PLAN_ENFORCEMENT = (
-        "【SQL 生成要求】\n"
-        "调用 execute_sql_query 前无需输出额外计划文本；请直接通过工具调用执行 SQL。"
-        "SQL 仍需遵循：先对齐粒度（CTE 聚合）→ 再 JOIN → 再计算比率/占比。"
-        "禁止在明细粒度多对多 JOIN 后再聚合。\n"
+        "【SQL Plan 中间层】\n"
+        "当平台要求 SQL Plan 时，调用 execute_sql_query 前必须先输出一个结构化计划，格式严格如下：\n"
+        "<sql_plan>{\"goal\":\"用户要查询的业务目标\",\"tables\":[\"物理表名\"],"
+        "\"fields\":[\"物理字段名\"],\"metrics\":[\"指标/计算口径\"],"
+        "\"filters\":[\"筛选条件\"],\"time_range\":\"时间范围或无\","
+        "\"grain\":\"聚合粒度或明细粒度\",\"joins\":[\"JOIN 条件或无\"],"
+        "\"risk_notes\":[\"可能出错点\"]}</sql_plan>\n"
+        "计划中的 tables/fields 必须来自 get_dataset_schema 或 Schema Binding 摘要。"
+        "输出计划后再通过工具调用 execute_sql_query；禁止只写计划不查数。"
+        "SQL 仍需遵循 Grain-first：先聚合到正确粒度，再 JOIN，再计算比率/占比。"
     )
 
     # 追问复用约束，每个执行器实例注入一次
@@ -1196,13 +1201,15 @@ class DataQueryPrompts:
 
     # 高风险查询：执行 SQL 前必须先输出计划（阻断一次）
     HIGH_RISK_REQUIRE_PLAN = (
-        "你当前问题属于高风险数据查询（包含比率/趋势/排名/分组等）。"
-        "请直接调用 execute_sql_query，并确保 SQL 按正确粒度聚合、过滤和计算。"
+        "【SQL Plan 缺失】当前问题属于高风险数据查询（包含比率、趋势、排名、分组、JOIN 或复杂聚合等）。"
+        "请先输出 <sql_plan>{...}</sql_plan>，明确目标指标、使用表、字段、筛选条件、时间范围、"
+        "聚合粒度和 JOIN 条件；随后再调用 execute_sql_query。"
     )
 
     # 低风险查询：建议补计划但不阻断
     PLAN_NUDGE_NON_BLOCKING = (
-        "提示：你将执行 SQL。请直接调用 execute_sql_query，并确保 SQL 字段、时间范围和聚合粒度正确。"
+        "提示：你将执行 SQL。若问题涉及多字段或口径不确定，可先输出 <sql_plan>{...}</sql_plan> 自检；"
+        "简单单表查询可直接调用 execute_sql_query。"
     )
 
     # 已拿 Schema，下一步必须执行 SQL（不得直接总结）

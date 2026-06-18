@@ -680,9 +680,14 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     }
   }
 
+  let cleanSql = sql || '';
+  if (cleanSql.includes('[Executed SQL]:')) {
+    cleanSql = cleanSql.replace(/\[Executed\s+SQL\]:\s*/i, '').trim();
+  }
+
   saveReportForm.value = {
     title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
-    sql_content: sql || '',
+    sql_content: cleanSql,
     dataset_id: null,
     data_source: 'default_clickhouse',
     original_query: originalQuery,

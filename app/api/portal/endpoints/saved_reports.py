@@ -96,10 +96,14 @@ async def save_report(
     report_id = f"rpt_{uuid.uuid4().hex[:12]}"
     now_str = datetime.now(timezone.utc).isoformat()
 
+    sql_clean = body.sql_content.strip()
+    if sql_clean.startswith("[Executed SQL]:"):
+        sql_clean = sql_clean[len("[Executed SQL]:"):].strip()
+
     report_item = SavedReportItem(
         id=report_id,
         title=body.title.strip(),
-        sql_content=body.sql_content.strip(),
+        sql_content=sql_clean,
         dataset_id=body.dataset_id,
         data_source=body.data_source,
         original_query=body.original_query,

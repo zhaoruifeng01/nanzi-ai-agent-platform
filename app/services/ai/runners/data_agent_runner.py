@@ -78,6 +78,7 @@ SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
 SQL_REPEAT_GATE_PREFIX = "[SQL_REPEAT_GATE]"
 SQL_STATIC_GATE_PREFIX = "[SQL_STATIC_GATE]"
 FAILED_SQL_REPEAT_GATE_PREFIX = "[FAILED_SQL_REPEAT_GATE]"
+SQL_PLAN_GATE_PREFIX = "[SQL_PLAN_GATE]"
 TOOL_LOOP_FUSE_THRESHOLD = 3
 FAILED_SQL_REPEAT_THRESHOLD = 2
 DELAY_SECONDS_EXTREME_THRESHOLD = 7 * 24 * 60 * 60
@@ -308,6 +309,12 @@ class DataAgentRunner(BaseExecutor):
     def _schema_strong_confidence_threshold(similarity_threshold: float) -> float:
         """Schema 置信度达到配置的 ragflow_similarity_threshold 即可进入 SQL。"""
         return float(similarity_threshold)
+
+    def _is_sql_plan_enabled(self) -> bool:
+        raw = self.debug_options.get("enable_sql_plan")
+        if isinstance(raw, bool):
+            return raw
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _extract_schema_confidence_values(tool_output: Any) -> list[float]:
@@ -1109,6 +1116,13 @@ class DataAgentRunner(BaseExecutor):
                 current_sql = str(kwargs.get("sql") or kwargs.get("query") or "").strip()
                 current_sql_normalized = self._normalize_sql_text(current_sql)
 
+                if state.requires_sql_plan and not state.sql_plan_seen:
+                    state.sql_plan_missing = True
+                    return (
+                        f"{SQL_PLAN_GATE_PREFIX} 高风险 SQL 执行前缺少结构化 SQL Plan，已阻止执行。\n"
+                        f"{DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN}"
+                    )
+
                 if current_sql_normalized:
                     prior_failures = state.failed_sql_signatures.get(current_sql_normalized, 0)
                     if prior_failures >= 1:
@@ -1510,7 +1524,12 @@ class DataAgentRunner(BaseExecutor):
         state = _DataRunState()
         state.requires_fresh_data = turn_cls.requires_fresh_data
         state.requires_sql_query = bool(getattr(turn_cls, "requires_sql_query", True))
-        state.requires_sql_plan = False
+        state.requires_sql_plan = (
+            self._is_sql_plan_enabled()
+            and state.requires_fresh_data
+            and state.requires_sql_query
+            and self._should_require_sql_plan(user_question)
+        )
         if prefetched_schema_output is not None:
             state.last_schema_keywords = (
                 self._schema_search_keywords
@@ -2678,6 +2697,7 @@ class DataAgentRunner(BaseExecutor):
         return (
             f"{DataQueryPrompts.GLOBAL_GUARDRAILS}\n\n"
             f"{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}\n\n"
+            f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT + chr(10) + chr(10) if self._is_sql_plan_enabled() else ''}"
             f"{time_anchor}\n\n"
             f"{DataQueryPrompts.FOLLOWUP_REUSE_CONSTRAINT}\n\n"
             f"{system_prompt}"
@@ -2791,6 +2811,7 @@ class DataAgentRunner(BaseExecutor):
             state.halt_current_react = (
                 state.sql_error
                 or state.empty_sql_result
+                or state.sql_plan_missing
                 or state.sql_static_risk
                 or state.sql_repeat_gate_block
                 or state.failed_sql_repeat_gate_block
@@ -3143,6 +3164,8 @@ class DataAgentRunner(BaseExecutor):
             return "schema_refinement"
         if state.sql_static_risk:
             return "sql_static_risk"
+        if state.sql_plan_missing:
+            return "sql_plan_missing"
         if state.failed_sql_repeat_gate_block:
             return "failed_sql_repeat"
         if state.sql_error:
@@ -3242,6 +3265,14 @@ class DataAgentRunner(BaseExecutor):
                 f"原因：{state.sql_static_risk_reason}\n"
                 "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、避免 SELECT *、"
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
+            )
+        if state.sql_plan_missing:
+            return (
+                "【SQL Plan 补充要求】上一轮 execute_sql_query 因缺少结构化 SQL Plan 被平台拦截。\n"
+                f"{DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN}\n"
+                f"{DataQueryPrompts.SQL_PLAN_ENFORCEMENT}\n"
+                "请先输出完整 <sql_plan>{...}</sql_plan>，然后基于同一计划修正并调用 execute_sql_query。"
+                "禁止跳过计划直接查数。"
             )
         if state.failed_sql_repeat_gate_block:
             error_text = (state.last_sql_error_summary or state.sql_error_message or "").strip()
@@ -3393,6 +3424,8 @@ class DataAgentRunner(BaseExecutor):
 
     def _resolve_initial_tool_choice(self, state: _DataRunState) -> Any | None:
         """Schema 已就绪时，首轮 Agent 第一次模型调用强制 execute_sql_query。"""
+        if state.requires_sql_plan and not state.sql_plan_seen:
+            return None
         return self._resolve_force_execute_sql_tool_choice(state)
 
     def _resolve_repair_tool_choice(self, state: _DataRunState) -> Any | None:
@@ -3451,6 +3484,8 @@ class DataAgentRunner(BaseExecutor):
             return "必须先重查数据集定义"
         if state.sql_static_risk:
             return "修正高风险 SQL"
+        if state.sql_plan_missing:
+            return "补充 SQL 计划"
         if state.failed_sql_repeat_gate_block:
             return "修正重复失败 SQL"
         if state.ratio_anomaly:

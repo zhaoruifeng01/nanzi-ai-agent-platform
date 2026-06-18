@@ -413,6 +413,24 @@ async def test_data_agent_runner_system_content_includes_data_guardrails(data_co
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_system_content_includes_sql_plan_when_enabled(data_config):
+    from app.services.ai.executors.prompts import DataQueryPrompts
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-data-plan",
+        trace_buffer=[],
+        debug_options={"enable_sql_plan": True},
+    )
+
+    system_content = await runner._build_system_content()
+
+    assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT in system_content
+    assert "<sql_plan>" in system_content
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_system_content_replaces_dataset_menu(data_config, monkeypatch):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
 
@@ -4668,6 +4686,68 @@ async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords
 
     assert observed_keywords == ["机房 所有机房 机房列表"]
     assert state.pending_schema_retry is False
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    async def fake_sql(**kwargs):
+        raise AssertionError("SQL must be blocked before physical execution when plan is required")
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="Execute SQL",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        schema_completed=True,
+        requires_sql_plan=True,
+        sql_plan_seen=False,
+        schema_table_columns={"demo": ["room", "used", "total"]},
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-plan-gate",
+        trace_buffer=[],
+        debug_options={"enable_sql_plan": True},
+    )
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    output = await wrapped.invoke(
+        {
+            "sql": "SELECT room, SUM(used) / SUM(total) AS ratio FROM demo GROUP BY room",
+            "data_source": "mysql_aiagent",
+            "dataset_name": "demo",
+        }
+    )
+
+    assert output.startswith("[SQL_PLAN_GATE]")
+    assert state.sql_plan_missing is True
+    assert runner._current_repair_kind(state) == "sql_plan_missing"
+    assert "<sql_plan>" in runner._build_repair_message(state)
+
+
+def test_sql_error_repair_message_includes_error_taxonomy(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-taxonomy", trace_buffer=[])
+    state = _DataRunState(
+        schema_completed=True,
+        sql_completed=True,
+        sql_error=True,
+        sql_error_message='[TOOL_ERROR] ORA-00904: "R"."SSFB": invalid identifier',
+        last_sql_error_summary='[TOOL_ERROR] ORA-00904: "R"."SSFB": invalid identifier',
+    )
+
+    repair = runner._build_repair_message(state)
+
+    assert "错误分类：invalid_identifier" in repair
+    assert "修复重点：核对字段名、表名或别名引用" in repair
 
 
 @pytest.mark.asyncio
