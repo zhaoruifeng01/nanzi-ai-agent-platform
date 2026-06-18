@@ -45,15 +45,44 @@
             <div class="flex flex-col min-w-0">
                 <div class="flex items-center space-x-2">
                     <span class="text-sm font-black text-gray-800 dark:text-gray-100 truncate">
-                        {{ isProcessing ? (lastAgentMessage?.agentDisplayName || lastAgentMessage?.agentName || '智能体') : '云枢智能助手' }}
+                        <template v-if="isProcessing">
+                            {{ lastAgentMessage?.agentDisplayName || lastAgentMessage?.agentName || '智能体' }}
+                        </template>
+                        <template v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent">
+                            {{ currentExpertAgent.display_name || currentExpertAgent.name }}
+                        </template>
+                        <template v-else>
+                            云枢智能助手
+                        </template>
                     </span>
                     <span v-if="isProcessing" class="flex h-1.5 w-1.5 relative">
                         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
                         <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
                     </span>
+                    <span
+                        v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent"
+                        class="inline-flex items-center px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[9px] font-black uppercase tracking-wider shrink-0"
+                    >
+                        专家
+                    </span>
                 </div>
-                <div class="text-[10px] text-gray-400 font-bold uppercase tracking-widest truncate">
-                    {{ isProcessing ? '正在处理您的请求...' : '准备就绪' }}
+                <div class="text-[10px] font-bold uppercase tracking-widest truncate flex items-center gap-1.5 min-w-0">
+                    <template v-if="isProcessing">
+                        <span class="text-gray-400">正在处理您的请求...</span>
+                    </template>
+                    <template v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent">
+                        <span class="text-primary/80 normal-case tracking-normal font-semibold">专家模式</span>
+                        <button
+                            type="button"
+                            @click.stop="switchToAuto"
+                            class="text-gray-400 hover:text-red-500 normal-case tracking-normal font-bold transition-colors shrink-0"
+                        >
+                            退出
+                        </button>
+                    </template>
+                    <template v-else>
+                        <span class="text-gray-400">准备就绪</span>
+                    </template>
                 </div>
             </div>
         </div>
@@ -74,10 +103,10 @@
                 </svg>
 	            </button>
             <button
-                v-if="!config.showShortcuts"
-                @click="toggleShortcuts"
+                v-if="isMobile || !config.showShortcuts"
+                @click="handleHeaderShortcutsClick"
                 class="p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
-                title="显示快捷指令"
+                :title="isMobile ? '快捷指令' : '显示快捷指令'"
             >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 2L4 14h7l-1 8 10-13h-7l1-7z" />
@@ -119,6 +148,7 @@
           :show-auto-routing-hint="showAutoRoutingHint"
           :show-multi-agent-hint="showMultiAgentHint"
           :multi-agent-hint-message="multiAgentHintMessage"
+          :is-mobile="isMobile"
           @switch-to-auto="switchToAuto"
       />
 
@@ -1146,7 +1176,7 @@
         ref="chatInputRef"
         v-model="userInput"
         :is-processing="isProcessing"
-        :show-shortcuts="config.showShortcuts"
+        :show-shortcuts="!isMobile && config.showShortcuts"
         :slash-commands="slashCommands"
         :allowed-agents="allowedAgents"
         :current-user="currentUser"
@@ -3648,6 +3678,15 @@ const toggleShortcuts = () => {
   if (config.showShortcuts) {
     fetchSlashCommands();
   }
+};
+
+const handleHeaderShortcutsClick = () => {
+  if (isMobile.value) {
+    fetchSlashCommands();
+    chatInputRef.value?.openCommandDrawer?.();
+    return;
+  }
+  toggleShortcuts();
 };
 const isFullScreen = ref(false);
 const toggleFullScreen = () => {
