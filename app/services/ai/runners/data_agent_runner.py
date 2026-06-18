@@ -3502,20 +3502,38 @@ class DataAgentRunner(BaseExecutor):
         sql_text = str(sql or "").strip()
         if not sql_text:
             return "SQL 为空"
-        sql_upper = " ".join(sql_text.upper().split())
+
+        # 1. 剥离多行注释 /* ... */ 和单行注释 -- ...，防止注释导致只读判定误杀
+        sql_clean = re.sub(r"/\*[\s\S]*?\*/", "", sql_text)
+        sql_clean = re.sub(r"--.*", "", sql_clean)
+        sql_clean = sql_clean.strip()
+
+        sql_upper = " ".join(sql_clean.upper().split())
         if not sql_upper.startswith(("SELECT ", "WITH ")):
             return "只允许执行只读 SELECT 查询"
         if re.search(r"\bSELECT\s+\*", sql_upper):
             return "SELECT * 会扩大返回范围，请只查询必要字段"
-        if re.search(r"\bORDER\s+BY\b[\s\S]{0,400}\bAND\b[\s\S]{0,120}\b(ROWNUM|LIMIT)\b", sql_upper):
+
+        # 2. 限制 ORDER BY 误杀：排除在 ORDER BY 子句中包含 CASE 的合理情况
+        if re.search(r"\bORDER\s+BY\b(?:(?!\bCASE\b)[\s\S]){0,400}\bAND\b[\s\S]{0,120}\b(ROWNUM|LIMIT)\b", sql_upper):
             return (
                 "ORDER BY 后不能接 AND ROWNUM/LIMIT；"
                 "Oracle TopN 请用子查询包一层排序后外层 ROWNUM，或 FETCH FIRST N ROWS ONLY；"
                 "MySQL/ClickHouse 请用 ORDER BY ... LIMIT N"
             )
-        if " JOIN " in f" {sql_upper} " and not re.search(r"\bJOIN\b[\s\S]{1,240}\bON\b", sql_upper):
-            return "JOIN 缺少明确 ON 条件，存在笛卡尔积风险"
-        has_limit = bool(re.search(r"\bLIMIT\s+\d+\b", sql_upper) or re.search(r"\bROWNUM\s*<=\s*\d+\b", sql_upper))
+
+        # 3. 兼容 CROSS JOIN、USING 以及复杂子查询字数溢出
+        if " JOIN " in f" {sql_upper} ":
+            if " CROSS JOIN " not in f" {sql_upper} " and " NATURAL JOIN " not in f" {sql_upper} ":
+                if not re.search(r"\bJOIN\b[\s\S]{1,400}\b(ON|USING)\b", sql_upper):
+                    return "JOIN 缺少明确 ON 或 USING 条件，存在笛卡尔积风险"
+
+        # 4. 支持 LIMIT、ROWNUM 以及 Oracle 标准的 FETCH FIRST/NEXT 分页
+        has_limit = bool(
+            re.search(r"\bLIMIT\s+\d+\b", sql_upper)
+            or re.search(r"\bROWNUM\s*[<>=]+\s*\d+\b", sql_upper)
+            or re.search(r"\bFETCH\s+(FIRST|NEXT)\b", sql_upper)
+        )
         has_aggregation = any(marker in sql_upper for marker in (" GROUP BY ", " COUNT(", " SUM(", " AVG(", " MAX(", " MIN("))
         if " JOIN " in f" {sql_upper} " and not has_limit and not has_aggregation:
             return "JOIN 明细查询缺少 LIMIT 或聚合约束，可能放大返回行数"

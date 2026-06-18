@@ -2243,6 +2243,93 @@ async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call
     assert state.sql_static_risk is True
     assert "JOIN 明细查询缺少 LIMIT" in state.sql_static_risk_reason
 
+@pytest.mark.asyncio
+async def test_execute_sql_wrapper_allows_lenient_safe_expressions(data_config):
+    from app.services.ai.runners.data_agent_runner import (
+        DataAgentRunner,
+        RuntimeToolSpec,
+        _DataRunState,
+    )
+
+    called_count = 0
+
+    async def fake_execute(**kwargs):
+        nonlocal called_count
+        called_count += 1
+        return {"rows": [{"id": 1}]}
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-lenient-valid", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    [wrapped] = runner._wrap_tools_with_schema_gate([
+        RuntimeToolSpec(
+            name="execute_sql_query",
+            description="execute",
+            parameters_schema={},
+            source_type="static",
+            callable=fake_execute,
+            permission_scope="read",
+        )
+    ], state)
+
+    # 1. 验证带有头部注释的 SQL 可以放行
+    state.sql_static_risk = False
+    output1 = await wrapped.callable(
+        sql="-- comment: select query\nSELECT id FROM demo LIMIT 1",
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+    assert called_count == 1
+    assert state.sql_static_risk is False
+
+    # 2. 验证含 CASE WHEN 复杂排序的 SQL 可以放行
+    output2 = await wrapped.callable(
+        sql=(
+            "SELECT id FROM demo "
+            "ORDER BY CASE WHEN status = 'active' AND val > 10 THEN 0 ELSE 1 END LIMIT 10"
+        ),
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+    assert called_count == 2
+    assert state.sql_static_risk is False
+
+    # 3. 验证 CROSS JOIN 语句可以放行
+    output3 = await wrapped.callable(
+        sql="SELECT a.id, b.name FROM table_a a CROSS JOIN table_b b LIMIT 10",
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+    assert called_count == 3
+    assert state.sql_static_risk is False
+
+    # 4. 验证 USING 语法可以放行
+    output4 = await wrapped.callable(
+        sql="SELECT id FROM table_a JOIN table_b USING (id) LIMIT 10",
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+    )
+    assert called_count == 4
+    assert state.sql_static_risk is False
+
+    # 5. 验证 FETCH FIRST 标准分页可以放行
+    output5 = await wrapped.callable(
+        sql="SELECT id FROM hrmresource FETCH FIRST 10 ROWS ONLY",
+        data_source="oracle_ds",
+        dataset_name="demo",
+    )
+    assert called_count == 5
+    assert state.sql_static_risk is False
+
+    # 6. 验证 ROWNUM = 1 同样可以放行
+    output6 = await wrapped.callable(
+        sql="SELECT id FROM hrmresource WHERE accountname = 'chenxiaolong' AND ROWNUM = 1",
+        data_source="oracle_ds",
+        dataset_name="demo",
+    )
+    assert called_count == 6
+    assert state.sql_static_risk is False
+
+
 
 def test_repair_budget_is_tracked_by_error_type(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
