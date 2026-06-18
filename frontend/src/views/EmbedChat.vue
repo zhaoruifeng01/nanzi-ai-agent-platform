@@ -33,7 +33,10 @@
         </div>
     </div>
 
-    <div class="flex-1 flex flex-col h-full relative z-10 min-w-0">
+    <div
+      class="flex-1 flex flex-col h-full relative z-10 min-w-0 transition-[margin] duration-300"
+      :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned }"
+    >
       <!-- Dynamic Header Status (New) -->
       <div 
         class="h-12 border-b border-gray-100 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-4 flex items-center justify-between z-30 flex-shrink-0"
@@ -617,13 +620,15 @@
                       <div
                         v-for="(log, idx) in getDisplayLogs(msg)"
                         :key="idx"
-                        class="relative group/log"
+                        class="relative group/log transition-opacity duration-300"
+                        :class="{ 'opacity-45 group-hover/log:opacity-80': isDimmedThoughtStep(log, msg.isThinking) }"
                       >
                         <!-- Timeline Numbered Badge (Soft) -->
                         <div class="absolute -left-[23px] top-2 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold group-hover/log:scale-110 transition-all z-10 select-none ring-4 ring-white dark:ring-gray-800"
                              :class="{
                                'bg-red-50 text-red-500 border border-red-200 dark:bg-red-900/30 dark:border-red-800/50': log.status === 'error',
-                               'bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': log.status !== 'error',
+                               'bg-primary/10 text-primary border border-primary/25 dark:bg-primary/20 dark:border-primary/30': isActiveThoughtStep(log, msg.isThinking),
+                               'bg-gray-100 text-gray-500 border border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                                'animate-pulse': log.status === 'pending'
                              }"
                         >
@@ -631,16 +636,21 @@
                         </div>
                         <!-- Log Card (Lightweight Row) -->
                         <div 
-                          class="rounded-lg p-2 text-xs transition-colors cursor-pointer"
+                          class="rounded-lg p-2 text-xs transition-all duration-300 cursor-pointer"
                           :class="{
-                             'bg-transparent hover:bg-gray-50 dark:hover:bg-gray-700/30': log.status !== 'error',
+                             'bg-blue-50/50 dark:bg-blue-900/15 border border-blue-100/80 dark:border-blue-800/40 shadow-sm': isActiveThoughtStep(log, msg.isThinking),
+                             'bg-transparent hover:bg-gray-50 dark:hover:bg-gray-700/30': log.status !== 'error' && !isActiveThoughtStep(log, msg.isThinking),
                              'bg-red-50/30 hover:bg-red-50/50 dark:bg-red-900/10 dark:hover:bg-red-900/20 border border-red-100 dark:border-red-900/30': log.status === 'error'
                           }"
                           @click="log.details ? (log.isExpanded = !log.isExpanded) : null"
                         >
                           <div class="flex items-center justify-between gap-2">
                              <div class="font-medium flex items-center gap-2 flex-1 min-w-0"
-                                  :class="log.status === 'error' ? 'text-red-700 dark:text-red-400' : 'text-gray-700 dark:text-gray-300'">
+                                  :class="{
+                                    'text-red-700 dark:text-red-400': log.status === 'error',
+                                    'text-gray-800 dark:text-gray-100': isActiveThoughtStep(log, msg.isThinking),
+                                    'text-gray-700 dark:text-gray-300': !isActiveThoughtStep(log, msg.isThinking) && log.status !== 'error',
+                                  }">
                                <!-- Semantic Icon -->
                                <span class="text-[13px] flex-shrink-0" :class="{ 'animate-pulse': log.status === 'pending' }">
                                  <template v-if="log.status === 'error'">⚠️</template>
@@ -651,14 +661,20 @@
                                </span>
                                <!-- Main Text -->
                                <span class="truncate">{{ log.title }}</span>
+                               <span
+                                 v-if="isActiveThoughtStep(log, msg.isThinking)"
+                                 class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20"
+                               >
+                                 进行中
+                               </span>
                              </div>
                              <div class="flex items-center gap-2 flex-shrink-0">
                                <span
-                                 v-if="formatLogDuration(log)"
+                                 v-if="formatLogDuration(log, getDisplayLogs(msg))"
                                  class="text-[10px] font-mono text-gray-400 dark:text-gray-500"
                                  :title="log.status === 'pending' ? '当前步骤已等待时间' : '当前步骤耗时'"
                                >
-                                 {{ formatLogDuration(log) }}
+                                 {{ formatLogDuration(log, getDisplayLogs(msg)) }}
                                </span>
                                <button
                                  v-if="log.details && log.isExpanded"
@@ -2202,88 +2218,18 @@
       </div>
     </div>
     <!-- 数据门户右侧抽屉 Drawer -->
-    <div
-      v-show="showPortalDrawer"
-      class="fixed inset-0 z-50 overflow-hidden"
-    >
-      <!-- 背景遮罩 (Overlay) -->
-      <transition
-        enter-active-class="ease-out duration-300"
-        enter-from-class="opacity-0"
-        enter-to-class="opacity-100"
-        leave-active-class="ease-in duration-200"
-        leave-from-class="opacity-100"
-        leave-to-class="opacity-0"
-      >
-        <div 
-          v-show="showPortalDrawer"
-          class="absolute inset-0 bg-gray-500/30 backdrop-blur-xs transition-opacity" 
-          @click="showPortalDrawer = false"
-        ></div>
-      </transition>
-
-      <!-- 抽屉面板 (Drawer Panel) -->
-      <div class="absolute inset-y-0 right-0 pl-0 sm:pl-10 max-w-full flex">
-        <transition
-          enter-active-class="transform transition ease-in-out duration-300"
-          enter-from-class="translate-x-full"
-          enter-to-class="translate-x-0"
-          leave-active-class="transform transition ease-in-out duration-300"
-          leave-from-class="translate-x-0"
-          leave-to-class="translate-x-full"
-        >
-          <div 
-            v-show="showPortalDrawer"
-            class="w-screen max-w-[min(100vw,28rem)] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl flex flex-col h-full relative z-10 pb-[env(safe-area-inset-bottom,0px)]"
-          >
-            <!-- 抽屉头部 -->
-            <div class="px-4 py-3 sm:py-4 border-b border-gray-150 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20 flex items-center justify-between gap-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
-              <span class="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-1.5 select-none min-w-0">
-                <svg class="w-4 h-4 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4zM14 16a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-4z" />
-                </svg>
-                <span class="truncate">数据门户导航</span>
-              </span>
-              <div class="flex items-center gap-2 flex-shrink-0">
-                <label
-                  class="hidden sm:flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400 cursor-pointer select-none whitespace-nowrap"
-                  title="开启后点击问题不会关闭抽屉，可连续提问（仅桌面端生效）"
-                >
-                  <input
-                    v-model="portalKeepOpenOnQuestion"
-                    type="checkbox"
-                    class="rounded border-gray-300 text-primary focus:ring-primary/30"
-                  />
-                  提问后保持
-                </label>
-                <button 
-                  type="button" 
-                  class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-150 dark:hover:bg-gray-800 transition-colors"
-                  title="关闭 (Esc)"
-                  @click="showPortalDrawer = false"
-                >
-                  <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-            <!-- 抽屉内容 -->
-            <div class="flex-1 overflow-y-auto p-3 sm:p-4 bg-white dark:bg-gray-900/60">
-              <DatasetCapabilityMenu
-                :payload="portalNavigationPayload || { groups: [] }"
-                :initial-loading="portalLoading && !portalNavigationPayload"
-                :background-refreshing="portalBackgroundRefreshing"
-                @quick-question="handlePortalQuickQuestion"
-                @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
-                @clear-question-click="(payload) => clearDatasetMenuQuestionClick(portalNavigationPayload, payload)"
-                @refresh="refreshPortalNavigation"
-              />
-            </div>
-          </div>
-        </transition>
-      </div>
-    </div>
+    <DatasetPortalDrawer
+      v-model="showPortalDrawer"
+      v-model:keep-open-on-question="portalKeepOpenOnQuestion"
+      v-model:pinned="portalPinned"
+      :payload="portalNavigationPayload"
+      :initial-loading="portalLoading && !portalNavigationPayload"
+      :background-refreshing="portalBackgroundRefreshing"
+      @quick-question="handlePortalQuickQuestion"
+      @record-question-click="(payload) => recordDatasetMenuQuestionClick(portalNavigationPayload, payload)"
+      @clear-question-click="(payload) => clearDatasetMenuQuestionClick(portalNavigationPayload, payload)"
+      @refresh="refreshPortalNavigation"
+    />
     </div>
 </template>
 <script setup lang="ts">
@@ -2291,11 +2237,13 @@ import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { useToast } from "../composables/useToast";
+import { useDatasetPortal } from "@/composables/useDatasetPortal";
 
 const toast = useToast();
 const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
+import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
 import CitationPopover from "@/components/CitationPopover.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
@@ -2315,6 +2263,8 @@ import {
   getTurnPanelTitle,
   defaultThoughtExpanded,
   countHiddenLogs,
+  isActiveThoughtStep,
+  isDimmedThoughtStep,
   type TurnType,
 } from "@/utils/turnLogDisplay";
 import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
@@ -2324,6 +2274,9 @@ import {
   dispatchAgentscopeStreamEvent,
   formatExternalExecutionStatus,
   formatPermissionStatus,
+  isLiveThoughtStepTimer,
+  resolveStreamLogDurationMs,
+  finalizeAllPendingStreamLogs,
   handlePermissionRequired as applyPermissionRequiredEvent,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
@@ -2476,14 +2429,14 @@ const formatDurationMs = (durationMs?: number | null): string => {
   return `${(durationMs / 1000).toFixed(1)}s`;
 };
 
-const formatLogDuration = (log: LogEntry): string => {
+const formatLogDuration = (log: LogEntry, allLogs?: LogEntry[]): string => {
   if (log.execution_time_ms !== undefined && log.execution_time_ms !== null) {
     return formatDurationMs(log.execution_time_ms);
   }
   if (log.elapsed_time_ms !== undefined && log.elapsed_time_ms !== null) {
     return formatDurationMs(log.elapsed_time_ms);
   }
-  if (log.status === "pending" && log.started_at) {
+  if (isLiveThoughtStepTimer(log, allLogs || []) && log.started_at) {
     return formatDurationMs(Date.now() - log.started_at);
   }
   return "";
@@ -3016,76 +2969,6 @@ const lockToDataQueryAgentForDatasetMenu = async () => {
     handleSwitchMode(dataQueryAgent);
 };
 
-const fetchDatasetMenuNavigationPayload = async (refresh = false) => {
-  const res = await axios.get("/api/v1/chat/dataset-menu", {
-    headers: embedAuthHeaders(),
-    params: refresh ? { refresh: true } : undefined,
-  });
-  return res.data?.data || {};
-};
-
-const recordDatasetMenuQuestionClick = async (
-  navigation: DatasetNavigationPayload | undefined,
-  payload: { query: string; label?: string; group_id?: string }
-) => {
-  const datasetMenuHash = navigation?.dataset_menu_hash;
-  const query = String(payload?.query || "").trim();
-  if (!datasetMenuHash || !query) return;
-  try {
-    await axios.post(
-      "/api/v1/chat/dataset-menu/click",
-      {
-        dataset_menu_hash: datasetMenuHash,
-        query,
-        label: payload.label,
-        group_id: payload.group_id,
-      },
-      { headers: embedAuthHeaders() }
-    );
-  } catch (error) {
-    console.warn("Failed to record dataset menu question click", error);
-  }
-};
-
-const clearNavigationQuestionClickStats = (
-  navigation: DatasetNavigationPayload | undefined,
-  query: string,
-) => {
-  const normalized = String(query || "").trim();
-  if (!navigation?.groups || !normalized) return;
-  for (const group of navigation.groups) {
-    for (const question of group.questions || []) {
-      if (String(question.query || "").trim() !== normalized) continue;
-      question.click_count = 0;
-      delete question.last_clicked_at;
-    }
-  }
-};
-
-const clearDatasetMenuQuestionClick = async (
-  navigation: DatasetNavigationPayload | undefined,
-  payload: { query: string },
-) => {
-  const datasetMenuHash = navigation?.dataset_menu_hash;
-  const query = String(payload?.query || "").trim();
-  if (!datasetMenuHash || !query) return;
-  try {
-    await axios.post(
-      "/api/v1/chat/dataset-menu/click/clear",
-      {
-        dataset_menu_hash: datasetMenuHash,
-        query,
-      },
-      { headers: embedAuthHeaders() }
-    );
-    clearNavigationQuestionClickStats(navigation, query);
-    if (navigation === portalNavigationPayload.value && portalNavigationPayload.value) {
-      portalNavigationPayload.value = { ...portalNavigationPayload.value };
-    }
-  } catch (error) {
-    console.warn("Failed to clear dataset menu question click", error);
-  }
-};
 const handleReorderCommands = async (reorderData: any[]) => {
     try {
         await axios.post("/api/portal/slash-commands/reorder", { items: reorderData });
@@ -3103,7 +2986,6 @@ const connectionStatus = ref<"connected" | "disconnected" | "reconnecting">(
 let abortController: AbortController | null = null;
 let thoughtTimer: any = null;
 let stallTimer: any = null;
-let datasetMenuThoughtTimer: ReturnType<typeof setInterval> | null = null;
 const showStalledPrompt = ref(false);
 const clearStallTimer = () => {
   if (stallTimer) {
@@ -4211,256 +4093,6 @@ const fetchConversationHistory = async (isLoadMore = false) => {
   }
 };
 // --- Logic ---
-const refreshDatasetMenuNavigation = async (msg: Message) => {
-  if (datasetMenuLoading.value || isProcessing.value) {
-    return;
-  }
-  datasetMenuLoading.value = true;
-  isProcessing.value = true;
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload(true);
-    msg.datasetNavigation = payload;
-    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
-    isProcessing.value = false;
-    showToast("数据门户刷新成功", "success");
-    await nextTick();
-    scrollToBottom(true);
-  } catch (error) {
-    console.warn("Failed to refresh dataset menu navigation", error);
-    showToast("刷新数据门户失败，请稍后重试", "error");
-    if (msg.datasetNavigation) {
-      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
-    }
-  } finally {
-    datasetMenuLoading.value = false;
-    isProcessing.value = false;
-  }
-};
-
-const showPortalDrawer = ref(false);
-const portalNavigationPayload = ref<any>(null);
-const portalLoading = ref(false);
-const portalSilentRefreshing = ref(false);
-const portalPrefetchInFlight = ref(false);
-const hasSilentlyRefreshed = ref(false);
-let silentRefreshTimer: any = null;
-
-const PORTAL_KEEP_OPEN_KEY = "embed_portal_keep_open";
-const portalKeepOpenOnQuestion = ref(localStorage.getItem(PORTAL_KEEP_OPEN_KEY) === "1");
-watch(portalKeepOpenOnQuestion, (val) => {
-  localStorage.setItem(PORTAL_KEEP_OPEN_KEY, val ? "1" : "0");
-});
-
-const isMobileViewport = () =>
-  typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches;
-
-/** 移动端点击问题后始终关闭抽屉；桌面端尊重「提问后保持」开关。 */
-const shouldClosePortalAfterQuestion = () =>
-  isMobileViewport() || !portalKeepOpenOnQuestion.value;
-
-// 数据门户初始化加载温馨提示词轮播
-const portalLoadingTips = [
-  "正在为数据集唤醒大模型并进行资源初始化... 🧠",
-  "AI 正在深度解析物理表的业务语义与指标口径... 📊",
-  "首次加载需探索物理库表，耗时稍长（约15-30秒），请耐心稍候喔 ✨",
-  "正在基于大模型智构最适合该数据集的场景分析提问... 🚀",
-  "云枢大模型正在努力推理计算中，马上就好... 🔄"
-];
-const currentPortalLoadingTip = ref(portalLoadingTips[0]);
-let portalLoadingTipTimer: any = null;
-
-const startPortalLoadingTips = () => {
-  if (portalLoadingTipTimer) clearInterval(portalLoadingTipTimer);
-  let index = 0;
-  currentPortalLoadingTip.value = portalLoadingTips[0];
-  portalLoadingTipTimer = setInterval(() => {
-    index = (index + 1) % portalLoadingTips.length;
-    currentPortalLoadingTip.value = portalLoadingTips[index];
-  }, 4000);
-};
-
-const stopPortalLoadingTips = () => {
-  if (portalLoadingTipTimer) {
-    clearInterval(portalLoadingTipTimer);
-    portalLoadingTipTimer = null;
-  }
-};
-
-const prefetchPortalNavigationIfEligible = async () => {
-  if (portalNavigationPayload.value || portalPrefetchInFlight.value || portalLoading.value) return;
-  if (!findDataQueryAgent()) return;
-  portalPrefetchInFlight.value = true;
-  try {
-    await fetchPortalNavigationData(false, true);
-  } catch {
-    // 静默预加载失败不影响主流程
-  } finally {
-    portalPrefetchInFlight.value = false;
-  }
-};
-
-const portalBackgroundRefreshing = computed(
-  () => portalSilentRefreshing.value || (portalLoading.value && !!portalNavigationPayload.value),
-);
-
-const openPortalDrawer = async () => {
-  showPortalDrawer.value = true;
-  hasSilentlyRefreshed.value = false;
-  if (silentRefreshTimer) {
-    clearTimeout(silentRefreshTimer);
-    silentRefreshTimer = null;
-  }
-  await lockToDataQueryAgentForDatasetMenu();
-  if (!portalNavigationPayload.value) {
-    await fetchPortalNavigationData();
-  } else if (portalNavigationPayload.value.is_fallback) {
-    await fetchPortalNavigationData(false, false);
-  }
-};
-
-const fetchPortalNavigationData = async (refresh = false, silent = false) => {
-  if (!silent) {
-    if (portalLoading.value) return;
-    portalLoading.value = true;
-    startPortalLoadingTips();
-  } else if (refresh) {
-    portalSilentRefreshing.value = true;
-  }
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload(refresh);
-    portalNavigationPayload.value = payload;
-    
-    // 如果获取的数据为降级兜底数据，且当前不是主动刷新、也不是静默刷新，且本轮还未发生过静默刷新
-    if (payload?.is_fallback && !refresh && !silent && !hasSilentlyRefreshed.value) {
-      hasSilentlyRefreshed.value = true;
-      if (silentRefreshTimer) clearTimeout(silentRefreshTimer);
-      silentRefreshTimer = setTimeout(async () => {
-        if (showPortalDrawer.value || portalNavigationPayload.value) {
-          await fetchPortalNavigationData(true, true);
-        }
-      }, 3000);
-    }
-    
-    if (refresh && !silent) {
-      showToast("数据门户刷新成功", "success");
-    }
-  } catch (error) {
-    console.warn("Failed to load portal navigation data", error);
-    if (!silent) {
-      showToast(refresh ? "刷新数据门户失败，请稍后重试" : "加载数据门户失败，请稍后重试", "error");
-    }
-    if (refresh && portalNavigationPayload.value) {
-      portalNavigationPayload.value = { ...portalNavigationPayload.value, _failed_at: new Date().toISOString() };
-    }
-  } finally {
-    if (!silent) {
-      portalLoading.value = false;
-      stopPortalLoadingTips();
-    } else if (refresh) {
-      portalSilentRefreshing.value = false;
-    }
-  }
-};
-
-const handlePortalDrawerKeydown = (event: KeyboardEvent) => {
-  if (event.key === "Escape" && showPortalDrawer.value) {
-    showPortalDrawer.value = false;
-  }
-};
-
-watch(showPortalDrawer, (val) => {
-  if (!val) {
-    if (silentRefreshTimer) {
-      clearTimeout(silentRefreshTimer);
-      silentRefreshTimer = null;
-    }
-    stopPortalLoadingTips();
-  }
-});
-
-const refreshPortalNavigation = async () => {
-  await fetchPortalNavigationData(true);
-};
-
-const handlePortalQuickQuestion = (query: string) => {
-  if (shouldClosePortalAfterQuestion()) {
-    showPortalDrawer.value = false;
-  }
-  handleQuickQuestion(query);
-};
-
-const showDatasetMenuNavigation = async () => {
-  if (datasetMenuLoading.value || isProcessing.value) {
-    return;
-  }
-  datasetMenuLoading.value = true;
-  isProcessing.value = true;
-
-  if (!conversationId.value) {
-    generateNewConversation();
-  }
-  await lockToDataQueryAgentForDatasetMenu();
-
-  messages.value.push({
-    id: Date.now(),
-    role: "user",
-    content: "/dataset_menu",
-    timestamp: new Date().toISOString(),
-  });
-
-  const navMsg = ref<Message>({
-    id: Date.now() + 1,
-    role: "agent",
-    content: "",
-    agentName: "sys_dataset_menu",
-    agentDisplayName: "系统 · 数据门户",
-    isThinking: true,
-    thinkingText: "正在生成我的数据门户，请稍后...",
-    logs: [],
-    thoughtStartTime: Date.now(),
-    thoughtDuration: "0.0",
-    isThoughtExpanded: false,
-    isCitationsExpanded: false,
-    timestamp: new Date().toISOString(),
-  });
-  messages.value.push(navMsg.value);
-  datasetMenuThoughtTimer = setInterval(() => {
-    if (navMsg.value.thoughtStartTime) {
-      navMsg.value.thoughtDuration = (
-        (Date.now() - navMsg.value.thoughtStartTime) /
-        1000
-      ).toFixed(1);
-    }
-  }, 100);
-  autoScrollEnabled.value = true;
-  await nextTick();
-  scrollToBottom(true);
-
-  try {
-    const payload = await fetchDatasetMenuNavigationPayload();
-    navMsg.value.datasetNavigation = payload;
-    const markdown = payload?.markdown || "";
-    navMsg.value.content = markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
-  } catch (error) {
-    console.warn("Failed to load dataset menu navigation", error);
-    navMsg.value.content = (
-      "暂时无法加载我的数据门户，请稍后重试。\n\n"
-      + "- [🙋 重新加载数据门户](quick:/dataset_menu)"
-    );
-  } finally {
-    navMsg.value.isThinking = false;
-    navMsg.value.thinkingText = "";
-    if (datasetMenuThoughtTimer) {
-      clearInterval(datasetMenuThoughtTimer);
-      datasetMenuThoughtTimer = null;
-    }
-    datasetMenuLoading.value = false;
-    isProcessing.value = false;
-    await nextTick();
-    scrollToBottom(true);
-  }
-};
-
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   switch (cmd) {
     case "/dataset_menu":
@@ -4725,6 +4357,92 @@ const handleQuickQuestion = async (content: string) => {
   sendMessage();
 };
 
+const portalLoadingTips = [
+  "正在为数据集唤醒大模型并进行资源初始化... 🧠",
+  "AI 正在深度解析物理表的业务语义与指标口径... 📊",
+  "首次加载需探索物理库表，耗时稍长（约15-30秒），请耐心稍候喔 ✨",
+  "正在基于大模型智构最适合该数据集的场景分析提问... 🚀",
+  "云枢大模型正在努力推理计算中，马上就好... 🔄",
+];
+const currentPortalLoadingTip = ref(portalLoadingTips[0]);
+let portalLoadingTipTimer: ReturnType<typeof setInterval> | null = null;
+
+const startPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) clearInterval(portalLoadingTipTimer);
+  let index = 0;
+  currentPortalLoadingTip.value = portalLoadingTips[0];
+  portalLoadingTipTimer = setInterval(() => {
+    index = (index + 1) % portalLoadingTips.length;
+    currentPortalLoadingTip.value = portalLoadingTips[index];
+  }, 4000);
+};
+
+const stopPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) {
+    clearInterval(portalLoadingTipTimer);
+    portalLoadingTipTimer = null;
+  }
+};
+
+const {
+  showPortalDrawer,
+  portalNavigationPayload,
+  portalLoading,
+  portalBackgroundRefreshing,
+  portalKeepOpenOnQuestion,
+  portalPinned,
+  openPortalDrawer,
+  refreshPortalNavigation,
+  handlePortalQuickQuestion,
+  recordDatasetMenuQuestionClick,
+  clearDatasetMenuQuestionClick,
+  prefetchPortalNavigationIfEligible,
+  fetchDatasetMenuNavigationPayload,
+  disposePortalTimers,
+} = useDatasetPortal({
+  getAuthHeaders: () => embedAuthHeaders() || {},
+  showToast,
+  lockToDataQueryAgentForDatasetMenu,
+  onQuickQuestion: handleQuickQuestion,
+  findDataQueryAgent,
+  keepOpenStorageKey: "embed_portal_keep_open",
+  pinStorageKey: "embed_portal_pinned",
+  onPortalLoadingChange: (loading) => {
+    if (loading) startPortalLoadingTips();
+    else stopPortalLoadingTips();
+  },
+});
+
+watch(showPortalDrawer, (val) => {
+  if (!val) stopPortalLoadingTips();
+});
+
+const refreshDatasetMenuNavigation = async (msg: Message) => {
+  if (datasetMenuLoading.value || isProcessing.value) {
+    return;
+  }
+  datasetMenuLoading.value = true;
+  isProcessing.value = true;
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(true);
+    msg.datasetNavigation = payload;
+    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    isProcessing.value = false;
+    showToast("数据门户刷新成功", "success");
+    await nextTick();
+    scrollToBottom(true);
+  } catch (error) {
+    console.warn("Failed to refresh dataset menu navigation", error);
+    showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
+  } finally {
+    datasetMenuLoading.value = false;
+    isProcessing.value = false;
+  }
+};
+
 const handleVisualAnalysis = async () => {
   await handleQuickQuestion("可视化分析一下");
 };
@@ -4743,16 +4461,28 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
     else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
     else if (title.includes("权限") || title.includes("permission") || title.includes("确认")) category = "permission";
   }
+  if (data.turn_type && category === "intent") {
+    msg.turnType = data.turn_type;
+    if (msg.isThinking) {
+      msg.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+    }
+  }
   if (existingIdx > -1) {
     const currentLog = msg.logs[existingIdx];
     if (!currentLog) return;
+    const nextStatus = (data.status as LogEntry["status"]) || currentLog.status || "success";
+    const execution_time_ms =
+      data.execution_time_ms ??
+      (nextStatus !== "pending"
+        ? resolveStreamLogDurationMs(currentLog, data.execution_time_ms)
+        : currentLog.execution_time_ms);
     msg.logs[existingIdx] = {
       ...currentLog,
       title: data.title || currentLog.title,
       details: data.details ?? currentLog.details,
-      status: (data.status as any) || currentLog.status || "success",
+      status: nextStatus,
       category: category !== "default" ? category : currentLog.category,
-      execution_time_ms: data.execution_time_ms ?? currentLog.execution_time_ms,
+      execution_time_ms: execution_time_ms ?? currentLog.execution_time_ms,
       elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
       started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
     };
@@ -5099,60 +4829,10 @@ const sendMessage = async () => {
             agentMsg.value.trace_id = data.data.trace_id;
           }
           if (data.type === "log") {
-            if (agentMsg.value.logs) {
-              const logId = data.id || Date.now() + Math.random();
-              const existingIdx = agentMsg.value.logs.findIndex((l) => l.id === logId);
-              // Categorization
-              const title = data.title || "";
-              let category: LogEntry["category"] = data.category || "default";
-              // --- [SMART THINKING TEXT UPDATE] ---
-              if (agentMsg.value.isThinking && title) {
-                  agentMsg.value.thinkingText = `正在${title}...`;
-              }
-              if (category === "default") {
-                if (title.includes("路由")) category = "router";
-                else if (title.includes("SQL") || title.includes("sql") || title.includes("数据")) category = "sql";
-                else if (title.includes("知识") || title.includes("检索") || title.includes("引用") || title.includes("来源") || title.includes("分析")) category = "knowledge";
-                else if (title.includes("工具") || title.includes("调用")) category = "tool";
-                else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
-                else if (title.includes("权限") || title.includes("permission")) category = "permission";
-              }
-              if (data.turn_type && category === "intent") {
-                agentMsg.value.turnType = data.turn_type;
-                if (agentMsg.value.isThinking) {
-                  agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
-                }
-              }
-              if (existingIdx > -1) {
-                const currentLog = agentMsg.value.logs[existingIdx];
-                if (currentLog) {
-                  agentMsg.value.logs[existingIdx] = {
-                    id: currentLog.id,
-                    title: data.title || currentLog.title,
-                    details: (data.details !== undefined && data.details !== null) ? data.details : currentLog.details,
-                    status: (data.status as any) || "success",
-                    category: category !== "default" ? category : currentLog.category,
-                    execution_time_ms: data.execution_time_ms ?? currentLog.execution_time_ms,
-                    elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
-                    started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
-                    isExpanded: currentLog.isExpanded,
-                    isRouter: currentLog.isRouter,
-                  };
-                }
-              } else {
-                agentMsg.value.logs.push({
-                  id: logId,
-                  title: data.title || "Log Info",
-                  details: data.details || "",
-                  status: (data.status as any) || "success",
-                  isExpanded: false,
-                  category: category,
-                  execution_time_ms: data.execution_time_ms ?? null,
-                  elapsed_time_ms: data.elapsed_time_ms ?? null,
-                  started_at: data.status === "pending" ? Date.now() : (data.started_at ?? null),
-                });
-              }
+            if (agentMsg.value.isThinking && data.title) {
+              agentMsg.value.thinkingText = `正在${data.title}...`;
             }
+            addEmbedLogFromStream(agentMsg.value, data);
           } else if (data.type === "citation") {
             if (data.data && Array.isArray(data.data)) {
               // Deduplicate and append ALL chunks (filtering will happen in UI)
@@ -5264,11 +4944,7 @@ const sendMessage = async () => {
     showStalledPrompt.value = false;
     if (thoughtTimer) clearInterval(thoughtTimer);
     // Final cleanup: stop any remaining log spinners
-    if (agentMsg.value.logs) {
-      agentMsg.value.logs.forEach((l) => {
-        if (l.status === "pending" && l.category !== "permission") l.status = "success";
-      });
-    }
+    finalizeAllPendingStreamLogs(agentMsg.value);
     scrollToBottom();
     nextTick(() => {
       chatInputRef.value?.focus();
@@ -5382,7 +5058,6 @@ onMounted(() => {
   window.addEventListener("fullscreenchange", updateFullScreenStatus);
   // Close agent selector on global click
   window.addEventListener("click", onWindowClick);
-  document.addEventListener("keydown", handlePortalDrawerKeydown);
   // Initialize or Retrieve Conversation ID
   const savedId = localStorage.getItem("yovole_embed_conv_id");
   if (savedId) {
@@ -5429,7 +5104,7 @@ onMounted(() => {
   }
 
   // Attach cleanup handlers to component instance scope
-  (onUnmountHandlers as any).value = { onMessage, onOnline, onOffline, onWindowClick, onPortalDrawerKeydown: handlePortalDrawerKeydown };
+  (onUnmountHandlers as any).value = { onMessage, onOnline, onOffline, onWindowClick };
 });
 onUnmounted(() => {
   window.removeEventListener("resize", updateWidth);
@@ -5439,7 +5114,8 @@ onUnmounted(() => {
   if (handlers?.onOnline) window.removeEventListener("online", handlers.onOnline);
   if (handlers?.onOffline) window.removeEventListener("offline", handlers.onOffline);
   if (handlers?.onWindowClick) window.removeEventListener("click", handlers.onWindowClick);
-  if (handlers?.onPortalDrawerKeydown) document.removeEventListener("keydown", handlers.onPortalDrawerKeydown);
+  disposePortalTimers();
+  stopPortalLoadingTips();
   if (thoughtTimer) clearInterval(thoughtTimer);
 });
 // --- Typewriter Effect ---

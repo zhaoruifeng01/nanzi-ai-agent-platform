@@ -191,7 +191,7 @@
 
       <div class="grid gap-4" :class="{ 'pointer-events-none select-none': showRefreshBusy }">
         <article
-          v-for="{ group, visuals } in displayGroups"
+          v-for="{ group, visuals } in visibleDisplayGroups"
           :key="group.id || group.title"
           class="group/card relative overflow-hidden rounded-xl border p-3.5 sm:p-4 shadow-sm hover:shadow-lg hover:-translate-y-0.5 transition-all duration-300"
           :class="[visuals.card, visuals.cardBorder, visuals.cardHover]"
@@ -207,31 +207,35 @@
 
           <!-- Card Header -->
           <div class="relative space-y-2.5">
-            <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5">
-              <div class="flex items-start gap-2.5 min-w-0 flex-1">
-                <!-- Icon -->
-                <div 
-                  class="portal-card-icon flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-xl shadow-sm border text-white"
-                  :class="visuals.iconBorder"
-                  :data-theme="visuals.key"
-                  v-html="visuals.icon"
-                ></div>
-                <h4 class="text-sm font-bold leading-normal pt-1.5" :class="visuals.title">
-                  {{ group.title }}
-                </h4>
-              </div>
-              
-              <!-- Tags -->
-              <div v-if="group.tags?.length" class="flex flex-wrap gap-1 sm:justify-end flex-shrink-0">
-                <span
-                  v-for="tag in group.tags.slice(0, 3)"
-                  :key="tag"
-                  class="rounded-full border px-2 py-0.5 text-[9px] font-bold"
-                  :class="visuals.tag"
-                >
-                  {{ tag }}
-                </span>
-              </div>
+            <div class="flex items-start gap-2.5 min-w-0">
+              <div
+                class="portal-card-icon flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-xl shadow-sm border text-white"
+                :class="visuals.iconBorder"
+                :data-theme="visuals.key"
+                v-html="visuals.icon"
+              />
+              <h4
+                class="flex-1 min-w-0 text-sm font-bold leading-snug break-words pt-0.5"
+                :class="visuals.title"
+                :title="group.title"
+              >
+                {{ group.title }}
+              </h4>
+            </div>
+
+            <div
+              v-if="group.tags?.length"
+              class="flex flex-wrap gap-1 pl-11 min-w-0"
+            >
+              <span
+                v-for="tag in group.tags.slice(0, 3)"
+                :key="tag"
+                class="inline-block max-w-full rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight line-clamp-2 break-all"
+                :class="visuals.tag"
+                :title="tag"
+              >
+                {{ formatTagLabel(tag) }}
+              </span>
             </div>
 
             <blockquote
@@ -241,6 +245,31 @@
               :style="{ '--summary-strong': visuals.strongColor }"
               v-html="formatGroupSummary(group.summary)"
             />
+
+            <div v-if="group.metrics?.length" class="relative mt-2.5">
+              <div class="mb-1.5 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 select-none" :class="visuals.sectionLabel">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                </svg>
+                核心指标
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="metric in group.metrics"
+                  :key="`${group.id || group.title}-${metric}`"
+                  type="button"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-lg border transition-all active:scale-95"
+                  :class="visuals.questionBtn"
+                  :title="`点击查询「${metric}」趋势`"
+                  @click.stop="handleMetricClick(metric, group)"
+                >
+                  <span>{{ metric }}</span>
+                  <svg class="w-2.5 h-2.5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 5l7 7-7 7"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- You Can Ask Section -->
@@ -254,12 +283,18 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
                 你可以这样问
+                <span
+                  class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-help border border-gray-300/70 dark:border-gray-600/70"
+                  :title="QUESTIONS_SECTION_TIP"
+                  aria-label="你可以这样问说明"
+                  @click.stop
+                >?</span>
               </span>
               <button
                 type="button"
                 class="inline-flex items-center gap-1 text-[10px] font-bold transition-all duration-200 cursor-pointer active:scale-95 px-2 py-0.5 rounded-md border disabled:opacity-50"
                 :class="visuals.refreshBtn"
-                :disabled="refreshingGroupIds[group.id || group.title]"
+                :disabled="isQuestionsRefreshDisabled(group)"
                 @click.stop="handleRefreshGroupQuestions(group)"
               >
                 <svg
@@ -489,19 +524,49 @@
 
           <!-- Follow-ups Section -->
           <div v-if="group.followups?.length" class="mt-4 border-t border-gray-100 dark:border-gray-800/80 pt-3">
-            <div class="mb-2 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1 select-none">
-              <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
-              </svg>
-              继续追问
+            <div class="mb-2 flex items-center justify-between select-none">
+              <span class="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
+                </svg>
+                继续追问
+                <span
+                  class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-help border border-gray-300/70 dark:border-gray-600/70"
+                  :title="FOLLOWUPS_SECTION_TIP"
+                  aria-label="继续追问说明"
+                  @click.stop
+                >?</span>
+              </span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-[10px] font-bold text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 transition-all px-2 py-0.5 rounded-md border border-gray-200/80 dark:border-gray-700 disabled:opacity-50"
+                :disabled="isFollowupsRefreshDisabled(group)"
+                @click.stop="handleRefreshGroupFollowups(group)"
+              >
+                <svg
+                  class="w-3 h-3"
+                  :class="{ 'animate-spin': refreshingFollowupGroupIds[group.id || group.title] }"
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <span>换一批</span>
+              </button>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <div v-if="refreshingFollowupGroupIds[group.id || group.title]" class="flex flex-wrap gap-2 animate-pulse-slow">
+              <div
+                v-for="i in 2"
+                :key="`followup-sk-${i}`"
+                class="inline-flex h-7 w-28 rounded-lg border border-gray-200/60 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-800/30"
+              />
+            </div>
+            <div v-else class="flex flex-wrap gap-2">
               <button
                 v-for="followup in group.followups"
                 :key="followup.query"
                 type="button"
                 class="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors bg-gray-50/50 dark:bg-gray-800/20 hover:bg-blue-50/30 dark:hover:bg-blue-900/20 border border-gray-200/50 dark:border-gray-700 hover:border-blue-100 dark:hover:border-blue-900/40 rounded-lg shadow-xs active:scale-95 font-medium"
-                @click="emitQuickQuestion(followup.query)"
+                @click="handleFollowupClick(followup, group)"
               >
                 <span>{{ followup.label }}</span>
               </button>
@@ -510,9 +575,53 @@
         </article>
       </div>
 
-      <!-- Empty State -->
       <div
-        v-if="filteredGroups.length === 0"
+        v-if="hiddenPortalCardCount > 0"
+        class="mt-3 flex justify-center"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100/80 dark:hover:bg-gray-800/50 transition-colors"
+          @click="portalCardsExpanded = true"
+        >
+          <span>还有 {{ hiddenPortalCardCount }} 个数据集未展示</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </div>
+      <div
+        v-else-if="portalCardsExpanded && displayGroups.length > PORTAL_DEFAULT_VISIBLE_CARDS && !isFilteringPortal"
+        class="mt-2 flex justify-center"
+      >
+        <button
+          type="button"
+          class="text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
+          @click="portalCardsExpanded = false"
+        >
+          收起部分数据集
+        </button>
+      </div>
+
+      <!-- Empty State: no permission -->
+      <div
+        v-if="isNoPermissionEmpty"
+        class="bg-amber-50/30 dark:bg-amber-950/10 border border-dashed border-amber-200 dark:border-amber-900/40 rounded-xl p-8 flex flex-col items-center justify-center text-center space-y-2 select-none"
+      >
+        <div class="text-amber-400 dark:text-amber-600">
+          <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+        </div>
+        <h4 class="text-xs font-bold text-amber-800 dark:text-amber-200">暂无可用数据集</h4>
+        <p class="text-[10px] text-amber-700/80 dark:text-amber-300/80 max-w-[260px] leading-relaxed">
+          当前账号尚未开通 ChatBI 数据查询权限。请联系系统管理员为您配置数据集访问权限后再试。
+        </p>
+      </div>
+
+      <!-- Empty State: search / filter -->
+      <div
+        v-else-if="filteredGroups.length === 0 && !initialLoading"
         class="bg-gray-50/20 dark:bg-gray-900/10 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl p-8 flex flex-col items-center justify-center text-center space-y-2 select-none"
       >
         <div class="text-gray-300 dark:text-gray-600">
@@ -542,6 +651,14 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onUnmounted, nextTick } from "vue";
 import axios from "@/utils/axios";
+import { useToast } from "@/composables/useToast";
+
+const { showToast } = useToast();
+
+const QUESTIONS_SECTION_TIP =
+  "该场景的入门示例问题：点击即可直接发起查询，适合快速了解核心指标、趋势与排名。";
+const FOLLOWUPS_SECTION_TIP =
+  "延伸探索型追问：适合在已有结果基础上深挖关联维度、口径说明或下一步分析方向。";
 
 interface DatasetCapabilityQuestion {
   label: string;
@@ -572,6 +689,7 @@ interface DatasetCapabilityGroup {
   title: string;
   summary: string;
   tags?: string[];
+  metrics?: string[];
   questions?: DatasetCapabilityQuestion[];
   related_data?: DatasetCapabilityRelatedData[];
   followups?: DatasetCapabilityQuestion[];
@@ -584,6 +702,8 @@ interface DatasetNavigationPayload {
   groups?: DatasetCapabilityGroup[];
   markdown?: string;
   is_fallback?: boolean;
+  from_cache?: boolean;
+  has_datasets?: boolean;
 }
 
 const props = withDefaults(defineProps<{
@@ -601,6 +721,13 @@ const formatGroupSummary = (text: string): string => {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
   return escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+};
+
+const formatTagLabel = (tag: string, maxLen = 18): string => {
+  const cleaned = String(tag || "").trim();
+  if (!cleaned) return "";
+  if (cleaned.length <= maxLen) return cleaned;
+  return `${cleaned.slice(0, maxLen)}…`;
 };
 
 const emit = defineEmits<{
@@ -626,6 +753,12 @@ const clearRefreshBusy = () => {
 };
 const expandedGroups = ref<Record<string, boolean>>({});
 const refreshingGroupIds = ref<Record<string, boolean>>({});
+const refreshingFollowupGroupIds = ref<Record<string, boolean>>({});
+const GROUP_REFRESH_COOLDOWN_MS = 4000;
+type GroupRefreshScope = "questions" | "followups";
+const groupRefreshCooldownUntil = ref<Record<string, number>>({});
+const groupRefreshCooldownTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const groupRefreshCooldownTick = ref(0);
 const pinnedTableDictionary = ref<string | null>(null);
 const popoverStyles = ref<Record<string, Record<string, string>>>({});
 const tableRecommendState = ref<Record<string, {
@@ -716,10 +849,21 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleGlobalClick);
+  if (upgradedBannerTimer) {
+    clearTimeout(upgradedBannerTimer);
+    upgradedBannerTimer = null;
+  }
+  for (const timer of Object.values(groupRefreshCooldownTimers)) {
+    clearTimeout(timer);
+  }
 });
 
 const searchQuery = ref("");
 const selectedTag = ref("All");
+const PORTAL_DEFAULT_VISIBLE_CARDS = 5;
+const portalCardsExpanded = ref(false);
+const upgradedFromFallback = ref(false);
+let upgradedBannerTimer: ReturnType<typeof setTimeout> | null = null;
 
 const groupPopularityScore = (group: DatasetCapabilityGroup): number => {
   const questions = group.questions || [];
@@ -748,9 +892,53 @@ const formattedGeneratedAt = computed(() => {
   return date.toLocaleString();
 });
 
-const showReadyBanner = computed(() => false);
+const cacheAgeLabel = computed(() => {
+  if (!props.payload.generated_at) return "";
+  const date = new Date(props.payload.generated_at);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return "刚刚生成";
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "刚刚生成";
+  if (diffMin < 60) return `${diffMin} 分钟前生成`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH} 小时前生成`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD < 7) return `${diffD} 天前生成`;
+  return formattedGeneratedAt.value;
+});
+
+const cacheHashShort = computed(() => {
+  const hash = props.payload.dataset_menu_hash;
+  return hash ? hash.slice(0, 8) : "";
+});
+
+const cacheSourceLabel = computed(() => {
+  if (props.payload.from_cache === true) return "缓存命中";
+  if (props.payload.from_cache === false) return "本次新生成";
+  return "";
+});
+
+const isNoPermissionEmpty = computed(() => {
+  if (props.initialLoading || props.backgroundRefreshing) return false;
+  if (props.payload.has_datasets === false) return true;
+  const groupCount = (props.payload.groups || []).length;
+  const datasetCount = props.payload.dataset_count ?? groupCount;
+  return datasetCount === 0 && groupCount === 0 && !props.payload.is_fallback;
+});
+
+const showReadyBanner = computed(
+  () => upgradedFromFallback.value && portalStatus.value === "ready",
+);
+
+const isFilteringPortal = computed(
+  () => !!searchQuery.value.trim() || selectedTag.value !== "All",
+);
 
 const statusBannerClass = computed(() => {
+  if (showReadyBanner.value) {
+    return "border-emerald-100 bg-emerald-50/70 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200";
+  }
   switch (portalStatus.value) {
     case "loading":
       return "border-blue-100 bg-blue-50/70 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-200";
@@ -770,6 +958,9 @@ const statusBannerIcon = computed(() => {
 });
 
 const statusBannerText = computed(() => {
+  if (showReadyBanner.value) {
+    return "完整 AI 场景卡片已生成，推荐问题与摘要已更新，可直接点击提问。";
+  }
   switch (portalStatus.value) {
     case "loading":
       return "正在生成数据门户，首次加载约需 15–30 秒，请稍候…";
@@ -777,14 +968,22 @@ const statusBannerText = computed(() => {
       return "正在后台刷新完整门户内容…";
     case "fallback":
       return "当前为基础场景目录，完整 AI 场景卡片正在后台生成，可先点击问题开始查数。";
-    default:
-      return `门户已就绪${props.payload?.generated_at ? `（${formattedGeneratedAt.value}）` : ""}`;
+    default: {
+      const parts = ["门户已就绪"];
+      if (cacheAgeLabel.value) parts.push(cacheAgeLabel.value);
+      if (cacheSourceLabel.value) parts.push(cacheSourceLabel.value);
+      if (cacheHashShort.value) parts.push(`版本 #${cacheHashShort.value}`);
+      return parts.join(" · ");
+    }
   }
 });
 
 const refreshButtonTitle = computed(() => {
-  const hash = props.payload?.dataset_menu_hash?.slice(0, 8);
-  return hash ? `刷新数据门户（缓存版本 ${hash}）` : "刷新数据门户";
+  const parts = ["刷新数据门户"];
+  if (cacheHashShort.value) parts.push(`版本 #${cacheHashShort.value}`);
+  if (cacheAgeLabel.value) parts.push(cacheAgeLabel.value);
+  if (cacheSourceLabel.value) parts.push(cacheSourceLabel.value);
+  return parts.join(" · ");
 });
 
 const frequentQuestions = computed(() => {
@@ -1059,6 +1258,78 @@ const displayGroups = computed(() => {
   }));
 });
 
+const hiddenPortalCardCount = computed(() => {
+  if (isFilteringPortal.value || portalCardsExpanded.value) return 0;
+  return Math.max(0, displayGroups.value.length - PORTAL_DEFAULT_VISIBLE_CARDS);
+});
+
+const visibleDisplayGroups = computed(() => {
+  if (isFilteringPortal.value || portalCardsExpanded.value) {
+    return displayGroups.value;
+  }
+  if (displayGroups.value.length <= PORTAL_DEFAULT_VISIBLE_CARDS) {
+    return displayGroups.value;
+  }
+  return displayGroups.value.slice(0, PORTAL_DEFAULT_VISIBLE_CARDS);
+});
+
+const getGroupRefreshKey = (scope: GroupRefreshScope, uniqueId: string) => `${scope}:${uniqueId}`;
+
+const isGroupRefreshOnCooldown = (scope: GroupRefreshScope, uniqueId: string): boolean => {
+  void groupRefreshCooldownTick.value;
+  const until = groupRefreshCooldownUntil.value[getGroupRefreshKey(scope, uniqueId)] || 0;
+  return Date.now() < until;
+};
+
+const startGroupRefreshCooldown = (scope: GroupRefreshScope, uniqueId: string) => {
+  const key = getGroupRefreshKey(scope, uniqueId);
+  groupRefreshCooldownUntil.value = {
+    ...groupRefreshCooldownUntil.value,
+    [key]: Date.now() + GROUP_REFRESH_COOLDOWN_MS,
+  };
+  if (groupRefreshCooldownTimers[key]) {
+    clearTimeout(groupRefreshCooldownTimers[key]);
+  }
+  groupRefreshCooldownTimers[key] = setTimeout(() => {
+    delete groupRefreshCooldownTimers[key];
+    groupRefreshCooldownTick.value += 1;
+  }, GROUP_REFRESH_COOLDOWN_MS);
+};
+
+const clearGroupRefreshCooldowns = () => {
+  for (const timer of Object.values(groupRefreshCooldownTimers)) {
+    clearTimeout(timer);
+  }
+  for (const key of Object.keys(groupRefreshCooldownTimers)) {
+    delete groupRefreshCooldownTimers[key];
+  }
+  groupRefreshCooldownUntil.value = {};
+  groupRefreshCooldownTick.value += 1;
+};
+
+const isQuestionsRefreshDisabled = (group: DatasetCapabilityGroup): boolean => {
+  const uniqueId = group.id || group.title;
+  return !!refreshingGroupIds.value[uniqueId] || isGroupRefreshOnCooldown("questions", uniqueId);
+};
+
+const isFollowupsRefreshDisabled = (group: DatasetCapabilityGroup): boolean => {
+  const uniqueId = group.id || group.title;
+  return !!refreshingFollowupGroupIds.value[uniqueId] || isGroupRefreshOnCooldown("followups", uniqueId);
+};
+
+const collectGroupTables = (group: DatasetCapabilityGroup): string[] => {
+  const tables: string[] = [];
+  for (const related of group.related_data || []) {
+    for (const table of related.tables || []) {
+      const term = String(table || "").trim();
+      if (term && !tables.includes(term)) {
+        tables.push(term);
+      }
+    }
+  }
+  return tables;
+};
+
 const handleRefreshClick = () => {
   if (refreshDisabled.value) return;
   isRefreshing.value = true;
@@ -1081,35 +1352,63 @@ watch(
 const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
   const uniqueId = group.id || group.title;
   if (refreshingGroupIds.value[uniqueId]) return;
-
-  const tables: string[] = [];
-  if (group.related_data) {
-    for (const related of group.related_data) {
-      if (related.tables) {
-        for (const t of related.tables) {
-          if (t && !tables.includes(t)) {
-            tables.push(t);
-          }
-        }
-      }
-    }
+  if (isGroupRefreshOnCooldown("questions", uniqueId)) {
+    showToast("换一批太频繁，请稍后再试", "warning");
+    return;
   }
 
+  const tables = collectGroupTables(group);
+
+  startGroupRefreshCooldown("questions", uniqueId);
   refreshingGroupIds.value[uniqueId] = true;
   try {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
       group_title: group.title,
-      tables: tables,
+      tables,
+      purpose: "questions",
     });
-    if (res.data?.code === 200 && res.data?.data?.questions) {
+    if (res.data?.code === 200 && res.data?.data?.questions?.length) {
       group.questions = res.data.data.questions;
     } else {
       console.warn("Invalid refresh questions response:", res.data);
+      showToast("换一批推荐问题失败，请稍后重试", "error");
     }
   } catch (error) {
     console.error("Failed to refresh group questions:", error);
+    showToast("换一批推荐问题失败，请稍后重试", "error");
   } finally {
     refreshingGroupIds.value[uniqueId] = false;
+  }
+};
+
+const handleRefreshGroupFollowups = async (group: DatasetCapabilityGroup) => {
+  const uniqueId = group.id || group.title;
+  if (refreshingFollowupGroupIds.value[uniqueId]) return;
+  if (isGroupRefreshOnCooldown("followups", uniqueId)) {
+    showToast("换一批太频繁，请稍后再试", "warning");
+    return;
+  }
+
+  const tables = collectGroupTables(group);
+  startGroupRefreshCooldown("followups", uniqueId);
+  refreshingFollowupGroupIds.value[uniqueId] = true;
+  try {
+    const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
+      group_title: group.title,
+      tables,
+      purpose: "followups",
+    });
+    if (res.data?.code === 200 && res.data?.data?.questions?.length) {
+      group.followups = res.data.data.questions;
+    } else {
+      console.warn("Invalid refresh followups response:", res.data);
+      showToast("换一批继续追问失败，请稍后重试", "error");
+    }
+  } catch (error) {
+    console.error("Failed to refresh group followups:", error);
+    showToast("换一批继续追问失败，请稍后重试", "error");
+  } finally {
+    refreshingFollowupGroupIds.value[uniqueId] = false;
   }
 };
 
@@ -1129,7 +1428,23 @@ watch(
     }
     pinnedTableDictionary.value = null;
     refreshingGroupIds.value = {};
+    refreshingFollowupGroupIds.value = {};
+    clearGroupRefreshCooldowns();
     tableRecommendState.value = {};
+    portalCardsExpanded.value = false;
+  },
+);
+
+watch(
+  () => props.payload?.is_fallback,
+  (isFallback, wasFallback) => {
+    if (wasFallback === true && isFallback === false) {
+      upgradedFromFallback.value = true;
+      if (upgradedBannerTimer) clearTimeout(upgradedBannerTimer);
+      upgradedBannerTimer = setTimeout(() => {
+        upgradedFromFallback.value = false;
+      }, 8000);
+    }
   },
 );
 
@@ -1153,6 +1468,19 @@ const handleQuestionClick = (question: DatasetCapabilityQuestion, group: Dataset
     group_id: group.id,
   });
   emitQuickQuestion(query);
+};
+
+const handleFollowupClick = (followup: DatasetCapabilityQuestion, group: DatasetCapabilityGroup) => {
+  const query = String(followup.query || "").trim();
+  if (!query) return;
+  emitQuickQuestion(query);
+};
+
+const handleMetricClick = (metric: string, group: DatasetCapabilityGroup) => {
+  const metricName = String(metric || "").trim();
+  const sceneTitle = String(group.title || "").trim();
+  if (!metricName || !sceneTitle) return;
+  emitQuickQuestion(`查询${sceneTitle}最近6个月的${metricName}趋势`);
 };
 
 // 数据表数据字典快捷提问处理器

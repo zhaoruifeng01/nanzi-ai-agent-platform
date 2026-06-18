@@ -403,6 +403,7 @@ async def test_data_agent_runner_system_content_includes_data_guardrails(data_co
     system_content = await runner._build_system_content()
 
     assert DataQueryPrompts.GLOBAL_GUARDRAILS in system_content
+    assert DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE in system_content
     assert "[当前时间锚点]" in system_content
     assert "【相对时间 SQL 规则】" in system_content
     assert DataQueryPrompts.SQL_PLAN_ENFORCEMENT not in system_content
@@ -2088,6 +2089,50 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
 
 
 @pytest.mark.asyncio
+async def test_execute_sql_wrapper_blocks_order_by_and_rownum_antipattern(data_config):
+    from app.services.ai.runners.data_agent_runner import (
+        DataAgentRunner,
+        RuntimeToolSpec,
+        SQL_STATIC_GATE_PREFIX,
+        _DataRunState,
+    )
+
+    called = False
+
+    async def fake_execute(**kwargs):
+        nonlocal called
+        called = True
+        return {"rows": []}
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-order-rownum", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    [wrapped] = runner._wrap_tools_with_schema_gate([
+        RuntimeToolSpec(
+            name="execute_sql_query",
+            description="execute",
+            parameters_schema={},
+            source_type="static",
+            callable=fake_execute,
+            permission_scope="read",
+        )
+    ], state)
+
+    output = await wrapped.callable(
+        sql=(
+            "SELECT opp_code, create_date FROM view_demo "
+            "WHERE clue_flag = 0 ORDER BY create_date DESC AND ROWNUM <= 20"
+        ),
+        data_source="oracle_ds",
+        dataset_name="demo",
+    )
+
+    assert called is False
+    assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
+    assert state.sql_static_risk is True
+    assert "ORDER BY 后不能接 AND ROWNUM" in state.sql_static_risk_reason
+
+
+@pytest.mark.asyncio
 async def test_execute_sql_wrapper_blocks_unbounded_join_detail_before_tool_call(data_config):
     from app.services.ai.runners.data_agent_runner import (
         DataAgentRunner,
@@ -2548,6 +2593,155 @@ def test_data_agent_runner_tool_loop_fuse_triggers_on_global_limit(data_config):
     assert state.tool_loop_fuse_triggered is True
     assert state.halt_current_react is True
     assert "工具调用总数" in state.tool_loop_fuse_reason
+
+
+@pytest.mark.asyncio
+async def test_failed_sql_repeat_gate_blocks_second_identical_attempt(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return "should not run"
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-failed-sql-repeat", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    sql = "SELECT id FROM demo WHERE bad_col = 1"
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": sql},
+        output='[TOOL_ERROR] unknown column "bad_col"',
+    )
+    assert state.failed_sql_signatures[runner._normalize_sql_text(sql)] == 1
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({"sql": sql})
+    assert invoked is False
+    assert str(result).startswith("[FAILED_SQL_REPEAT_GATE]")
+    assert "禁止原样重复" in str(result)
+
+
+def test_schema_reference_sql_error_requires_schema_refresh(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-refresh", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+
+    runner._apply_sql_tool_result(
+        state,
+        tool_args={"sql": "SELECT a FROM t JOIN u ON t.x = u.id"},
+        output='[TOOL_ERROR] (1054, "Unknown column \'t.x\' in on clause")',
+    )
+
+    assert state.schema_refresh_required is True
+    assert state.schema_refreshed_after_sql_error is False
+    assert runner._current_repair_kind(state) == "schema_refresh_after_sql_error"
+    repair = runner._build_repair_message(state)
+    assert "get_dataset_schema" in repair
+    assert "禁止原样重复失败 SQL" in repair
+    assert runner._is_schema_reference_sql_error(state.last_sql_error_summary)
+
+
+@pytest.mark.asyncio
+async def test_schema_refresh_gate_blocks_sql_until_schema_refetched(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    invoked = False
+
+    async def fake_sql(**kwargs):
+        nonlocal invoked
+        invoked = True
+        return "should not run"
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-schema-refresh-gate", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        schema_refresh_required=True,
+        schema_refreshed_after_sql_error=False,
+        last_sql_error_summary="unknown column foo",
+    )
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="sql",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+    result = await wrapped.invoke({"sql": "SELECT 1"})
+    assert invoked is False
+    assert str(result).startswith("[SCHEMA_GATE]")
+    assert "get_dataset_schema" in str(result)
+
+
+def test_repair_resets_tool_loop_detector_without_clearing_failed_sql_memory(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-repair-loop-reset", trace_buffer=[])
+    state = _DataRunState(requires_fresh_data=True, schema_completed=True)
+    state.tool_loop_detector.record("execute_sql_query", {"sql": "SELECT 1"})
+    state.tool_loop_detector.record("execute_sql_query", {"sql": "SELECT 1"})
+    state.failed_sql_signatures["select 1"] = 1
+    state.sql_error = True
+    state.last_sql_error_summary = "unknown column x"
+
+    runner._reset_state_for_repair(state)
+
+    assert state.tool_loop_detector.total_calls == 0
+    assert state.tool_loop_fuse_triggered is False
+    assert state.failed_sql_signatures["select 1"] == 1
+    assert state.sql_error is False
+
+
+def test_sql_error_repair_message_for_schema_reference_includes_column_guidance(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-sql-error-repair", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        schema_refreshed_after_sql_error=True,
+        sql_error=True,
+        sql_error_message='unknown column "foo"',
+        last_sql_error_summary='unknown column "foo"',
+        last_failed_sql_normalized="select foo from bar",
+    )
+
+    repair = runner._build_repair_message(state)
+    assert "禁止原样重复" in repair
+    assert "字段/表引用修正指引" in repair
+
+
+def test_failed_sql_repeat_fuses_at_two_after_prior_failure(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-failed-sql-fuse-2", trace_buffer=[])
+    state = _DataRunState()
+    state.last_sql_error_summary = "unknown column"
+    state.failed_sql_signatures["select 1"] = 1
+    tool_args = {"sql": "SELECT 1"}
+
+    runner._record_tool_call_signature(state, "execute_sql_query", tool_args)
+    assert state.tool_loop_fuse_triggered is False
+
+    runner._record_tool_call_signature(state, "execute_sql_query", tool_args)
+    assert state.tool_loop_fuse_triggered is True
+    assert "SQL 执行失败" in state.tool_loop_fuse_reason
 
 
 def test_data_agent_runner_detects_negative_duration_anomaly(data_config):

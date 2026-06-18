@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from app.services.ai.time_anchor import build_data_query_time_anchor_block
+
 
 class SharedPrompts:
     """多个执行器复用的提示词片段。"""
@@ -49,6 +51,15 @@ class SharedPrompts:
 class DataQueryPrompts:
     """DataQueryExecutor 使用的系统级提示词。"""
 
+    @staticmethod
+    def _portal_time_recommendation_rules() -> str:
+        return (
+            f"{build_data_query_time_anchor_block()}\n\n"
+            "【相对时间推荐规则】\n"
+            "生成示例问题时，若使用「今天/昨天/本周/上周/本月/上月/最近7天/本季度」等相对时间表述，"
+            "必须与上方【当前时间锚点】中的具体日期或区间一致，并在问题中尽量写出明确日期范围。"
+        )
+
     # 复用上一轮结果时，用于替换 system_prompt 中的 {dataset_menu} 占位符
     REUSE_DATASET_MENU_PLACEHOLDER = "本轮复用上一轮结构化查询结果，不重新检索数据集。"
 
@@ -67,7 +78,19 @@ class DataQueryPrompts:
         "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。\n"
         "8. SQL 的 FROM/JOIN 只能使用 get_dataset_schema 返回的 table_name（物理表名）；"
         "schema 中的 table_desc、列 term、metrics_scope、数据集中文名等均为业务说明，严禁直接当作表名；"
-        "指标块（metrics）仅提供计算口径参考，不含表结构，禁止把指标块或 metrics_scope 当作可查询的表。"
+        "指标块（metrics）仅提供计算口径参考，不含表结构，禁止把指标块或 metrics_scope 当作可查询的表。\n"
+        "9. 分页语法：禁止 ORDER BY ... AND ROWNUM/LIMIT；Oracle TopN 用子查询包排序后外层 ROWNUM 或 FETCH FIRST；MySQL/ClickHouse 用 LIMIT。"
+    )
+
+    # 分页/TopN 常见语法反例（Oracle ROWNUM 与 ORDER BY 混用是高频错误）
+    SQL_PAGINATION_SYNTAX_GUIDE = (
+        "【分页/TopN 语法 — 禁止与推荐】\n"
+        "❌ ORDER BY create_date DESC AND ROWNUM <= 20"
+        "（语法错误：ORDER BY 后不能接 AND；ROWNUM 不是排序子句的一部分）\n"
+        "❌ WHERE ROWNUM <= 20 ... ORDER BY create_date DESC"
+        "（Oracle 会先截断再排序，TopN 结果错误）\n"
+        "✅ Oracle：内层 ORDER BY 排序，外层 WHERE ROWNUM <= N；或 FETCH FIRST N ROWS ONLY\n"
+        "✅ MySQL/ClickHouse：ORDER BY ... LIMIT N"
     )
 
     # 追问复用合成失败兜底
@@ -184,6 +207,8 @@ class DataQueryPrompts:
 - 文末必须包含 `### 💬 您可能还想了解`，其中至少包含一行列表项：`- [🙋 重新查看数据门户](quick:/dataset_menu)`。
 - “继续追问”属于每张业务场景卡片内部；全局“您可能还想了解”区块必须放在整段回答最末尾。
 - 不要编造目录中未出现的具体数值、表名或指标名。
+
+{DataQueryPrompts._portal_time_recommendation_rules()}
 
 【可用数据集目录】
 {dataset_menu}
@@ -324,12 +349,48 @@ class DataQueryPrompts:
         return (
             f"你是一个专业的 ChatBI 数据分析专家。\n"
             f"请针对以下业务分析场景，推荐 3 个最适合的高频业务分析提问：\n\n"
+            f"{DataQueryPrompts._portal_time_recommendation_rules()}\n\n"
             f"【业务场景】：'{group_title}'\n"
             f"【关联数据表结构】：\n{ctx}\n"
             f"【输出格式要求】：\n"
             f"生成的问题要具体、贴合上述字段设计。以 `- [🙋 推荐问题描述](quick:提问具体指令)` 的格式输出这 3 个问题，以便我一键点击触发提问。例如：\n"
             f"- [🙋 统计最近7天的每日请求次数趋势](quick:请展示最近7天各智能体的每日请求次数趋势)\n\n"
+            f"问题中优先使用中文表术语与业务表述，不要在 quick 中输出物理表名。\n"
             f"不要输出任何前言、总结或无关的 Markdown 标题，只输出这 3 行问题格式。"
+        )
+
+    @staticmethod
+    def build_group_followups_refresh_prompt(
+        *,
+        group_title: str,
+        tables: list[str],
+        table_to_columns: dict[str, list[dict[str, Any]]],
+        table_physical_names: dict[str, str],
+    ) -> str:
+        ctx = ""
+        for t in tables:
+            physical = table_physical_names.get(t)
+            cols = table_to_columns.get(t, [])
+            physical_str = f"（物理表名：{physical}）" if physical else ""
+            ctx += f"- 数据表 '{t}'{physical_str}:\n"
+            if cols:
+                for c in cols[:8]:
+                    desc_str = f" ({c['description']})" if c.get("description") else ""
+                    ctx += f"  * {c['name']} ({c['term']}){desc_str} - 类型: {c['type']}\n"
+            else:
+                ctx += "  * (暂无字段定义)\n"
+            ctx += "\n"
+
+        return (
+            f"你是一个专业的 ChatBI 数据分析专家。\n"
+            f"请针对业务场景「{group_title}」，生成 2 条**继续探索**型追问，帮助用户在该场景下延伸分析。\n\n"
+            f"{DataQueryPrompts._portal_time_recommendation_rules()}\n\n"
+            f"【关联数据表结构】：\n{ctx}\n"
+            f"【输出要求】：\n"
+            f"- 2 条追问应偏「还能问什么 / 字段口径 / 关联维度」，不要与常见统计明细重复。\n"
+            f"- 使用列表项格式：`- [🙋 简短标签](quick:完整可发送问题)`。\n"
+            f"- 问题中优先使用中文表术语，不要在 quick 中输出物理表名。\n"
+            f"- 只输出 2 行，不要前言或 Markdown 标题。"
         )
 
     @staticmethod
@@ -468,6 +529,7 @@ class DataQueryPrompts:
                     "title": scene_title,
                     "summary": scene["summary"],
                     "tags": scene["tags"],
+                    "metrics": metrics,
                     "questions": cls._question_templates_for_group(
                         scene_title=scene_title,
                         tables=tables,
@@ -1105,6 +1167,16 @@ class DataQueryPrompts:
         "要求：\n"
         "1) 直接通过大模型底层的原生 tools 参数发起 execute_sql_query 工具调用，切忌直接在文本中手写 XML 结构；\n"
         "2) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
+    )
+
+    # 字段/表/标识符引用错误后的 SQL 修复指引（unknown column/table 等）
+    SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE = (
+        "【字段/表引用修正指引】\n"
+        "1) 不要凭记忆臆造物理列名或 JOIN 键；必须以 get_dataset_schema 返回的字段定义为准。\n"
+        "2) 重点核对：SELECT 列、JOIN ON 条件、WHERE 筛选字段、GROUP BY 键是否与 Schema 一致。\n"
+        "3) 若报错涉及 unknown column/table/invalid identifier 等，优先重查 Schema，"
+        "再修改 SQL 中的列名、表别名或关联键；禁止原样重复失败 SQL。\n"
+        "4) 若 Schema 中仅有中文术语，请使用术语对应的物理字段名，不要直接写未定义的英文列名。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复
