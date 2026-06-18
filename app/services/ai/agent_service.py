@@ -55,14 +55,25 @@ class AgentService:
 
     async def _build_user_context_msg(self, user_info: Dict[str, Any]) -> Dict[str, str]:
         """
-        Builds a system message that introduces the user to the AI with etiquette guidelines.
+        Builds a read-only system message from verified API Key identity.
         """
-        # Strictly use English Account Name per user request
         raw_name = user_info.get("user_name") or user_info.get("username", "Unknown User")
+        user_id = str(user_info.get("user_id") or user_info.get("id") or "")
+        real_name = user_info.get("real_name") or raw_name
         dept = user_info.get("dept_name") or user_info.get("department")
+        org_path = user_info.get("org_path")
+        dept_code = user_info.get("dept_code")
         role = user_info.get("role_name") or user_info.get("role")
 
-        content = AgentServicePrompts.user_context_message(raw_name, dept, role)
+        content = AgentServicePrompts.user_context_message(
+            user_id=user_id or "unknown",
+            raw_name=raw_name,
+            real_name=real_name,
+            dept=dept,
+            dept_code=dept_code,
+            org_path=org_path,
+            role=role,
+        )
         return {"role": "system", "content": content}
 
     async def chat_completion_stream(
@@ -134,6 +145,10 @@ class AgentService:
                             max_context = 20
                         window = server_history[-max_context:] if server_history else []
                         messages = await self._maybe_compact_overflow(server_history, window)
+
+                from app.services.ai.executors.common import sanitize_client_messages_for_identity
+
+                messages = sanitize_client_messages_for_identity(messages)
 
                 from app.utils.skill_metadata import enrich_messages_with_skill_meta
 
@@ -648,8 +663,8 @@ class AgentService:
                     "cache_reorder_enabled": assembled_prompt.cache_reorder_enabled,
                 }
 
-            # --- User Identity Injection（查数轮次可省略以减 prompt 噪声）---
-            if should_inject_user_context(early_turn_type) and user_info:
+            # --- User Identity Injection（服务端只读，所有智能体/轮次默认注入）---
+            if user_info and should_inject_user_context(early_turn_type):
                 id_msg = await self._build_user_context_msg(user_info)
                 messages.insert(0, id_msg)
 
