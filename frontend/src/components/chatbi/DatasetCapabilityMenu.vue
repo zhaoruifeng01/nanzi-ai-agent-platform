@@ -142,7 +142,7 @@
               :class="{ 'animate-spin': loadingReports }"
               fill="none" stroke="currentColor" viewBox="0 0 24 24"
             >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H17" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
           <svg
@@ -208,12 +208,32 @@
     <!-- 我常问 -->
     <div
       v-if="showFrequentSection"
-      class="rounded-xl border border-amber-100/80 dark:border-amber-900/40 bg-amber-50/40 dark:bg-amber-950/20 p-3 space-y-2"
+      class="rounded-xl border border-amber-100/80 dark:border-amber-900/40 bg-amber-50/10 dark:bg-amber-950/5 p-3.5 space-y-2.5 animate-fade-in-up"
     >
-      <div class="text-[10px] font-bold text-amber-700/90 dark:text-amber-300/90 uppercase tracking-wider flex items-center gap-1">
-        <span>🔥</span> 我常问
+      <!-- Header：折叠 + 计数，对齐黄金报表样式 -->
+      <div
+        class="flex items-center justify-between w-full text-[11px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider transition-colors select-none cursor-pointer"
+        @click="showFrequentCollapse = !showFrequentCollapse"
+      >
+        <span class="flex items-center gap-1.5">
+          <span>🔥</span> 我常问
+          <span
+            class="rounded-full px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300"
+          >
+            {{ frequentQuestions.length }} 个
+          </span>
+        </span>
+        <svg
+          class="w-3.5 h-3.5 transform transition-transform duration-300 pointer-events-none"
+          :class="{ 'rotate-180': !showFrequentCollapse }"
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
+        </svg>
       </div>
-      <div class="flex flex-wrap gap-2">
+
+      <!-- 内容区 -->
+      <div v-if="!showFrequentCollapse" class="flex flex-wrap gap-2">
         <div
           v-for="item in frequentQuestions"
           :key="item.question.query"
@@ -314,6 +334,27 @@
               >
                 {{ group.title }}
               </h4>
+              <!-- 置顶按钮 -->
+              <button
+                type="button"
+                class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-lg transition-all duration-200 active:scale-90 mt-0.5"
+                :class="isPinned(group)
+                  ? 'text-amber-500 bg-amber-50 dark:bg-amber-900/30 opacity-100'
+                  : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover/card:opacity-100 hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20'"
+                :title="isPinned(group) ? '取消置顶' : '置顶此卡片'"
+                :aria-pressed="isPinned(group)"
+                @click.stop="togglePinGroup($event, group)"
+              >
+                <!-- 已置顶：实心图钉 -->
+                <svg v-if="isPinned(group)" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/>
+                </svg>
+                <!-- 未置顶：线框图钉 -->
+                <svg v-else class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="17" x2="12" y2="22"/>
+                  <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>
+                </svg>
+              </button>
             </div>
 
             <div
@@ -868,6 +909,57 @@ const tableRecommendState = ref<Record<string, {
   error?: string;
 }>>({});
 
+// ===== 门户置顶偏好 =====
+const pinnedGroupIds = ref<string[]>([]);
+const isSavingPrefs = ref(false);
+
+const isPinned = (group: DatasetCapabilityGroup): boolean => {
+  const id = group.id || group.title;
+  return pinnedGroupIds.value.includes(id);
+};
+
+const loadPortalPrefs = async () => {
+  try {
+    const res = await axios.get("/api/portal/portal-prefs");
+    if (res.data?.data?.pinned_group_ids) {
+      pinnedGroupIds.value = res.data.data.pinned_group_ids;
+    }
+  } catch (error) {
+    console.error("Failed to load portal prefs:", error);
+  }
+};
+
+const savePortalPrefs = async () => {
+  if (isSavingPrefs.value) return;
+  isSavingPrefs.value = true;
+  try {
+    await axios.put("/api/portal/portal-prefs", {
+      pinned_group_ids: pinnedGroupIds.value,
+    });
+  } catch (error) {
+    console.error("Failed to save portal prefs:", error);
+    showToast("置顶设置保存失败", "error");
+  } finally {
+    isSavingPrefs.value = false;
+  }
+};
+
+const togglePinGroup = async (event: MouseEvent, group: DatasetCapabilityGroup) => {
+  event.stopPropagation();
+  const id = group.id || group.title;
+  if (!id) return;
+  const idx = pinnedGroupIds.value.indexOf(id);
+  if (idx === -1) {
+    pinnedGroupIds.value = [id, ...pinnedGroupIds.value];
+    showToast(`已置顶「${group.title}」`, "success");
+  } else {
+    pinnedGroupIds.value = pinnedGroupIds.value.filter((v) => v !== id);
+    showToast(`已取消置顶「${group.title}」`, "success");
+  }
+  await savePortalPrefs();
+};
+// ===========================;
+
 const buildTableDictionaryKey = (
   group: DatasetCapabilityGroup,
   related: DatasetCapabilityRelatedData,
@@ -948,6 +1040,7 @@ const handleTableDictionaryClick = (
 const savedReports = ref<any[]>([]);
 const loadingReports = ref(false);
 const showSavedReportsCollapse = ref(true); // 默认收起
+const showFrequentCollapse = ref(false); // 我常问默认展开
 
 const fetchSavedReports = async () => {
   loadingReports.value = true;
@@ -1000,6 +1093,7 @@ watch(() => props.payload, () => {
 onMounted(() => {
   document.addEventListener("click", handleGlobalClick);
   fetchSavedReports();
+  loadPortalPrefs();
 });
 
 onUnmounted(() => {
@@ -1420,9 +1514,18 @@ const filteredGroups = computed(() => {
 });
 
 const displayGroups = computed(() => {
-  const sorted = [...filteredGroups.value].sort(
-    (a, b) => groupPopularityScore(b) - groupPopularityScore(a),
-  );
+  const pinned = pinnedGroupIds.value;
+  const sorted = [...filteredGroups.value].sort((a, b) => {
+    const aId = a.id || a.title;
+    const bId = b.id || b.title;
+    const aPinned = pinned.includes(aId) ? 1 : 0;
+    const bPinned = pinned.includes(bId) ? 1 : 0;
+    if (bPinned !== aPinned) return bPinned - aPinned; // 置顶优先
+    // 置顶组内按置顶先后顺序
+    if (aPinned && bPinned) return pinned.indexOf(aId) - pinned.indexOf(bId);
+    // 非置顶组按热度
+    return groupPopularityScore(b) - groupPopularityScore(a);
+  });
   return sorted.map((group, idx) => ({
     group,
     visuals: getGroupVisuals(group, idx),

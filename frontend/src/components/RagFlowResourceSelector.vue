@@ -201,10 +201,10 @@ const formatDate = (ts?: number | string) => {
             :class="engineStatus === 'checking' ? 'border-blue-500 border-t-transparent animate-spin' : engineStatus === 'connected' ? 'bg-emerald-500 border-emerald-500' : 'bg-amber-500 border-amber-500'"
           ></span>
           <span class="font-medium whitespace-nowrap">{{ engineStatusText }}</span>
-          <span class="text-gray-400">|</span>
-          <span class="flex items-center gap-1 min-w-0">
+          <span class="text-gray-400 hidden sm:inline">|</span>
+          <span class="hidden sm:inline-flex items-center gap-1 min-w-0">
             <span>RAGFlow 地址：</span>
-            <span :title="ragflowApiUrl" class="font-mono truncate max-w-[150px] sm:max-w-[250px] inline-block align-bottom">{{ ragflowApiUrl }}</span>
+            <span :title="ragflowApiUrl" class="font-mono truncate sm:max-w-[250px] inline-block align-bottom">{{ ragflowApiUrl }}</span>
           </span>
         </div>
         <span

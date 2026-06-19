@@ -3606,7 +3606,7 @@ onUnmounted(() => {
                                             </span>
                                             <span
                                               v-if="isActiveThoughtStep(log, msg.isThinking)"
-                                              class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20"
+                                              class="inline-flex items-center px-1 sm:px-1.5 py-px sm:py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20 scale-90 sm:scale-100 origin-center"
                                             >
                                               进行中
                                             </span>

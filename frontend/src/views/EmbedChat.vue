@@ -696,17 +696,18 @@
                                <!-- Main Text -->
                                <span class="truncate">{{ log.title }}</span>
                                <span
+                                 v-if="isActiveThoughtStep(log, msg.isThinking)"
+                                 class="inline-flex items-center px-1 sm:px-1.5 py-px sm:py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20 scale-90 sm:scale-100 origin-center"
+                               >
+                                 进行中
+                               </span>
+                               <span
                                  v-if="log.status === 'success' && (log.category === 'sql' || (log.title && log.title.toLowerCase().includes('sql')))"
                                  class="text-emerald-500 dark:text-emerald-400 font-bold ml-1 flex-shrink-0 select-none"
                                >
                                  ☑
                                </span>
-                               <span
-                                 v-if="isActiveThoughtStep(log, msg.isThinking)"
-                                 class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20"
-                               >
-                                 进行中
-                               </span>
+
                              </div>
                              <div class="flex items-center gap-2 flex-shrink-0">
                                <span

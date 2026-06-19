@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from app.core.dependencies import require_admin, require_api_key
-from app.api.portal.endpoints import auth, audit, management, keys, dashboard, system, chat, metadata, agents, prompts, slash_commands, health, models, tools, ragflow, roles, mcp, changelog, chat_feedback, chatbi_examples, skills, memory, saved_reports
+from app.api.portal.endpoints import auth, audit, management, keys, dashboard, system, chat, metadata, agents, prompts, slash_commands, health, models, tools, ragflow, roles, mcp, changelog, chat_feedback, chatbi_examples, skills, memory, saved_reports, portal_prefs
 
 portal_router = APIRouter()
 
@@ -70,3 +70,6 @@ portal_router.include_router(memory.router, prefix="/memory", tags=["记忆管�
 
 # 19. 黄金 SQL 暂存报表 (Saved Reports)
 portal_router.include_router(saved_reports.router, prefix="/saved-reports", tags=["暂存报表"], dependencies=[Depends(require_api_key)])
+
+# 20. 数据门户个人偏好 (Portal Preferences)
+portal_router.include_router(portal_prefs.router, prefix="/portal-prefs", tags=["门户偏好"], dependencies=[Depends(require_api_key)])
