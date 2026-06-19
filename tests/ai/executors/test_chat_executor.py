@@ -1374,6 +1374,8 @@ async def test_general_runner_without_tools_intercepts_hallucination(chat_config
         trace_buffer=[],
         user_info={"role": "admin", "user_id": "1"},
     )
+    runner.config.agent_id = "sys-agent-chat"
+    runner.config.agent_name = "main"
     runner.config.tools = [] # 确保无工具，走 Simple Mode
     
     data_agent = SimpleNamespace(
@@ -1390,7 +1392,7 @@ async def test_general_runner_without_tools_intercepts_hallucination(chat_config
              AsyncMock(return_value=[data_agent]),
          ):
         events = []
-        async for chunk in runner.execute([{"role": "user", "content": "查一下我机器的 IP 地址"}]):
+        async for chunk in runner.execute([{"role": "user", "content": "查一下资产列表和设备清单"}]):
             events.append(chunk)
             
     assert any(e.get("title") == "引导切换数据智能体" for e in events)
@@ -1422,6 +1424,8 @@ async def test_general_runner_without_data_tool_intercepts_fake_chatbi_handoff(c
         trace_buffer=[],
         user_info={"role": "admin", "user_id": "1"},
     )
+    runner.config.agent_id = "sys-agent-chat"
+    runner.config.agent_name = "main"
     runner.config.tools = []
     runner.turn_classification = TurnClassification(
         turn_type=TurnType.GENERAL,
@@ -1453,8 +1457,8 @@ async def test_general_runner_without_data_tool_intercepts_fake_chatbi_handoff(c
 
 
 @pytest.mark.asyncio
-async def test_general_runner_replaces_plain_chatbi_suggestions_with_switch_command(chat_config):
-    """通用助手识别到查数诉求时，不能只给普通 quick 提问按钮，必须给智能体切换指令。"""
+async def test_general_runner_plain_chatbi_suggestions_without_hallucination_not_intercepted(chat_config):
+    """仅口头建议切换 ChatBI、无编造数据特征时，反查数护栏不再误拦。"""
     from app.services.ai.intent_service import IntentType
     from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
     from app.services.ai.turn_classifier import TurnClassification, TurnType
@@ -1478,6 +1482,8 @@ async def test_general_runner_replaces_plain_chatbi_suggestions_with_switch_comm
         trace_buffer=[],
         user_info={"role": "admin", "user_id": "1"},
     )
+    runner.config.agent_id = "sys-agent-chat"
+    runner.config.agent_name = "main"
     runner.config.tools = []
     runner.turn_classification = TurnClassification(
         turn_type=TurnType.GENERAL,
@@ -1485,26 +1491,14 @@ async def test_general_runner_replaces_plain_chatbi_suggestions_with_switch_comm
         intent=IntentType.DATA_QUERY,
     )
 
-    data_agent = SimpleNamespace(
-        id="agent-data-custom",
-        display_name="业务数据专家",
-        name="biz-data-agent",
-        capabilities=["data_query"],
-    )
-
     with patch("app.services.ai.config.AgentConfigProvider.get_synthesis_llm", AsyncMock(return_value=FakeLLM())), \
-         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]), \
-         patch(
-             "app.services.ai.runners.assistant_agent_runner.AgentManagerService.list_allowed_agents",
-             AsyncMock(return_value=[data_agent]),
-         ):
+         patch("app.services.ai.tools.registry.ToolRegistry.get_system_implicit_tools", return_value=[]):
         events = []
         async for chunk in runner.execute([{"role": "user", "content": "帮我查一下用户列表数据呢"}]):
             events.append(chunk)
 
-    assert any(e.get("title") == "引导切换数据智能体" for e in events)
-    assert any("quick:/switch_agent_expert?agent_id=agent-data-custom" in str(e.get("content", "")) for e in events)
-    assert not any("quick:查询所有活跃用户" in str(e.get("content", "")) for e in events if e.get("content"))
+    assert not any(e.get("title") == "引导切换数据智能体" for e in events)
+    assert any(plain_suggestion_text in str(e.get("content", "")) for e in events if e.get("content"))
 
 
 @pytest.mark.asyncio
