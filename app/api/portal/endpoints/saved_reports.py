@@ -199,6 +199,7 @@ async def delete_saved_report(
 )
 async def execute_saved_report(
     report_id: str,
+    conversation_id: Optional[str] = None, # 接收 conversation_id 以便写入缓存复用
     user_info: Dict[str, Any] = Depends(require_api_key),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -270,6 +271,23 @@ async def execute_saved_report(
         parsed = json.loads(raw_res)
         if isinstance(parsed, dict) and ("[Validation Failed]" in raw_res or "[Permission Denied]" in raw_res or "[Security Error]" in raw_res):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=parsed)
+            
+        # 若传入了会话ID，写入缓存供大模型下一轮做可视化复用
+        if conversation_id:
+            try:
+                from app.services.ai.memory_service import memory_service
+                cache_payload = {
+                    "sql": report.sql_content,
+                    "data_source": report.data_source,
+                    "dataset_name": None,
+                    "rows": parsed,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "trace_id": None,
+                }
+                await memory_service.set_last_data_result(str(user_id), conversation_id, cache_payload)
+            except Exception as cache_err:
+                logger.warning("Failed to save report data to memory_service cache: %s", cache_err)
+
         return StandardResponse(data=parsed)
     except json.JSONDecodeError:
         pass

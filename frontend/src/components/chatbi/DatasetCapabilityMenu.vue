@@ -117,9 +117,8 @@
       v-if="!initialLoading"
       class="rounded-xl border border-blue-150/70 dark:border-blue-900/40 bg-blue-50/10 dark:bg-blue-950/5 p-3.5 space-y-2.5 animate-fade-in-up"
     >
-      <button
-        type="button"
-        class="flex items-center justify-between w-full text-left text-[11px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wider hover:text-blue-800 dark:hover:text-blue-300 transition-colors select-none"
+      <div
+        class="flex items-center justify-between w-full text-[11px] font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wider transition-colors select-none cursor-pointer"
         @click="showSavedReportsCollapse = !showSavedReportsCollapse; if (!showSavedReportsCollapse) fetchSavedReports();"
       >
         <span class="flex items-center gap-1.5">
@@ -154,7 +153,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M19 9l-7 7-7-7" />
           </svg>
         </div>
-      </button>
+      </div>
 
       <div 
         v-if="!showSavedReportsCollapse"
@@ -965,9 +964,6 @@ const fetchSavedReports = async () => {
 };
 
 const handleDeleteReport = async (report: any) => {
-  if (!confirm(`确认要删除暂存报表「${report.title}」吗？`)) {
-    return;
-  }
   try {
     await axios.delete(`/api/portal/saved-reports/${report.id}`);
     showToast("删除暂存报表成功", "success");

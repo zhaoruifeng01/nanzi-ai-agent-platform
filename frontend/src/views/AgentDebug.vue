@@ -740,6 +740,8 @@ const renderSavedReportDataToMarkdown = (data: any): string => {
   
   if (data.rows && Array.isArray(data.rows)) {
     rows = data.rows;
+  } else if (data.items && Array.isArray(data.items)) {
+    rows = data.items;
   } else if (Array.isArray(data)) {
     rows = data;
   } else if (typeof data === 'object') {
@@ -819,6 +821,8 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
   const agentMsg = ref<any>({
     id: Date.now() + 1,
     role: "agent",
+    agentName: "chat-bi",
+    agentDisplayName: "数据智能助手",
     content: "",
     isThinking: true,
     thinkingText: "正在进行免模型极速直连安全执行，请稍候...",
@@ -833,17 +837,21 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
   await nextTick();
   scrollToBottom(true);
 
+  let execResult: any = null;
+  let resultMarkdown = "";
+
   try {
-    const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`);
+    const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, null, {
+      params: { conversation_id: conversationId.value }
+    });
     
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
     
-    let resultMarkdown = "";
     let detailsText = "";
     
     if (res.data && res.data.data !== undefined) {
-      const execResult = res.data.data;
+      execResult = res.data.data;
       resultMarkdown = renderSavedReportDataToMarkdown(execResult);
       detailsText = `${report.sql_content}\n--- 结果 ---\n${typeof execResult === 'object' ? JSON.stringify(execResult, null, 2) : String(execResult)}`;
     } else {
@@ -851,12 +859,14 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
       detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
     }
     
-    agentMsg.value.content = `### 📊 黄金报表「${report.title}」执行结果：\n\n${resultMarkdown}`;
+    // 直连成功后输出表格，并在结尾拼接“深度可视化分析一下”快捷按钮，方便用户手动点击触发大模型分析流程
+    agentMsg.value.content = `### 📊 黄金报表「${report.title}」执行结果：\n\n${resultMarkdown}\n\n---\n- [🙋 深度可视化分析一下](quick:深度可视化分析一下)`;
     
     agentMsg.value.logs = [
       {
         id: `log_${Date.now()}`,
         name: "execute_sql_query",
+        title: "工具完成: execute_sql_query",
         category: "sql",
         status: "success",
         details: detailsText,
@@ -880,12 +890,15 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
       {
         id: `log_${Date.now()}`,
         name: "execute_sql_query",
+        title: "工具完成: execute_sql_query",
         category: "sql",
         status: "error",
         details: `${report.sql_content}\n--- 错误 ---\n${errorMsg}`,
       }
     ];
   } finally {
+    agentMsg.value.isThinking = false;
+    agentMsg.value.thinkingText = "";
     isProcessing.value = false;
     await nextTick();
     scrollToBottom(true);
