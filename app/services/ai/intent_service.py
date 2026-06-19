@@ -180,6 +180,22 @@ def looks_like_strong_business_data_request(user_question: str) -> bool:
     return any(sig in q for sig in _DATA_QUERY_STRONG_SIGNALS)
 
 
+def should_inherit_data_agent_session(user_question: str) -> bool:
+    """上一轮为 data_query 智能体时，本轮是否仍应沿用其会话粘性。
+
+    正向判定：仅当本轮是「对已有查数结果的加工追问」，或仍含明确内部业务库查数信号。
+    仅有「看看/查一下/情况」等弱探询、但无内部业务对象时返回 False，避免机械沿用 ChatBI。
+    """
+    q = (user_question or "").strip()
+    if not q:
+        return False
+    if looks_like_meta_action(q) or looks_like_context_action(q) or looks_like_skill_execution(q):
+        return False
+    if looks_like_data_followup(q) or looks_like_pure_result_followup(q):
+        return True
+    return looks_like_strong_business_data_request(q)
+
+
 _GREETING_CORE_PHRASES = frozenset({
     "你好", "您好", "你好呀", "你好啊", "您好呀", "你好吗",
     "hi", "hello", "hey",
