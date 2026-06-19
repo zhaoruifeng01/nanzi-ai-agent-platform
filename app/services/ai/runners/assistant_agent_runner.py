@@ -12,8 +12,10 @@ from app.services.ai.runtime.agentscope.compat import (
     SystemMessage,
 )
 from app.schemas.agent import ChatConfig, AgentExecutionStep
+from app.core.orm import AsyncSessionLocal
 from app.services.ai.tools.registry import ToolRegistry
 from app.services.ai.config import AgentConfigProvider
+from app.services.ai.agent_manager import AgentManagerService
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.intent_service import IntentType, looks_like_business_data_request
 from app.services.ai.turn_classifier import TurnType
@@ -58,6 +60,9 @@ from app.services.ai.runtime.agentscope.tools import build_toolkit
 from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
 
 logger = logging.getLogger(__name__)
+
+
+DATA_QUERY_SWITCH_CAPABILITY = "data_query"
 
 
 class AssistantAgentRunner(BaseExecutor):
@@ -150,12 +155,77 @@ class AssistantAgentRunner(BaseExecutor):
         # 1. 包含表格结构，但在通用对话中未调用查数工具，判定为编造的数据库列表
         if "|" in text_clean and "---" in text_clean:
             return True
-        # 2. 包含典型的数据库列表特征或大量虚构字段/IP等
-        ip_pattern = r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"
+        # 2. 假装已自动转派 ChatBI 或正在检索数据集，也属于无数据工具时的过程幻觉
         import re
+        fake_data_process_patterns = (
+            r"自动.{0,12}(衔接|接入|调用|转交).{0,12}(ChatBI|数据智能助手|数据分析专家)",
+            r"我将.{0,12}(衔接|接入|调用|转交).{0,12}(ChatBI|数据智能助手|数据分析专家)",
+            r"(正在|开始|为您).{0,12}(检索|查询|查找).{0,12}(数据集|业务数据|指标)",
+            r"数据查询未成功",
+        )
+        if any(re.search(pattern, text_clean, re.IGNORECASE) for pattern in fake_data_process_patterns):
+            return True
+        # 3. 包含典型的数据库列表特征或大量虚构字段/IP等
+        ip_pattern = r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"
         if re.search(ip_pattern, text_clean):
             return True
         return False
+
+    @staticmethod
+    def _agent_field(agent: Any, field: str, default: Any = None) -> Any:
+        if isinstance(agent, dict):
+            return agent.get(field, default)
+        return getattr(agent, field, default)
+
+    @classmethod
+    def _agent_has_capability(cls, agent: Any, capability: str) -> bool:
+        capabilities = cls._agent_field(agent, "capabilities", []) or []
+        return capability in capabilities
+
+    async def _resolve_switch_agent_for_capability(self, capability: str) -> Optional[Dict[str, str]]:
+        """Find a user-allowed agent that can satisfy the missing capability."""
+        if not self.user_info:
+            return None
+        try:
+            async with AsyncSessionLocal() as session:
+                agents = await AgentManagerService.list_allowed_agents(session, user=self.user_info)
+        except Exception as exc:
+            logger.warning(
+                "[AssistantAgentRunner] Failed to resolve switch target for capability=%s: %s",
+                capability,
+                exc,
+            )
+            return None
+
+        for agent in agents or []:
+            if not self._agent_has_capability(agent, capability):
+                continue
+            agent_id = self._agent_field(agent, "id")
+            if not agent_id:
+                continue
+            display_name = (
+                self._agent_field(agent, "display_name")
+                or self._agent_field(agent, "name")
+                or str(agent_id)
+            )
+            return {"id": str(agent_id), "display_name": str(display_name)}
+        return None
+
+    async def _build_data_guard_refusal_content(self) -> str:
+        switch_agent = await self._resolve_switch_agent_for_capability(DATA_QUERY_SWITCH_CAPABILITY)
+        base = (
+            "⚠️ 抱歉，检测到您正在查询系统内部数据或资产列表。通用助手未连接数据库，"
+            "为保证数据真实性已拦截该回答。"
+        )
+        if not switch_agent:
+            return f"{base}请切换到具备数据查询能力的智能体后继续查询。"
+
+        display_name = switch_agent["display_name"]
+        agent_id = switch_agent["id"]
+        return (
+            f"{base}请切换到 **{display_name}** 后继续查询。\n\n"
+            f"- [⚡ 切换到 {display_name}](quick:/switch_agent_expert?agent_id={agent_id})"
+        )
 
     async def execute(
         self,
@@ -182,22 +252,23 @@ class AssistantAgentRunner(BaseExecutor):
 
         should_intercept = False
         if run_data_guard and not has_called_data_tool:
-            should_intercept = self._is_hallucinated_data_reply(full_text)
+            should_intercept = True
 
         if should_intercept:
             logger.warning(
                 f"[AssistantAgentRunner] Hallucination detected! "
                 f"run_data_guard={run_data_guard}, has_tool={has_called_data_tool}. "
+                f"looks_hallucinated={self._is_hallucinated_data_reply(full_text)}. "
                 f"Generated: {full_text[:200]}..."
             )
             yield {
                 "type": "log",
                 "id": f"data_general_guard_{uuid.uuid4().hex[:8]}",
-                "title": "拦截虚构业务数据",
-                "details": "检测到您正在查询系统内部数据，通用助手未连接数据库，已拦截可能存在的编造回复。",
+                "title": "引导切换数据智能体",
+                "details": "检测到您正在查询系统内部数据，当前助手未连接数据库，已生成可执行的智能体切换建议。",
                 "status": "warning",
             }
-            refusal_content = "⚠️ 抱歉，检测到您正在查询系统内部数据或资产列表。通用助手未连接数据库，为保证数据真实性已拦截该回答。请使用 **数据智能助手 (ChatBI)** 进行查询。"
+            refusal_content = await self._build_data_guard_refusal_content()
             yield {"content": refusal_content}
         else:
             for chunk in chunks_buffer:
