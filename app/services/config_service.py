@@ -161,6 +161,7 @@ class ConfigService:
             if is_local:
                 await session.close()
         
+        redis = await get_redis()
         if redis:
             await redis.set(f"{CACHE_PREFIX}{key}", value, ex=CACHE_TTL)
             logger.info(f"Config '{key}' updated in DB and Redis. Audit log created.")
@@ -259,6 +260,7 @@ class ConfigService:
              # Fallback to set_config outside of the session block
              return await ConfigService.set_config(key, value, changed_by=changed_by, change_reason=change_reason)
         
+        redis = await get_redis()
         if redis:
             await redis.set(f"{CACHE_PREFIX}{key}", value, ex=CACHE_TTL)
             logger.info(f"Config '{key}' value updated. Audit log created.")
