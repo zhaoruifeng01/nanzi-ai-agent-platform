@@ -1,6 +1,6 @@
 <template>
   <div
-    class="flex h-full bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans overflow-hidden"
+    class="flex h-full bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans overflow-hidden relative"
   >
     <!-- Sidebar (Desktop/Mobile) -->
     <ChatHistorySidebar
@@ -409,7 +409,7 @@
                           :file="file"
                           clickable
                           class="mr-2 border-white/10"
-                          @click="previewImage"
+                          @click="(url) => handlePreviewImageUrl(url, file.filename)"
                         />
                         <!-- Skill Icon -->
                         <div v-else-if="file.type === 'skill'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2 font-mono">
@@ -429,7 +429,10 @@
                         </div>
                         <div class="flex-1 min-w-0 flex flex-col">
                             <span v-if="file.type === 'skill' || file.type === 'knowledge_base' || file.type === 'memory'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
-                            <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            <template v-else>
+                              <span v-if="canPreviewFile(file)" @click="handlePreviewFile(file)" class="text-xs font-bold text-white hover:underline cursor-pointer truncate">{{ file.filename }}</span>
+                              <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            </template>
                             <span class="text-[9px] text-white/70 font-mono">
                                 {{ 
                                     file.type === 'skill' ? '生态技能' : 
@@ -909,6 +912,7 @@
                                                                   :content="msg.content"
                                                                   @quick-question="handleQuickQuestion"
                                                                   @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
+                                                                  @open-canvas="handleOpenCanvas"
                                                                 />
                                                                 <DatasetCapabilityMenu
                                                                   v-else
@@ -2351,6 +2355,13 @@
       @refresh="refreshPortalNavigation"
       @execute-saved-report="handleExecuteSavedReport"
     />
+
+    <!-- ChatCanvas Panel -->
+    <ChatCanvas
+      :visible="canvasVisible"
+      :data="canvasData"
+      @close="canvasVisible = false"
+    />
     </div>
 </template>
 <script setup lang="ts">
@@ -2376,6 +2387,7 @@ import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
 import ExpertCapsule from "@/components/embed/ExpertCapsule.vue";
 import ChatSettings from "@/components/embed/ChatSettings.vue";
+import ChatCanvas from "@/components/embed/ChatCanvas.vue";
 import ChatInput from "@/components/embed/ChatInput.vue";
 import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
 import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
@@ -3452,6 +3464,38 @@ const saveAndResend = async () => {
   }
   await sendMessage();
 };
+
+// Canvas Panel States
+const canvasVisible = ref(false);
+const canvasData = ref<{ type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string } | null>(null);
+
+const handleOpenCanvas = (payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string }) => {
+  canvasData.value = payload;
+  canvasVisible.value = true;
+};
+
+const handlePreviewImageUrl = (url: string, filename: string) => {
+  handleOpenCanvas({
+    type: 'image',
+    title: filename || '图片预览',
+    content: url
+  });
+};
+
+const canPreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  return ext === 'pdf' || ext === 'csv';
+};
+
+const handlePreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  handleOpenCanvas({
+    type: ext === 'pdf' ? 'pdf' : 'csv',
+    title: file.filename,
+    content: file.url
+  });
+};
+
 const confirmDeleteTrace = async () => {
   if (traceToDelete.value) {
     await handleDeleteHistory(traceToDelete.value);
@@ -3626,6 +3670,7 @@ watch(historyKeyword, () => {
 // Settings
 const showSettings = ref(false);
 const showHelpModal = ref(false);
+
 
 // 黄金报表暂存状态
 const showSaveReportModal = ref(false);

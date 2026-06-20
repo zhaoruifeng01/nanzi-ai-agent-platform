@@ -53,14 +53,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'quick-question', question: string): void;
   (e: 'show-citation', payload: { id: string; anchor: HTMLElement }): void;
+  (e: 'open-canvas', payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image'; title: string; content: string }): void;
 }>();
 
 interface ContentSegment {
-  type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'sql_plan';
+  type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'sql_plan' | 'canvas_html' | 'canvas_code';
   content: string;
   chartData?: any;
   title?: string;
   sqlPlan?: SqlPlanData;
+  langName?: string;
 }
 
   /** 将 [ID:n] 转为可点击徽章（Markdown 渲染前保护，避免被解析器吞掉） */
@@ -123,12 +125,37 @@ const handleContentClick = (event: MouseEvent) => {
   const linkEl = target.closest('a');
   if (linkEl) {
     const href = linkEl.getAttribute('href');
-    if (href && href.startsWith('quick:')) {
-      const rawQuestion = href.replace(/^quick:/, '');
-      let question = '';
-      try { question = decodeURIComponent(decodeURIComponent(rawQuestion)); } 
-      catch { question = decodeURIComponent(rawQuestion); }
-      if (question) { emit('quick-question', question.trim()); event.preventDefault(); event.stopPropagation(); return; }
+    if (href) {
+      if (href.startsWith('quick:')) {
+        const rawQuestion = href.replace(/^quick:/, '');
+        let question = '';
+        try { question = decodeURIComponent(decodeURIComponent(rawQuestion)); } 
+        catch { question = decodeURIComponent(rawQuestion); }
+        if (question) { emit('quick-question', question.trim()); event.preventDefault(); event.stopPropagation(); return; }
+      } else {
+        const lowerHref = href.toLowerCase().split('?')[0].split('#')[0];
+        const isPdf = lowerHref.endsWith('.pdf');
+        const isCsv = lowerHref.endsWith('.csv');
+        if (isPdf || isCsv) {
+          const type = isPdf ? 'pdf' : 'csv';
+          const filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : 'CSV 数据表');
+          emit('open-canvas', { type, title: filename, content: href });
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+    }
+  }
+
+  const imgEl = target.closest('img');
+  if (imgEl) {
+    const src = imgEl.getAttribute('src');
+    if (src) {
+      emit('open-canvas', { type: 'image', title: '图片预览', content: src });
+      event.preventDefault();
+      event.stopPropagation();
+      return;
     }
   }
 
@@ -156,7 +183,7 @@ const segments = computed<ContentSegment[]>(() => {
   // 2. 预处理 Quick 按钮 (核心改进)
   cleanContent = parseQuickButtons(cleanContent);
 
-  const regex = /(?:<sql_plan>([\s\S]*?)<\/sql_plan>)|(?:<thought>([\s\S]*?)<\/thought>)|(?:<chart>([\s\S]*?)<\/chart>)|(?:```\s*(?:chart|echarts|json)\s*([\s\S]*?)```)|(?:```\s*mermaid\s*([\s\S]*?)```)|(?::::analysis\s*([^\n]*)\n([\s\S]*?)\n:::)/gi;
+  const regex = /(?:<sql_plan>([\s\S]*?)<\/sql_plan>)|(?:<thought>([\s\S]*?)<\/thought>)|(?:<chart>([\s\S]*?)<\/chart>)|(?:```\s*(?:chart|echarts|json)\s*([\s\S]*?)```)|(?:```\s*mermaid\s*([\s\S]*?)```)|(?::::analysis\s*([^\n]*)\n([\s\S]*?)\n:::)|(?:```\s*([a-zA-Z0-9_\-]+)?\s*\n([\s\S]*?)```)/gi;
   const result: ContentSegment[] = [];
   let lastIndex = 0;
   let match;
@@ -201,6 +228,36 @@ const segments = computed<ContentSegment[]>(() => {
         result.push({ type: 'text', content: renderMarkdown(`> ⚠️ **Chart Render Failed**\n\n\`\`\`json\n${jsonStr}\n\`\`\``) });
       }
     }
+    else if (match[9] !== undefined) {
+      const lang = (match[8] || '').trim().toLowerCase();
+      const codeContent = match[9];
+      const isHtmlApp = lang === 'html' && (/<html/i.test(codeContent) || /<body/i.test(codeContent) || /<!doctype html/i.test(codeContent));
+      
+      if (isHtmlApp) {
+        result.push({
+          type: 'canvas_html',
+          content: codeContent,
+          title: 'HTML 交互应用'
+        });
+      } else {
+        const lines = codeContent.split('\n').length;
+        if (lang && lines > 15) {
+          result.push({
+            type: 'canvas_code',
+            content: codeContent,
+            title: `${lang.toUpperCase()} 源代码`,
+            langName: lang
+          });
+        } else {
+          const langPrefix = match[8] || '';
+          const rawMarkdownCode = `\`\`\`${langPrefix}\n${codeContent}\`\`\``;
+          result.push({
+            type: 'text',
+            content: renderMarkdownSegment(rawMarkdownCode)
+          });
+        }
+      }
+    }
     lastIndex = regex.lastIndex;
   }
 
@@ -223,8 +280,56 @@ const segments = computed<ContentSegment[]>(() => {
         <div class="markdown-body thought-content pl-4 py-1 border-l-2 border-slate-200 text-slate-500/80 italic text-sm" v-html="segment.content"></div>
       </div>
       <div v-if="segment.type === 'text'" class="markdown-body" v-html="segment.content"></div>
-      <div v-else-if="segment.type === 'mermaid'" class="w-full my-4"><MermaidRenderer :content="segment.content" /></div>
+      <div v-else-if="segment.type === 'mermaid'" class="w-full my-4 relative group/mermaid">
+        <button 
+          @click="emit('open-canvas', { type: 'mermaid', title: '架构流程图预览', content: segment.content })"
+          class="absolute top-2 right-2 p-1.5 bg-white/90 dark:bg-gray-800/90 text-gray-500 hover:text-primary rounded-lg shadow border border-gray-200 dark:border-gray-700 opacity-0 group-hover/mermaid:opacity-100 transition-all z-10 text-xs flex items-center space-x-1"
+          title="在画布中放大缩小平移"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7"/></svg>
+          <span>放大查看</span>
+        </button>
+        <MermaidRenderer :content="segment.content" />
+      </div>
       <div v-else-if="segment.type === 'chart'" class="w-full h-64 bg-white rounded-lg border border-gray-100 p-2 shadow-sm"><v-chart class="chart" :option="segment.chartData" autoresize /></div>
+
+      <!-- Canvas HTML 激活卡片 -->
+      <div v-else-if="segment.type === 'canvas_html'" class="my-3 p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 flex items-center justify-between shadow-sm">
+        <div class="flex items-center space-x-3">
+          <div class="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg text-blue-600 dark:text-blue-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          </div>
+          <div>
+            <h4 class="text-xs font-bold text-gray-800 dark:text-gray-200">{{ segment.title }}</h4>
+            <p class="text-[10px] text-gray-400 dark:text-gray-500">已为您生成可交互原型页面</p>
+          </div>
+        </div>
+        <button 
+          @click="emit('open-canvas', { type: 'html', title: segment.title || '', content: segment.content })"
+          class="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg shadow-sm transition-all"
+        >
+          运行应用
+        </button>
+      </div>
+
+      <!-- Canvas Code 激活卡片 -->
+      <div v-else-if="segment.type === 'canvas_code'" class="my-3 p-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/30 flex items-center justify-between shadow-sm">
+        <div class="flex items-center space-x-3">
+          <div class="p-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+          </div>
+          <div>
+            <h4 class="text-xs font-bold text-gray-800 dark:text-gray-200">{{ segment.title }}</h4>
+            <p class="text-[10px] text-gray-400 dark:text-gray-500">包含大段 {{ segment.langName }} 源代码</p>
+          </div>
+        </div>
+        <button 
+          @click="emit('open-canvas', { type: 'code', title: segment.title || '', content: segment.content })"
+          class="px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 active:scale-95 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm transition-all"
+        >
+          查看代码
+        </button>
+      </div>
 
       <div v-else-if="segment.type === 'sql_plan' && segment.sqlPlan" class="w-full">
         <SqlPlanCard :plan="segment.sqlPlan" />
