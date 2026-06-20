@@ -391,6 +391,7 @@ class AgentService:
                 api_key=api_key,
                 conversation_id=conversation_id,
                 knowledge_dataset_ids=request_knowledge_dataset_ids,
+                trace_buffer=trace_buffer,
             )
 
             # --- Active Skill Injection ---
@@ -613,6 +614,7 @@ class AgentService:
                     conversation_id=conversation_id,
                     knowledge_dataset_ids=request_knowledge_dataset_ids,
                     require_explicit_dataset=True,
+                    trace_buffer=trace_buffer,
                 )
 
             # --- Long-Term Memory (LTM) Injection ---

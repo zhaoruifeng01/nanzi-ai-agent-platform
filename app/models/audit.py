@@ -22,6 +22,9 @@ class AgentExecutionTrace(Base):
     prompt_tokens = Column(Integer, default=0, comment='输入 Token 消耗数')
     completion_tokens = Column(Integer, default=0, comment='输出 Token 消耗数')
     total_tokens = Column(Integer, default=0, comment='总 Token 消耗数')
+    span_id = Column(String(64), nullable=True, comment='当前 Span ID')
+    parent_span_id = Column(String(64), nullable=True, comment='父 Span ID')
+    meta_info = Column(JSON, comment='额外元数据')
 
     created_at = Column(DateTime, default=datetime.now)
 

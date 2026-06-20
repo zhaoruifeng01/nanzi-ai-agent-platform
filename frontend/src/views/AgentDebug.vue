@@ -59,27 +59,27 @@ const handleInput = (e: Event) => {
   const target = e.target as HTMLTextAreaElement;
   const val = target.value;
   const cursor = target.selectionStart;
-  
+
   // Check for @
   const lastAt = val.lastIndexOf('@', cursor - 1);
   if (lastAt !== -1) {
     const query = val.slice(lastAt + 1, cursor);
     if (!query.includes(' ')) {
         // Fetch allowed agents if not already fetched
-        // Optimization: We can fetch this once or lazy load. 
+        // Optimization: We can fetch this once or lazy load.
         // For Debug view, we might want to use the same list as the dropdown (all visible),
         // OR strict allowed list. Let's use /allowed for consistency with EmbedChat.
         if (agents.value.length === 0) { // Fallback if main list empty
-             fetchAgents(); 
+             fetchAgents();
         }
-        
+
         // Use 'agents' list for now, but ideally should be a separate 'allowedAgents' list
         // filtering locally is fine for Debug view as it shows all by default.
         mentionKeyword.value = query;
         showMentionList.value = true;
-        
+
         const rect = target.getBoundingClientRect();
-        mentionPosition.top = rect.top - 220; 
+        mentionPosition.top = rect.top - 220;
         mentionPosition.left = rect.left + 20;
         return;
     }
@@ -90,24 +90,24 @@ const handleInput = (e: Event) => {
 const handleMentionSelect = (agent: any) => {
   const target = inputTextarea.value;
   if (!target) return;
-  
+
   const val = userInput.value;
   const cursor = target.selectionStart;
   const lastAt = val.lastIndexOf('@', cursor - 1);
-  
+
   if (lastAt !== -1) {
       const before = val.slice(0, lastAt);
       const after = val.slice(cursor);
       // Insert Agent Display Name
       const insertText = `@${agent.display_name} `;
       userInput.value = before + insertText + after;
-      
+
       // Move cursor
       nextTick(() => {
           target.selectionStart = target.selectionEnd = before.length + insertText.length;
           target.focus();
       });
-      
+
       // Auto-switch Agent Context
       debugMode.value = 'specific';
       agentParams.agent_id = agent.id;
@@ -143,7 +143,7 @@ const aggregatedHistoryList = computed(() => {
   if (!historyList.value.length) return [];
   const groups: Record<string, any[]> = {};
   const orderedKeys: string[] = [];
-  
+
   // 1. Group by conversation_id
   historyList.value.forEach(item => {
     const cid = item.conversation_id || `trace_${item.trace_id}`;
@@ -159,10 +159,10 @@ const aggregatedHistoryList = computed(() => {
     const items = groups[key];
     if (!items || items.length === 0) return null;
     // Use the latest item (or first, depending on sort) as representative
-    // Assuming historyList is sorted by created_at desc? 
+    // Assuming historyList is sorted by created_at desc?
     // Usually fetching history returns latest first.
-    const representative = items[0]; 
-    
+    const representative = items[0];
+
     // If we have multiple items locally, that's the count (frontend aggregation).
     // If we have 1 item, it might be a pre-grouped item from backend with a count.
     const count = items.length > 1 ? items.length : (representative.turn_count || items.length);
@@ -217,24 +217,24 @@ const groupedHistoryList = computed(() => {
     .sort((a, b) => a.order - b.order);
 });
 
-const formatDate = (dateStr: string) => { 
-  if (!dateStr) return "-"; 
+const formatDate = (dateStr: string) => {
+  if (!dateStr) return "-";
   try {
-    return new Date(dateStr).toLocaleString(); 
+    return new Date(dateStr).toLocaleString();
   } catch (e) { return dateStr; }
 };
 
 const openSessionPreview = async (traceIdOrItem: string | any) => {
   const traceId = typeof traceIdOrItem === 'string' ? traceIdOrItem : traceIdOrItem?.trace_id;
   const convId = typeof traceIdOrItem === 'string' ? null : traceIdOrItem?.conversation_id;
-  
+
   if (!traceId && !convId) return;
-  
+
   showSessionPreview.value = true;
   loadingTrace.value = true;
   conversationTurns.value = [];
   previewConversationId.value = "";
-  
+
   try {
      if (convId) {
          previewConversationId.value = convId;
@@ -248,9 +248,9 @@ const openSessionPreview = async (traceIdOrItem: string | any) => {
                 await fetchSessionTurns(cid);
             } else if (res.data.data.history) {
                 // Single trace fallback
-                conversationTurns.value = [{ 
-                    ...res.data.data.history, 
-                    steps: res.data.data.steps || [], 
+                conversationTurns.value = [{
+                    ...res.data.data.history,
+                    steps: res.data.data.steps || [],
                     isExpanded: true,
                     trace_id: traceId
                 }];
@@ -271,8 +271,8 @@ const fetchSessionTurns = async (cid: string) => {
         });
         if (historyRes.data?.data?.items) {
             // Sort by created_at (oldest first for chat view)
-            const sorted = historyRes.data.data.items.reverse(); 
-            
+            const sorted = historyRes.data.data.items.reverse();
+
             // 全部默认折叠
             conversationTurns.value = sorted.map((item: any) => ({
                 ...item,
@@ -302,7 +302,7 @@ const toggleTurnSteps = async (turn: any) => {
 const continueChatFromTrace = () => {
     // 1. Prefer explicit conversation ID
     let targetId = previewConversationId.value;
-    
+
     // 2. Fallback to extracting from turns
     if (!targetId && conversationTurns.value.length > 0) {
         const targetTurn = conversationTurns.value[conversationTurns.value.length - 1];
@@ -444,10 +444,10 @@ const messages = ref<Message[]>([]);
 const displayMessages = computed(() => {
   const raw = messages.value;
   if (!raw || raw.length === 0) return [];
-  
+
   const filtered: Message[] = [];
   if (raw[0]) filtered.push(raw[0]);
-  
+
   for (let i = 1; i < raw.length; i++) {
     const prev = raw[i - 1];
     const curr = raw[i];
@@ -494,7 +494,7 @@ const loadSessionHistory = async (id: string) => {
       // Deduplicate: Filter out consecutive messages with same role and content
       const rawMessages = res.data.data.messages;
       const validMessages: any[] = [];
-      
+
       if (rawMessages.length > 0) {
         validMessages.push(rawMessages[0]);
         for (let i = 1; i < rawMessages.length; i++) {
@@ -510,11 +510,11 @@ const loadSessionHistory = async (id: string) => {
 
       const historyMsg: Message[] = validMessages.map(
         (m: any, idx: number) => ({
-          id: Date.now() + idx, 
+          id: Date.now() + idx,
           trace_id: m.trace_id,
           role: m.role === "assistant" ? "agent" : m.role,
           content: m.content as string,
-          logs: [], 
+          logs: [],
           isThinking: false,
           isHistory: true, // Mark as history
           feedback: m.feedback,
@@ -542,12 +542,12 @@ const loadSessionHistory = async (id: string) => {
           id: Date.now() + historyMsg.length,
           role: "system",
           content: "以上是历史会话，可以重置会话清除",
-          timestamp: timeStr 
+          timestamp: timeStr
         });
 
         messages.value = historyMsg;
         nextTick(scrollToBottom);
-        return; 
+        return;
       }
     }
     // If empty or fail, load greeting
@@ -731,14 +731,14 @@ const submitSaveReport = async () => {
 
 const renderSavedReportDataToMarkdown = (data: any): string => {
   if (!data) return "执行结果为空";
-  
+
   let columns: string[] = [];
   let rows: any[] = [];
-  
+
   if (data.columns && Array.isArray(data.columns)) {
     columns = data.columns.map((c: any) => typeof c === 'object' ? (c.name || '') : String(c));
   }
-  
+
   if (data.rows && Array.isArray(data.rows)) {
     rows = data.rows;
   } else if (data.items && Array.isArray(data.items)) {
@@ -788,11 +788,11 @@ const renderSavedReportDataToMarkdown = (data: any): string => {
     } else {
       rowCells = [String(r)];
     }
-    
+
     const cleanCells = rowCells.map(cell => {
       return cell.replace(/\|/g, "\\|").replace(/\n/g, " ");
     });
-    
+
     md += `| ${cleanCells.join(" | ")} |\n`;
   }
 
@@ -811,7 +811,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
   }
 
   isProcessing.value = true;
-  
+
   messages.value.push({
     id: Date.now(),
     role: "user",
@@ -845,12 +845,12 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, null, {
       params: { conversation_id: conversationId.value }
     });
-    
+
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
-    
+
     let detailsText = "";
-    
+
     if (res.data && res.data.data !== undefined) {
       execResult = res.data.data;
       resultMarkdown = renderSavedReportDataToMarkdown(execResult);
@@ -859,10 +859,10 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
       resultMarkdown = "执行结果为空。";
       detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
     }
-    
+
     // 直连成功后输出表格，并在结尾拼接“深度可视化分析一下”快捷按钮，方便用户手动点击触发大模型分析流程
     agentMsg.value.content = `### 📊 黄金报表「${report.title}」执行结果：\n\n${resultMarkdown}\n\n---\n- [🙋 深度可视化分析一下](quick:深度可视化分析一下)`;
-    
+
     agentMsg.value.logs = [
       {
         id: `log_${Date.now()}`,
@@ -877,7 +877,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     console.error("Failed to execute saved report:", error);
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
-    
+
     const detail = error.response?.data?.detail;
     let errorMsg = "";
     if (detail) {
@@ -885,7 +885,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     } else {
       errorMsg = error.message || "执行失败，请检查网络或配置";
     }
-    
+
     agentMsg.value.content = `### ❌ 报表执行失败\n\n在直连执行 SQL 报表时遇到错误：\n\n\`\`\`\n${errorMsg}\n\`\`\``;
     agentMsg.value.logs = [
       {
@@ -935,9 +935,9 @@ const exportData = async (traceId: string, format = 'xlsx') => {
       params: { format },
       responseType: 'blob'
     });
-    
-    const blob = new Blob([response.data], { 
-      type: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv' 
+
+    const blob = new Blob([response.data], {
+      type: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv'
     });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1259,11 +1259,11 @@ const exportChat = () => {
     alert("暂无对话记录");
     return;
   }
-  
+
   const thread = messages.value.map(m => {
     return `### ${m.role === 'user' ? 'User' : m.agentName || 'Agent'}\n\n${m.content}\n`;
   }).join("\n---\n\n");
-  
+
   const blob = new Blob([thread], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1340,18 +1340,18 @@ const saveAndResend = async () => {
   if (editingMsgId.value === null) return;
   const msgIndex = messages.value.findIndex(m => m.id === editingMsgId.value);
   if (msgIndex === -1) return;
-  
+
   // Update content
   const newContent = editContent.value.trim();
   if (!newContent) return; // Don't allow empty
-  
+
   // Truncate history: keep up to this message, and remove everything after
   messages.value = messages.value.slice(0, msgIndex);
-  
+
   // Reset ID and state
   editingMsgId.value = null;
   editContent.value = "";
-  
+
   // Set as new input and send
   userInput.value = newContent;
   await sendMessage();
@@ -1359,24 +1359,24 @@ const saveAndResend = async () => {
 
 const regenerate = async (agentMsg: Message) => {
   if (isProcessing.value) return;
-  
+
   // Find index of this agent message
   const idx = messages.value.findIndex(m => m.id === agentMsg.id);
   if (idx === -1) return;
-  
+
   // Verify previous message is user
   const userMsg = messages.value[idx - 1];
   if (!userMsg || userMsg.role !== 'user') return;
-  
+
   // Remove this agent message
   messages.value.splice(idx, 1);
-  
+
   // Set user input to previous query and resend
   // Need to avoid duplicate user message being added in sendMessage, so we manually trigger backend call or adjust sendMessage.
   // Actually, easiest way: remove agent message, set userInput = userMsg.content, REMOVE userMsg as well (sendMessage adds it back)
   // OR: Modify sendMessage to accept content and skip adding user msg if needed?
   // Let's go with: Remove BOTH agent and user message, then sendMessage(userMsg.content)
-  
+
   messages.value.splice(idx - 1, 1); // Remove user message
   userInput.value = userMsg.content;
   await sendMessage();
@@ -1484,8 +1484,8 @@ onUnmounted(() => {
 const filteredSkillsForSelector = computed(() => {
   const query = skillSelectorSearchQuery.value.trim().toLowerCase();
   if (!query) return allSkillsList.value;
-  return allSkillsList.value.filter(s => 
-    s.name?.toLowerCase().includes(query) || 
+  return allSkillsList.value.filter(s =>
+    s.name?.toLowerCase().includes(query) ||
     s.id?.toLowerCase().includes(query) ||
     s.description?.toLowerCase().includes(query) ||
     s.path?.toLowerCase().includes(query)
@@ -1744,7 +1744,7 @@ const filteredMemoryList = computed(() => {
 const openMemorySelector = async () => {
   showMemorySelector.value = true;
   memorySearchQuery.value = "";
-  
+
   // 从 chatInputRef 的 uploadedFiles 中恢复已选中的 memory ID
   const existingMemoryIds = new Set<string>();
   if (chatInputRef.value?.uploadedFiles) {
@@ -1756,7 +1756,7 @@ const openMemorySelector = async () => {
     }
   }
   selectedMemoryIds.value = existingMemoryIds;
-  
+
   memoryList.value = [];
   isLoadingMemoryList.value = true;
   try {
@@ -1786,7 +1786,7 @@ const confirmMemorySelection = () => {
   if (chatInputRef.value) {
     const files = chatInputRef.value.uploadedFiles || [];
     chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
-    
+
     if (selected.length > 0) {
       chatInputRef.value.uploadedFiles.push({
         type: "memory",
@@ -2112,7 +2112,7 @@ const handleFeedback = async (msg: Message, type: "up" | "down") => {
   } else {
     msg.feedback = type;
   }
-  
+
   // 立即给予 UI 反馈提示 (乐观更新)
   if (msg.feedback) {
     showToast(msg.feedback === 'up' ? "感谢您的点赞！" : "已记录您的反馈，我们将持续改进。", "success");
@@ -2150,7 +2150,7 @@ const stopGeneration = () => {
     abortController = null;
   }
   isProcessing.value = false;
-  
+
   // Stop thinking timer if active
   if (thoughtTimer) {
     clearInterval(thoughtTimer);
@@ -2164,11 +2164,107 @@ const stopGeneration = () => {
   }
 };
 
+const tryLocalChartOptionPatch = (userText: string): boolean => {
+  const q = userText.toLowerCase().trim();
+  let newType: 'line' | 'bar' | 'pie' | null = null;
+  if (/改(成|为)折线图/.test(q) || /换成折线/.test(q)) {
+    newType = 'line';
+  } else if (/改(成|为)柱状图/.test(q) || /换成柱状/.test(q)) {
+    newType = 'bar';
+  } else if (/改(成|为)饼图/.test(q) || /换成饼图/.test(q)) {
+    newType = 'pie';
+  }
+
+  const isRedPatch = /标红/.test(q);
+
+  if (!newType && !isRedPatch) {
+    return false;
+  }
+
+  // Find the last agent message with a chart block
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i];
+    if (!msg) continue;
+    if (msg.role === 'agent' && msg.content) {
+      const chartRegex = /(<chart>([\s\S]*?)<\/chart>)|(```(?:chart|echarts|json)\s*([\s\S]*?)```)/gi;
+      const match = chartRegex.exec(msg.content);
+      if (match) {
+        const fullMatch = match[0];
+        const jsonContent = (match[2] || match[4] || "").trim();
+        if (!jsonContent) continue;
+        try {
+          const option = JSON.parse(jsonContent);
+          if (option.series) {
+            if (newType) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({ ...s, type: newType }));
+              } else if (typeof option.series === 'object') {
+                option.series.type = newType;
+              }
+              if (newType === 'pie') {
+                delete option.xAxis;
+                delete option.yAxis;
+              }
+            }
+            if (isRedPatch) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({
+                  ...s,
+                  itemStyle: { ...s.itemStyle, color: '#ef4444' }
+                }));
+              } else if (typeof option.series === 'object') {
+                option.series.itemStyle = { ...option.series.itemStyle, color: '#ef4444' };
+              }
+            }
+
+            const updatedJson = JSON.stringify(option, null, 2);
+            let updatedMatch = "";
+            if (match[1]) {
+              updatedMatch = `<chart>\n${updatedJson}\n</chart>`;
+            } else {
+              updatedMatch = `\`\`\`chart\n${updatedJson}\n\`\`\``;
+            }
+
+            msg.content = msg.content.replace(fullMatch, updatedMatch);
+            messages.value.push({
+              id: Date.now(),
+              role: "user",
+              content: userText,
+              timestamp: new Date().toISOString(),
+            });
+            messages.value.push({
+              id: Date.now() + 1,
+              role: "agent",
+              content: `✨ 已为您本地秒级重绘图表，将图表形式调整为：${newType === 'line' ? '折线图' : newType === 'bar' ? '柱状图' : newType === 'pie' ? '饼图' : '标红调整'}。`,
+              timestamp: new Date().toISOString(),
+              logs: [],
+              citations: [],
+            });
+            return true;
+          }
+        } catch (err) {
+          console.error("Failed to parse or patch ECharts option locally:", err);
+        }
+      }
+    }
+  }
+  return false;
+};
+
 const sendMessage = async () => {
   const files = chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [];
   const content = userInput.value.trim();
   if (!content && files.length === 0) return;
   if (isProcessing.value) return;
+
+  if (files.length === 0 && tryLocalChartOptionPatch(content)) {
+    userInput.value = "";
+    if (chatInputRef.value) {
+      chatInputRef.value.uploadedFiles = [];
+    }
+    nextTick(() => scrollToBottom(true));
+    return;
+  }
 
   if (await handleSystemCommand(content)) {
     userInput.value = "";
@@ -2185,7 +2281,7 @@ const sendMessage = async () => {
     content: content,
     files: files,
   });
-  
+
   // Force scroll for user message
   nextTick(() => scrollToBottom(true));
 
@@ -2227,7 +2323,7 @@ const sendMessage = async () => {
       const duration = (Date.now() - agentMsg.value.thoughtStartTime) / 1000;
       agentMsg.value.thoughtDuration = duration.toFixed(1);
     }
-    
+
     // Rotate message every 3 seconds (30 * 100ms)
     if (ticks % 30 === 0) {
       const msgIndex = (ticks / 30) % THINKING_MESSAGES.length;
@@ -2365,7 +2461,7 @@ const sendMessage = async () => {
               const thoughtText = data.thought || "No reasoning provided.";
               const agentName = data.selected_agent || "Unknown";
               const conf = data.confidence !== undefined ? `(置信度: ${data.confidence})` : "";
-              
+
               addRealLog(agentMsg.value, {
                 title: "智能路由决策",
                 details: `**思考过程 (Chain of Thought):**\n${thoughtText}\n\n**最终选择:** ${agentName} ${conf}`,
@@ -2390,7 +2486,7 @@ const sendMessage = async () => {
             else if (data.type === "citation") {
               if (data.data && Array.isArray(data.data)) {
                 if (!agentMsg.value.citations) agentMsg.value.citations = [];
-                
+
                 data.data.forEach((newRef: any) => {
                     const exists = agentMsg.value.citations?.some(c => c.chunk_id === newRef.chunk_id || (c.content === newRef.content && c.doc_name === newRef.doc_name));
                     if (!exists) {
@@ -2521,7 +2617,7 @@ const sendMessage = async () => {
       clearInterval(thoughtTimer);
       thoughtTimer = null;
     }
-    
+
     // Mark pending logs as error
     if (agentMsg.value.logs) {
       agentMsg.value.logs.forEach(log => {
@@ -2834,8 +2930,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div 
-    ref="debugPageContainer" 
+  <div
+    ref="debugPageContainer"
     class="h-full flex bg-gray-100 overflow-hidden"
     :class="{ 'fixed inset-0 z-[99] w-screen h-screen': isFullScreen }"
   >
@@ -2860,7 +2956,7 @@ onUnmounted(() => {
                     <span v-if="conversationTurns.length" class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">{{ conversationTurns.length }} Rounds</span>
                 </div>
                 <div class="flex items-center gap-2 flex-shrink-0">
-                    <button 
+                    <button
                         v-if="conversationTurns.length > 0"
                         @click.stop="continueChatFromTrace"
                         class="flex items-center space-x-1.5 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-lg transition-all text-xs font-black border border-primary/20"
@@ -2872,7 +2968,7 @@ onUnmounted(() => {
                     <button @click.stop="showSessionPreview = false" class="p-2 text-gray-500 hover:text-gray-800"><svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg></button>
                 </div>
             </div>
-            
+
             <!-- Content -->
             <div class="flex-1 overflow-y-auto p-4 sm:p-6 bg-gray-50 dark:bg-gray-900 custom-scrollbar">
                 <div v-if="loadingTrace" class="flex flex-col items-center justify-center h-full text-gray-400 py-20">
@@ -2880,7 +2976,7 @@ onUnmounted(() => {
                     <p class="text-xs font-bold uppercase tracking-widest">加载会话记录...</p>
                 </div>
                 <div v-else-if="conversationTurns.length > 0" class="space-y-6 pb-10">
-                    <div v-for="(turn, tIdx) in conversationTurns" :key="turn.id" 
+                    <div v-for="(turn, tIdx) in conversationTurns" :key="turn.id"
                          class="bg-white dark:bg-gray-800 p-4 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm relative overflow-hidden"
                          :class="{'ring-2 ring-primary/20': turn.trace_id === activeTraceId}"
                     >
@@ -2901,7 +2997,7 @@ onUnmounted(() => {
                                 <div class="text-gray-600 dark:text-gray-300 text-xs sm:text-sm"><MessageRenderer :content="turn.summary" /></div>
                             </div>
                         </div>
-                        
+
                         <!-- Actions & Steps -->
                         <div class="mt-4 pt-3 border-t border-gray-50">
                             <div class="flex items-center justify-between">
@@ -2912,9 +3008,9 @@ onUnmounted(() => {
                                         <svg class="w-4 h-4 text-gray-400 transform transition-transform duration-300" :class="{ 'rotate-180': turn.isExpanded }" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" /></svg>
                                     </div>
                                 </button>
-                                
+
                                 <!-- Link to Full Trace Viewer -->
-                                <button 
+                                <button
                                     @click.stop="openFullLogs(turn.trace_id)"
                                     class="px-3 py-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded border border-indigo-100 transition-colors uppercase tracking-widest flex items-center gap-1"
                                 >
@@ -2922,7 +3018,7 @@ onUnmounted(() => {
                                     完整链路
                                 </button>
                             </div>
-                            
+
                             <div v-show="turn.isExpanded" class="mt-3 pl-4 border-l-2 border-gray-100 space-y-3 animate-fade-in">
                                 <div v-if="turn.steps && turn.steps.length > 0" class="space-y-3">
                                     <div v-for="(step, sIdx) in turn.steps" :key="sIdx" class="bg-white p-3 rounded-xl border border-gray-100 shadow-sm text-xs">
@@ -2950,7 +3046,7 @@ onUnmounted(() => {
       :history-list="groupedHistoryList"
       :active-trace-id="activeTraceId"
       @fetch-history="fetchHistory"
-      @load-chat="openSessionPreview" 
+      @load-chat="openSessionPreview"
       @open-full-logs="openSessionPreview"
     />
 
@@ -3021,8 +3117,8 @@ onUnmounted(() => {
           <button
             @click="toggleFullScreen"
             class="flex items-center transition-all"
-            :class="isFullScreen 
-              ? 'bg-primary/10 text-primary border border-primary/20 p-1.5 rounded-lg hover:bg-primary/20' 
+            :class="isFullScreen
+              ? 'bg-primary/10 text-primary border border-primary/20 p-1.5 rounded-lg hover:bg-primary/20'
               : 'text-gray-500 hover:text-blue-600 p-1.5 rounded-lg hover:bg-gray-50'"
             :title="isFullScreen ? '退出全屏' : '全屏调试'"
           >
@@ -3242,20 +3338,20 @@ onUnmounted(() => {
                 />
               </svg>
             </div>
-            
+
             <!-- Editing Mode -->
             <div v-if="editingMsgId === msg.id" class="w-full flex flex-col items-end space-y-2">
-               <textarea 
+               <textarea
                   v-model="editContent"
                   class="w-full p-3 border border-primary/30 rounded-lg shadow-sm focus:ring-2 focus:ring-primary focus:border-primary text-sm min-h-[80px]"
                 ></textarea>
                 <div class="flex space-x-2">
-                  <button 
-                    @click="cancelEdit" 
+                  <button
+                    @click="cancelEdit"
                     class="px-3 py-1 text-xs text-gray-500 bg-gray-100 hover:bg-gray-200 rounded"
                   >取消</button>
-                  <button 
-                    @click="saveAndResend" 
+                  <button
+                    @click="saveAndResend"
                     class="px-3 py-1 text-xs text-white bg-primary hover:bg-primary-dark rounded"
                   >发送</button>
                 </div>
@@ -3276,7 +3372,7 @@ onUnmounted(() => {
                   </template>
                   <MessageRenderer v-else :content="msg.content" />
                 </template>
-                
+
                 <!-- Attached Files In Bubble -->
                 <div v-if="msg.files && msg.files.length > 0" class="mt-2 space-y-2 border-t border-white/20 pt-2">
                     <div v-for="(file, fIdx) in msg.files" :key="fIdx" class="flex items-center bg-white/10 rounded-lg p-1.5 max-w-xs select-none">
@@ -3308,11 +3404,11 @@ onUnmounted(() => {
                             <span v-if="file.type === 'skill' || file.type === 'knowledge_base' || file.type === 'memory'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
                             <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
                             <span class="text-[9px] text-white/70 font-mono">
-                                {{ 
-                                    file.type === 'skill' ? '生态技能' : 
-                                    file.type === 'knowledge_base' ? '知识库' : 
-                                    file.type === 'memory' ? '记忆记录' : 
-                                    formatBytes(file.size) 
+                                {{
+                                    file.type === 'skill' ? '生态技能' :
+                                    file.type === 'knowledge_base' ? '知识库' :
+                                    file.type === 'memory' ? '记忆记录' :
+                                    formatBytes(file.size)
                                 }}
                             </span>
                         </div>
@@ -3334,7 +3430,7 @@ onUnmounted(() => {
                   </svg>
                   <span>编辑</span>
                 </button>
-                
+
                 <button
                   @click="copyContent(msg.content, $event)"
                   class="text-xs text-gray-400 hover:text-gray-600 flex items-center space-x-1 transition-colors"
@@ -3396,8 +3492,8 @@ onUnmounted(() => {
                 <!-- Agent Badge (Smart Routing State) -->
                 <div
                   class="flex items-center space-x-1 px-2 py-1 text-xs font-medium rounded-md select-none transition-all duration-300 border"
-                  :class="msg.agentName 
-                    ? 'text-blue-600 bg-blue-50 border-blue-100' 
+                  :class="msg.agentName
+                    ? 'text-blue-600 bg-blue-50 border-blue-100'
                     : 'text-gray-400 bg-gray-50 border-gray-100 italic animate-pulse'"
                 >
                   <svg
@@ -3494,7 +3590,7 @@ onUnmounted(() => {
               </div>
 
               <!-- Agent Message Bubble (Unified Card Style) -->
-              <div 
+              <div
                 v-if="(!msg.isGreeting && (msg.logs && msg.logs.length > 0)) || msg.content || (msg.citations && msg.citations.length > 0)"
                 class="bg-gradient-to-br from-slate-50/80 to-white dark:from-slate-900/20 dark:to-gray-800 rounded-2xl rounded-tl-none border border-gray-200 dark:border-gray-700 border-l-4 border-l-primary/60 dark:border-l-primary/40 shadow-sm p-4 overflow-hidden"
               >
@@ -3572,7 +3668,7 @@ onUnmounted(() => {
                         </div>
 
                         <!-- Log Card (Lightweight Row) -->
-                        <div 
+                        <div
                             class="rounded-lg p-2 text-xs transition-all duration-300 cursor-pointer"
                             :class="{
                                'bg-blue-50/50 border border-blue-100/80 shadow-sm': isActiveThoughtStep(log, msg.isThinking),
@@ -3617,7 +3713,7 @@ onUnmounted(() => {
                                             </span>
                                             <span v-else-if="log.status === 'pending'" class="text-[10px] text-gray-400 animate-pulse">...</span>
                                         </span>
-                                        
+
                                         <!-- Category Badge -->
                                         <span v-if="log.category && log.category !== 'default'" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
                                           :class="{
@@ -3633,7 +3729,7 @@ onUnmounted(() => {
                                         </span>
 
                                         <!-- Model Info Badge (Debug Only) -->
-                                        <span 
+                                        <span
                                           v-if="log.model"
                                           class="px-1.5 py-0.5 rounded bg-gray-100 border border-gray-200 text-[9px] text-gray-500 font-mono flex items-center"
                                           :title="`执行模型: ${log.model} / Temp: ${log.temperature ?? 'N/A'}`"
@@ -3645,10 +3741,10 @@ onUnmounted(() => {
                                         </span>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Chevron & Copy Actions -->
                                 <div class="flex items-center gap-2 flex-shrink-0">
-                                  <button 
+                                  <button
                                     v-if="log.details && log.isExpanded"
                                     @click.stop="copyContent(log.details, $event)"
                                     class="p-1 text-gray-400 hover:text-primary transition-all rounded hover:bg-white border border-transparent hover:border-gray-100 shadow-none hover:shadow-sm"
@@ -3952,8 +4048,8 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <!-- Typewriter Cursor -->
-                <span 
-                  v-if="msg.role === 'agent' && isProcessing && messages.indexOf(msg) === messages.length - 1 && !msg.isThinking" 
+                <span
+                  v-if="msg.role === 'agent' && isProcessing && messages.indexOf(msg) === messages.length - 1 && !msg.isThinking"
                   class="typing-cursor"
                 ></span>
               </div>
@@ -3980,8 +4076,8 @@ onUnmounted(() => {
               </div>
 
 
-              
-              
+
+
               <style scoped>
               .typing-cursor::after {
                 content: '▋';
@@ -4238,7 +4334,7 @@ onUnmounted(() => {
                   </svg>
                 </div>
                 <div v-else class="w-4"></div> <!-- Spacer -->
-                
+
                 <span class="text-xs font-bold text-gray-500 w-6 text-center">{{
                   cmd.sort_order
                 }}</span>
@@ -4251,7 +4347,7 @@ onUnmounted(() => {
                   <span v-if="['system', 'admin'].includes(cmd.created_by)" class="px-1.5 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700 border border-purple-200 font-medium">System</span>
                   <span v-else-if="currentUser && cmd.created_by === currentUser.user_name" class="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-700 border border-blue-200 font-medium">Mine</span>
                 </div>
-                
+
                 <span class="text-xs text-gray-500 truncate max-w-xs">{{
                   cmd.command
                 }}</span>
@@ -4740,7 +4836,7 @@ onUnmounted(() => {
     class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
     @click.self="showSkillSelector = false"
   >
-    <div 
+    <div
       class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[75vh] flex flex-col overflow-hidden"
     >
       <!-- Header -->
@@ -4762,10 +4858,10 @@ onUnmounted(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </span>
-          <input 
+          <input
             v-model="skillSelectorSearchQuery"
-            type="text" 
-            placeholder="搜索技能名称、标识或目录..." 
+            type="text"
+            placeholder="搜索技能名称、标识或目录..."
             class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
           />
         </div>
@@ -4787,8 +4883,8 @@ onUnmounted(() => {
         </div>
 
         <!-- Skill Cards -->
-        <div 
-          v-for="skill in filteredSkillsForSelector" 
+        <div
+          v-for="skill in filteredSkillsForSelector"
           :key="skill.id"
           @click="handleSelectSkill(skill)"
           class="group p-3 bg-white dark:bg-gray-800 border border-gray-150 dark:border-gray-700/60 rounded-xl cursor-pointer hover:border-primary/40 hover:shadow-md active:scale-[0.98] transition-all flex items-start space-x-3"
@@ -4828,7 +4924,7 @@ onUnmounted(() => {
     class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
     @click.self="showMemorySelector = false"
   >
-    <div 
+    <div
       class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden animate-fade-in-up"
     >
       <!-- Header -->
@@ -4851,10 +4947,10 @@ onUnmounted(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </span>
-          <input 
+          <input
             v-model="memorySearchQuery"
-            type="text" 
-            placeholder="搜索记忆内容..." 
+            type="text"
+            placeholder="搜索记忆内容..."
             class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
           />
         </div>
@@ -4876,8 +4972,8 @@ onUnmounted(() => {
         </div>
 
         <!-- Memory Cards -->
-        <div 
-          v-for="memory in filteredMemoryList" 
+        <div
+          v-for="memory in filteredMemoryList"
           :key="memory.conversation_id"
           @click="toggleMemorySelection(memory.conversation_id)"
           class="group p-3 border rounded-xl cursor-pointer transition-all flex items-start space-x-3"
@@ -4886,7 +4982,7 @@ onUnmounted(() => {
             : 'bg-white dark:bg-gray-800 border-gray-150 dark:border-gray-700/60 hover:border-primary/30 hover:shadow-sm'"
         >
           <!-- Checkbox -->
-          <div 
+          <div
             class="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
             :class="selectedMemoryIds.has(memory.conversation_id)
               ? 'bg-primary border-primary'
@@ -4905,8 +5001,8 @@ onUnmounted(() => {
                   {{ new Date(memory.last_active * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
                 </span>
               </span>
-              <button 
-                @click.stop="openMemoryDetail(memory)" 
+              <button
+                @click.stop="openMemoryDetail(memory)"
                 class="text-[10px] text-primary hover:text-primary-dark hover:underline flex items-center space-x-0.5"
                 :style="{ color: 'var(--primary-color, #1677ff)' }"
               >
@@ -4924,7 +5020,7 @@ onUnmounted(() => {
         <span class="text-[10px] text-gray-400 font-bold">选择后内容将作为引用附加到消息中</span>
         <div class="flex space-x-2">
           <button @click="showMemorySelector = false" class="px-3 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium">取消</button>
-          <button 
+          <button
             @click="confirmMemorySelection"
             :disabled="selectedMemoryIds.size === 0"
             class="px-4 py-1.5 text-xs text-white rounded-lg transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed"
@@ -4941,7 +5037,7 @@ onUnmounted(() => {
     class="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in"
     @click.self="showMemoryDetailModal = false"
   >
-    <div 
+    <div
       class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-fade-in-up"
     >
       <!-- Header -->
@@ -4970,16 +5066,16 @@ onUnmounted(() => {
 
       <!-- Footer -->
       <div class="px-5 py-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center flex-shrink-0">
-        <button 
+        <button
           @click="copyMemoryDetailText"
           class="px-3 py-1.5 text-xs text-gray-600 bg-white dark:bg-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors font-medium flex items-center space-x-1"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
           <span>复制内容</span>
         </button>
-        
+
         <div class="flex space-x-2">
-          <button 
+          <button
             @click="toggleMemorySelectionFromDetail(selectedMemoryDetail.conversation_id)"
             class="px-3.5 py-1.5 text-xs text-white rounded-lg transition-all font-medium"
             :class="selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-dark'"
@@ -5148,8 +5244,8 @@ onUnmounted(() => {
 
               <!-- Thoughts and Output Text Expansion Panel -->
               <div v-if="stat.reasoning_content || stat.response_text" class="pt-1 border-t border-gray-100/50 dark:border-gray-700/20">
-                <button 
-                  @click="toggleStatExpand(stat.call_index)" 
+                <button
+                  @click="toggleStatExpand(stat.call_index)"
                   class="text-[10px] text-primary dark:text-blue-400 hover:underline flex items-center space-x-1 font-bold focus:outline-none cursor-pointer"
                 >
                   <span>{{ expandedStats[stat.call_index] ? '收起思考与输出' : '展开思考与输出' }}</span>
@@ -5197,7 +5293,7 @@ onUnmounted(() => {
     class="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
     @click.self="showSaveReportModal = false"
   >
-    <div 
+    <div
       class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700 animate-fade-in-up"
     >
       <!-- Header -->
@@ -5219,9 +5315,9 @@ onUnmounted(() => {
       <div class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar max-h-[60vh]">
         <div>
           <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">报表名称 <span class="text-red-500">*</span></label>
-          <input 
-            v-model="saveReportForm.title" 
-            type="text" 
+          <input
+            v-model="saveReportForm.title"
+            type="text"
             placeholder="请输入自定义报表名称"
             class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-800 dark:text-gray-200"
           />
@@ -5243,14 +5339,14 @@ onUnmounted(() => {
 
       <!-- Footer -->
       <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end space-x-3 bg-gray-50/50 dark:bg-gray-800/50">
-        <button 
-          @click="showSaveReportModal = false" 
+        <button
+          @click="showSaveReportModal = false"
           class="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
         >
           取消
         </button>
-        <button 
-          @click="submitSaveReport" 
+        <button
+          @click="submitSaveReport"
           :disabled="isSavingReport"
           class="px-4 py-2 text-xs font-bold text-white bg-primary rounded-xl hover:bg-primary-hover active:bg-primary-active disabled:opacity-50 transition-colors flex items-center space-x-1.5"
         >

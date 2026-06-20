@@ -14,7 +14,9 @@ from app.services.ai.turn_classifier import (
 from app.services.ai.intent_service import IntentResponse, IntentType
 from app.services.ai.data_query_turn_classifier import (
     DataQueryTurnType,
+    _classify_with_llm,
     data_query_turn_type_label,
+    looks_like_chart_format_correction,
     resolve_data_query_turn_classification,
 )
 
@@ -343,6 +345,40 @@ def test_turn_type_label():
     assert turn_type_label(TurnType.DATA_QUERY_REQUEST) == "数据查询请求"
     assert data_query_turn_type_label(DataQueryTurnType.REUSE_PREVIOUS_RESULT) == "复用上一轮结果"
     assert data_query_turn_type_label(DataQueryTurnType.CLARIFICATION_OR_NON_DATA) == "需澄清或非查数请求"
+
+
+@pytest.mark.asyncio
+async def test_data_query_classifier_prompt_includes_federated_turn_type():
+    captured = {}
+
+    class FakeChatClient:
+        async def generate_text(self, messages):
+            captured["messages"] = messages
+            return '{"turn_type":"federated_data_query","reasoning":"用户显式要求跨数据集关联查询"}'
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=object()),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=FakeChatClient(),
+    ):
+        classification = await _classify_with_llm(
+            "跨数据集关联 CRM 和员工数据",
+            [{"role": "user", "content": "跨数据集关联 CRM 和员工数据"}],
+            has_last_data_result=False,
+        )
+
+    prompt_text = "\n".join(str(getattr(msg, "content", msg)) for msg in captured["messages"])
+    assert "federated_data_query" in prompt_text
+    assert classification.turn_type == DataQueryTurnType.FEDERATED_DATA_QUERY
+
+
+def test_chart_format_correction_does_not_capture_fresh_query_requests():
+    assert looks_like_chart_format_correction("把刚才的图改成柱状图") is True
+    assert looks_like_chart_format_correction("显示数值标签") is True
+    assert looks_like_chart_format_correction("按地区把颜色改为分组再查一遍") is False
+    assert looks_like_chart_format_correction("重新查询本月数据并显示数值") is False
 
 
 def test_shared_turn_classification_is_generic_not_chatbi_specific():

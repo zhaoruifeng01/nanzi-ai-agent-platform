@@ -326,14 +326,35 @@ async def get_dataset_schema(keywords: Optional[str] = None) -> str:
         is_admin = ctx.is_admin if ctx else False
         api_key = ctx.api_key if ctx else None
 
-        async with AsyncSessionLocal() as session:
-            return await fetch_dataset_schema_core(
-                session,
-                keywords=keywords,
-                user_id=user_id,
-                is_admin=is_admin,
-                api_key=api_key,
-            )
+        trace_buffer = ctx.trace_buffer if ctx else None
+        if trace_buffer is not None:
+            from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+            async with TraceSpanContext(
+                trace_buffer=trace_buffer,
+                event_type="tool_call",
+                span_name="get_dataset_schema",
+                tool_name="get_dataset_schema",
+                tool_input={"keywords": keywords}
+            ) as span:
+                async with AsyncSessionLocal() as session:
+                    res = await fetch_dataset_schema_core(
+                        session,
+                        keywords=keywords,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                        api_key=api_key,
+                    )
+                    span.set_output(res)
+                    return res
+        else:
+            async with AsyncSessionLocal() as session:
+                return await fetch_dataset_schema_core(
+                    session,
+                    keywords=keywords,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                    api_key=api_key,
+                )
 
     except Exception as e:
         logger.error(f"[Tool Error] Schema Retrieval Failed: {e}", exc_info=True)
@@ -357,17 +378,44 @@ async def execute_sql_query(sql: str, data_source: str, dataset_name: str) -> st
     user_id = ctx.user_id if ctx else None
     is_admin = bool(ctx and getattr(ctx, "is_admin", False))
 
-    async with AsyncSessionLocal() as session:
-        return await execute_sql_query_core(
-            session,
-            sql=sql,
-            data_source=data_source,
-            dataset_name=dataset_name,
-            user_id=user_id,
-            user_dimensions=(ctx.user_dimensions if ctx else None) or None,
-            trace_logs=None,
-            api_key=ctx.api_key if ctx else None,
-            agent_context=ctx,
-            dry_run=None,
-            is_admin=is_admin,
-        )
+    trace_buffer = ctx.trace_buffer if ctx else None
+    if trace_buffer is not None:
+        from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+        async with TraceSpanContext(
+            trace_buffer=trace_buffer,
+            event_type="tool_call",
+            span_name="execute_sql_query",
+            tool_name="execute_sql_query",
+            tool_input={"sql": sql, "data_source": data_source, "dataset_name": dataset_name}
+        ) as span:
+            async with AsyncSessionLocal() as session:
+                res = await execute_sql_query_core(
+                    session,
+                    sql=sql,
+                    data_source=data_source,
+                    dataset_name=dataset_name,
+                    user_id=user_id,
+                    user_dimensions=(ctx.user_dimensions if ctx else None) or None,
+                    trace_logs=None,
+                    api_key=ctx.api_key if ctx else None,
+                    agent_context=ctx,
+                    dry_run=None,
+                    is_admin=is_admin,
+                )
+                span.set_output(res)
+                return res
+    else:
+        async with AsyncSessionLocal() as session:
+            return await execute_sql_query_core(
+                session,
+                sql=sql,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id,
+                user_dimensions=(ctx.user_dimensions if ctx else None) or None,
+                trace_logs=None,
+                api_key=ctx.api_key if ctx else None,
+                agent_context=ctx,
+                dry_run=None,
+                is_admin=is_admin,
+            )

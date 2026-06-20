@@ -14,6 +14,30 @@ from app.services.ai.intent_service import IntentType
 pytestmark = pytest.mark.no_infrastructure
 
 
+def test_federated_upgrade_requires_explicit_cross_dataset_intent():
+    from app.services.ai.runners.data_agent_runner import _should_upgrade_to_federated_query
+
+    schema_output = """
+dataset: energy_ds
+table_name: energy_usage
+columns: device_id, power
+
+# [跨数据集关联补全: asset_ds.asset_info]
+dataset: asset_ds
+table_name: asset_info
+columns: id, owner
+"""
+
+    assert _should_upgrade_to_federated_query(
+        schema_output,
+        user_question="查一下本月能耗超标的设备",
+    ) is False
+    assert _should_upgrade_to_federated_query(
+        schema_output,
+        user_question="跨数据集关联能耗数据和资产数据，查维保人员",
+    ) is True
+
+
 @pytest.fixture
 def data_config():
     return ChatConfig(

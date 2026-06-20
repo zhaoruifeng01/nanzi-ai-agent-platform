@@ -792,8 +792,11 @@ class MetadataService:
             return []
             
         # 2. Find relations
-        stmt = select(MetaRelationship).where(
-            (MetaRelationship.source_table_id.in_(table_ids)) | 
+        stmt = select(MetaRelationship).options(
+            selectinload(MetaRelationship.source_table),
+            selectinload(MetaRelationship.target_table),
+        ).where(
+            (MetaRelationship.source_table_id.in_(table_ids)) |
             (MetaRelationship.target_table_id.in_(table_ids))
         )
         result = await db.execute(stmt)
@@ -911,6 +914,132 @@ class MetadataService:
                 await MetadataIndexService.sync_local_redis_vector(dataset_id)
             except Exception as ex:
                 logger.warning("[Local Redis Sync] Failed to trigger sync in delete_relationship: %s", ex)
+
+    # --- 跨数据集关联 ---
+
+    @staticmethod
+    async def get_cross_dataset_related_tables(
+        db: AsyncSession,
+        source_table_ids: list[int],
+    ) -> list[MetaTable]:
+        """查询给定表集合中，存在跨数据集关联的目标表列表（去重）。
+
+        逻辑：
+        1. 查询以 source_table_ids 为 source 的所有 Relationship
+        2. 取出 target_table_id
+        3. 过滤掉目标表与源表在同一数据集的情况（同数据集关联不需要补全）
+        4. 返回跨数据集目标表的 MetaTable 对象（eager load columns/dataset）
+        """
+        if not source_table_ids:
+            return []
+
+        # 1. 找出以这些表为 source 的所有 relationship
+        rels_stmt = select(MetaRelationship).where(
+            MetaRelationship.source_table_id.in_(source_table_ids)
+        )
+        rels_result = await db.execute(rels_stmt)
+        rels = rels_result.scalars().all()
+
+        if not rels:
+            return []
+
+        # 也找以这些表为 target 的（双向）
+        rels_stmt2 = select(MetaRelationship).where(
+            MetaRelationship.target_table_id.in_(source_table_ids)
+        )
+        rels_result2 = await db.execute(rels_stmt2)
+        rels2 = rels_result2.scalars().all()
+
+        # 汇总所有关联的对端 table_id
+        all_related_ids: set[int] = set()
+        for rel in rels:
+            all_related_ids.add(rel.target_table_id)
+        for rel in rels2:
+            all_related_ids.add(rel.source_table_id)
+
+        # 排除自身
+        all_related_ids -= set(source_table_ids)
+        if not all_related_ids:
+            return []
+
+        # 2. 查询这些目标表对象
+        target_tables_stmt = select(MetaTable).options(
+            selectinload(MetaTable.columns),
+            selectinload(MetaTable.dataset),
+        ).where(MetaTable.id.in_(all_related_ids))
+        target_result = await db.execute(target_tables_stmt)
+        target_tables = target_result.scalars().all()
+
+        # 3. 过滤掉与所有 source 表同数据集的（只保留跨数据集的）
+        source_tables_stmt = select(MetaTable).where(MetaTable.id.in_(source_table_ids))
+        source_result = await db.execute(source_tables_stmt)
+        source_tables = source_result.scalars().all()
+        source_dataset_ids = {t.dataset_id for t in source_tables}
+
+        cross_dataset_tables = [
+            t for t in target_tables
+            if t.dataset_id not in source_dataset_ids
+        ]
+
+        return cross_dataset_tables
+
+    @staticmethod
+    async def get_all_tables_with_dataset(
+        db: AsyncSession,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> list[dict]:
+        """返回所有有权限数据集的所有表，按数据集分组，供前端跨数据集表选择器使用。
+
+        返回格式：
+        [
+          {
+            "dataset_id": 1,
+            "dataset_name": "hr_data",
+            "display_name": "HR 人员数据",
+            "tables": [
+              {"id": 10, "physical_name": "employees", "term": "员工信息表"}
+            ]
+          }
+        ]
+        """
+        datasets = await MetadataService.search_datasets(
+            db,
+            query=None,
+            user_id=user_id,
+            is_admin=is_admin,
+            status=1,
+        )
+
+        result = []
+        for ds in datasets:
+            tables_stmt = select(MetaTable).where(
+                MetaTable.dataset_id == ds.id,
+                MetaTable.status == 1,
+            ).options(selectinload(MetaTable.columns))
+            tables_result = await db.execute(tables_stmt)
+            tables = tables_result.scalars().all()
+            result.append({
+                "dataset_id": ds.id,
+                "dataset_name": ds.name,
+                "display_name": ds.display_name or ds.name,
+                "tables": [
+                    {
+                        "id": t.id,
+                        "physical_name": t.physical_name,
+                        "term": t.term or t.physical_name,
+                        "columns": [
+                            {
+                                "physical_name": col.physical_name,
+                                "term": col.term or col.physical_name,
+                            }
+                            for col in t.columns
+                        ]
+                    }
+                    for t in tables
+                ],
+            })
+        return result
 
     # --- YAML Export Logic ---
 

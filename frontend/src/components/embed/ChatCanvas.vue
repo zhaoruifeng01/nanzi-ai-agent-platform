@@ -4,6 +4,7 @@ import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import MermaidRenderer from '@/components/MermaidRenderer.vue';
 import { renderMarkdown } from '@/utils/markdown';
+import PivotTable from '@/components/embed/PivotTable.vue';
 
 const props = defineProps<{
   visible: boolean;
@@ -62,7 +63,7 @@ const copyContent = () => {
 const downloadFile = () => {
   if (!props.data) return;
   const content = resolvedContent.value;
-  
+
   // 对于图片、PDF以及CSV（这里的CSV content存放的是文件链接），我们可以通过原生a标签进行链接下载或跳转
   if (props.data.type === 'image' || props.data.type === 'pdf' || props.data.type === 'csv') {
     const a = document.createElement('a');
@@ -74,7 +75,7 @@ const downloadFile = () => {
     document.body.removeChild(a);
     return;
   }
-  
+
   const extension = props.data.type === 'html' ? 'html' : getFileExtension(props.data.title);
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -91,7 +92,7 @@ const downloadFile = () => {
 const highlightedCode = computed(() => {
   if (!props.data || (props.data.type !== 'code' && props.data.type !== 'html')) return '';
   const content = props.data.content;
-  
+
   let lang = 'txt';
   if (props.data.type === 'html') {
     lang = 'xml';
@@ -114,7 +115,7 @@ const highlightedCode = computed(() => {
   } catch (e) {
     console.error('Highlight failed, fallback to safe html escape', e);
   }
-  
+
   // Safe fallback html escaping
   return content
     .replace(/&/g, '&amp;')
@@ -159,7 +160,7 @@ const startDrag = (e: MouseEvent) => {
   isDragging.value = true;
   startX.value = e.clientX - translateX.value;
   startY.value = e.clientY - translateY.value;
-  
+
   window.addEventListener('mousemove', onDrag);
   window.addEventListener('mouseup', stopDrag);
 };
@@ -217,7 +218,7 @@ const loadCSVData = async () => {
   csvError.value = '';
   csvHeaders.value = [];
   csvRows.value = [];
-  
+
   try {
     const response = await fetch(resolvedContent.value);
     if (!response.ok) {
@@ -237,12 +238,12 @@ const parseCSV = (text: string) => {
   if (!text) return;
   const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
   if (lines.length === 0) return;
-  
+
   const rawRows = lines.map(line => {
     const cells: string[] = [];
     let currentCell = '';
     let inQuotes = false;
-    
+
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
       if (char === '"') {
@@ -257,7 +258,7 @@ const parseCSV = (text: string) => {
     cells.push(currentCell.replace(/^"|"$/g, '').trim());
     return cells;
   });
-  
+
   if (rawRows.length > 0) {
     csvHeaders.value = rawRows[0] || [];
     csvRows.value = rawRows.slice(1) || [];
@@ -282,6 +283,44 @@ const highlightMatch = (text: string) => {
 const escapeRegExp = (str: string) => {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
+
+// ==========================================
+// CSV Pivot Table Integration
+// ==========================================
+const csvViewMode = ref<'table' | 'pivot'>('table');
+
+const pivotFields = computed(() => {
+  return csvHeaders.value.map((header) => {
+    let type = "string";
+    const firstRow = csvRows.value[0];
+    if (firstRow) {
+      const idx = csvHeaders.value.indexOf(header);
+      if (idx !== -1) {
+        const sampleVal = firstRow[idx];
+        if (sampleVal && !isNaN(Number(sampleVal))) {
+          type = "number";
+        }
+      }
+    }
+    return {
+      name: header,
+      label: header,
+      type: type,
+    };
+  });
+});
+
+const pivotRows = computed(() => {
+  return csvRows.value.map((row) => {
+    const obj: Record<string, any> = {};
+    csvHeaders.value.forEach((header, idx) => {
+      const val = row[idx];
+      const isNum = pivotFields.value[idx]?.type === "number";
+      obj[header] = isNum && val !== "" ? Number(val) : val;
+    });
+    return obj;
+  });
+});
 
 // ==========================================
 // 3. HTML Preview & Code Tab Switcher
@@ -330,8 +369,8 @@ const resolveUrlPath = (val: string): string => {
     return '/static/uploads/' + parts[parts.length - 1];
   }
   // 兼容绝对路径与相对物理路径，只要它不属于静态路由与API接口路由，均通过后端预览API拉取
-  if (!val.startsWith('/static/') && 
-      !val.startsWith('/api/') && 
+  if (!val.startsWith('/static/') &&
+      !val.startsWith('/api/') &&
       !val.startsWith('/assets/')) {
     const convId = localStorage.getItem("yovole_embed_conv_id") || "";
     const convParam = convId ? `&conversation_id=${encodeURIComponent(convId)}` : "";
@@ -343,19 +382,19 @@ const resolveUrlPath = (val: string): string => {
 const resolvedContent = computed(() => {
   if (!props.data?.content) return '';
   const val = props.data.content;
-  
+
   if (isHtmlContent.value) {
     // 只要识别为可预览的 HTML 语法，就深度重写其内部的所有物理资源绝对路径引用
-    return val.replace(/(src|href)=["']([^"']*)["']/gi, (match, attr, pathVal) => {
+    return val.replace(/(src|href)=["']([^"']*)["']/gi, (_match, attr, pathVal) => {
       const newVal = resolveUrlPath(pathVal);
       return `${attr}="${newVal}"`;
     });
   }
-  
+
   if (props.data.type === 'image' || props.data.type === 'pdf' || props.data.type === 'csv') {
     return resolveUrlPath(val);
   }
-  
+
   return val;
 });
 
@@ -366,9 +405,10 @@ watch(() => props.data, () => {
   resetTransform();
   if (props.data?.type === 'csv') {
     csvSearchQuery.value = '';
+    csvViewMode.value = 'table';
     loadCSVData();
   }
-  
+
   // 自动根据类型与内容初始化当前激活 Tab
   if (props.data) {
     if (props.data.type === 'html' || isMarkdownContent.value) {
@@ -386,28 +426,28 @@ const diffSegments = computed(() => {
   if (!props.data || props.data.type !== 'compare') return [];
   const left = props.data.content || '';
   const right = props.data.compareContent || '';
-  
+
   const leftLines = left.split('\n');
   const rightLines = right.split('\n');
-  
+
   const matrix: number[][] = Array(leftLines.length + 1)
     .fill(null)
     .map(() => Array(rightLines.length + 1).fill(0));
-    
+
   for (let i = 1; i <= leftLines.length; i++) {
     for (let j = 1; j <= rightLines.length; j++) {
       if (leftLines[i - 1] === rightLines[j - 1]) {
-        matrix[i][j] = matrix[i - 1][j - 1] + 1;
+        matrix[i]![j] = (matrix[i - 1]?.[j - 1] ?? 0) + 1;
       } else {
-        matrix[i][j] = Math.max(matrix[i - 1][j], matrix[i][j - 1]);
+        matrix[i]![j] = Math.max(matrix[i - 1]?.[j] ?? 0, matrix[i]?.[j - 1] ?? 0);
       }
     }
   }
-  
+
   let i = leftLines.length;
   let j = rightLines.length;
   const result: { type: 'equal' | 'delete' | 'insert'; leftLineNum?: number; rightLineNum?: number; leftVal?: string; rightVal?: string }[] = [];
-  
+
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && leftLines[i - 1] === rightLines[j - 1]) {
       result.unshift({
@@ -419,7 +459,7 @@ const diffSegments = computed(() => {
       });
       i--;
       j--;
-    } else if (j > 0 && (i === 0 || matrix[i][j - 1] >= matrix[i - 1][j])) {
+    } else if (j > 0 && (i === 0 || (matrix[i]?.[j - 1] ?? 0) >= (matrix[i - 1]?.[j] ?? 0))) {
       result.unshift({
         type: 'insert',
         rightLineNum: j,
@@ -474,14 +514,14 @@ const analyzeDiff = () => {
               'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
             "
           >
-            {{ 
-              data?.type === 'html' ? 'Application' : 
+            {{
+              data?.type === 'html' ? 'Application' :
               data?.type === 'image' ? 'Image' :
               data?.type === 'pdf' ? 'PDF' :
               data?.type === 'csv' ? 'CSV Table' :
               data?.type === 'mermaid' ? 'Diagram' :
               data?.type === 'compare' ? 'File Diff' :
-              'Code' 
+              'Code'
             }}
           </span>
         </div>
@@ -551,21 +591,21 @@ const analyzeDiff = () => {
       <!-- HTML / Markdown Preview/Code Tabs Selector -->
       <div v-if="isHtmlContent || isMarkdownContent" class="px-4 py-2 border-b border-gray-100/50 dark:border-gray-700/50 bg-slate-50/50 dark:bg-gray-900/10 flex-shrink-0 flex justify-center">
         <div class="bg-gray-150/80 dark:bg-gray-900 p-0.5 rounded-lg flex space-x-1 w-full max-w-[240px] border border-gray-200/20 shadow-inner">
-          <button 
+          <button
             @click="activeTab = 'preview'"
             class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
-            :class="activeTab === 'preview' 
-              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10' 
+            :class="activeTab === 'preview'
+              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10'
               : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
           >
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
             <span>效果预览</span>
           </button>
-          <button 
+          <button
             @click="activeTab = 'code'"
             class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
-            :class="activeTab === 'code' 
-              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10' 
+            :class="activeTab === 'code'
+              ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10'
               : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
           >
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
@@ -644,18 +684,18 @@ const analyzeDiff = () => {
         <!-- Mermaid Diagram Viewer (with Drag & Zoom) -->
         <template v-else-if="data?.type === 'mermaid'">
           <div class="w-full h-full flex flex-col min-h-0 relative select-none">
-            <div 
+            <div
               class="flex-1 relative w-full overflow-hidden cursor-grab active:cursor-grabbing border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 rounded-xl shadow-inner min-h-[480px]"
               @mousedown="startDrag"
               @wheel.prevent="handleZoom"
             >
-              <div 
-                :style="transformStyle" 
+              <div
+                :style="transformStyle"
                 class="w-full h-full flex items-center justify-center p-8 origin-center"
               >
                 <MermaidRenderer :content="data.content" />
               </div>
-              
+
               <!-- Zoom Control overlay -->
               <div class="absolute bottom-4 right-4 flex items-center space-x-1 bg-white/90 dark:bg-gray-800/90 shadow border border-gray-100 dark:border-gray-700 rounded-lg p-1 z-10 backdrop-blur-xs select-none">
                 <button @click="zoomIn" class="w-7 h-7 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors text-sm font-bold">+</button>
@@ -671,13 +711,39 @@ const analyzeDiff = () => {
 
         <!-- CSV Data Table Viewer (with Filter) -->
         <template v-else-if="data?.type === 'csv'">
+          <!-- CSV View Mode Tabs -->
+          <div v-if="!csvLoading && !csvError" class="mb-4 flex justify-center flex-shrink-0">
+            <div class="bg-gray-150/80 dark:bg-gray-900 p-0.5 rounded-lg flex space-x-1 w-full max-w-[240px] border border-gray-200/20 shadow-inner">
+              <button
+                @click="csvViewMode = 'table'"
+                class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
+                :class="csvViewMode === 'table'
+                  ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10'
+                  : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
+              >
+                <span>📊</span>
+                <span>原始表格</span>
+              </button>
+              <button
+                @click="csvViewMode = 'pivot'"
+                class="flex-1 py-1 text-[11px] font-bold rounded-md transition-all duration-200 flex items-center justify-center space-x-1"
+                :class="csvViewMode === 'pivot'
+                  ? 'bg-white dark:bg-gray-800 text-gray-800 dark:text-white shadow-xs border border-gray-200/10'
+                  : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'"
+              >
+                <span>💡</span>
+                <span>数据透视</span>
+              </button>
+            </div>
+          </div>
+
           <div class="w-full h-full flex flex-col min-h-0">
             <!-- Search bar -->
-            <div class="mb-3 flex-shrink-0">
+            <div v-if="csvViewMode === 'table' && !csvLoading && !csvError" class="mb-3 flex-shrink-0">
               <div class="relative">
-                <input 
+                <input
                   v-model="csvSearchQuery"
-                  type="text" 
+                  type="text"
                   placeholder="全局模糊搜索过滤数据..."
                   class="w-full text-xs bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-750 focus:border-primary focus:ring-1 focus:ring-primary rounded-lg pl-8 pr-3 py-2 outline-none text-gray-700 dark:text-gray-300 transition-all"
                 />
@@ -696,63 +762,75 @@ const analyzeDiff = () => {
               <span class="text-xl mb-2">⚠️</span>
               <span class="text-xs text-red-500 font-mono">{{ csvError }}</span>
             </div>
-            <div v-else class="flex-grow overflow-auto border border-gray-200 dark:border-gray-750 rounded-xl bg-white dark:bg-gray-900/50 shadow-inner custom-scrollbar min-h-[360px]">
-              <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-left border-collapse table-auto">
-                <thead class="bg-gray-50 dark:bg-gray-800/80 sticky top-0 z-10">
-                  <tr>
-                    <th 
-                      v-for="(header, hIdx) in csvHeaders" 
-                      :key="hIdx"
-                      class="px-4 py-2.5 text-xs font-bold text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-750 whitespace-nowrap"
+
+            <template v-else>
+              <!-- Raw Table View -->
+              <div v-if="csvViewMode === 'table'" class="flex-grow overflow-auto border border-gray-200 dark:border-gray-750 rounded-xl bg-white dark:bg-gray-900/50 shadow-inner custom-scrollbar min-h-[360px]">
+                <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-left border-collapse table-auto">
+                  <thead class="bg-gray-50 dark:bg-gray-800/80 sticky top-0 z-10">
+                    <tr>
+                      <th
+                        v-for="(header, hIdx) in csvHeaders"
+                        :key="hIdx"
+                        class="px-4 py-2.5 text-xs font-bold text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-750 whitespace-nowrap"
+                      >
+                        {{ header }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-150 dark:divide-gray-800 text-[11px] text-gray-700 dark:text-gray-300">
+                    <tr
+                      v-for="(row, rIdx) in filteredCsvRows"
+                      :key="rIdx"
+                      class="hover:bg-gray-50/60 dark:hover:bg-gray-800/20"
                     >
-                      {{ header }}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-150 dark:divide-gray-800 text-[11px] text-gray-700 dark:text-gray-300">
-                  <tr 
-                    v-for="(row, rIdx) in filteredCsvRows" 
-                    :key="rIdx"
-                    class="hover:bg-gray-50/60 dark:hover:bg-gray-800/20"
-                  >
-                    <td 
-                      v-for="(cell, cIdx) in row" 
-                      :key="cIdx"
-                      class="px-4 py-2 border-b border-gray-100 dark:border-gray-800 break-words whitespace-normal"
-                      v-html="highlightMatch(cell)"
-                    >
-                    </td>
-                  </tr>
-                  <tr v-if="filteredCsvRows.length === 0">
-                    <td :colspan="csvHeaders.length" class="text-center py-10 text-xs text-gray-400 select-none">
-                      无匹配结果
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+                      <td
+                        v-for="(cell, cIdx) in row"
+                        :key="cIdx"
+                        class="px-4 py-2 border-b border-gray-100 dark:border-gray-800 break-words whitespace-normal"
+                        v-html="highlightMatch(cell)"
+                      >
+                      </td>
+                    </tr>
+                    <tr v-if="filteredCsvRows.length === 0">
+                      <td :colspan="csvHeaders.length" class="text-center py-10 text-xs text-gray-400 select-none">
+                        无匹配结果
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Pivot View -->
+              <div v-else-if="csvViewMode === 'pivot'" class="flex-grow overflow-hidden rounded-xl border border-gray-200 dark:border-gray-750 bg-white dark:bg-gray-900 shadow-inner">
+                <PivotTable
+                  :data="pivotRows"
+                  :fields="pivotFields"
+                />
+              </div>
+            </template>
           </div>
         </template>
 
         <!-- Image Viewer (with Drag & Zoom) -->
         <template v-else-if="data?.type === 'image'">
           <div class="w-full h-full flex flex-col min-h-0 relative select-none">
-            <div 
+            <div
               class="flex-1 relative w-full overflow-hidden cursor-grab active:cursor-grabbing border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 rounded-xl shadow-inner min-h-[480px] flex items-center justify-center"
               @mousedown="startDrag"
               @wheel.prevent="handleZoom"
             >
-              <div 
-                :style="transformStyle" 
+              <div
+                :style="transformStyle"
                 class="max-w-full max-h-full flex items-center justify-center p-4 origin-center"
               >
-                <img 
-                  :src="resolvedContent" 
-                  :alt="data.title" 
+                <img
+                  :src="resolvedContent"
+                  :alt="data.title"
                   class="max-w-full max-h-[80vh] object-contain pointer-events-none select-none rounded-lg"
                 />
               </div>
-              
+
               <!-- Zoom Control overlay -->
               <div class="absolute bottom-4 right-4 flex items-center space-x-1 bg-white/90 dark:bg-gray-800/90 shadow border border-gray-100 dark:border-gray-700 rounded-lg p-1 z-10 backdrop-blur-xs select-none">
                 <button @click="zoomIn" class="w-7 h-7 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors text-sm font-bold">+</button>
@@ -780,12 +858,12 @@ const analyzeDiff = () => {
                 <span>{{ data?.compareTitle || '对比文件' }}</span>
               </div>
             </div>
-            
+
             <!-- 对比行展示区域 -->
             <div class="flex-1 overflow-auto font-mono text-[11px] leading-relaxed custom-scrollbar divide-y divide-gray-100/30 dark:divide-gray-800/30">
               <div v-for="(seg, idx) in diffSegments" :key="idx" class="grid grid-cols-2 divide-x divide-gray-200 dark:divide-gray-880 min-w-[700px]">
                 <!-- 左侧行 -->
-                <div 
+                <div
                   class="flex items-stretch min-h-[22px]"
                   :class="{
                     'bg-red-50/40 dark:bg-red-950/15 text-red-700 dark:text-red-300': seg.type === 'delete',
@@ -803,9 +881,9 @@ const analyzeDiff = () => {
                   <!-- 内容 -->
                   <pre class="flex-1 px-2 py-0.5 overflow-x-auto whitespace-pre custom-scrollbar select-text font-mono text-[11px]">{{ seg.type !== 'insert' ? seg.leftVal : '' }}</pre>
                 </div>
-                
+
                 <!-- 右侧行 -->
-                <div 
+                <div
                   class="flex items-stretch min-h-[22px]"
                   :class="{
                     'bg-green-50/40 dark:bg-green-950/15 text-green-700 dark:text-green-300': seg.type === 'insert',
@@ -834,8 +912,8 @@ const analyzeDiff = () => {
         <button
           @click="copyContent"
           class="flex-1 py-2 text-xs font-bold rounded-lg transition-colors flex items-center justify-center space-x-1.5"
-          :class="copied 
-            ? 'bg-emerald-50 text-emerald-600 border border-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-900/30' 
+          :class="copied
+            ? 'bg-emerald-50 text-emerald-600 border border-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-900/30'
             : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-transparent dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-300'"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

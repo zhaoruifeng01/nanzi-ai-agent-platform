@@ -286,6 +286,19 @@ class AssistantAgentRunner(BaseExecutor):
 
     async def execute(
         self,
+        history: List[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+        async with TraceSpanContext(
+            trace_buffer=self.trace_buffer,
+            event_type="agent_execution",
+            span_name="AssistantAgentRunner",
+        ):
+            async for chunk in self._execute_raw(history):
+                yield chunk
+
+    async def _execute_raw(
+        self,
         history: List[Dict[str, str]]
     ) -> AsyncGenerator[Dict[str, Any], None]:
         user_query = self._extract_last_user_query(history)

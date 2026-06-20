@@ -147,6 +147,9 @@ class AuditManager:
                         prompt_tokens=getattr(log, 'prompt_tokens', 0) or 0,
                         completion_tokens=getattr(log, 'completion_tokens', 0) or 0,
                         total_tokens=getattr(log, 'total_tokens', 0) or 0,
+                        span_id=getattr(log, 'span_id', None),
+                        parent_span_id=getattr(log, 'parent_span_id', None),
+                        meta_info=getattr(log, 'meta_info', None),
                         created_at=log.timestamp
                     ))
                 session.add_all(orm_objects)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { renderMarkdown } from '@/utils/markdown';
 import { parseQuickButtons, postProcessQuickButtonHtml } from '@/utils/quickButtons';
 import { mergeChartDefaults, parseChartOptions } from '@/utils/chartRenderer';
@@ -56,6 +56,30 @@ const emit = defineEmits<{
   (e: 'open-canvas', payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string }): void;
 }>();
 
+const localChartTypes = ref<Record<number, string>>({});
+
+const getChartOption = (segment: ContentSegment, idx: number) => {
+  const option = JSON.parse(JSON.stringify(segment.chartData || {}));
+  const overriddenType = localChartTypes.value[idx];
+  if (overriddenType) {
+    if (option.series) {
+      if (Array.isArray(option.series)) {
+        option.series = option.series.map((s: any) => ({ ...s, type: overriddenType }));
+      } else if (typeof option.series === 'object') {
+        option.series = { ...option.series, type: overriddenType };
+      }
+    }
+    if (overriddenType === 'pie') {
+      delete option.xAxis;
+      delete option.yAxis;
+    } else {
+      if (!option.xAxis && segment.chartData?.xAxis) option.xAxis = segment.chartData.xAxis;
+      if (!option.yAxis && segment.chartData?.yAxis) option.yAxis = segment.chartData.yAxis;
+    }
+  }
+  return option;
+};
+
 interface ContentSegment {
   type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'sql_plan' | 'canvas_html' | 'canvas_code';
   content: string;
@@ -100,13 +124,13 @@ interface ContentSegment {
         const newVal = '/static/uploads/' + parts[parts.length - 1];
         return `${attr}="${newVal}"`;
       }
-      if (!val.startsWith('http://') && 
-          !val.startsWith('https://') && 
-          !val.startsWith('data:') && 
-          !val.startsWith('quick:') && 
-          !val.startsWith('canvas:') && 
-          !val.startsWith('/static/') && 
-          !val.startsWith('/api/') && 
+      if (!val.startsWith('http://') &&
+          !val.startsWith('https://') &&
+          !val.startsWith('data:') &&
+          !val.startsWith('quick:') &&
+          !val.startsWith('canvas:') &&
+          !val.startsWith('/static/') &&
+          !val.startsWith('/api/') &&
           !val.startsWith('/assets/')) {
         const convId = localStorage.getItem("yovole_embed_conv_id") || "";
         const convParam = convId ? `&conversation_id=${encodeURIComponent(convId)}` : "";
@@ -134,17 +158,17 @@ interface ContentSegment {
       tags.push(match);
       return `###HTML_TAG_PLACEHOLDER_${tags.length - 1}###`;
     });
-    
+
     // 正则路径匹配：支持绝对路径（以 / 开始）或带斜杠的相对路径，以常见代码、文本、数据及 PDF 扩展名结尾
     const pathRegex = /(?:\.\/|\/)?(?:[a-zA-Z0-9_\-\.]+\/)+[a-zA-Z0-9_\-\.]+\.(?:md|csv|txt|py|js|ts|sh|sql|json|pdf|html|css|yaml|yml|log|env)/gi;
-    
+
     textWithPlaceholders = textWithPlaceholders.replace(pathRegex, (pathVal) => {
       const canvasUrl = `canvas://file?path=${encodeURIComponent(pathVal)}`;
       return `${pathVal}<a href="${canvasUrl}" class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-bold ml-1.5 text-[10.5px]" title="点击在画布中打开文件" style="cursor: pointer;">[打开]</a>`;
     });
-    
-    res = textWithPlaceholders.replace(/###HTML_TAG_PLACEHOLDER_(\d+)###/g, (match, idx) => {
-      return tags[parseInt(idx, 10)];
+
+    res = textWithPlaceholders.replace(/###HTML_TAG_PLACEHOLDER_(\d+)###/g, (_match, idx) => {
+      return tags[parseInt(idx, 10)] ?? "";
     });
 
     return res;
@@ -174,21 +198,21 @@ const handleContentClick = (event: MouseEvent) => {
       if (href.startsWith('quick:')) {
         const rawQuestion = href.replace(/^quick:/, '');
         let question = '';
-        try { question = decodeURIComponent(decodeURIComponent(rawQuestion)); } 
+        try { question = decodeURIComponent(decodeURIComponent(rawQuestion)); }
         catch { question = decodeURIComponent(rawQuestion); }
         if (question) { emit('quick-question', question.trim()); event.preventDefault(); event.stopPropagation(); return; }
       } else {
-        const lowerHref = href.toLowerCase().split('?')[0].split('#')[0];
+        const lowerHref = ((href.toLowerCase().split('?')[0] ?? '').split('#')[0] ?? '');
         const isPdf = lowerHref.endsWith('.pdf');
         const isCsv = lowerHref.endsWith('.csv');
         const isImage = lowerHref.endsWith('.jpg') || lowerHref.endsWith('.jpeg') || lowerHref.endsWith('.png') || lowerHref.endsWith('.gif') || lowerHref.endsWith('.webp');
         const isCompare = href.startsWith('canvas://compare');
         const isCanvasFile = href.startsWith('canvas://file');
-        
+
         if (isPdf || isCsv || isImage || isCompare || isCanvasFile) {
           let type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare' = 'code';
           let filename = '预览';
-          
+
           if (isCompare) {
             type = 'compare';
             filename = linkEl.textContent?.trim() || '数据对比';
@@ -198,7 +222,7 @@ const handleContentClick = (event: MouseEvent) => {
               const filePath = urlObj.searchParams.get('path') || '';
               const lowerPath = filePath.toLowerCase();
               filename = filePath.split('/').pop() || '文件预览';
-              
+
               if (lowerPath.endsWith('.csv')) type = 'csv';
               else if (lowerPath.endsWith('.pdf')) type = 'pdf';
               else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') || lowerPath.endsWith('.gif') || lowerPath.endsWith('.webp')) type = 'image';
@@ -211,7 +235,7 @@ const handleContentClick = (event: MouseEvent) => {
             type = isPdf ? 'pdf' : (isCsv ? 'csv' : 'image');
             filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : isCsv ? 'CSV 数据表' : '图片预览');
           }
-          
+
           emit('open-canvas', { type, title: filename, content: href });
           event.preventDefault();
           event.stopPropagation();
@@ -284,10 +308,10 @@ const segments = computed<ContentSegment[]>(() => {
     } else if (match[2]) result.push({ type: 'thought', content: renderMarkdown(match[2].trim()) });
     else if (match[5]) result.push({ type: 'mermaid', content: match[5].trim() });
     else if (match[6] || match[7]) {
-      result.push({ 
-        type: 'analysis', 
+      result.push({
+        type: 'analysis',
         title: 'AI分析推理过程 ...',
-        content: renderMarkdown(match[7]?.trim() || '') 
+        content: renderMarkdown(match[7]?.trim() || '')
       });
     }
     else if (match[3] || match[4]) {
@@ -305,7 +329,7 @@ const segments = computed<ContentSegment[]>(() => {
       const lang = (match[8] || '').trim().toLowerCase();
       const codeContent = match[9];
       const isHtmlApp = lang === 'html' && (/<html/i.test(codeContent) || /<body/i.test(codeContent) || /<!doctype html/i.test(codeContent));
-      
+
       if (isHtmlApp) {
         result.push({
           type: 'canvas_html',
@@ -354,7 +378,7 @@ const segments = computed<ContentSegment[]>(() => {
       </div>
       <div v-if="segment.type === 'text'" class="markdown-body" v-html="segment.content"></div>
       <div v-else-if="segment.type === 'mermaid'" class="w-full my-4 relative group/mermaid">
-        <button 
+        <button
           @click="emit('open-canvas', { type: 'mermaid', title: '架构流程图预览', content: segment.content })"
           class="absolute top-2 right-2 p-1.5 bg-white/90 dark:bg-gray-800/90 text-gray-500 hover:text-primary rounded-lg shadow border border-gray-200 dark:border-gray-700 opacity-0 group-hover/mermaid:opacity-100 transition-all z-10 text-xs flex items-center space-x-1"
           title="在画布中放大缩小平移"
@@ -364,7 +388,36 @@ const segments = computed<ContentSegment[]>(() => {
         </button>
         <MermaidRenderer :content="segment.content" />
       </div>
-      <div v-else-if="segment.type === 'chart'" class="w-full h-64 bg-white rounded-lg border border-gray-100 p-2 shadow-sm"><v-chart class="chart" :option="segment.chartData" autoresize /></div>
+      <div v-else-if="segment.type === 'chart'" class="w-full h-64 bg-white rounded-lg border border-gray-100 p-2 shadow-sm relative group/chart">
+        <!-- Chart type switcher buttons overlay -->
+        <div class="absolute top-2 right-2 flex items-center space-x-1 bg-white/90 dark:bg-gray-800/90 shadow-sm border border-gray-100 dark:border-gray-700 rounded-lg p-1 z-10 opacity-0 group-hover/chart:opacity-100 transition-opacity">
+          <button
+            @click="localChartTypes[idx] = 'line'"
+            class="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-[10px] font-bold transition-colors"
+            :class="localChartTypes[idx] === 'line' || (!localChartTypes[idx] && segment.chartData?.series?.[0]?.type === 'line') ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-400'"
+            title="切换为折线图"
+          >
+            折线
+          </button>
+          <button
+            @click="localChartTypes[idx] = 'bar'"
+            class="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-[10px] font-bold transition-colors"
+            :class="localChartTypes[idx] === 'bar' || (!localChartTypes[idx] && segment.chartData?.series?.[0]?.type === 'bar') ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-400'"
+            title="切换为柱状图"
+          >
+            柱状
+          </button>
+          <button
+            @click="localChartTypes[idx] = 'pie'"
+            class="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-[10px] font-bold transition-colors"
+            :class="localChartTypes[idx] === 'pie' || (!localChartTypes[idx] && segment.chartData?.series?.[0]?.type === 'pie') ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-400'"
+            title="切换为饼图"
+          >
+            饼图
+          </button>
+        </div>
+        <v-chart class="chart" :option="getChartOption(segment, idx)" autoresize />
+      </div>
 
       <!-- Canvas HTML 激活卡片 -->
       <div v-else-if="segment.type === 'canvas_html'" class="my-3 p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 flex items-center justify-between shadow-sm">
@@ -377,7 +430,7 @@ const segments = computed<ContentSegment[]>(() => {
             <p class="text-[10px] text-gray-400 dark:text-gray-500">已为您生成可交互原型页面</p>
           </div>
         </div>
-        <button 
+        <button
           @click="emit('open-canvas', { type: 'html', title: segment.title || '', content: segment.content })"
           class="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-lg shadow-sm transition-all"
         >
@@ -396,7 +449,7 @@ const segments = computed<ContentSegment[]>(() => {
             <p class="text-[10px] text-gray-400 dark:text-gray-500">包含大段 {{ segment.langName }} 源代码</p>
           </div>
         </div>
-        <button 
+        <button
           @click="emit('open-canvas', { type: 'code', title: segment.title || '', content: segment.content })"
           class="px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 active:scale-95 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm transition-all"
         >
@@ -407,7 +460,7 @@ const segments = computed<ContentSegment[]>(() => {
       <div v-else-if="segment.type === 'sql_plan' && segment.sqlPlan" class="w-full">
         <SqlPlanCard :plan="segment.sqlPlan" />
       </div>
-      
+
       <div v-else-if="segment.type === 'analysis'" class="analysis-block mb-6">
         <details class="analysis-details group" open>
           <summary class="analysis-summary">
