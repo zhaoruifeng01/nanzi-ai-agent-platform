@@ -136,9 +136,10 @@ const handleContentClick = (event: MouseEvent) => {
         const lowerHref = href.toLowerCase().split('?')[0].split('#')[0];
         const isPdf = lowerHref.endsWith('.pdf');
         const isCsv = lowerHref.endsWith('.csv');
-        if (isPdf || isCsv) {
-          const type = isPdf ? 'pdf' : 'csv';
-          const filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : 'CSV 数据表');
+        const isImage = lowerHref.endsWith('.jpg') || lowerHref.endsWith('.jpeg') || lowerHref.endsWith('.png') || lowerHref.endsWith('.gif') || lowerHref.endsWith('.webp');
+        if (isPdf || isCsv || isImage) {
+          const type = isPdf ? 'pdf' : (isCsv ? 'csv' : 'image');
+          const filename = linkEl.textContent?.trim() || (isPdf ? 'PDF 文档' : isCsv ? 'CSV 数据表' : '图片预览');
           emit('open-canvas', { type, title: filename, content: href });
           event.preventDefault();
           event.stopPropagation();
