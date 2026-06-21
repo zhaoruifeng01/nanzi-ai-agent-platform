@@ -2,10 +2,13 @@
 ChatBI 数据集 Schema 获取：与工具 `get_dataset_schema` 共用逻辑，供 HTTP 等调用复用。
 """
 import logging
+import re
 from typing import Optional
 
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.metadata import MetaDataset, MetaTable
 from app.services.auth_service import AuthService
 from app.services.config_service import ConfigService
 from app.services.metadata_service import MetadataService
@@ -156,13 +159,23 @@ async def _fetch_dataset_schema_impl(
             })
 
         if filtered_hits:
-            return format_schema_hits(filtered_hits)
+            schema_text = format_schema_hits(filtered_hits)
+            # 跨数据集关联补全
+            schema_text = await _enrich_with_cross_dataset_schema(
+                session,
+                schema_text,
+                user_id=user_id_eff,
+                is_admin=is_admin_eff,
+            )
+            return schema_text
         return f"No relevant schema info found for '{query}'.\nDebug Logs: {'; '.join(trace_logs)}"
 
     # --- Local Mode (Default) ---
     query = (keywords or "").strip()
     threshold = float(await ConfigService.get("ragflow_similarity_threshold") or 0.2)
     top_k = int(await ConfigService.get("ragflow_metadata_top_k") or 5)
+
+    schema_text: str | None = None  # 先收集到变量，再统一做跨数据集补全
 
     if query:
         try:
@@ -197,35 +210,179 @@ async def _fetch_dataset_schema_impl(
                 })
 
             if filtered_hits:
-                return format_schema_hits(filtered_hits)
-            return (
-                f"No relevant schema info found for '{query}'.\n"
-                f"Debug Logs: Redis Vector Search completed. Found {len(redis_results)} raw items; "
-                f"no hit above threshold {threshold}"
-            )
+                schema_text = format_schema_hits(filtered_hits)
+            else:
+                return (
+                    f"No relevant schema info found for '{query}'.\n"
+                    f"Debug Logs: Redis Vector Search completed. Found {len(redis_results)} raw items; "
+                    f"no hit above threshold {threshold}"
+                )
         except Exception as ex:
             logger.warning(
                 "[fetch_dataset_schema_core] Local Redis vector search failed: %s. Falling back to MySQL keyword search.",
                 ex,
             )
 
-    if not query:
-        return "No relevant schema info found for ''.\nDebug Logs: local metadata query is empty"
+    if schema_text is None:
+        if not query:
+            return "No relevant schema info found for ''.\nDebug Logs: local metadata query is empty"
 
-    found_datasets = await MetadataService.search_datasets(
+        found_datasets = await MetadataService.search_datasets(
+            session,
+            query=query,
+            user_id=user_id_eff,
+            is_admin=is_admin_eff,
+            status=1,
+        )
+        if not found_datasets:
+            return f"No relevant schema info found for '{query}'.\nDebug Logs: local MySQL keyword search returned 0 datasets"
+
+        results: list[str] = []
+        next_index = 1
+        for ds in found_datasets:
+            chunks, next_index = await _format_fallback_dataset_chunks(session, ds.id, next_index)
+            results.extend(chunks)
+
+        schema_text = "\n\n".join(results)
+
+    # 跨数据集关联补全：在已有 schema 结果基础上，追加跨数据集关联表的 schema chunk
+    schema_text = await _enrich_with_cross_dataset_schema(
         session,
-        query=query,
+        schema_text,
         user_id=user_id_eff,
         is_admin=is_admin_eff,
-        status=1,
     )
-    if not found_datasets:
-        return f"No relevant schema info found for '{query}'.\nDebug Logs: local MySQL keyword search returned 0 datasets"
 
-    results: list[str] = []
-    next_index = 1
-    for ds in found_datasets:
-        chunks, next_index = await _format_fallback_dataset_chunks(session, ds.id, next_index)
-        results.extend(chunks)
+    return schema_text
 
-    return "\n\n".join(results)
+
+def _extract_schema_table_refs(schema_text: str) -> list[tuple[str | None, str]]:
+    refs: list[tuple[str | None, str]] = []
+    current_dataset: str | None = None
+    for raw_line in (schema_text or "").splitlines():
+        stripped = raw_line.strip()
+        dataset_match = re.match(r"dataset:\s*(\S+)", stripped, flags=re.IGNORECASE)
+        if dataset_match:
+            current_dataset = dataset_match.group(1).strip()
+            continue
+        table_match = re.match(r"table_name:\s*(\S+)", stripped, flags=re.IGNORECASE)
+        if table_match:
+            refs.append((current_dataset, table_match.group(1).strip()))
+    return refs
+
+
+async def _filter_tables_by_metadata_permission(
+    session: AsyncSession,
+    tables: list[MetaTable],
+    *,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> list[MetaTable]:
+    if is_admin:
+        return tables
+    if user_id is None:
+        return []
+
+    from app.services.permission_service import PermissionService
+
+    permission_service = PermissionService(session)
+    allowed: list[MetaTable] = []
+    for table in tables:
+        dataset_id = getattr(table, "dataset_id", None)
+        if dataset_id is None and getattr(table, "dataset", None) is not None:
+            dataset_id = getattr(table.dataset, "id", None)
+        if dataset_id is None:
+            continue
+        if await permission_service.check_permission(int(user_id), "metadata", str(dataset_id)):
+            allowed.append(table)
+    return allowed
+
+
+async def _enrich_with_cross_dataset_schema(
+    session: AsyncSession,
+    schema_text: str,
+    *,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> str:
+    """从 schema 文本中解析 table_name，查询其跨数据集关联表，追加对应 schema chunk。
+
+    只在确有跨数据集关联配置时才做额外 DB 查询，正常情况下几乎无开销（无关联则直接返回）。
+    """
+    from app.services.metadata_rag_service import MetadataRagService
+
+    # 1. 从 schema YAML 中提取 dataset + table_name 列表，避免不同数据集同名物理表误命中。
+    table_refs = _extract_schema_table_refs(schema_text)
+    if not table_refs:
+        return schema_text
+
+    # 2. 查询这些 table_name 对应的 table_id（物理表名匹配）
+    scoped_conditions = [
+        and_(MetaDataset.name == dataset_name, MetaTable.physical_name == table_name)
+        for dataset_name, table_name in table_refs
+        if dataset_name and table_name
+    ]
+    unscoped_table_names = [table_name for dataset_name, table_name in table_refs if not dataset_name and table_name]
+    stmt = select(MetaTable).join(MetaDataset, MetaDataset.id == MetaTable.dataset_id)
+    if scoped_conditions and unscoped_table_names:
+        stmt = stmt.where(or_(or_(*scoped_conditions), MetaTable.physical_name.in_(unscoped_table_names)))
+    elif scoped_conditions:
+        stmt = stmt.where(or_(*scoped_conditions))
+    else:
+        stmt = stmt.where(MetaTable.physical_name.in_(unscoped_table_names))
+    result = await session.execute(stmt)
+    source_tables = result.scalars().all()
+    source_table_ids = [t.id for t in source_tables]
+
+    if not source_table_ids:
+        return schema_text
+
+    # 3. 查询跨数据集关联目标表
+    cross_tables = await MetadataService.get_cross_dataset_related_tables(session, source_table_ids)
+    if not cross_tables:
+        return schema_text
+    cross_tables = await _filter_tables_by_metadata_permission(
+        session,
+        cross_tables,
+        user_id=user_id,
+        is_admin=is_admin,
+    )
+    if not cross_tables:
+        return schema_text
+
+    # 4. 对这些跨数据集表生成 schema chunk 并追加
+    ds_source_default = await ConfigService.get("external_sql_data_source", default="default_clickhouse")
+    extra_chunks: list[str] = []
+    chunk_index = schema_text.count("---\n") + 1  # 粗略估算 index 起点
+
+    for table in cross_tables:
+        dataset = table.dataset
+        if not dataset:
+            continue
+        ds_source = dataset.data_source or ds_source_default
+        try:
+            yaml_chunk = MetadataRagService.render_table_schema_yaml(
+                dataset, table, [], data_source=ds_source
+            )
+            formatted = format_schema_chunk(chunk_index, yaml_chunk)
+            if formatted:
+                extra_chunks.append(
+                    f"# [跨数据集关联补全: {dataset.name}.{table.physical_name}]\n{formatted}"
+                )
+                chunk_index += 1
+        except Exception as ex:
+            logger.warning(
+                "[cross_dataset_enrich] Failed to render schema for table %s: %s",
+                table.physical_name,
+                ex,
+            )
+
+    if extra_chunks:
+        logger.info(
+            "[cross_dataset_enrich] Appended %d cross-dataset schema chunks: %s",
+            len(extra_chunks),
+            [t.physical_name for t in cross_tables],
+        )
+        return schema_text + "\n\n" + "\n\n".join(extra_chunks)
+
+    return schema_text

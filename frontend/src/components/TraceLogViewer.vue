@@ -51,7 +51,6 @@ const copyToClipboard = async (text: any, id: string) => {
 };
 
 const fetchLogs = async () => {
-  // Debug check
   if (!props.traceId) {
     return;
   }
@@ -61,16 +60,35 @@ const fetchLogs = async () => {
   traceData.value = null;
 
   try {
-    const res = await axios.get(`/api/v1/chat/logs/${props.traceId}`);
-    // Unwrapping StandardResponse: res.data is proper axios body, res.data.data is the payload
-    traceData.value = res.data.data || res.data;
+    const res = await axios.get(`/api/portal/audit/traces/${props.traceId}/spans`);
+    const payload = res.data.data || res.data;
 
-    // Default expand all inputs/outputs for now
+    const stepsList: any[] = [];
+    const flatten = (arr: any[], depth = 0) => {
+      if (!arr) return;
+      arr.forEach((item) => {
+        stepsList.push({
+          ...item,
+          _depth: depth,
+        });
+        if (item.children && item.children.length) {
+          flatten(item.children, depth + 1);
+        }
+      });
+    };
+    flatten(payload.spans || []);
+
+    traceData.value = {
+      trace_id: payload.trace_id,
+      steps: stepsList,
+      raw_spans: payload.spans
+    };
+
     if (traceData.value && traceData.value.steps) {
       traceData.value.steps.forEach((_: any, idx: number) => {
         expandedSteps.value[`input-${idx}`] = true;
         expandedSteps.value[`output-${idx}`] = true;
-        expandedSteps.value[`raw-${idx}`] = false; // NEW: Raw log defaults to collapsed
+        expandedSteps.value[`raw-${idx}`] = false;
       });
     }
   } catch (e: any) {
@@ -95,12 +113,9 @@ const timelineSteps = computed(() => {
 
   const steps = traceData.value.steps;
 
-  // Calculate start and end times for each step
-  // Assuming 'timestamp' is the start time.
-  // Note: timestamps are ISO strings.
-
   const parsedSteps = steps.map((step: any) => {
-    const startTime = new Date(step.timestamp).getTime();
+    const timeVal = step.created_at || step.timestamp;
+    const startTime = timeVal ? new Date(timeVal).getTime() : Date.now();
     const duration = step.execution_time_ms || 0;
     const endTime = startTime + duration;
     return {
@@ -111,15 +126,14 @@ const timelineSteps = computed(() => {
     };
   });
 
-  // Find global min and max
   const minTime = Math.min(...parsedSteps.map((s: any) => s._startTime));
   const maxTime = Math.max(...parsedSteps.map((s: any) => s._endTime));
-  const totalDuration = maxTime - minTime || 1; // Avoid division by zero
+  const totalDuration = maxTime - minTime || 1;
 
   return parsedSteps.map((step: any) => {
     const startOffset = step._startTime - minTime;
     const leftPercent = (startOffset / totalDuration) * 100;
-    const widthPercent = Math.max((step._duration / totalDuration) * 100, 0.5); // Min width for visibility
+    const widthPercent = Math.max((step._duration / totalDuration) * 100, 0.5);
 
     return {
       ...step,
@@ -151,6 +165,7 @@ const formatJson = (data: any) => {
 const getEventIcon = (type: string) => {
   switch (type) {
     case "intent_recognition":
+    case "agent_execution":
       return CpuChipIcon;
     case "tool_call":
       return CommandLineIcon;
@@ -172,6 +187,7 @@ const getEventLabel = (type: string) => {
     synthesis: "总结生成",
     final_answer: "最终回复",
     error: "发生错误",
+    agent_execution: "智能体执行",
   };
   return map[type] || type;
 };
@@ -311,12 +327,13 @@ const localizeToolName = (name: string) => {
               :key="index"
               class="relative mb-8 group last:mb-0"
               :class="{ 'animate-pulse-subtle': step.status === 'pending' }"
+              :style="{ marginLeft: `${(step._depth || 0) * 24}px` }"
             >
               <!-- Timeline Icon -->
               <div
                 class="absolute -left-[32px] top-0 w-10 h-10 rounded-full border-4 border-gray-50 bg-white shadow-sm flex items-center justify-center z-10 transition-all group-hover:scale-110 group-hover:shadow-md ring-1"
                 :class="[
-                  step.status === 'error' ? 'text-red-500 ring-red-100' : 
+                  step.status === 'error' ? 'text-red-500 ring-red-100' :
                   step.status === 'pending' ? 'text-amber-500 ring-amber-100 animate-spin-slow' :
                   'text-indigo-600 ring-indigo-50',
                   step.event_type === 'thought' ? 'bg-slate-50' : 'bg-white'
@@ -329,7 +346,7 @@ const localizeToolName = (name: string) => {
               </div>
 
               <!-- Shimmer Effect for Pending -->
-              <div 
+              <div
                 v-if="step.status === 'pending'"
                 class="absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-xl"
               >
@@ -352,26 +369,27 @@ const localizeToolName = (name: string) => {
                 >
                   <div class="flex items-center space-x-3">
                     <div class="flex items-center space-x-2">
-                      <span 
+                      <span
                         v-if="step.event_type === 'synthesis'"
                         class="px-1.5 py-0.5 rounded bg-emerald-500 text-white text-[9px] font-black uppercase tracking-wider"
                       >
                         Final
                       </span>
-                      <span 
+                      <span
                         v-else-if="step.event_type === 'thought'"
                         class="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[9px] font-black uppercase tracking-wider"
                       >
                         Thought
                       </span>
-                      <span 
+                      <span
                         v-else
                         class="px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[9px] font-black uppercase tracking-wider"
                       >
                         Action
                       </span>
-                      <span class="text-sm font-bold" :class="step.event_type === 'thought' ? 'text-slate-500' : 'text-gray-900'">
-                        {{ getEventLabel(step.event_type) }}
+                      <span class="text-sm font-bold flex items-center" :class="step.event_type === 'thought' ? 'text-slate-500' : 'text-gray-900'">
+                        <span v-if="(step._depth || 0) > 0" class="text-gray-400 font-normal mr-1">↳</span>
+                        <span>{{ getEventLabel(step.event_type) }}</span>
                       </span>
                     </div>
 
@@ -537,16 +555,20 @@ const localizeToolName = (name: string) => {
                 class="relative flex items-bottom group"
               >
                 <!-- Label -->
-                <div class="w-48 shrink-0 pr-4 text-right">
+                <div
+                  class="w-48 shrink-0 pr-4 text-left font-sans transition-all flex flex-col justify-center"
+                  :style="{ paddingLeft: `${(step._depth || 0) * 16}px` }"
+                >
                   <div
-                    class="text-sm font-bold text-gray-800 truncate"
+                    class="text-xs font-bold text-gray-800 truncate flex items-center space-x-1"
                     :title="getEventLabel(step.event_type)"
                   >
-                    {{ getEventLabel(step.event_type) }}
+                    <span v-if="(step._depth || 0) > 0" class="text-gray-400 font-normal shrink-0">↳</span>
+                    <span class="truncate">{{ getEventLabel(step.event_type) }}</span>
                   </div>
                   <div
                     v-if="step.tool_name"
-                    class="text-xs text-indigo-600 truncate"
+                    class="text-[10px] text-indigo-600 truncate pl-3"
                     :title="localizeToolName(step.tool_name)"
                   >
                     {{ localizeToolName(step.tool_name) }}

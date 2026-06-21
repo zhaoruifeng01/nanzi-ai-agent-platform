@@ -65,6 +65,105 @@ class DataQueryPrompts:
     """DataQueryExecutor 使用的系统级提示词。"""
 
     @staticmethod
+    def build_federated_plan_prompt(
+        schema_context: str,
+        user_question: str,
+        dataset_dialect_map: dict | None = None,
+    ) -> str:
+        # 构建数据集方言说明块，告知 LLM 每个数据集对应的物理数据库类型
+        dialect_hint = ""
+        if dataset_dialect_map:
+            dialect_lines = []
+            for ds_name, ds_type in dataset_dialect_map.items():
+                ds_type_lower = (ds_type or "").lower()
+                if "mysql" in ds_type_lower:
+                    dialect_note = "MySQL（请使用 MySQL 语法，例如 DATE(field) 而非 field::DATE）"
+                elif "clickhouse" in ds_type_lower:
+                    dialect_note = "ClickHouse（请使用 ClickHouse 语法，例如 toDate(field) 而非 field::DATE）"
+                elif "oracle" in ds_type_lower:
+                    dialect_note = "Oracle（请使用 Oracle 语法，例如 TRUNC(field) 而非 field::DATE）"
+                elif "postgresql" in ds_type_lower or "postgres" in ds_type_lower:
+                    dialect_note = "PostgreSQL（支持 field::DATE 转换语法）"
+                elif "sqlite" in ds_type_lower:
+                    dialect_note = "SQLite（请使用 DATE(field) 函数）"
+                else:
+                    dialect_note = f"{ds_type}（请参照该数据库标准 SQL 语法）"
+                dialect_lines.append(f"  - 数据集 `{ds_name}`: {dialect_note}")
+            if dialect_lines:
+                dialect_hint = (
+                    "\n\n【数据集与 SQL 方言对照表】\n"
+                    "每个数据集的物理数据库类型如下，编写 <sub_query> 时必须严格使用对应的 SQL 方言，\n"
+                    "禁止使用其他数据库的专有语法（例如不能在 MySQL 数据集中使用 field::DATE，应改用 DATE(field)）：\n"
+                    + "\n".join(dialect_lines)
+                )
+
+        return f"""你是一个智能跨数据集联邦查询计划生成器。
+用户希望查询多个不同的数据集，你需要根据下面提供的多个数据集的合并 Schema，生成一个联邦查询执行计划。
+
+【跨数据集 Schema 定义】
+{schema_context}{dialect_hint}
+
+【约束规则】
+1. 分析用户问题，识别出所有需要涉及的数据集。
+2. 数据集关联数据源，一个数据集下的所有表都是同一个数据源。不同的数据集可能代表不同的物理数据库实例。
+3. 你不能直接在单个 SQL 中跨数据集 Join。你必须为每个数据集编写一个独立的子查询（`<sub_query>`），将其结果存入一个内存临时表（`temp_table`）。
+4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
+5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
+6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
+7. 在编写 SQL 时，请注意：
+   - 字段名和表名必须与 Schema 中严格一致。
+   - 子查询的 SQL 中禁止使用跨库的 Join。
+   - 每个 `<sub_query>` 的 SQL 必须使用上方【数据集与 SQL 方言对照表】中对应数据集的数据库语法。
+   - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）。
+   - 为了防止 SQL 语句中的特殊字符（如比较运算符 <、>、& 等）破坏 XML 格式，请将所有 SQL 语句使用 <![CDATA[ ... ]]> 包裹。
+
+【输出格式】
+只输出一个 `<multi_dataset_plan>` XML 区块，不要输出任何其他的解释文字、不要包裹 Markdown 标记之外的内容。
+
+XML 示例：
+<multi_dataset_plan>
+  <sub_query dataset_name="energy_data" temp_table="t_energy">
+    <![CDATA[
+    SELECT device_id, SUM(power) as total_power FROM device_energy WHERE record_date >= '2026-06-01' GROUP BY device_id
+    ]]>
+  </sub_query>
+  <sub_query dataset_name="asset_data" temp_table="t_asset">
+    <![CDATA[
+    SELECT id as device_id, name, location FROM asset_info WHERE status = 1
+    ]]>
+  </sub_query>
+  <memory_join>
+    <![CDATA[
+    SELECT a.name, a.location, e.total_power
+    FROM t_asset a
+    JOIN t_energy e ON a.device_id = e.device_id
+    ORDER BY e.total_power DESC
+    ]]>
+  </memory_join>
+</multi_dataset_plan>
+
+【当前用户问题】
+{user_question}
+"""
+
+    @staticmethod
+    def build_federated_synthesis_prompt(user_question: str, final_result_md: str) -> str:
+        return f"""你是一个数据分析专家。
+已经完成了跨数据集的联邦查询计算，以下是最终的计算结果：
+
+{final_result_md}
+
+请结合该结果，直接针对用户的问题进行专业的总结和解读。
+【输出规范】
+1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
+2. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
+3. ECharts 图表必须使用标准 ECharts Option 配置。
+
+【当前用户问题】
+{user_question}
+"""
+
+    @staticmethod
     def _portal_time_recommendation_rules() -> str:
         return (
             f"{build_data_query_time_anchor_block()}\n\n"
@@ -365,7 +464,8 @@ class DataQueryPrompts:
         group_title: str,
         tables: list[str],
         table_to_columns: dict[str, list[dict[str, Any]]],
-        table_physical_names: dict[str, str]
+        table_physical_names: dict[str, str],
+        exclude_questions: list[str] | None = None,
     ) -> str:
         ctx = ""
         for t in tables:
@@ -381,10 +481,12 @@ class DataQueryPrompts:
                 ctx += "  * (暂无字段定义)\n"
             ctx += "\n"
 
+        exclude_block = DataQueryPrompts._format_recent_question_exclusions(exclude_questions)
         return (
             f"你是一个专业的 ChatBI 数据分析专家。\n"
             f"请针对以下业务分析场景，推荐 3 个最适合的高频业务分析提问：\n\n"
             f"{DataQueryPrompts._portal_time_recommendation_rules()}\n\n"
+            f"{exclude_block}"
             f"【业务场景】：'{group_title}'\n"
             f"【关联数据表结构】：\n{ctx}\n"
             f"【输出格式要求】：\n"
@@ -401,6 +503,7 @@ class DataQueryPrompts:
         tables: list[str],
         table_to_columns: dict[str, list[dict[str, Any]]],
         table_physical_names: dict[str, str],
+        exclude_questions: list[str] | None = None,
     ) -> str:
         ctx = ""
         for t in tables:
@@ -416,10 +519,12 @@ class DataQueryPrompts:
                 ctx += "  * (暂无字段定义)\n"
             ctx += "\n"
 
+        exclude_block = DataQueryPrompts._format_recent_question_exclusions(exclude_questions)
         return (
             f"你是一个专业的 ChatBI 数据分析专家。\n"
             f"请针对业务场景「{group_title}」，生成 2 条**继续探索**型追问，帮助用户在该场景下延伸分析。\n\n"
             f"{DataQueryPrompts._portal_time_recommendation_rules()}\n\n"
+            f"{exclude_block}"
             f"【关联数据表结构】：\n{ctx}\n"
             f"【输出要求】：\n"
             f"- 2 条追问应偏「还能问什么 / 字段口径 / 关联维度」，不要与常见统计明细重复。\n"
@@ -427,6 +532,20 @@ class DataQueryPrompts:
             f"- 问题中优先使用中文表术语，不要在 quick 中输出物理表名。\n"
             f"- 只输出 2 行，不要前言或 Markdown 标题。"
         )
+
+    @staticmethod
+    def _format_recent_question_exclusions(exclude_questions: list[str] | None) -> str:
+        cleaned: list[str] = []
+        for question in exclude_questions or []:
+            text = str(question or "").strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+        if not cleaned:
+            return ""
+        lines = ["【最近已经出现过的问题，禁止重复或生成语义高度相似的问题】："]
+        for question in cleaned[:12]:
+            lines.append(f"- {question}")
+        return "\n".join(lines) + "\n\n"
 
     @staticmethod
     def _slugify_scene_id(text: str) -> str:
@@ -1391,6 +1510,22 @@ class DataQueryPrompts:
                 + result_json
             )
         return cls._CONTEXT_ACTION_GUIDE_BODY
+
+    @staticmethod
+    def format_correction_user_message(user_question: str, result_json: str) -> str:
+        """样式微调与图表切换的用户消息，专门引导模型输出调整后的图表配置。"""
+        return (
+            f"【用户样式微调要求】：{user_question}\n\n"
+            "【上一轮结构化数据/图表数据】\n"
+            f"{result_json}\n\n"
+            "请根据用户的样式微调要求（例如：折线图改柱状图、特定数值标记颜色、调整图表标题/图例、显示/隐藏数值等），"
+            "对上一轮的图表配置进行微调。你必须输出对应的 ECharts 配置 JSON，并用 ```chart \\n {ECharts JSON} \\n ``` 包裹输出。\n"
+            "注意：\n"
+            "1. 不要重新查询数据库，不要生成新的 SQL。\n"
+            "2. 输出微调后的 ```chart JSON``` 即可，可包含简短的调整说明，但不要长篇大论或重复无关数据结论。\n"
+            "3. 如果用户要求改变图表类型（如折线改柱状），请确保 series 里的 type 属性修改为对应类型（如 'line' 改为 'bar' 等）。\n"
+            "4. 输出的 chart json 必须是合法的 JSON，不要带有 JS 表达式或注释。\n"
+        )
 
     @staticmethod
     def followup_synthesis_user_message(user_question: str, result_json: str) -> str:

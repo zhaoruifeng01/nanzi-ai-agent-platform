@@ -37,6 +37,8 @@ class DataQueryTurnType(str, Enum):
     CONTEXT_ACTION = "context_action"
     SKILL_EXECUTION = "skill_execution"
     CLARIFICATION_OR_NON_DATA = "clarification_or_non_data"
+    FORMAT_CORRECTION = "format_correction"
+    FEDERATED_DATA_QUERY = "federated_data_query"
 
 
 DATA_QUERY_TURN_TYPE_LABELS: dict[DataQueryTurnType, str] = {
@@ -46,7 +48,10 @@ DATA_QUERY_TURN_TYPE_LABELS: dict[DataQueryTurnType, str] = {
     DataQueryTurnType.CONTEXT_ACTION: "上下文动作",
     DataQueryTurnType.SKILL_EXECUTION: "技能执行",
     DataQueryTurnType.CLARIFICATION_OR_NON_DATA: "需澄清或非查数请求",
+    DataQueryTurnType.FORMAT_CORRECTION: "样式与图表微调",
+    DataQueryTurnType.FEDERATED_DATA_QUERY: "跨数据集联邦查询",
 }
+
 
 
 def data_query_turn_type_label(turn_type: DataQueryTurnType) -> str:
@@ -77,6 +82,26 @@ def _classification_for_turn_type(
             requires_fresh_data=False,
             requires_few_shot=False,
             requires_sql_query=False,
+            skip_intent_llm=skip_intent_llm,
+            intent=IntentType.DATA_QUERY,
+        )
+    if turn_type == DataQueryTurnType.FORMAT_CORRECTION:
+        return DataQueryTurnClassification(
+            turn_type=turn_type,
+            reasoning=reasoning,
+            requires_fresh_data=False,
+            requires_few_shot=False,
+            requires_sql_query=False,
+            skip_intent_llm=skip_intent_llm,
+            intent=IntentType.DATA_QUERY,
+        )
+    if turn_type == DataQueryTurnType.FEDERATED_DATA_QUERY:
+        return DataQueryTurnClassification(
+            turn_type=turn_type,
+            reasoning=reasoning,
+            requires_fresh_data=True,
+            requires_few_shot=True,
+            requires_sql_query=True,
             skip_intent_llm=skip_intent_llm,
             intent=IntentType.DATA_QUERY,
         )
@@ -356,15 +381,18 @@ async def _classify_with_llm(
 4. context_action：对已有上下文或上一轮结果执行保存、导出、发送、记住、沉淀为技能等动作。
 5. skill_execution：显式要求使用/执行某个技能。
 6. clarification_or_non_data：当前不是明确查数或元数据探索请求，或指代过于模糊，需要先请用户补充业务数据对象、时间范围、指标/维度等信息。
+7. format_correction：不需要重新查库，只是对图表的展现形式或样式进行微调（如将折线图改为柱状图、给特定数据标红、添加图表参考线等样式调整）。
+8. federated_data_query：用户显式要求跨数据集/跨库/跨源/联邦/联合查询，或明确要求关联多个数据集、数据源、库或表。
 
 约束：
-- 如果选择 reuse_previous_result，必须确认“存在上一轮结构化查询结果”为 true。
+- 如果选择 reuse_previous_result 或 format_correction，必须确认“存在上一轮结构化查询结果”为 true。
 - 如果用户提出新的查询对象、时间范围或筛选条件，选择 new_data_query。
+- 如果用户明确要求跨数据集、跨库、联邦查询，或要求关联多个数据集/数据源/库/表，选择 federated_data_query。
 - 如果用户只是提问元数据字段/分析口径，选择 metadata_query。
 - 只返回 JSON，不要解释，不要 Markdown。
 
 JSON 格式：
-{{"turn_type":"new_data_query|metadata_query|reuse_previous_result|context_action|skill_execution|clarification_or_non_data","reasoning":"一句中文原因"}}
+{{"turn_type":"new_data_query|metadata_query|reuse_previous_result|context_action|skill_execution|clarification_or_non_data|format_correction|federated_data_query","reasoning":"一句中文原因"}}
 
 【存在上一轮结构化查询结果】
 {str(has_last_data_result).lower()}
@@ -405,6 +433,31 @@ def looks_like_metadata_query(q: str) -> bool:
     return any(kw in q_clean for kw in metadata_keywords)
 
 
+def looks_like_chart_format_correction(q: str) -> bool:
+    """识别样式/图表类型微调，如“改为折线图”、“饼图换成柱状图”、“柱子标红”等。"""
+    q_clean = q.lower().strip()
+    fresh_query_patterns = [
+        r"(重新|再|重新再)?(查询|查一下|查下|查|统计|筛选|过滤|拉取)",
+        r"按.{1,12}(分组|维度|地区|区域|部门|用户|销售|客户)",
+        r"(本月|上月|本周|上周|今天|昨天|最近).{0,12}(数据|记录|明细|统计)",
+    ]
+    if any(re.search(pat, q_clean) for pat in fresh_query_patterns):
+        return False
+    patterns = [
+        r"改(成|为)(折线|柱状|饼|环形|面积|条形|雷达|散点|漏斗|热力|图)",
+        r"(折线|柱状|饼|环形|面积|条形|雷达|散点|漏斗|热力|图)改(成|为)",
+        r"图表改(成|为)",
+        r"换成(折线|柱状|饼|环形|面积|条形|雷达|散点|漏斗|热力|图)",
+        r"标红",
+        r"颜色改为",
+        r"字体大小",
+        r"图例",
+        r"显示数值",
+        r"隐藏数值"
+    ]
+    return any(re.search(pat, q_clean) for pat in patterns)
+
+
 async def resolve_data_query_turn_classification(
     user_query: str,
     messages: Optional[List[Dict[str, str]]],
@@ -427,6 +480,20 @@ async def resolve_data_query_turn_classification(
         classification = _classification_for_turn_type(
             DataQueryTurnType.METADATA_QUERY,
             "检测到元数据或分析口径探索意图，仅需检索数据集定义后回答，不强制执行 SQL",
+            skip_intent_llm=True,
+        )
+        intent_info = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=1.0,
+            reasoning=classification.reasoning,
+            entities=[],
+        )
+        return classification, intent_info, 0.0
+
+    if has_last_data_result and looks_like_chart_format_correction(q):
+        classification = _classification_for_turn_type(
+            DataQueryTurnType.FORMAT_CORRECTION,
+            "检测到样式微调或图表形式变更请求，且存在可复用结构化查询结果，进行短路渲染",
             skip_intent_llm=True,
         )
         intent_info = IntentResponse(

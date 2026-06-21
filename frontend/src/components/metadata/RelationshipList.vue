@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, computed, nextTick } from "vue";
 import { metadataApi } from "../../api/metadata";
-import type { Relationship, Table } from "../../api/metadata";
+import type { Relationship, Table, AllTablesDataset } from "../../api/metadata";
 import { useUser } from "../../composables/useUser";
 
 const { isAdmin: _isAdmin, hasPermission } = useUser();
@@ -34,12 +34,28 @@ const form = ref<Relationship>({
 const sourceField = ref("");
 const targetField = ref("");
 
+// 跨数据集：全平台所有数据集 + 表列表
+const allTablesList = ref<AllTablesDataset[]>([]);
+
 const sourceColumns = computed(() => {
   const table = props.tables.find((t) => t.id === form.value.source_table_id);
   return table ? table.columns : [];
 });
 
+// targetColumns 改为从 allTablesList 中查找，支持跨数据集
 const targetColumns = computed(() => {
+  for (const ds of allTablesList.value) {
+    const found = ds.tables.find((t) => t.id === form.value.target_table_id);
+    if (found) {
+      // 优先从 allTablesList (可能包含跨数据集的 columns) 中获取
+      if (found.columns && found.columns.length > 0) {
+        return found.columns;
+      }
+      // 先看 props.tables 有没有（同数据集优先）
+      const localTable = props.tables.find((t) => t.id === form.value.target_table_id);
+      return localTable ? localTable.columns : [];
+    }
+  }
   const table = props.tables.find((t) => t.id === form.value.target_table_id);
   return table ? table.columns : [];
 });
@@ -49,11 +65,21 @@ const applyJoinCondition = () => {
     const sourceTable = props.tables.find(
       (t) => t.id === form.value.source_table_id
     );
-    const targetTable = props.tables.find(
-      (t) => t.id === form.value.target_table_id
-    );
-    if (sourceTable && targetTable) {
-      form.value.join_condition = `${sourceTable.physical_name}.${sourceField.value} = ${targetTable.physical_name}.${targetField.value}`;
+    // 目标表从 allTablesList 中找
+    let targetPhysicalName = "";
+    for (const ds of allTablesList.value) {
+      const found = ds.tables.find((t) => t.id === form.value.target_table_id);
+      if (found) {
+        targetPhysicalName = found.physical_name;
+        break;
+      }
+    }
+    if (!targetPhysicalName) {
+      const localTarget = props.tables.find((t) => t.id === form.value.target_table_id);
+      if (localTarget) targetPhysicalName = localTarget.physical_name;
+    }
+    if (sourceTable && targetPhysicalName) {
+      form.value.join_condition = `${sourceTable.physical_name}.${sourceField.value} = ${targetPhysicalName}.${targetField.value}`;
     }
   }
 };
@@ -83,6 +109,16 @@ const fetchRelationships = async () => {
     error.value = "无法加载关系列表";
   } finally {
     loading.value = false;
+  }
+};
+
+// 获取全平台表列表（用于跨数据集目标表选择）
+const fetchAllTables = async () => {
+  try {
+    const res = await metadataApi.getAllTables();
+    allTablesList.value = res.data;
+  } catch (e) {
+    console.error("[RelationshipList] Failed to fetch all tables:", e);
   }
 };
 
@@ -176,16 +212,29 @@ const handleSave = async () => {
   }
 };
 
-// Helpers for Display
+// 判断某个 table_id 是否属于当前数据集（源数据集）
+const isCurrentDataset = (tableId: number) => {
+  return props.tables.some((t) => t.id === tableId);
+};
+
+// 获取表名（支持跨数据集，回显格式为 "数据集名.表名"）
 const getTableName = (id: number) => {
-  const t = props.tables.find((t) => t.id === id);
-  return t
-    ? t.physical_name + (t.term ? ` (${t.term})` : "")
-    : `Unknown(${id})`;
+  // 先在当前数据集找
+  const local = props.tables.find((t) => t.id === id);
+  if (local) return local.physical_name + (local.term ? ` (${local.term})` : "");
+  // 再在跨数据集列表找
+  for (const ds of allTablesList.value) {
+    const t = ds.tables.find((t) => t.id === id);
+    if (t) return `${ds.dataset_name}.${t.physical_name}${t.term ? ` (${t.term})` : ""}`;
+  }
+  return `Unknown(${id})`;
 };
 
 watch(() => props.datasetId, fetchRelationships);
-onMounted(fetchRelationships);
+onMounted(() => {
+  fetchRelationships();
+  fetchAllTables();
+});
 </script>
 
 <template>
@@ -196,9 +245,7 @@ onMounted(fetchRelationships);
       <button
         v-if="hasPermission('element:metadata:edit')"
         @click="openCreate"
-        :disabled="tables.length < 2"
-        class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-all shadow-md flex items-center gap-2 text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-        :title="tables.length < 2 ? '至少需要两张表才能创建关系' : ''"
+        class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-all shadow-md flex items-center gap-2 text-sm font-bold"
       >
         <svg
           class="w-4 h-4"
@@ -264,6 +311,13 @@ onMounted(fetchRelationships);
         <div
           class="flex-1 flex flex-col md:flex-row items-center justify-center xl:justify-start gap-3 min-w-0"
         >
+          <!-- 跨数据集徽章 -->
+          <span
+            v-if="!isCurrentDataset(r.target_table_id)"
+            class="shrink-0 px-2 py-1 text-[10px] font-bold bg-amber-500 text-white rounded shadow-sm uppercase tracking-wider"
+          >
+            跨数据集
+          </span>
           <!-- Source -->
           <div
             class="px-3 py-2 bg-blue-50 text-blue-700 rounded-lg text-xs font-mono border border-blue-100 flex items-center gap-2 max-w-full md:max-w-[240px] truncate"
@@ -325,6 +379,11 @@ onMounted(fetchRelationships);
               />
             </svg>
             <span class="truncate">{{ getTableName(r.target_table_id) }}</span>
+            <!-- 跨数据集标记 -->
+            <span
+              v-if="!isCurrentDataset(r.target_table_id)"
+              class="ml-1 px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-700 rounded border border-amber-200 whitespace-nowrap shrink-0"
+            >跨库</span>
           </div>
         </div>
 
@@ -484,15 +543,34 @@ onMounted(fetchRelationships);
               <label class="block text-sm font-medium text-gray-700 mb-1"
                 >目标表 (Right)</label
               >
+              <!-- 跨数据集分组下拉 -->
               <select
                 v-model="form.target_table_id"
                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
               >
-                <option v-for="t in tables" :key="t.id" :value="t.id">
-                  {{ t.physical_name }} {{ t.term ? `(${t.term})` : "" }}
-                </option>
+                <!-- 当前数据集（同库关联）-->
+                <optgroup :label="'当前数据集'">
+                  <option v-for="t in tables" :key="t.id" :value="t.id">
+                    {{ t.physical_name }} {{ t.term ? `(${t.term})` : "" }}
+                  </option>
+                </optgroup>
+                <!-- 其他数据集（跨库关联）-->
+                <template v-for="ds in allTablesList" :key="ds.dataset_id">
+                  <optgroup
+                    v-if="ds.tables.some(t => !tables.find(lt => lt.id === t.id))"
+                    :label="`${ds.display_name} [跨数据集]`"
+                  >
+                    <option
+                      v-for="t in ds.tables.filter(t => !tables.find(lt => lt.id === t.id))"
+                      :key="t.id"
+                      :value="t.id"
+                    >
+                      {{ t.physical_name }} {{ t.term ? `(${t.term})` : "" }}
+                    </option>
+                  </optgroup>
+                </template>
               </select>
-              <!-- Field Selector -->
+              <!-- Field Selector：跨数据集时字段无法自动推断，提示手动填写 -->
               <div class="mt-2">
                 <label
                   class="block text-[10px] uppercase font-bold text-gray-400 mb-1"

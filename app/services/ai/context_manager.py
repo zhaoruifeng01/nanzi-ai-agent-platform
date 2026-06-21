@@ -205,6 +205,7 @@ class AgentContextManager:
         conversation_id: Optional[str] = None,
         knowledge_dataset_ids: Optional[List[str]] = None,
         require_explicit_dataset: bool = False,
+        trace_buffer: Optional[List[Any]] = None,
     ):
         """
         Setup the execution context (debug options + agent config).
@@ -281,5 +282,6 @@ class AgentContextManager:
             conversation_id=conversation_id,
             is_admin=is_admin_val,
             api_key=api_key_val,
-            user_dimensions=user_dims
+            user_dimensions=user_dims,
+            trace_buffer=trace_buffer or []
         ))

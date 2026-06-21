@@ -79,6 +79,26 @@ export interface Relationship {
   target_table_name?: string;
 }
 
+// 跨数据集 all-tables 接口返回类型
+export interface AllTablesColumn {
+  physical_name: string;
+  term: string;
+}
+
+export interface AllTablesTable {
+  id: number;
+  physical_name: string;
+  term: string;
+  columns?: AllTablesColumn[];
+}
+
+export interface AllTablesDataset {
+  dataset_id: number;
+  dataset_name: string;
+  display_name: string;
+  tables: AllTablesTable[];
+}
+
 export const metadataApi = {
   // Datasets
   getDatasets: () => axios.get<Dataset[]>(`${API_BASE}/datasets`),
@@ -132,6 +152,8 @@ export const metadataApi = {
     axios.put<Relationship>(`${API_BASE}/relationships/${id}`, data),
   deleteRelationship: (id: number) =>
     axios.delete(`${API_BASE}/relationships/${id}`),
+  getAllTables: () =>
+    axios.get<AllTablesDataset[]>(`${API_BASE}/all-tables`),
 
   // AI Assistant / Import (Mock for Phase 4)
   analyzeDDL: (ddl: string) =>

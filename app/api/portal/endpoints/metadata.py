@@ -230,6 +230,34 @@ async def list_relationships(dataset_id: int, conn: AsyncSession = Depends(get_d
     """获取数据集相关的关系"""
     return await MetadataService.get_relationships_by_dataset(conn, dataset_id)
 
+
+@router.get("/all-tables")
+async def list_all_tables(
+    conn: AsyncSession = Depends(get_db_session),
+    user: dict = Depends(require_permission("menu", "menu:metadata")),
+):
+    """获取所有有权限数据集及其表，按数据集分组，用于跨数据集关联关系配置的目标表选择器。
+
+    返回格式：
+    [
+      {
+        "dataset_id": 1,
+        "dataset_name": "hr_data",
+        "display_name": "HR 人员数据",
+        "tables": [
+          {"id": 10, "physical_name": "employees", "term": "员工信息表"}
+        ]
+      }
+    ]
+    """
+    user_id = int(user.get("user_id") or 0) or None
+    is_admin = user.get("role") == "admin"
+    return await MetadataService.get_all_tables_with_dataset(
+        conn,
+        user_id=user_id,
+        is_admin=is_admin,
+    )
+
 # --- Table APIs ---
 
 @router.post("/datasets/{dataset_id}/tables", response_model=TableResponse, dependencies=[Depends(require_permission("element", "element:metadata:edit"))])

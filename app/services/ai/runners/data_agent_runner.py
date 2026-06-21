@@ -131,6 +131,43 @@ _SQL_TOOL_RESULT_DELIMITER = "--- 结果 ---"
 _SQL_TOOL_ERROR_DELIMITER = "--- 错误 ---"
 
 
+def _extract_schema_dataset_names(schema_output: str) -> set[str]:
+    return {
+        match.strip()
+        for match in re.findall(r"^\s*dataset:\s*([^\s]+)", schema_output or "", re.MULTILINE)
+        if match.strip()
+    }
+
+
+def _looks_like_explicit_federated_query(user_question: str) -> bool:
+    q = (user_question or "").strip().lower()
+    if not q:
+        return False
+    explicit_terms = (
+        "跨数据集",
+        "跨库",
+        "跨源",
+        "联邦查询",
+        "多数据集",
+        "多个数据集",
+        "不同数据集",
+        "不同库",
+        "联合查询",
+    )
+    if any(term in q for term in explicit_terms):
+        return True
+    has_join_action = any(term in q for term in ("关联", "join", "连接", "合并"))
+    has_multi_source_hint = any(term in q for term in ("数据集", "数据源", "库", "表"))
+    return has_join_action and has_multi_source_hint
+
+
+def _should_upgrade_to_federated_query(schema_output: str, user_question: str) -> bool:
+    return (
+        len(_extract_schema_dataset_names(schema_output)) > 1
+        and _looks_like_explicit_federated_query(user_question)
+    )
+
+
 class _ForcedFirstToolChoiceModel:
     """Inject tool_choice on the first model call of a repair round."""
 
@@ -386,6 +423,18 @@ class DataAgentRunner(BaseExecutor):
         except (TypeError, ValueError):
             return None
 
+    def _current_user_is_admin(self) -> bool:
+        if not self.user_info:
+            return False
+        if bool(self.user_info.get("is_admin")):
+            return True
+        role = str(
+            self.user_info.get("role")
+            or self.user_info.get("role_name")
+            or ""
+        ).strip().lower()
+        return role == "admin" or role == "administrator" or role == "平台管理员"
+
     async def _resolve_max_steps(self) -> int:
         max_steps_str = await ConfigService.get("agent_max_iterations")
         raw_max = int(max_steps_str) if max_steps_str else 6
@@ -469,6 +518,39 @@ class DataAgentRunner(BaseExecutor):
                 state.followup_data_saved = True
         except Exception as e:
             logger.warning("[DataAgentRunner] Failed to save last data result: %s", e)
+
+    async def _maybe_enrich_sql_tool_result(
+        self,
+        *,
+        tool_args: dict[str, Any],
+        output: Any,
+        parsed_output: Any,
+    ) -> tuple[Any, Any, Any | None]:
+        if not isinstance(parsed_output, dict) or not self._is_structured_sql_result(parsed_output):
+            return output, parsed_output, None
+        dataset_name = str(tool_args.get("dataset_name") or "").strip()
+        if not dataset_name:
+            return output, parsed_output, None
+        try:
+            from app.core.orm import AsyncSessionLocal
+            from app.services.ai.dimension_enrichment_service import DimensionEnrichmentService
+
+            async with AsyncSessionLocal() as session:
+                enrichment = await DimensionEnrichmentService.enrich_sql_result(
+                    session,
+                    result_payload=parsed_output,
+                    source_dataset_name=dataset_name,
+                    user_id=self._current_user_id(),
+                    is_admin=self._current_user_is_admin(),
+                    agent_context=None,
+                )
+            if not enrichment.applied:
+                return output, parsed_output, enrichment
+            enriched_output = json.dumps(enrichment.payload, ensure_ascii=False)
+            return enriched_output, enrichment.payload, enrichment
+        except Exception as e:
+            logger.warning("[DataAgentRunner] Dimension enrichment skipped: %s", e, exc_info=True)
+            return output, parsed_output, None
 
     def resolve_has_data_output(self) -> bool:
         """本轮 ChatBI 是否产出了可复用的结构化查数结果（供前端展示「可视化分析」入口）。"""
@@ -1274,6 +1356,19 @@ class DataAgentRunner(BaseExecutor):
         self,
         history: List[Dict[str, str]],
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+        async with TraceSpanContext(
+            trace_buffer=self.trace_buffer,
+            event_type="agent_execution",
+            span_name="DataAgentRunner",
+        ):
+            async for chunk in self._execute_raw(history):
+                yield chunk
+
+    async def _execute_raw(
+        self,
+        history: List[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         model_name = resolve_runtime_model_name(self.config, prefer_synthesis=True)
         incompatible_msg = await ensure_multimodal_compatible(history, model_name)
         if incompatible_msg:
@@ -1312,6 +1407,25 @@ class DataAgentRunner(BaseExecutor):
             "turn_type": turn_cls.turn_type.value,
             "execution_time_ms": turn_elapsed_ms,
         }
+
+        if turn_cls.turn_type == DataQueryTurnType.FORMAT_CORRECTION:
+            if not last_data_result_for_turn:
+                last_data_result_for_turn = await self._load_last_data_result_with_retry()
+            if last_data_result_for_turn:
+                async for chunk in self._synthesize_format_correction(
+                    runtime_messages,
+                    self.config.system_prompt or "",
+                    user_question,
+                    last_data_result_for_turn,
+                ):
+                    yield chunk
+            else:
+                async for chunk in self._yield_missing_reusable_result_clarification(
+                    history,
+                    user_question=user_question,
+                ):
+                    yield chunk
+            return
 
         if turn_cls.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT:
             if not last_data_result_for_turn:
@@ -1455,6 +1569,50 @@ class DataAgentRunner(BaseExecutor):
                 schema_binding_summary = self._build_schema_binding_summary(prefetched_schema_output)
                 if schema_binding_summary:
                     system_content += f"\n\n{schema_binding_summary}"
+
+                # 跨数据集联邦查询动态升级检测：必须有显式跨数据集意图，schema 补全本身只作为辅助证据。
+                datasets = sorted(_extract_schema_dataset_names(prefetched_schema_output))
+                if _should_upgrade_to_federated_query(prefetched_schema_output, self._standalone_query):
+                    turn_cls.turn_type = DataQueryTurnType.FEDERATED_DATA_QUERY
+                    yield {
+                        "type": "log",
+                        "id": f"chatbi_turn_upgrade_{uuid.uuid4().hex[:8]}",
+                        "title": "ChatBI 请求类别升级",
+                        "details": f"检测到请求涉及跨数据集联合查询 (共 {len(datasets)} 个数据集: {', '.join(datasets)})，已自动升级为跨数据集联邦查询。",
+                        "status": "success",
+                        "category": "intent",
+                        "turn_type": turn_cls.turn_type.value,
+                        "execution_time_ms": 0,
+                    }
+
+                    self._last_run_state = _DataRunState(requires_fresh_data=True)
+                    from app.services.ai.executors.federated_executor import FederatedQueryExecutor
+                    from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
+                    executor = FederatedQueryExecutor(
+                        agent_runner=self,
+                        schema_output=prefetched_schema_output,
+                        datasets=datasets,
+                    )
+                    federated_content = ""
+                    async for chunk in executor.execute(
+                        runtime_messages=runtime_messages,
+                        system_prompt=system_content,
+                        user_question=self._standalone_query,
+                    ):
+                        # 收集流式 content 用于事后去重检测
+                        if chunk.get("content"):
+                            federated_content += chunk["content"]
+                        yield chunk
+                    # 事后去重：若 LLM 将回答输出了两遍，发 retraction 修正
+                    if federated_content:
+                        deduped = finalize_visible_reply(federated_content)
+                        if deduped != federated_content:
+                            logger.warning(
+                                "[DataAgentRunner][Federated] Collapsed duplicated content (%d -> %d chars)",
+                                len(federated_content), len(deduped),
+                            )
+                            yield {"type": "retraction", "content": deduped}
+                    return
 
         llm_handle = await AgentConfigProvider.get_configured_llm(
             streaming=True,
@@ -1606,7 +1764,7 @@ class DataAgentRunner(BaseExecutor):
         interrupted = False
         initial_tool_choice = self._resolve_initial_tool_choice(state)
         original_model = agent.model
-        
+
         # 优化：如果在 prefetch 阶段就已经确定 schema 检索未命中 (schema_miss)，直接短路跳过首轮 LLM 交互以节省延迟与 Token，下沉进后面的修复轮次
         if state.schema_miss:
             logger.info("[DataAgentRunner] Prefetch schema miss, skipping initial LLM interaction and entering repair directly.")
@@ -2235,7 +2393,7 @@ class DataAgentRunner(BaseExecutor):
             org_path = self.user_info.get("org_path")
             dept_code = self.user_info.get("dept_code")
             role = self.user_info.get("role_name") or self.user_info.get("role")
-            
+
             user_profile = AgentServicePrompts.user_context_message(
                 user_id=user_id or "unknown",
                 raw_name=raw_name,
@@ -2448,6 +2606,118 @@ class DataAgentRunner(BaseExecutor):
                 len(full_synthesis_content),
                 len(deduped_synthesis),
             )
+            full_synthesis_content = deduped_synthesis
+            if content_emitted:
+                yield {"type": "retraction", "content": full_synthesis_content}
+
+        synthesis_tokens = extract_tokens_from_message(last_synthesis_chunk)
+        self._increment_step()
+        self.trace_buffer.append(
+            AgentExecutionStep(
+                step_number=self.step_counter,
+                event_type="synthesis",
+                agent_name=self.config.agent_name,
+                model=str(getattr(final_llm, "model_name", self.config.synthesis_model_name or self.config.model_name)),
+                temperature=float(self.config.synthesis_temperature or self.config.temperature or 0),
+                tool_output={"content": full_synthesis_content, "reused_last_data_result": True},
+                raw_log=full_synthesis_content,
+                prompt_tokens=synthesis_tokens["prompt_tokens"],
+                completion_tokens=synthesis_tokens["completion_tokens"],
+                total_tokens=synthesis_tokens["total_tokens"],
+                execution_time_ms=(time.time() - start_synthesis) * 1000,
+                timestamp=datetime.fromtimestamp(start_synthesis),
+            )
+        )
+
+    async def _synthesize_format_correction(
+        self,
+        runtime_messages: List[Any],
+        system_prompt: str,
+        user_question: str,
+        last_result: Dict[str, Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        start_synthesis = time.time()
+        yield {
+            "type": "log",
+            "id": f"format_{uuid.uuid4().hex[:8]}",
+            "title": "样式与图表微调",
+            "details": "检测到图表样式或展示微调请求，直接复用上一轮数据，无需重新查数。",
+            "status": "success",
+        }
+        yield {"type": "thinking", "status": "continuing"}
+
+        prompt_without_menu = (system_prompt or "").replace(
+            "{dataset_menu}",
+            DataQueryPrompts.REUSE_DATASET_MENU_PLACEHOLDER,
+        )
+        safe_result = dict(last_result)
+        for r_key in ("rows", "items", "data", "records"):
+            val = safe_result.get(r_key)
+            if isinstance(val, list) and len(val) > 50:
+                safe_result[r_key] = val[:50]
+                safe_result["_display_note"] = "部分明细数据由于上下文长度限制已在此处被省略..."
+                break
+        result_json = json.dumps(safe_result, ensure_ascii=False, indent=2)
+
+        from app.services.ai.runtime.agentscope.compat import HumanMessage
+
+        synthesis_messages = [SystemMessage(content=prompt_without_menu)]
+        synthesis_messages.extend(
+            message
+            for message in runtime_messages[-6:-1]
+            if isinstance(message, HumanMessage) and getattr(message, "content", None)
+        )
+        synthesis_messages.append(
+            HumanMessage(content=DataQueryPrompts.format_correction_user_message(user_question, result_json))
+        )
+
+        final_llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+        full_synthesis_content = ""
+        content_emitted = False
+        generation_start = None
+        gen_log_id = f"gen_{uuid.uuid4().hex[:8]}"
+        last_synthesis_chunk = None
+        try:
+            async for chunk in final_llm.astream(normalize_messages_for_llm(synthesis_messages)):
+                last_synthesis_chunk = chunk
+                content = str(getattr(chunk, "content", "") or "")
+                if not content:
+                    continue
+                if not content_emitted:
+                    generation_start = time.time()
+                    content_emitted = True
+                    yield {
+                        "type": "log",
+                        "id": gen_log_id,
+                        "title": "✨ 开始生成微调样式",
+                        "status": "pending",
+                        "started_at": int(generation_start * 1000),
+                    }
+                full_synthesis_content += content
+                yield {"content": content}
+            if generation_start:
+                yield {
+                    "type": "log",
+                    "id": gen_log_id,
+                    "title": "✨ 微调样式生成完成",
+                    "status": "success",
+                    "execution_time_ms": (time.time() - generation_start) * 1000,
+                }
+        except Exception as syn_err:
+            logger.error("[DataAgentRunner] Chart format correction synthesis failed: %s", syn_err)
+            fallback = DataQueryPrompts.FOLLOWUP_SYNTHESIS_FALLBACK
+            full_synthesis_content = fallback
+            yield {
+                "type": "log",
+                "id": f"syn_err_{uuid.uuid4().hex[:6]}",
+                "title": "⚠️ 样式生成失败",
+                "details": str(syn_err),
+                "status": "error",
+            }
+            yield {"content": fallback}
+
+        deduped_synthesis = finalize_visible_reply(full_synthesis_content)
+        if deduped_synthesis != full_synthesis_content:
             full_synthesis_content = deduped_synthesis
             if content_emitted:
                 yield {"type": "retraction", "content": full_synthesis_content}
@@ -2835,8 +3105,42 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                enrichment_result = None
                 if should_save_followup:
+                    output, parsed_output, enrichment_result = await self._maybe_enrich_sql_tool_result(
+                        tool_args=tool_args,
+                        output=output,
+                        parsed_output=parsed_output,
+                    )
+                    state.tool_outputs[tool_id] = output
+                    state.last_successful_sql_output = output
                     await self._save_last_data_result_for_followups(tool_args, parsed_output)
+                    if enrichment_result is not None and getattr(enrichment_result, "applied", False):
+                        self._increment_step()
+                        enrichment_details = "\n".join(getattr(enrichment_result, "logs", []) or [])
+                        self.trace_buffer.append(
+                            AgentExecutionStep(
+                                step_number=self.step_counter,
+                                event_type="tool_call",
+                                agent_name=self.config.agent_name,
+                                model=getattr(native_model, "model", self.config.model_name),
+                                temperature=float(self.config.temperature or 0),
+                                tool_name="dimension_enrichment",
+                                tool_input={"dataset_name": tool_args.get("dataset_name")},
+                                tool_output={"logs": getattr(enrichment_result, "logs", [])},
+                                raw_log=enrichment_details,
+                                execution_time_ms=0,
+                                timestamp=datetime.now(),
+                            )
+                        )
+                        yield {
+                            "type": "log",
+                            "id": f"{tool_id}:dimension_enrichment",
+                            "title": "跨数据集维度补全",
+                            "details": enrichment_details or "已根据 relation 补全跨数据集维度字段。",
+                            "status": "success",
+                            "execution_time_ms": 0,
+                        }
             self._record_tool_call_signature(state, tool_name, tool_args)
             state.halt_current_react = (
                 state.sql_error

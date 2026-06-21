@@ -1,6 +1,6 @@
 <template>
   <div
-    class="flex h-full bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans overflow-hidden"
+    class="flex h-full bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans overflow-hidden relative"
   >
     <!-- Sidebar (Desktop/Mobile) -->
     <ChatHistorySidebar
@@ -38,7 +38,7 @@
       :class="{ 'sm:mr-[min(28rem,100vw)]': showPortalDrawer && portalPinned && !isMobile }"
     >
       <!-- Dynamic Header Status (New) -->
-      <div 
+      <div
         class="h-12 border-b border-gray-100 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-4 flex items-center justify-between z-30 flex-shrink-0"
       >
         <div class="flex items-center space-x-3 overflow-hidden">
@@ -86,7 +86,7 @@
                 </div>
             </div>
         </div>
-        
+
         <div class="flex items-center space-x-2">
             <!-- Fullscreen Button (desktop only) -->
             <button
@@ -142,9 +142,9 @@
         </div>
       </div>
 
-      <ExpertCapsule 
-          :config="config" 
-          :current-expert-agent="currentExpertAgent" 
+      <ExpertCapsule
+          :config="config"
+          :current-expert-agent="currentExpertAgent"
           :show-auto-routing-hint="showAutoRoutingHint"
           :show-multi-agent-hint="showMultiAgentHint"
           :multi-agent-hint-message="multiAgentHintMessage"
@@ -153,11 +153,11 @@
       />
 
       <!-- Agent Selector Popup -->
-      <transition 
-        enter-active-class="transition-all duration-500 cubic-bezier(0.16, 1, 0.3, 1)" 
-        enter-from-class="opacity-0 translate-y-[-20px] scale-95 blur-sm" 
-        enter-to-class="opacity-100 translate-y-0 scale-100 blur-0" 
-        leave-active-class="transition-all duration-300 cubic-bezier(0.7, 0, 0.84, 0)" 
+      <transition
+        enter-active-class="transition-all duration-500 cubic-bezier(0.16, 1, 0.3, 1)"
+        enter-from-class="opacity-0 translate-y-[-20px] scale-95 blur-sm"
+        enter-to-class="opacity-100 translate-y-0 scale-100 blur-0"
+        leave-active-class="transition-all duration-300 cubic-bezier(0.7, 0, 0.84, 0)"
         leave-to-class="opacity-0 translate-y-[-10px] scale-90 blur-sm"
       >
         <div v-if="showAgentSelector" class="fixed top-[52px] right-4 w-72 max-h-[70vh] bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl z-50 flex flex-col overflow-hidden" @click.stop>
@@ -165,8 +165,8 @@
             <div class="flex items-center space-x-2">
               <span class="w-1.5 h-4 bg-primary rounded-full"></span>
               <span class="text-xs font-black text-gray-800 dark:text-gray-100 uppercase tracking-widest">选择智能体专家</span>
-              <button 
-                @click.stop="fetchAllowedAgents(true)" 
+              <button
+                @click.stop="fetchAllowedAgents(true)"
                 class="ml-2 text-gray-400 hover:text-primary transition-all p-1 rounded-md hover:bg-white/50 dark:hover:bg-black/20"
                 :class="{ 'animate-spin text-primary': isLoadingAgents }"
                 title="刷新列表"
@@ -188,7 +188,7 @@
               <span class="text-[10px] font-black uppercase tracking-widest">同步中</span>
             </div>
             <!-- Auto Mode Option -->
-            <div 
+            <div
               @click.stop="switchToAuto(); showAgentSelector = false;"
               class="flex items-center space-x-3 p-3 rounded-xl cursor-pointer transition-all border border-transparent"
               :class="config.routingMode === 'auto' ? 'bg-primary/10 border-primary/20 ring-1 ring-primary/10' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'"
@@ -210,8 +210,8 @@
             <div class="h-px bg-gray-100 dark:bg-gray-700 my-2 mx-2"></div>
 
             <!-- Individual Agents -->
-            <div 
-              v-for="agent in allowedAgents" 
+            <div
+              v-for="agent in allowedAgents"
               :key="agent.id"
               @click.stop="switchToExpert(agent.id); showAgentSelector = false;"
               class="flex items-center space-x-3 p-3 rounded-xl cursor-pointer transition-all border border-transparent group"
@@ -349,7 +349,7 @@
       </div>
       <!-- Message List -->
       <div
-        v-for="(msg, index) in displayMessages"
+        v-for="msg in displayMessages"
         :key="msg.id"
         class="flex flex-col space-y-4 animate-fade-in-up"
       >
@@ -366,17 +366,17 @@
         >
           <!-- Editing Mode -->
           <div v-if="editingMsgId === msg.id" class="flex flex-col items-end space-y-2 max-w-[90%] self-end">
-             <textarea 
+             <textarea
                 v-model="editContent"
                 class="w-full p-3 border border-primary/30 rounded-lg shadow-sm focus:ring-2 focus:ring-primary focus:border-primary text-sm min-h-[80px] bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
               ></textarea>
               <div class="flex space-x-2">
-                <button 
-                  @click="cancelEdit" 
+                <button
+                  @click="cancelEdit"
                   class="px-3 py-1 text-xs text-gray-500 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 rounded"
                 >取消</button>
-                <button 
-                  @click="saveAndResend" 
+                <button
+                  @click="saveAndResend"
                   class="px-3 py-1 text-xs text-white bg-primary hover:opacity-90 rounded"
                   :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
                 >发送</button>
@@ -399,7 +399,7 @@
                   </template>
                   <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
                 </template>
-                
+
                 <!-- Attached Files In Bubble -->
                 <div v-if="msg.files && msg.files.length > 0" class="mt-2 space-y-2 border-t border-white/20 pt-2">
                     <div v-for="(file, fIdx) in msg.files" :key="fIdx" class="flex items-center bg-white/10 rounded-lg p-1.5 max-w-xs select-none">
@@ -409,7 +409,7 @@
                           :file="file"
                           clickable
                           class="mr-2 border-white/10"
-                          @click="previewImage"
+                          @click="(url) => handlePreviewImageUrl(url, file.filename)"
                         />
                         <!-- Skill Icon -->
                         <div v-else-if="file.type === 'skill'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2 font-mono">
@@ -429,13 +429,16 @@
                         </div>
                         <div class="flex-1 min-w-0 flex flex-col">
                             <span v-if="file.type === 'skill' || file.type === 'knowledge_base' || file.type === 'memory'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
-                            <a v-else :href="file.url" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            <template v-else>
+                              <span v-if="canPreviewFile(file)" @click="handlePreviewFile(file)" class="text-xs font-bold text-white hover:underline cursor-pointer truncate">{{ file.filename }}</span>
+                              <a v-else :href="resolveFileUrl(file.url)" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            </template>
                             <span class="text-[9px] text-white/70 font-mono">
-                                {{ 
-                                    file.type === 'skill' ? '生态技能' : 
-                                    file.type === 'knowledge_base' ? '知识库' : 
-                                    file.type === 'memory' ? '记忆记录' : 
-                                    formatBytes(file.size) 
+                                {{
+                                    file.type === 'skill' ? '生态技能' :
+                                    file.type === 'knowledge_base' ? '知识库' :
+                                    file.type === 'memory' ? '记忆记录' :
+                                    formatBytes(file.size)
                                 }}
                             </span>
                         </div>
@@ -579,10 +582,10 @@
           <div class="max-w-[90%]">
             <!-- Agent Name (Smart Status Capsule) -->
             <div class="mb-1 ml-1 flex items-center">
-              <div 
+              <div
                 class="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium transition-all duration-500 ease-out border"
-                :class="msg.agentName 
-                  ? 'bg-blue-50/80 border-blue-100 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300 opacity-100 translate-y-0' 
+                :class="msg.agentName
+                  ? 'bg-blue-50/80 border-blue-100 text-blue-700 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300 opacity-100 translate-y-0'
                   : 'opacity-0 translate-y-1 bg-transparent border-transparent'"
               >
                 <!-- Status Indicator Dot (Removed to reduce visual noise) -->
@@ -594,8 +597,8 @@
             <div
               class="px-4 py-3 rounded-2xl rounded-tl-sm shadow-md border border-gray-100 dark:border-gray-700 border-l-4 border-l-primary/60 dark:border-l-primary/40 text-sm leading-relaxed min-h-[46px] transition-all duration-300 relative group/bubble"
               :class="[
-                msg.isThinking 
-                    ? 'bg-slate-50/80 dark:bg-slate-800/80' 
+                msg.isThinking
+                    ? 'bg-slate-50/80 dark:bg-slate-800/80 shimmer-thought-card'
                     : 'bg-white dark:bg-gray-800'
               ]"
             >
@@ -669,7 +672,7 @@
                           {{ Number(idx) + 1 }}
                         </div>
                         <!-- Log Card (Lightweight Row) -->
-                        <div 
+                        <div
                           class="rounded-lg p-2 text-xs transition-all duration-300 cursor-pointer"
                           :class="{
                              'bg-blue-50/50 dark:bg-blue-900/15 border border-blue-100/80 dark:border-blue-800/40 shadow-sm': isActiveThoughtStep(log, msg.isThinking),
@@ -909,6 +912,7 @@
                                                                   :content="msg.content"
                                                                   @quick-question="handleQuickQuestion"
                                                                   @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
+                                                                  @open-canvas="handleOpenCanvas"
                                                                 />
                                                                 <DatasetCapabilityMenu
                                                                   v-else
@@ -920,19 +924,19 @@
                                                                   @execute-saved-report="handleExecuteSavedReport"
                                                                 />
                                 <!-- Typewriter Cursor -->
-                                <span 
-                                  v-if="isProcessing && msg.id === lastAgentMessage?.id && !msg.isThinking" 
+                                <span
+                                  v-if="isProcessing && msg.id === lastAgentMessage?.id && !msg.isThinking"
                                   class="inline-block w-1.5 h-4 ml-1 bg-primary/60 animate-pulse-fast align-middle rounded-sm"
                                   :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
                                                                 ></span>
                                                               </div>
 
                                 <!-- AI Stalled Thinking Prompt (Moved out to be sibling to msg.content) -->
-                                <div 
+                                <div
                                   v-if="isProcessing && msg.id === lastAgentMessage?.id && showStalledPrompt"
                                   class="mt-2"
                                 >
-                                  <span 
+                                  <span
                                     class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-blue-200/55 dark:bg-blue-900/55 border border-blue-200/80 dark:border-blue-900/50 text-[11px] text-blue-600 dark:text-blue-300 select-none animate-fade-in align-middle backdrop-blur-sm shadow-sm"
                                   >
                                     <svg class="w-3 h-3 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
@@ -949,7 +953,7 @@
                                 </div>
                                                                                                                           <!-- Citation Cards -->
                                                                                                                           <div v-if="msg.citations && msg.citations.length > 0" class="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700/50">
-                                                                                                                            <button 
+                                                                                                                            <button
                                                                                                                               @click="msg.isCitationsExpanded = !msg.isCitationsExpanded"
                                                                                                                               class="flex items-center space-x-1.5 mb-2 w-full text-left group/cite-head"
                                                                                                                             >
@@ -957,7 +961,7 @@
                                                                                                                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                                                                                                                                </svg>
                                                                                                                                <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex-1 group-hover/cite-head:text-gray-600 dark:group-hover/cite-head:text-gray-300 transition-colors">引用来源 ({{ msg.citations.length }})</span>
-                                                                                                                               <svg 
+                                                                                                                               <svg
                                                                                                                                   class="w-3.5 h-3.5 text-gray-400 transform transition-transform duration-200"
                                                                                                                                   :class="{ 'rotate-180': msg.isCitationsExpanded }"
                                                                                                                                   fill="none" stroke="currentColor" viewBox="0 0 24 24"
@@ -976,7 +980,7 @@
                                                                                                                                 <div v-show="msg.isCitationsExpanded" class="overflow-hidden">
                                                                                                                                                                   <div class="flex flex-wrap gap-2 py-1">
                                                                                                                                                                      <template v-for="(cite, cIdx) in msg.citations" :key="cIdx">
-                                                                                                                                                                       <div 
+                                                                                                                                                                       <div
                                                                                                                                                                           class="citation-chip group/cite relative flex items-center space-x-2 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer overflow-hidden"
                                                                                                                                                                           :class="cite.similarity && cite.similarity < 0.5
                                                                                                                                                                             ? 'bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200/80 dark:border-amber-700/50 hover:border-amber-400/60'
@@ -1083,6 +1087,18 @@
                 </svg>
                 <span class="hidden sm:inline">重新生成</span>
               </button>
+              <button
+                v-if="msg.trace_id"
+                @click="openEmbedTrace(msg.trace_id)"
+                class="hidden md:flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="链路追踪"
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span>链路追踪</span>
+              </button>
               <!-- Token 消耗显示 -->
               <button
                 v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
@@ -1165,7 +1181,7 @@
       <div
         v-if="showNewMessageHint"
         class="absolute bottom-52 left-1/2 -translate-x-1/2 z-30"
-      >        <button 
+      >        <button
           @click="scrollToBottom(true)"
           class="flex items-center space-x-2 px-4 py-2.5 bg-primary text-white shadow-2xl shadow-primary/40 rounded-full text-xs font-black hover:-translate-y-0.5 active:scale-95 transition-all group"
           :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
@@ -1200,6 +1216,7 @@
         :approval-mode="config.approvalMode"
         :selected-model="config.overrideModel"
         :available-models="availableModels"
+        :active-ltm-preference="activeLtmPreference"
         @update:approval-mode="(mode) => { config.approvalMode = mode; saveRoutingSettings(); }"
         @update:selected-model="(model) => { config.overrideModel = model; saveRoutingSettings(); }"
         @send="sendMessage"
@@ -1216,6 +1233,8 @@
         @select-local-fs="showFileBrowserModal = true"
         @select-memory="openMemorySelector"
         @system-command="handleSystemCommand"
+        @ignore-ltm="handleIgnoreLtm"
+        @dismiss-ltm="activeLtmPreference = null"
       >
       </ChatInput>
     </div>
@@ -1241,7 +1260,7 @@
       class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
       @click.self="showSkillSelector = false"
     >
-      <div 
+      <div
         class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md max-h-[75vh] flex flex-col overflow-hidden animate-fade-in-up"
       >
         <!-- Header -->
@@ -1263,10 +1282,10 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </span>
-            <input 
+            <input
               v-model="skillSelectorSearchQuery"
-              type="text" 
-              placeholder="搜索技能名称、标识或目录..." 
+              type="text"
+              placeholder="搜索技能名称、标识或目录..."
               class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
             />
           </div>
@@ -1288,8 +1307,8 @@
           </div>
 
           <!-- Skill Cards -->
-          <div 
-            v-for="skill in filteredSkillsForSelector" 
+          <div
+            v-for="skill in filteredSkillsForSelector"
             :key="skill.id"
             @click="handleSelectSkill(skill)"
             class="group p-3 bg-white dark:bg-gray-800 border border-gray-150 dark:border-gray-700/60 rounded-xl cursor-pointer hover:border-primary/40 hover:shadow-md active:scale-[0.98] transition-all flex items-start space-x-3"
@@ -1329,7 +1348,7 @@
       class="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in"
       @click.self="showMemorySelector = false"
     >
-      <div 
+      <div
         class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden animate-fade-in-up"
       >
         <!-- Header -->
@@ -1352,10 +1371,10 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </span>
-            <input 
+            <input
               v-model="memorySearchQuery"
-              type="text" 
-              placeholder="搜索记忆内容..." 
+              type="text"
+              placeholder="搜索记忆内容..."
               class="w-full pl-9 pr-4 py-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-xs transition-all"
             />
           </div>
@@ -1377,8 +1396,8 @@
           </div>
 
           <!-- Memory Cards -->
-          <div 
-            v-for="memory in filteredMemoryList" 
+          <div
+            v-for="memory in filteredMemoryList"
             :key="memory.conversation_id"
             @click="toggleMemorySelection(memory.conversation_id)"
             class="group p-3 border rounded-xl cursor-pointer transition-all flex items-start space-x-3"
@@ -1387,7 +1406,7 @@
               : 'bg-white dark:bg-gray-800 border-gray-150 dark:border-gray-700/60 hover:border-primary/30 hover:shadow-sm'"
           >
             <!-- Checkbox -->
-            <div 
+            <div
               class="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
               :class="selectedMemoryIds.has(memory.conversation_id)
                 ? 'bg-primary border-primary'
@@ -1406,8 +1425,8 @@
                     {{ new Date(memory.last_active * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}
                   </span>
                 </span>
-                <button 
-                  @click.stop="openMemoryDetail(memory)" 
+                <button
+                  @click.stop="openMemoryDetail(memory)"
                   class="text-[10px] text-primary hover:text-primary-dark hover:underline flex items-center space-x-0.5"
                   :style="{ color: 'var(--primary-color, #1677ff)' }"
                 >
@@ -1425,7 +1444,7 @@
           <span class="text-[10px] text-gray-400 font-bold">选择后内容将作为引用附加到消息中</span>
           <div class="flex space-x-2">
             <button @click="showMemorySelector = false" class="px-3 py-1.5 text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors font-medium">取消</button>
-            <button 
+            <button
               @click="confirmMemorySelection"
               :disabled="selectedMemoryIds.size === 0"
               class="px-4 py-1.5 text-xs text-white rounded-lg transition-all font-medium disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1442,7 +1461,7 @@
     class="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in"
     @click.self="showMemoryDetailModal = false"
   >
-    <div 
+    <div
       class="bg-white/95 dark:bg-gray-800/95 border border-gray-200/50 dark:border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-fade-in-up"
     >
       <!-- Header -->
@@ -1471,16 +1490,16 @@
 
       <!-- Footer -->
       <div class="px-5 py-3 bg-gray-50/80 dark:bg-gray-800/80 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center flex-shrink-0">
-        <button 
+        <button
           @click="copyMemoryDetailText"
           class="px-3 py-1.5 text-xs text-gray-600 bg-white dark:bg-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors font-medium flex items-center space-x-1"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
           <span>复制内容</span>
         </button>
-        
+
         <div class="flex space-x-2">
-          <button 
+          <button
             @click="toggleMemorySelectionFromDetail(selectedMemoryDetail.conversation_id)"
             class="px-3.5 py-1.5 text-xs text-white rounded-lg transition-all font-medium animate-none"
             :class="selectedMemoryIds.has(selectedMemoryDetail.conversation_id) ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-dark'"
@@ -1500,38 +1519,38 @@
       class="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4"
       @click.self.stop="closeTraceModal"
     >
-        <div 
+        <div
             class="bg-white dark:bg-gray-800 w-full flex flex-col overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700 shadow-2xl transition-all duration-300"
             :class="windowWidth < 640 ? 'h-full rounded-none' : 'max-w-3xl h-[80vh] rounded-xl'"
         >
             <!-- Header -->
-            <div 
+            <div
                 class="px-4 py-3 sm:px-6 sm:py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0"
                 :class="windowWidth < 640 ? 'justify-center relative' : 'justify-between'"
             >
-                <div 
+                <div
                     class="flex items-center gap-2 sm:gap-3 min-w-0"
                     :class="windowWidth < 640 ? 'flex-col gap-0.5' : ''"
                 >
                     <!-- Watermark Number -->
-                    <div 
+                    <div
                         v-if="activeHistoryIndex >= 0"
                         class="flex items-center justify-center w-5 h-5 rounded-full border flex-shrink-0 text-[9px] font-black select-none pointer-events-none -rotate-12 opacity-80"
                         :style="{ color: `hsl(${(activeHistoryIndex * 137.5) % 360}, 70%, 50%)`, borderColor: `hsl(${(activeHistoryIndex * 137.5) % 360}, 70%, 40%, 0.3)` }"
                     >
                         {{ activeHistoryIndex + 1 }}
                     </div>
-                
+
                     <h3 class="text-sm sm:text-lg font-black text-gray-800 dark:text-gray-100 truncate">会话回溯详情</h3>
                     <span v-if="traceLogData?.history?.created_at" class="text-[9px] sm:text-xs text-gray-400 font-mono bg-white dark:bg-gray-700 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-600 flex-shrink-0">
                         {{ formatDate(traceLogData.history.created_at).split(' ')[0] }}
                     </span>
                 </div>
-                <div 
+                <div
                     class="flex items-center gap-1 sm:gap-2 flex-shrink-0"
                     :class="windowWidth < 640 ? 'absolute right-3' : ''"
                 >
-                    <button 
+                    <button
                         v-if="traceLogData"
                         @click.stop="continueChatFromTrace"
                         class="flex items-center space-x-1.5 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-lg transition-all text-xs font-black border border-primary/20"
@@ -1545,28 +1564,28 @@
 
                     <div v-if="traceLogData" class="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
 
-                    <button 
+                    <button
                         @click.stop="openDeleteModal(traceLogData?.trace_id)"
                         class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                         title="删除此记录"
                     >
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                     </button>
-                    
+
                     <div class="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
 
-                    <button 
-                         @click.stop="closeTraceModal" 
+                    <button
+                         @click.stop="closeTraceModal"
                          class="rounded-full transition-colors flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-500"
                          :class="windowWidth < 640 ? 'w-8 h-8' : 'p-2 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white bg-transparent dark:bg-transparent'"
                     >
                         <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
-                    
+
                     <!-- Back Button Helper for Mobile (Left side) -->
-                    <button 
+                    <button
                          v-if="windowWidth < 640"
-                         @click.stop="closeTraceModal" 
+                         @click.stop="closeTraceModal"
                          class="absolute left-[calc(-100vw+60px)] top-1/2 -translate-y-1/2 p-2"
                     >
                        <!-- Invisible hit area extension if needed, or just rely on top right close -->
@@ -1582,7 +1601,7 @@
                 <div v-else-if="traceLogData" class="space-y-4 sm:space-y-6 pb-10">
                     <!-- Conversation Thread Thread -->
                     <div v-if="conversationTurns.length > 0" class="space-y-6">
-                        <div v-for="(turn, tIdx) in conversationTurns" :key="turn.id" 
+                        <div v-for="(turn, tIdx) in conversationTurns" :key="turn.id"
                              class="bg-white dark:bg-gray-800 p-4 rounded-3xl border border-gray-200 dark:border-gray-700 shadow-sm relative overflow-hidden"
                              :class="{'ring-2 ring-primary/20': turn.trace_id === traceLogData.trace_id}"
                         >
@@ -1613,7 +1632,7 @@
 
                             <!-- Embedded Thinking Chain (Steps) -->
                             <div class="mt-6 pt-4 border-t border-gray-50 dark:border-gray-700/50">
-                                <button 
+                                <button
                                     @click="toggleTurnSteps(turn)"
                                     class="flex items-center justify-between w-full p-2.5 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all group/btn"
                                 >
@@ -1624,7 +1643,7 @@
                                     </div>
                                     <div class="flex items-center">
                                         <div v-if="turn.loading" class="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin mr-2"></div>
-                                        <svg 
+                                        <svg
                                             class="w-4 h-4 text-gray-400 transform transition-transform duration-300"
                                             :class="{ 'rotate-180': turn.isExpanded }"
                                             fill="none" stroke="currentColor" viewBox="0 0 24 24"
@@ -1746,7 +1765,7 @@
       class="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
       @click.self="showSaveReportModal = false"
     >
-      <div 
+      <div
         class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700 animate-fade-in-up"
       >
         <!-- Header -->
@@ -1768,9 +1787,9 @@
         <div class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar max-h-[60vh]">
           <div>
             <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">报表名称 <span class="text-red-500">*</span></label>
-            <input 
-              v-model="saveReportForm.title" 
-              type="text" 
+            <input
+              v-model="saveReportForm.title"
+              type="text"
               placeholder="请输入自定义报表名称"
               class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-800 dark:text-gray-200"
             />
@@ -1792,14 +1811,14 @@
 
         <!-- Footer -->
         <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end space-x-3 bg-gray-50/50 dark:bg-gray-800/50">
-          <button 
-            @click="showSaveReportModal = false" 
+          <button
+            @click="showSaveReportModal = false"
             class="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
           >
             取消
           </button>
-          <button 
-            @click="submitSaveReport" 
+          <button
+            @click="submitSaveReport"
             :disabled="isSavingReport"
             class="px-4 py-2 text-xs font-bold text-white bg-primary rounded-xl hover:bg-primary-hover active:bg-primary-active disabled:opacity-50 transition-colors flex items-center space-x-1.5"
           >
@@ -1816,7 +1835,7 @@
       class="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
       @click.self="showHelpModal = false"
     >
-      <div 
+      <div
         class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700 animate-fade-in-up"
         :class="windowWidth < 640 ? 'h-[80vh]' : 'max-h-[85vh]'"
       >
@@ -1899,12 +1918,12 @@
                       <p class="text-[11px] text-gray-500 leading-relaxed">具备强大的语言理解能力，支持日常答疑、方案编写及代码建议。</p>
                     </div>
                   </div>
-                  <div 
+                  <div
                     class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
                   >
                     <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('帮我写一个关于机房节能降耗的宣传文案。', 'help_chat')">“帮我写一个关于机房节能降耗的宣传文案。”</p>
                     <div class="absolute right-2 top-2.5 flex items-center space-x-2">
-                      <button 
+                      <button
                         @click="handleQuickQuestion('帮我写一个关于机房节能降耗的宣传文案。'); showHelpModal = false;"
                         class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
                       >
@@ -1928,12 +1947,12 @@
                       <p class="text-[11px] text-gray-500 leading-relaxed">支持自然语言查询数据库。您可以问：</p>
                     </div>
                   </div>
-                  <div 
+                  <div
                     class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
                   >
                     <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('查询上海区域所有机房的剩余机柜数', 'help_bi')">“查询上海区域所有机房的剩余机柜数”</p>
                     <div class="absolute right-2 top-2.5 flex items-center space-x-2">
-                      <button 
+                      <button
                         @click="handleQuickQuestion('查询上海区域所有机房的剩余机柜数'); showHelpModal = false;"
                         class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
                       >
@@ -1957,12 +1976,12 @@
                       <p class="text-[11px] text-gray-500 leading-relaxed">基于私有文档提供精准问答。您可以问：</p>
                     </div>
                   </div>
-                  <div 
+                  <div
                     class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
                   >
                     <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('本周的 CS 和 ops 工单有哪些？', 'help_kb')">“本周的 CS 和 ops 工单有哪些？”</p>
                     <div class="absolute right-2 top-2.5 flex items-center space-x-2">
-                      <button 
+                      <button
                         @click="handleQuickQuestion('本周的 CS 和 ops 工单有哪些？'); showHelpModal = false;"
                         class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
                       >
@@ -1986,12 +2005,12 @@
                       <p class="text-[11px] text-gray-500 leading-relaxed">支持处理复杂逻辑。您可以问：</p>
                     </div>
                   </div>
-                  <div 
+                  <div
                     class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
                   >
                     <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。', 'help_task')">“查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。”</p>
                     <div class="absolute right-2 top-2.5 flex items-center space-x-2">
-                      <button 
+                      <button
                         @click="handleQuickQuestion('查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。'); showHelpModal = false;"
                         class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
                       >
@@ -2014,7 +2033,7 @@
                常见场景 (点击可复制)
             </h4>
             <div class="space-y-2.5">
-               <div 
+               <div
                  class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
                >
                  <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
@@ -2023,7 +2042,7 @@
                  </div>
                  <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。', 'help_scenario_fault')">“查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。”</p>
                  <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
-                    <button 
+                    <button
                       @click="handleQuickQuestion('查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。'); showHelpModal = false;"
                       class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
                     >
@@ -2035,7 +2054,7 @@
                     </div>
                  </div>
                </div>
-               <div 
+               <div
                  class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
                >
                  <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
@@ -2044,7 +2063,7 @@
                  </div>
                  <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('统计各机房昨天的监控指标数据量，并进行分析。', 'help_scenario_inspect')">“统计各机房昨天的监控指标数据量，并进行分析。”</p>
                  <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
-                    <button 
+                    <button
                       @click="handleQuickQuestion('统计各机房昨天的监控指标数据量，并进行分析。'); showHelpModal = false;"
                       class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
                     >
@@ -2056,7 +2075,7 @@
                     </div>
                  </div>
                </div>
-               <div 
+               <div
                  class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
                >
                  <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
@@ -2065,7 +2084,7 @@
                  </div>
                  <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。', 'help_scenario_audit')">“查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。”</p>
                  <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
-                    <button 
+                    <button
                       @click="handleQuickQuestion('查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。'); showHelpModal = false;"
                       class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
                     >
@@ -2083,8 +2102,8 @@
 
         <!-- Footer -->
         <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex justify-end">
-          <button 
-            @click="showHelpModal = false" 
+          <button
+            @click="showHelpModal = false"
             class="px-6 py-2 bg-primary text-white text-xs font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
             :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
           >
@@ -2309,8 +2328,8 @@
 
                 <!-- Thoughts and Output Text Expansion Panel -->
                 <div v-if="stat.reasoning_content || stat.response_text" class="pt-1 border-t border-gray-100/50 dark:border-gray-700/20">
-                  <button 
-                    @click="toggleStatExpand(stat.call_index)" 
+                  <button
+                    @click="toggleStatExpand(stat.call_index)"
                     class="text-[10px] text-primary dark:text-blue-400 hover:underline flex items-center space-x-1 font-bold focus:outline-none cursor-pointer"
                   >
                     <span>{{ expandedStats[stat.call_index] ? '收起思考与输出' : '展开思考与输出' }}</span>
@@ -2351,6 +2370,21 @@
       @refresh="refreshPortalNavigation"
       @execute-saved-report="handleExecuteSavedReport"
     />
+
+    <!-- ChatCanvas Panel -->
+    <ChatCanvas
+      :visible="canvasVisible"
+      :data="canvasData"
+      @close="canvasVisible = false"
+      @analyze-diff="handleAnalyzeDiff"
+    />
+
+    <!-- TraceLogViewer -->
+    <TraceLogViewer
+      :trace-id="embedTraceId"
+      :visible="showEmbedTrace"
+      @close="showEmbedTrace = false"
+    />
     </div>
 </template>
 <script setup lang="ts">
@@ -2376,12 +2410,14 @@ import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
 import ExpertCapsule from "@/components/embed/ExpertCapsule.vue";
 import ChatSettings from "@/components/embed/ChatSettings.vue";
+import ChatCanvas from "@/components/embed/ChatCanvas.vue";
 import ChatInput from "@/components/embed/ChatInput.vue";
 import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
 import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
+import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 import { normalizeAgentSwitchCommand } from "@/utils/agentSwitchCommands";
 import { createSseLineParser } from "@/utils/chartRenderer";
@@ -2389,7 +2425,6 @@ import { modelApi, type AIModel } from "@/api/model";
 import {
   filterLogsForTurn,
   getTurnPanelTitle,
-  defaultThoughtExpanded,
   countHiddenLogs,
   isActiveThoughtStep,
   isDimmedThoughtStep,
@@ -2406,7 +2441,6 @@ import {
   resolveStreamLogDurationMs,
   finalizeAllPendingStreamLogs,
   markStalePendingStreamLogs,
-  handlePermissionRequired as applyPermissionRequiredEvent,
   resumeExternalExecutionStream,
   type PendingExternalExecution,
   type PendingToolPermission,
@@ -2414,6 +2448,7 @@ import {
 // --- Types ---
 interface LogEntry {
   id: number | string;
+  name?: string;
   title: string;
   details: string;
   status: "pending" | "success" | "error";
@@ -2466,6 +2501,12 @@ interface DatasetNavigationPayload {
   }>;
   markdown?: string;
   is_fallback?: boolean;
+  has_datasets?: boolean;
+  from_cache?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
+  refresh_disabled_reason?: string | null;
+  _failed_at?: string;
 }
 interface Message {
   id: number;
@@ -2611,7 +2652,7 @@ const displayMessages = computed(() => {
       // 5 minutes threshold
       if (currTime - lastTime > 300000) {
          result.push({
-           id: -currTime, 
+           id: -currTime,
            role: 'system',
            content: formatTimeLabel(currMsg.timestamp),
            isTimeLabel: true
@@ -2935,8 +2976,11 @@ const buildOutboundMessages = () => {
   });
 };
 
-const previewImage = (url: string) => {
-  window.open(url, '_blank');
+const embedTraceId = ref("");
+const showEmbedTrace = ref(false);
+const openEmbedTrace = (traceId: string) => {
+  embedTraceId.value = traceId;
+  showEmbedTrace.value = true;
 };
 const isProcessing = ref(false);
 const datasetMenuLoading = ref(false);
@@ -2964,6 +3008,7 @@ const config = reactive({
   enableMultiAgent: true,
   showShortcuts: true,
   enableSqlPlan: false,
+  expandThoughts: false, // 思考过程默认展示开关
 });
 const showAutoRoutingHint = ref(false);
 const showMultiAgentHint = ref(false);
@@ -2978,6 +3023,7 @@ const saveRoutingSettings = () => {
     localStorage.setItem("yovole_override_model", config.overrideModel || "");
     localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
     localStorage.setItem("yovole_embed_theme", config.theme || "light");
+    localStorage.setItem("yovole_expand_thoughts", config.expandThoughts ? "1" : "0");
 };
 const triggerMultiAgentHint = (enabled: boolean) => {
     multiAgentHintMessage.value = enabled ? "已开启多智能体协同模式" : "已切换为单智能体模式";
@@ -3137,6 +3183,34 @@ const startStalePendingTimer = (msg: Message) => {
     }
   }, 10_000);
 };
+const startThoughtTimer = (msg: Message) => {
+  if (thoughtTimer) clearInterval(thoughtTimer);
+  msg.thoughtStartTime = Date.now();
+  msg.thoughtDuration = "0.0";
+  let ticks = 0;
+  const THINKING_MESSAGES = [
+    "正在分析任务...",
+    "正在组织回答...",
+  ];
+  thoughtTimer = setInterval(() => {
+    ticks++;
+    if (msg.thoughtStartTime) {
+      msg.thoughtDuration = (
+        (Date.now() - msg.thoughtStartTime) /
+        1000
+      ).toFixed(1);
+    }
+    // Switch message every 3 seconds (30 * 100ms)
+    if (ticks % 30 === 0) {
+      const stepIndex = ticks / 30;
+      if (stepIndex < THINKING_MESSAGES.length) {
+        msg.thinkingText = THINKING_MESSAGES[stepIndex];
+      } else {
+        msg.thinkingText = "任务处理中，请稍候...";
+      }
+    }
+  }, 100);
+};
 const clearStallTimer = () => {
   if (stallTimer) {
     clearTimeout(stallTimer);
@@ -3177,21 +3251,21 @@ const historyKeyword = ref("");
 // --- Aggregated History Logic ---
 const aggregatedHistoryList = computed(() => {
   if (!historyList.value.length) return [];
-  
+
   const groups: Record<string, any> = {};
   const orderedKeys: string[] = [];
-  
+
   historyList.value.forEach(item => {
     // 从根源上直接拦截并忽略没有 conversation_id 的旧垃圾测试脏数据，防止显示僵尸条目
     if (!item.conversation_id) return;
-    
+
     const cid = item.conversation_id;
     if (!groups[cid]) {
       groups[cid] = item;
       orderedKeys.push(cid);
     }
   });
-  
+
   return orderedKeys.map(key => groups[key]);
 });
 
@@ -3199,12 +3273,12 @@ const groupedHistoryList = computed(() => {
   const aggregated = aggregatedHistoryList.value;
   if (!aggregated.length) return [];
 
-  const groupsMap: Record<string, { title: string; items: any[]; order: number }> = {
-    today: { title: "今天", items: [], order: 1 },
-    yesterday: { title: "昨天", items: [], order: 2 },
-    threeDays: { title: "3天前", items: [], order: 3 },
-    sevenDays: { title: "7天前", items: [], order: 4 },
-    older: { title: "更早", items: [], order: 5 },
+  const groupsMap = {
+    today: { title: "今天", items: [] as any[], order: 1 },
+    yesterday: { title: "昨天", items: [] as any[], order: 2 },
+    threeDays: { title: "3天前", items: [] as any[], order: 3 },
+    sevenDays: { title: "7天前", items: [] as any[], order: 4 },
+    older: { title: "更早", items: [] as any[], order: 5 },
   };
 
   const now = new Date();
@@ -3232,8 +3306,8 @@ const groupedHistoryList = computed(() => {
     }
   });
 
-  return Object.keys(groupsMap)
-    .map(key => ({ id: key, ...groupsMap[key] }))
+  return Object.entries(groupsMap)
+    .map(([key, group]) => ({ id: key, ...group }))
     .filter(g => g.items.length > 0)
     .sort((a, b) => a.order - b.order);
 });
@@ -3255,7 +3329,7 @@ const copyToClipboard = async (text: string, id?: string) => {
 };
 const fetchHistory = async (isLoadMore = false) => {
   if (!config.token && !hasPermission.value) return;
-  
+
   if (isLoadMore) {
     if (!historyHasMore.value || loadingMoreHistory.value || loadingHistory.value) return;
     loadingMoreHistory.value = true;
@@ -3273,7 +3347,7 @@ const fetchHistory = async (isLoadMore = false) => {
     };
     if (historyKeyword.value) params.keyword = historyKeyword.value;
     if (config.agentId) params.agent_id = config.agentId;
-    
+
     const res = await axios.get("/api/v1/chat/history", { params });
     if (res.data?.data) {
         const newItems = res.data.data.items || [];
@@ -3282,7 +3356,7 @@ const fetchHistory = async (isLoadMore = false) => {
         } else {
             historyList.value = newItems;
         }
-        
+
         historyHasMore.value = newItems.length >= 20;
         if (newItems.length > 0) {
             historyPage.value += 1;
@@ -3312,15 +3386,15 @@ const handleHistoryClick = (item: any) => {
     // Switch to this conversation
     conversationId.value = item.conversation_id;
     localStorage.setItem("yovole_embed_conv_id", item.conversation_id);
-    
+
     // Reset message list and history state
     messages.value = [];
     historyOffset.value = 0;
     hasMoreHistory.value = true;
-    
+
     // Load the full history for this conversation
     fetchConversationHistory(false);
-    
+
     // Auto-close sidebar on mobile
     if (isMobile.value) {
         showHistorySidebar.value = false;
@@ -3354,7 +3428,7 @@ const confirmDeleteGroup = async () => {
   const convIds = group.items
     .map((item: any) => item.conversation_id)
     .filter(Boolean);
-    
+
   if (convIds.length === 0) {
     showDeleteGroupModal.value = false;
     groupToDelete.value = null;
@@ -3369,17 +3443,17 @@ const confirmDeleteGroup = async () => {
     }
 
     await axios.post(
-      "/api/v1/chat/history/batch-delete", 
+      "/api/v1/chat/history/batch-delete",
       { conversation_ids: convIds },
       { headers }
     );
-    
+
     // 检查是否包含当前正在对话的会话 ID
     if (convIds.includes(conversationId.value)) {
       messages.value = [];
       generateNewConversation();
     }
-    
+
     await fetchHistory();
   } catch (e) {
     console.error("Failed to batch delete group history", e);
@@ -3408,6 +3482,7 @@ const saveAndResend = async () => {
   const msgIndex = messages.value.findIndex(m => m.id === editingMsgId.value);
   if (msgIndex === -1) return;
   const originalMsg = messages.value[msgIndex];
+  if (!originalMsg) return;
   const newContent = editContent.value.trim();
   if (!newContent) return;
   // Truncate history: keep up to this message
@@ -3422,6 +3497,166 @@ const saveAndResend = async () => {
   }
   await sendMessage();
 };
+
+// Canvas Panel States
+const canvasVisible = ref(false);
+const canvasData = ref<{ type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string; compareContent?: string; compareTitle?: string } | null>(null);
+const activeBlobUrl = ref('');
+
+// Long-Term Memory States
+const activeLtmPreference = ref<any>(null);
+const ignoreLtmThisTurn = ref(false);
+
+const handleIgnoreLtm = () => {
+  ignoreLtmThisTurn.value = true;
+  activeLtmPreference.value = null;
+  showToast("已在此会话本轮提问中忽略该记忆偏好", "info");
+};
+
+const handleOpenCanvas = async (payload: { type: 'html' | 'code' | 'mermaid' | 'pdf' | 'csv' | 'image' | 'compare'; title: string; content: string }) => {
+  // 回收之前创建的本地 Blob 内存链接，防止内存泄漏
+  if (activeBlobUrl.value) {
+    try {
+      URL.revokeObjectURL(activeBlobUrl.value);
+    } catch (e) {
+      console.warn("Revoke blob URL error:", e);
+    }
+    activeBlobUrl.value = '';
+  }
+
+  if (payload.type === 'compare') {
+    try {
+      // 解析 canvas://compare?left=pathA&right=pathB
+      const urlObj = new URL(payload.content.replace('canvas://', 'http://localhost/'));
+      const leftPath = urlObj.searchParams.get('left') || '';
+      const rightPath = urlObj.searchParams.get('right') || '';
+
+      const leftResolved = resolveFileUrl(leftPath);
+      const rightResolved = resolveFileUrl(rightPath);
+
+      // 使用全局配置了 Authorization 头的 axios 安全拉取物理内容
+      const [leftRes, rightRes] = await Promise.all([
+        axios.get(leftResolved).then(res => res.data),
+        axios.get(rightResolved).then(res => res.data)
+      ]);
+
+      canvasData.value = {
+        type: 'compare',
+        title: payload.title || '数据对比',
+        content: leftRes,
+        compareContent: rightRes,
+        compareTitle: rightPath.split('/').pop() || '对比文件'
+      };
+      canvasVisible.value = true;
+    } catch (err: any) {
+      console.error('加载对比文件失败:', err);
+      let errMsg = '加载对比文件失败';
+      if (err.response?.data?.detail) {
+        errMsg = err.response.data.detail;
+      } else if (err.response?.status === 404) {
+        errMsg = '对比的文件不存在，可能已被删除或尚未生成。';
+      } else if (err.response?.status === 403) {
+        errMsg = '权限拦截：无权访问该对比文件。';
+      } else {
+        errMsg = err.message || String(err);
+      }
+      showToast(errMsg, 'error');
+    }
+  } else if (payload.content.startsWith('canvas://file')) {
+    try {
+      const urlObj = new URL(payload.content.replace('canvas://', 'http://localhost/'));
+      const filePath = urlObj.searchParams.get('path') || '';
+      const resolvedUrl = resolveFileUrl(filePath);
+
+      if (payload.type === 'pdf' || payload.type === 'image' || payload.type === 'csv') {
+        // 对于二进制或结构化媒体资源，使用 axios 携带 header 发送安全请求，并将响应流转为 blob URL 零泄露渲染
+        const response = await axios.get(resolvedUrl, { responseType: 'blob' });
+        const blobUrl = URL.createObjectURL(response.data);
+        activeBlobUrl.value = blobUrl;
+
+        canvasData.value = {
+          type: payload.type,
+          title: payload.title || filePath.split('/').pop() || '文件预览',
+          content: blobUrl
+        };
+        canvasVisible.value = true;
+      } else {
+        const resText = await axios.get(resolvedUrl).then(res => res.data);
+        canvasData.value = {
+          type: payload.type,
+          title: payload.title || filePath.split('/').pop() || '文件预览',
+          content: resText
+        };
+        canvasVisible.value = true;
+      }
+    } catch (err: any) {
+      console.error('加载本地文件失败:', err);
+      let errMsg = '加载本地文件失败';
+      if (err.response?.data?.detail) {
+        errMsg = err.response.data.detail;
+      } else if (err.response?.status === 404) {
+        errMsg = '预览的文件不存在，请确认路径是否正确。';
+      } else if (err.response?.status === 403) {
+        errMsg = '安全拦截：无权访问该服务器文件。';
+      } else {
+        errMsg = err.message || String(err);
+      }
+      showToast(errMsg, 'error');
+    }
+  } else {
+    canvasData.value = payload;
+    canvasVisible.value = true;
+  }
+};
+
+const handleAnalyzeDiff = async (question: string) => {
+  canvasVisible.value = false;
+  userInput.value = question;
+  await nextTick();
+  sendMessage();
+};
+
+const handlePreviewImageUrl = (url: string, filename: string) => {
+  handleOpenCanvas({
+    type: 'image',
+    title: filename || '图片预览',
+    content: url
+  });
+};
+
+const resolveFileUrl = (url: string): string => {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('quick:') || url.startsWith('canvas:')) {
+    return url;
+  }
+  if (url.includes('uploads/')) {
+    const parts = url.split('uploads/');
+    return '/static/uploads/' + parts[parts.length - 1];
+  }
+  // 兼容绝对路径与相对物理路径，只要它不属于静态路由与API接口路由，均通过后端预览API拉取
+  if (!url.startsWith('/static/') &&
+      !url.startsWith('/api/') &&
+      !url.startsWith('/assets/')) {
+    const convParam = conversationId.value ? `&conversation_id=${encodeURIComponent(conversationId.value)}` : "";
+    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(url)}${convParam}`;
+  }
+  return url;
+};
+
+const canPreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  return ext === 'pdf' || ext === 'csv' || ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif';
+};
+
+const handlePreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  handleOpenCanvas({
+    type: ext === 'pdf' ? 'pdf' : (ext === 'csv' ? 'csv' : 'image'),
+    title: file.filename,
+    content: file.url
+  });
+};
+
 const confirmDeleteTrace = async () => {
   if (traceToDelete.value) {
     await handleDeleteHistory(traceToDelete.value);
@@ -3462,7 +3697,7 @@ const openTraceLogs = async (traceIdOrItem: string | any) => {
   const isString = typeof traceIdOrItem === 'string';
   const traceId = isString ? traceIdOrItem : traceIdOrItem?.trace_id;
   let convId = isString ? null : traceIdOrItem?.conversation_id;
-  
+
   if (isString) {
       const found = historyList.value.find(h => h.trace_id === traceId);
       if (found) {
@@ -3474,14 +3709,14 @@ const openTraceLogs = async (traceIdOrItem: string | any) => {
   } else {
       activeHistoryItem.value = traceIdOrItem;
   }
-  
+
   if (!traceId) return;
 
   showTraceModal.value = true;
   loadingTrace.value = true;
   traceLogData.value = null;
-  conversationTurns.value = []; 
-  expandedTraceSteps.value = {}; 
+  conversationTurns.value = [];
+  expandedTraceSteps.value = {};
   showThinkingProcess.value = false;
 
   try {
@@ -3500,13 +3735,13 @@ const openTraceLogs = async (traceIdOrItem: string | any) => {
         if (historyRes.data?.data?.items) {
             // 结果按时间正序排列（后端返回的是倒序，所以这里反转一下）
             const sortedItems = [...historyRes.data.data.items].reverse();
-            
+
             // 初始化每个回合的状态：全部默认折叠
             conversationTurns.value = sortedItems.map((item: any) => ({
                 ...item,
                 steps: item.trace_id === traceId ? (traceLogData.value?.steps || []) : [],
                 loading: false,
-                isExpanded: false 
+                isExpanded: false
             }));
         }
     } else if (traceLogData.value?.history) {
@@ -3597,6 +3832,7 @@ watch(historyKeyword, () => {
 const showSettings = ref(false);
 const showHelpModal = ref(false);
 
+
 // 黄金报表暂存状态
 const showSaveReportModal = ref(false);
 const isSavingReport = ref(false);
@@ -3614,10 +3850,11 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     const idx = messages.value.findIndex((m: any) => m.id === agentMessage.id);
     if (idx > 0) {
       for (let i = idx - 1; i >= 0; i--) {
-        if (messages.value[i].role === 'user') {
-          const content = messages.value[i].content || '';
+        const previousMessage = messages.value[i];
+        if (previousMessage?.role === 'user') {
+          const content = previousMessage.content || '';
           if (content.includes('---')) {
-            originalQuery = content.split('---')[0].trim();
+            originalQuery = (content.split('---')[0] || '').trim();
           } else {
             originalQuery = content.trim();
           }
@@ -3677,14 +3914,14 @@ const submitSaveReport = async () => {
 
 const renderSavedReportDataToMarkdown = (data: any): string => {
   if (!data) return "执行结果为空";
-  
+
   let columns: string[] = [];
   let rows: any[] = [];
-  
+
   if (data.columns && Array.isArray(data.columns)) {
     columns = data.columns.map((c: any) => typeof c === 'object' ? (c.name || '') : String(c));
   }
-  
+
   if (data.rows && Array.isArray(data.rows)) {
     rows = data.rows;
   } else if (data.items && Array.isArray(data.items)) {
@@ -3734,11 +3971,11 @@ const renderSavedReportDataToMarkdown = (data: any): string => {
     } else {
       rowCells = [String(r)];
     }
-    
+
     const cleanCells = rowCells.map(cell => {
       return cell.replace(/\|/g, "\\|").replace(/\n/g, " ");
     });
-    
+
     md += `| ${cleanCells.join(" | ")} |\n`;
   }
 
@@ -3757,7 +3994,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
   }
 
   isProcessing.value = true;
-  
+
   messages.value.push({
     id: Date.now(),
     role: "user",
@@ -3789,13 +4026,13 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, null, {
       params: { conversation_id: conversationId.value }
     });
-    
+
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
-    
+
     let resultMarkdown = "";
     let detailsText = "";
-    
+
     if (res.data && res.data.data !== undefined) {
       const execResult = res.data.data;
       resultMarkdown = renderSavedReportDataToMarkdown(execResult);
@@ -3804,10 +4041,10 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
       resultMarkdown = "执行结果为空。";
       detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
     }
-    
+
     // 直连成功后输出表格，并在结尾拼接“深度可视化分析一下”快捷按钮，方便用户手动点击触发大模型分析流程
     agentMsg.value.content = `### 📊 黄金报表「${report.title}」执行结果：\n\n${resultMarkdown}\n\n---\n- [🙋 深度可视化分析一下](quick:深度可视化分析一下)`;
-    
+
     agentMsg.value.logs = [
       {
         id: `log_${Date.now()}`,
@@ -3815,6 +4052,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
         title: "工具完成: execute_sql_query",
         category: "sql",
         status: "success",
+        isExpanded: false,
         details: detailsText,
       }
     ];
@@ -3822,7 +4060,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     console.error("Failed to execute saved report:", error);
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
-    
+
     const detail = error.response?.data?.detail;
     let errorMsg = "";
     if (detail) {
@@ -3830,7 +4068,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
     } else {
       errorMsg = error.message || "执行失败，请检查网络或配置";
     }
-    
+
     agentMsg.value.content = `### ❌ 报表执行失败\n\n在直连执行 SQL 报表时遇到错误：\n\n\`\`\`\n${errorMsg}\n\`\`\``;
     agentMsg.value.logs = [
       {
@@ -3839,6 +4077,7 @@ const handleExecuteSavedReport = async (report: { id: string; title: string; sql
         title: "工具完成: execute_sql_query",
         category: "sql",
         status: "error",
+        isExpanded: false,
         details: `${report.sql_content}\n--- 错误 ---\n${errorMsg}`,
       }
     ];
@@ -3865,8 +4104,8 @@ const isLoadingSkillsList = ref(false);
 const filteredSkillsForSelector = computed(() => {
   const query = skillSelectorSearchQuery.value.trim().toLowerCase();
   if (!query) return allSkillsList.value;
-  return allSkillsList.value.filter(s => 
-    s.name?.toLowerCase().includes(query) || 
+  return allSkillsList.value.filter(s =>
+    s.name?.toLowerCase().includes(query) ||
     s.id?.toLowerCase().includes(query) ||
     s.description?.toLowerCase().includes(query) ||
     s.path?.toLowerCase().includes(query)
@@ -3950,7 +4189,7 @@ const filteredMemoryList = computed(() => {
 const openMemorySelector = async () => {
   showMemorySelector.value = true;
   memorySearchQuery.value = "";
-  
+
   // 从 chatInputRef 的 uploadedFiles 中恢复已选中的 memory ID
   const existingMemoryIds = new Set<string>();
   if (chatInputRef.value?.uploadedFiles) {
@@ -3962,7 +4201,7 @@ const openMemorySelector = async () => {
     }
   }
   selectedMemoryIds.value = existingMemoryIds;
-  
+
   memoryList.value = [];
   isLoadingMemoryList.value = true;
   try {
@@ -3992,7 +4231,7 @@ const confirmMemorySelection = () => {
   if (chatInputRef.value) {
     const files = chatInputRef.value.uploadedFiles || [];
     chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
-    
+
     if (selected.length > 0) {
       chatInputRef.value.uploadedFiles.push({
         type: "memory",
@@ -4351,7 +4590,7 @@ const initChat = async () => {
     if (!isValid) {
       hasPermission.value = false;
       isInitialLoading.value = false;
-      return; 
+      return;
     }
     hasPermission.value = true;
     // 2. Clear skeleton as soon as auth is confirmed
@@ -4408,9 +4647,9 @@ const fetchConversationHistory = async (isLoadMore = false) => {
     const page = Math.floor((isLoadMore ? historyOffset.value : 0) / HISTORY_LIMIT) + 1;
     const res = await axios.get(
       `/api/v1/chat/history`,
-      { 
+      {
           params: { conversation_id: conversationId.value, page: page, page_size: HISTORY_LIMIT },
-          headers 
+          headers
       }
     );
     if (res.data?.data && Array.isArray(res.data.data.items)) {
@@ -4420,13 +4659,13 @@ const fetchConversationHistory = async (isLoadMore = false) => {
         hasMoreHistory.value = false;
       }
       historyOffset.value += rawItems.length;
-      
+
       const newHistoryBatch: Message[] = [];
       const offset = isLoadMore ? historyOffset.value : 0;
-      
+
       // Items are returned newest first. Reverse to oldest first for UI.
       const sortedItems = [...rawItems].reverse();
-      
+
       sortedItems.forEach((item: any, idx: number) => {
           if (item.query) {
               newHistoryBatch.push({
@@ -4448,7 +4687,7 @@ const fetchConversationHistory = async (isLoadMore = false) => {
                   content: item.summary,
                   logs: [],
                   isThinking: false,
-                  feedback: null, 
+                  feedback: null,
                   agentName: item.agent_name ?? undefined,
                   agentDisplayName: item.agent_display_name ?? undefined,
                   prompt_tokens: item.prompt_tokens ?? undefined,
@@ -4591,9 +4830,9 @@ const exportData = async (traceId: string, format = 'xlsx') => {
       params: { format },
       responseType: 'blob'
     });
-    
-    const blob = new Blob([response.data], { 
-      type: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv' 
+
+    const blob = new Blob([response.data], {
+      type: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv'
     });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -4636,7 +4875,7 @@ const handleFeedback = async (msg: Message, type: "up" | "down") => {
   } else {
     msg.feedback = type;
   }
-  
+
   // 立即弹出提示 (乐观更新)
   if (msg.feedback) {
      showToast(msg.feedback === 'up' ? "感谢您的点赞！" : "已记录您的反馈，我们将持续改进。", "success");
@@ -4908,7 +5147,7 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
   if (data.turn_type && category === "intent") {
     msg.turnType = data.turn_type;
     if (msg.isThinking) {
-      msg.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+      msg.isThoughtExpanded = config.expandThoughts;
     }
   }
   if (existingIdx > -1) {
@@ -5011,22 +5250,14 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   }
 };
 
-const handlePermissionRequired = (msg: Message, data: any) => {
-  applyPermissionRequiredEvent(msg, data, addEmbedLogFromStream);
-  if (thoughtTimer) {
-    clearInterval(thoughtTimer);
-    thoughtTimer = null;
-  }
-};
-
 const submitPendingExternalExecution = async (msg: Message) => {
   const pending = msg.pendingExternalExecution;
   if (!pending || pending.status !== "pending") return;
   pending.isSubmitting = true;
   isProcessing.value = true;
   msg.isThinking = true;
-  msg.thoughtStartTime = Date.now();
-  msg.thoughtDuration = "0.0";
+  startThoughtTimer(msg);
+  msg.isThoughtExpanded = config.expandThoughts;
   msg.thinkingText = "正在提交外部执行结果...";
   resetStallTimer();
 
@@ -5071,8 +5302,8 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
   isProcessing.value = true;
   if (confirmed) {
     msg.isThinking = true;
-    msg.thoughtStartTime = Date.now();
-    msg.thoughtDuration = "0.0";
+    startThoughtTimer(msg);
+    msg.isThoughtExpanded = config.expandThoughts;
     msg.thinkingText = "正在继续执行...";
     resetStallTimer();
   }
@@ -5130,10 +5361,103 @@ const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
   }
 };
 
+const tryLocalChartOptionPatch = (userText: string): boolean => {
+  const q = userText.toLowerCase().trim();
+  let newType: 'line' | 'bar' | 'pie' | null = null;
+  if (/改(成|为)折线图/.test(q) || /换成折线/.test(q)) {
+    newType = 'line';
+  } else if (/改(成|为)柱状图/.test(q) || /换成柱状/.test(q)) {
+    newType = 'bar';
+  } else if (/改(成|为)饼图/.test(q) || /换成饼图/.test(q)) {
+    newType = 'pie';
+  }
+
+  const isRedPatch = /标红/.test(q);
+
+  if (!newType && !isRedPatch) {
+    return false;
+  }
+
+  // Find the last agent message with a chart block
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i];
+    if (!msg) continue;
+    if (msg.role === 'agent' && msg.content) {
+      const chartRegex = /(<chart>([\s\S]*?)<\/chart>)|(```(?:chart|echarts|json)\s*([\s\S]*?)```)/gi;
+      const match = chartRegex.exec(msg.content);
+      if (match) {
+        const fullMatch = match[0];
+        const jsonContent = (match[2] || match[4] || "").trim();
+        if (!jsonContent) continue;
+        try {
+          const option = JSON.parse(jsonContent);
+          if (option.series) {
+            if (newType) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({ ...s, type: newType }));
+              } else if (typeof option.series === 'object') {
+                option.series.type = newType;
+              }
+              if (newType === 'pie') {
+                delete option.xAxis;
+                delete option.yAxis;
+              }
+            }
+            if (isRedPatch) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({
+                  ...s,
+                  itemStyle: { ...s.itemStyle, color: '#ef4444' }
+                }));
+              } else if (typeof option.series === 'object') {
+                option.series.itemStyle = { ...option.series.itemStyle, color: '#ef4444' };
+              }
+            }
+
+            const updatedJson = JSON.stringify(option, null, 2);
+            let updatedMatch = "";
+            if (match[1]) {
+              updatedMatch = `<chart>\n${updatedJson}\n</chart>`;
+            } else {
+              updatedMatch = `\`\`\`chart\n${updatedJson}\n\`\`\``;
+            }
+
+            msg.content = msg.content.replace(fullMatch, updatedMatch);
+            messages.value.push({
+              id: Date.now(),
+              role: "user",
+              content: userText,
+              timestamp: new Date().toISOString(),
+            });
+            messages.value.push({
+              id: Date.now() + 1,
+              role: "agent",
+              content: `✨ 已为您本地秒级重绘图表，将图表形式调整为：${newType === 'line' ? '折线图' : newType === 'bar' ? '柱状图' : newType === 'pie' ? '饼图' : '标红调整'}。`,
+              timestamp: new Date().toISOString(),
+            });
+            return true;
+          }
+        } catch (err) {
+          console.error("Failed to parse or patch ECharts option locally:", err);
+        }
+      }
+    }
+  }
+  return false;
+};
+
 const sendMessage = async () => {
   const content = userInput.value.trim();
   const files = chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [];
   if ((!content && files.length === 0) || isProcessing.value) return;
+
+  if (files.length === 0 && tryLocalChartOptionPatch(content)) {
+    userInput.value = "";
+    showCommandMenu.value = false;
+    nextTick(() => scrollToBottom(true));
+    return;
+  }
+
   const messageContent = files.length > 0 ? appendAttachmentContext(content, files) : content;
 
   // 全局兜底：确保一定存在会话 ID
@@ -5172,7 +5496,7 @@ const sendMessage = async () => {
     logs: [],
     thoughtStartTime: Date.now(),
     thoughtDuration: "0.0",
-    isThoughtExpanded: false,
+    isThoughtExpanded: config.expandThoughts,
     isCitationsExpanded: false,
     timestamp: new Date().toISOString(),
   });
@@ -5184,33 +5508,12 @@ const sendMessage = async () => {
   await nextTick();
   scrollToBottom(true);
   requestAnimationFrame(() => scrollToBottom(true));
-  // Thinking Messages
-  const THINKING_MESSAGES = [
-    "正在分析任务...",
-    "正在组织回答...",
-  ];
-  // Timer
-  if (thoughtTimer) clearInterval(thoughtTimer);
-  let ticks = 0;
-  thoughtTimer = setInterval(() => {
-    ticks++;
-    if (agentMsg.value.thoughtStartTime) {
-      agentMsg.value.thoughtDuration = (
-        (Date.now() - agentMsg.value.thoughtStartTime) /
-        1000
-      ).toFixed(1);
-    }
-    // Switch message every 3 seconds (30 * 100ms)
-    // If we exceed the defined messages, show a generic "still processing" message
-    if (ticks % 30 === 0) {
-      const stepIndex = ticks / 30;
-      if (stepIndex < THINKING_MESSAGES.length) {
-        agentMsg.value.thinkingText = THINKING_MESSAGES[stepIndex];
-      } else {
-        agentMsg.value.thinkingText = "任务处理中，请稍候...";
-      }
-    }
-  }, 100);
+  const ltmIgnoredVal = ignoreLtmThisTurn.value;
+  ignoreLtmThisTurn.value = false;
+  activeLtmPreference.value = null;
+
+  // Start thought timer
+  startThoughtTimer(agentMsg.value);
   // 3. API Call
   abortController = new AbortController();
   try {
@@ -5225,6 +5528,7 @@ const sendMessage = async () => {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
         enable_sql_plan: config.enableSqlPlan,
+        ignore_ltm: ltmIgnoredVal,
       },
       permission_options: {
         approval_mode: config.approvalMode || "ask",
@@ -5251,24 +5555,24 @@ const sendMessage = async () => {
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     if (!reader) throw new Error("No body");
-    
+
     let buffer = ""; // 缓冲区，用于处理跨 chunk 的不完整行
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       // 最后一项可能是不完整的行，保留在缓冲区中
       buffer = lines.pop() || "";
-      
+
       for (const line of lines) {
         const trimmedLine = line.trim();
         if (!trimmedLine || !trimmedLine.startsWith("data: ")) continue;
-        
+
         const dataStr = trimmedLine.slice(6).trim();
         if (dataStr === "[DONE]") continue;
-        
+
         try {
           const data = JSON.parse(dataStr);
           if (data.trace_id) {
@@ -5329,7 +5633,7 @@ const sendMessage = async () => {
               if (typeof data.thought_expanded_default === "boolean") {
                 agentMsg.value.isThoughtExpanded = data.thought_expanded_default;
               } else {
-                agentMsg.value.isThoughtExpanded = defaultThoughtExpanded(data.turn_type);
+                agentMsg.value.isThoughtExpanded = config.expandThoughts;
               }
             }
             if (data.prompt_tokens !== undefined) {
@@ -5340,6 +5644,9 @@ const sendMessage = async () => {
             }
             if (data.has_data_output) {
               agentMsg.value.hasDataOutput = true;
+            }
+            if (data.ltm_applied && data.ltm_data) {
+              activeLtmPreference.value = data.ltm_data;
             }
           } else if (data.type === "retraction") {
             agentMsg.value.content = data.content;
@@ -5540,6 +5847,8 @@ onMounted(() => {
     config.theme = savedTheme;
     applyTheme(savedTheme);
   }
+  const savedExpandThoughts = localStorage.getItem("yovole_expand_thoughts");
+  if (savedExpandThoughts !== null) config.expandThoughts = savedExpandThoughts === "1";
   const query = new URLSearchParams(window.location.search);
   if (query.get("token")) {
     const token = query.get("token")!;
@@ -5593,11 +5902,11 @@ const startTypewriter = (text: string) => {
          // Finished typing, wait then delete
          isDeleting = true;
          // Wait 3 seconds before deleting
-         typewriterTimeout = setTimeout(typeLoop, 3000); 
+         typewriterTimeout = setTimeout(typeLoop, 3000);
          return;
       }
       typewriterTimeout = setTimeout(typeLoop, 100); // Typing speed
-    } 
+    }
     // Delete
     else if (isDeleting && i >= 0) {
       displayedWelcomeMessage.value = text.substring(0, i);
@@ -5607,7 +5916,7 @@ const startTypewriter = (text: string) => {
         isDeleting = false;
         i = 0;
         // Wait 0.5s before typing again
-        typewriterTimeout = setTimeout(typeLoop, 500); 
+        typewriterTimeout = setTimeout(typeLoop, 500);
         return;
       }
       typewriterTimeout = setTimeout(typeLoop, 50); // Deleting speed
@@ -5905,5 +6214,44 @@ onUnmounted(() => {
 :deep(.markdown-body .code-copy-btn.copied) {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2310b981'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
   border-color: #10b981;
+}
+
+/* 思维链扫光动效 */
+.shimmer-thought-card {
+  position: relative !important;
+  overflow: hidden !important;
+}
+.shimmer-thought-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.45) 20%,
+    rgba(255, 255, 255, 0.75) 60%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: shimmer-slide 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+.dark .shimmer-thought-card::after {
+  background-image: linear-gradient(
+    90deg,
+    rgba(30, 41, 59, 0) 0%,
+    rgba(148, 163, 184, 0.08) 20%,
+    rgba(148, 163, 184, 0.15) 60%,
+    rgba(30, 41, 59, 0) 100%
+  );
+}
+@keyframes shimmer-slide {
+  100% {
+    transform: translateX(100%);
+  }
 }
 </style>

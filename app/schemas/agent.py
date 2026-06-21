@@ -91,6 +91,9 @@ class AgentExecutionStep(BaseModel):
     prompt_tokens: Optional[int] = 0
     completion_tokens: Optional[int] = 0
     total_tokens: Optional[int] = 0
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+    meta_info: Optional[Dict[str, Any]] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

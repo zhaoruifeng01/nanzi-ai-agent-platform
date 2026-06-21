@@ -391,6 +391,7 @@ class AgentService:
                 api_key=api_key,
                 conversation_id=conversation_id,
                 knowledge_dataset_ids=request_knowledge_dataset_ids,
+                trace_buffer=trace_buffer,
             )
 
             # --- Active Skill Injection ---
@@ -613,11 +614,16 @@ class AgentService:
                     conversation_id=conversation_id,
                     knowledge_dataset_ids=request_knowledge_dataset_ids,
                     require_explicit_dataset=True,
+                    trace_buffer=trace_buffer,
                 )
 
             # --- Long-Term Memory (LTM) Injection ---
             ltm_profile: Optional[str] = None
-            if should_inject_ltm(early_turn_type) and user_info:
+            ltm_loaded_data: Optional[dict] = None
+            ignore_ltm = False
+            if debug_options and debug_options.get("ignore_ltm"):
+                ignore_ltm = True
+            if not ignore_ltm and should_inject_ltm(early_turn_type) and user_info:
                 u_id = user_info.get("user_id", user_info.get("id"))
                 if u_id:
                     try:
@@ -627,6 +633,7 @@ class AgentService:
                             import json
                             ltm_formatted = json.dumps(ltm_data, ensure_ascii=False, indent=2)
                             ltm_profile = AgentServicePrompts.ltm_memory_profile(ltm_formatted)
+                            ltm_loaded_data = ltm_data
                             logger.info(f"[LTM] Successfully loaded memory profile for user {u_id}")
                     except Exception as ltm_err:
                         logger.warning(f"[LTM] Failed to inject long-term memory for user {u_id}: {ltm_err}")
@@ -815,6 +822,9 @@ class AgentService:
                 "turn_type_label": turn_display_label,
                 "thought_expanded_default": default_thought_expanded(turn_classification.turn_type),
             }
+            if ltm_profile and ltm_loaded_data:
+                meta_event["ltm_applied"] = True
+                meta_event["ltm_data"] = ltm_loaded_data
             if (
                 turn_classification.turn_type == TurnType.KNOWLEDGE
                 or request_knowledge_dataset_ids

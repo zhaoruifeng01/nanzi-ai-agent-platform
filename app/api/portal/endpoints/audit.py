@@ -21,7 +21,7 @@ def is_admin(user: dict) -> bool:
     if not perms: return False
     if isinstance(perms, str):
          try: perms = json.loads(perms)
-         except: return False
+         except Exception: return False
     return perms.get("role") == "admin"
 
 @router.get("/features")
@@ -199,3 +199,67 @@ async def get_execution_trace(trace_id: str, user: dict = Depends(require_api_ke
         if row.tool_output: step["tool_output"] = row.tool_output if isinstance(row.tool_output, (dict, list)) else json.loads(str(row.tool_output))
         steps.append(step)
     return {"trace_id": trace_id, "steps": steps}
+
+@router.get("/traces/{trace_id}/spans")
+async def get_execution_trace_spans(
+    trace_id: str,
+    user: dict = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session)
+):
+    stmt = select(AgentExecutionTrace).where(AgentExecutionTrace.trace_id == trace_id).order_by(AgentExecutionTrace.step_number)
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+    span_list = []
+    span_map = {}
+    for row in rows:
+        tool_input = row.tool_input
+        if tool_input and isinstance(tool_input, str):
+            try: tool_input = json.loads(tool_input)
+            except Exception: pass
+        tool_output = row.tool_output
+        if tool_output and isinstance(tool_output, str):
+            try: tool_output = json.loads(tool_output)
+            except Exception: pass
+        meta_info = getattr(row, "meta_info", None)
+        if meta_info and isinstance(meta_info, str):
+            try: meta_info = json.loads(meta_info)
+            except Exception: pass
+
+        span_data = {
+            "id": row.id,
+            "step_number": row.step_number,
+            "event_type": row.event_type,
+            "agent_name": row.agent_name,
+            "tool_name": row.tool_name,
+            "tool_input": tool_input,
+            "tool_output": tool_output,
+            "execution_time_ms": row.execution_time_ms,
+            "status": row.status,
+            "error_message": row.error_message,
+            "model": row.model,
+            "temperature": row.temperature,
+            "prompt_tokens": row.prompt_tokens,
+            "completion_tokens": row.completion_tokens,
+            "total_tokens": row.total_tokens,
+            "meta_info": meta_info,
+            "span_id": getattr(row, "span_id", None),
+            "parent_span_id": getattr(row, "parent_span_id", None),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "children": []
+        }
+        span_list.append(span_data)
+        s_id = getattr(row, "span_id", None)
+        if s_id:
+            span_map[s_id] = span_data
+
+    roots = []
+    for span in span_list:
+        parent_id = span["parent_span_id"]
+        if parent_id and parent_id in span_map:
+            span_map[parent_id]["children"].append(span)
+        else:
+            roots.append(span)
+
+    return {"trace_id": trace_id, "spans": roots}

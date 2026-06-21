@@ -229,6 +229,19 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         self,
         history: List[Dict[str, str]],
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
+        async with TraceSpanContext(
+            trace_buffer=self.trace_buffer,
+            event_type="agent_execution",
+            span_name="KnowledgeAgentRunner",
+        ):
+            async for chunk in self._execute_raw(history):
+                yield chunk
+
+    async def _execute_raw(
+        self,
+        history: List[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         from app.services.ai.multimodal_support import (
             ensure_multimodal_compatible,
             resolve_runtime_model_name,

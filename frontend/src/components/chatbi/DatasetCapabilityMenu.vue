@@ -895,7 +895,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import axios from "@/utils/axios";
 import { useToast } from "@/composables/useToast";
 
@@ -905,6 +905,7 @@ const QUESTIONS_SECTION_TIP =
   "该场景的入门示例问题：点击即可直接发起查询，适合快速了解核心指标、趋势与排名。";
 const FOLLOWUPS_SECTION_TIP =
   "延伸探索型追问：适合在已有结果基础上深挖关联维度、口径说明或下一步分析方向。";
+const NO_MORE_UNIQUE_QUESTIONS_TIP = "暂无更多不同问题，稍后再试";
 
 interface DatasetCapabilityQuestion {
   label: string;
@@ -1673,7 +1674,7 @@ const getGroupVisuals = (
   fallbackIndex = 0,
 ): GroupVisualTheme => {
   const seed = String(group.id || group.title || fallbackIndex);
-  return CARD_THEMES[hashThemeIndex(seed)];
+  return CARD_THEMES[hashThemeIndex(seed)] || CARD_THEMES[0]!;
 };
 
 // 计算属性：联合搜索与过滤
@@ -1829,6 +1830,20 @@ const collectGroupTables = (group: DatasetCapabilityGroup): string[] => {
   return tables;
 };
 
+const buildQuestionExclusions = (questions?: DatasetCapabilityQuestion[]) => {
+  return (questions || [])
+    .map((question) => ({
+      label: String(question.label || "").trim(),
+      query: String(question.query || "").trim(),
+    }))
+    .filter((question) => question.query);
+};
+
+const resolveRefreshEmptyReason = (responseData: any): string => {
+  if (responseData?.code !== 200) return "";
+  return String(responseData?.data?.refresh_disabled_reason || NO_MORE_UNIQUE_QUESTIONS_TIP).trim();
+};
+
 const handleRefreshClick = () => {
   if (refreshDisabled.value) return;
   isRefreshing.value = true;
@@ -1864,11 +1879,19 @@ const handleRefreshGroupQuestions = async (group: DatasetCapabilityGroup) => {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
       group_title: group.title,
       tables,
+      dataset_menu_hash: props.payload.dataset_menu_hash,
+      group_id: group.id || group.title,
+      exclude_questions: buildQuestionExclusions(group.questions),
       purpose: "questions",
     });
     if (res.data?.code === 200 && res.data?.data?.questions?.length) {
       group.questions = res.data.data.questions;
     } else {
+      const reason = resolveRefreshEmptyReason(res.data);
+      if (reason) {
+        showToast(reason, "warning");
+        return;
+      }
       console.warn("Invalid refresh questions response:", res.data);
       showToast("换一批推荐问题失败，请稍后重试", "error");
     }
@@ -1895,11 +1918,19 @@ const handleRefreshGroupFollowups = async (group: DatasetCapabilityGroup) => {
     const res = await axios.post("/api/v1/chat/dataset-menu/refresh-group-questions", {
       group_title: group.title,
       tables,
+      dataset_menu_hash: props.payload.dataset_menu_hash,
+      group_id: group.id || group.title,
+      exclude_questions: buildQuestionExclusions(group.followups),
       purpose: "followups",
     });
     if (res.data?.code === 200 && res.data?.data?.questions?.length) {
       group.followups = res.data.data.questions;
     } else {
+      const reason = resolveRefreshEmptyReason(res.data);
+      if (reason) {
+        showToast(reason, "warning");
+        return;
+      }
       console.warn("Invalid refresh followups response:", res.data);
       showToast("换一批继续追问失败，请稍后重试", "error");
     }
@@ -1983,7 +2014,7 @@ const handleQuestionClick = (
 
 const handleFollowupClick = (
   followup: DatasetCapabilityQuestion,
-  group: DatasetCapabilityGroup,
+  _group: DatasetCapabilityGroup,
   action: "send" | "fill" = "send"
 ) => {
   const query = String(followup.query || "").trim();
