@@ -3892,6 +3892,91 @@ async def test_data_agent_runner_allows_final_answer_after_trusted_empty_sql_res
 
 
 @pytest.mark.asyncio
+async def test_data_agent_runner_blocks_string_filter_empty_sql_result_for_recheck(data_config):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    async def fake_events():
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_schema", tool_call_name="get_dataset_schema")
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_schema", delta="table_name: demo\ncolumns: gxqy, room_name")
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_schema")
+        yield SimpleNamespace(type="TOOL_CALL_START", tool_call_id="call_sql", tool_call_name="execute_sql_query")
+        yield SimpleNamespace(
+            type="TOOL_CALL_DELTA",
+            tool_call_id="call_sql",
+            delta=(
+                '{"sql": "SELECT room_name FROM demo WHERE gxqy = \'上海\'", '
+                '"data_source": "mysql_aiagent", "dataset_name": "demo"}'
+            ),
+        )
+        yield SimpleNamespace(type="TOOL_RESULT_TEXT_DELTA", tool_call_id="call_sql", delta='{"items": [], "total": 0}')
+        yield SimpleNamespace(type="TOOL_RESULT_END", tool_call_id="call_sql")
+        yield SimpleNamespace(type="TEXT_BLOCK_DELTA", delta="没有数据")
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-string-empty-block", trace_buffer=[])
+
+    with patch.object(
+        DataAgentRunner,
+        "_maybe_run_empty_filter_diagnostics",
+        new=AsyncMock(),
+    ) as mock_diag:
+        events = []
+        async for chunk in runner._stream_agentscope_events(
+            event_stream=fake_events(),
+            tools=[],
+            native_model=SimpleNamespace(model="fake-native-data"),
+            emit_final_guard=False,
+        ):
+            events.append(chunk)
+
+    assert runner._last_run_state.empty_sql_result is True
+    assert not any(event.get("content") == "没有数据" for event in events if isinstance(event, dict))
+    mock_diag.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_replaces_generic_failure_reply_for_empty_filter(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-empty-replace", trace_buffer=[])
+    state = _DataRunState(
+        empty_sql_result=True,
+        empty_sql_text="SELECT room_name FROM demo WHERE gxqy = '上海'",
+        full_content="数据查询遇到了一些技术问题，暂时无法获取结果。",
+        empty_filter_diagnostics=[
+            {
+                "column": "gxqy",
+                "table": "demo",
+                "operator": "=",
+                "used_values": ["上海"],
+                "diagnostic_sql": "SELECT DISTINCT gxqy FROM demo LIMIT 20",
+                "candidates": ["上海市"],
+                "suggested_values": ["上海市"],
+                "error": "",
+            }
+        ],
+    )
+    assert runner._should_replace_generic_empty_failure_reply(state) is True
+
+
+def test_is_trusted_empty_result_rejects_string_literal_filter(data_config):
+    from app.services.ai.runners.data_agent_runner import _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-trusted-empty", trace_buffer=[])
+    state = _DataRunState()
+    assert (
+        runner._is_trusted_empty_result(
+            "SELECT room_name FROM demo WHERE region = '上海'",
+            state,
+        )
+        is False
+    )
+    assert runner._is_trusted_empty_result("SELECT room_name FROM demo WHERE id = 1", state) is True
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_blocks_complex_empty_sql_result_for_recheck(data_config):
     from types import SimpleNamespace
 

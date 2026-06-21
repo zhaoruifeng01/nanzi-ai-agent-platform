@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 GENERIC_SQL_ERROR_CONTENT = (
@@ -17,12 +18,55 @@ GENERIC_SQL_ERROR_CONTENT = (
     "2. 若多次尝试依然失败，可能是底层服务正在维护，请稍后重试或联系管理员。"
 )
 
+EMPTY_FILTER_RESULT_FALLBACK_CONTENT = (
+    "SQL 已成功执行，但按当前筛选条件未返回数据。\n\n"
+    "💡 **建议您可以尝试**：\n"
+    "1. 检查提问中的筛选条件是否与库内真实取值一致（如「上海」vs「上海市」、项目简称 vs 全称）。\n"
+    "2. 适当放宽或修正筛选条件后重新提问。\n"
+    "3. 确认当前数据集是否包含您想查询的信息。"
+)
+
 
 @dataclass(frozen=True)
 class SqlUserErrorPresentation:
     title: str
     content: str
     specific: bool = True
+
+
+def format_empty_filter_result_content(diagnostics: list[dict[str, Any]] | None = None) -> str:
+    """D：空结果 + 文本筛选诊断后的用户可见文案（区别于 SQL 技术故障）。"""
+    from app.services.ai.empty_result_filter_diagnostic import (
+        FilterDiagnosticResult,
+        format_empty_filter_guard_message,
+    )
+
+    if not diagnostics:
+        return EMPTY_FILTER_RESULT_FALLBACK_CONTENT
+    parsed: list[FilterDiagnosticResult] = []
+    for item in diagnostics:
+        if not isinstance(item, dict):
+            continue
+        parsed.append(
+            FilterDiagnosticResult(
+                column=str(item.get("column") or ""),
+                table=str(item.get("table") or ""),
+                operator=str(item.get("operator") or ""),
+                used_values=tuple(item.get("used_values") or ()),
+                diagnostic_sql=str(item.get("diagnostic_sql") or ""),
+                candidates=[str(value) for value in (item.get("candidates") or [])],
+                suggested_values=[str(value) for value in (item.get("suggested_values") or [])],
+                suspect_wrong_column=bool(item.get("suspect_wrong_column")),
+                alternative_columns=[str(value) for value in (item.get("alternative_columns") or [])],
+                matched_alternative_column=str(item.get("matched_alternative_column") or ""),
+                matched_alternative_values=[
+                    str(value) for value in (item.get("matched_alternative_values") or [])
+                ],
+                error=str(item.get("error") or ""),
+            )
+        )
+    specific = format_empty_filter_guard_message(parsed)
+    return specific or EMPTY_FILTER_RESULT_FALLBACK_CONTENT
 
 
 def map_sql_tool_error_for_user(raw: str) -> SqlUserErrorPresentation:

@@ -28,7 +28,10 @@ from app.services.ai.executors.common import (
     extract_tokens_from_message,
     normalize_messages_for_llm,
 )
-from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
+from app.services.ai.chatbi_sql_user_messages import (
+    format_empty_filter_result_content,
+    map_sql_tool_error_for_user,
+)
 from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.time_anchor import (
     TIME_RANGE_GATE_PREFIX,
@@ -102,7 +105,7 @@ DATA_REPAIR_BUDGETS = {
     "sql_static_risk": 1,
     "time_range_anomaly": 1,
     "sql_sandbox_blocked": 2,
-    "sql_error": 5,
+    "sql_error": 8,
     "failed_sql_repeat": 1,
     "schema_refresh_after_sql_error": 2,
     "empty_sql_result": 1,
@@ -226,6 +229,9 @@ class _DataRunState:
     empty_sql_result: bool = False
     empty_sql_reason: str = ""
     empty_sql_text: str = ""
+    empty_filter_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    empty_filter_diagnostic_summary: str = ""
+    empty_filter_auto_retry_sql: str = ""
     expecting_final_sql_after_diagnostic: bool = False
     diagnostic_sql_pending_final: bool = False
     sql_error: bool = False
@@ -2014,6 +2020,8 @@ class DataAgentRunner(BaseExecutor):
                     reason="repair-loop content followed by a repair condition",
                 ):
                     yield chunk
+            if state.full_content and self._should_replace_generic_empty_failure_reply(state):
+                state.full_content = format_empty_filter_result_content(state.empty_filter_diagnostics)
             if state.full_content:
                 deduped = finalize_visible_reply(state.full_content)
                 if deduped != state.full_content:
@@ -3227,6 +3235,44 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                auto_retry = await self._maybe_run_empty_filter_diagnostics(state, tool_args=tool_args)
+                if auto_retry and auto_retry.has_rows:
+                    should_save_followup = self._apply_auto_retry_sql_result(
+                        state,
+                        sql_text=auto_retry.corrected_sql,
+                        output=auto_retry.raw_output,
+                        parsed_output=auto_retry.parsed_output,
+                    )
+                    output = auto_retry.raw_output
+                    parsed_output = auto_retry.parsed_output
+                    state.tool_outputs[tool_id] = output
+                    yield {
+                        "type": "log",
+                        "id": f"{tool_id}:empty_filter_auto_retry",
+                        "title": "平台自动修正筛选并重试",
+                        "details": (
+                            f"{auto_retry.summary}\n\n```sql\n{auto_retry.corrected_sql}\n```"
+                            if auto_retry.corrected_sql
+                            else auto_retry.summary
+                        ),
+                        "status": "success",
+                        "execution_time_ms": 0,
+                    }
+                elif auto_retry and auto_retry.attempted:
+                    if auto_retry.corrected_sql:
+                        state.empty_sql_text = auto_retry.corrected_sql
+                    yield {
+                        "type": "log",
+                        "id": f"{tool_id}:empty_filter_auto_retry",
+                        "title": "平台自动修正筛选并重试",
+                        "details": (
+                            f"{auto_retry.summary}\n\n```sql\n{auto_retry.corrected_sql}\n```"
+                            if auto_retry.corrected_sql
+                            else auto_retry.summary
+                        ),
+                        "status": "warning",
+                        "execution_time_ms": 0,
+                    }
                 if state.sql_error and "不属于当前指定的数据集" in (state.sql_error_message or ""):
                     from app.services.sql_query_execution_service import (
                         extract_physical_table_refs_from_select_sql,
@@ -3570,13 +3616,7 @@ class DataAgentRunner(BaseExecutor):
                 "2. 若问题较复杂，可拆成更具体的单指标/单表问题。"
             )
         elif state.empty_sql_result:
-            content = (
-                "抱歉，系统在当前数据集中未查询到符合条件的数据。\n\n"
-                "💡 **建议您可以尝试**：\n"
-                "1. 检查提问中是否包含不正确的筛选条件（如时间范围不正确、拼写错误或不存在的项目名称）。\n"
-                "2. 换个提问方式，或适当放宽时间范围重试（例如将精确时间改为模糊时间，如“本月”）。\n"
-                "3. 确认当前选中的数据集是否包含您想查询的信息。"
-            )
+            content = format_empty_filter_result_content(state.empty_filter_diagnostics)
         elif state.sql_static_risk:
             content = (
                 "该查询涉及的数据量过大或超出安全规范，已被系统自动拦截。\n\n"
@@ -3840,10 +3880,13 @@ class DataAgentRunner(BaseExecutor):
                 repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
             return repair
         if state.empty_sql_result:
-            return DataQueryPrompts.empty_result_recheck(
+            repair = DataQueryPrompts.empty_result_recheck(
                 state.empty_sql_reason,
                 executed_sql=state.empty_sql_text,
             )
+            if state.empty_filter_diagnostic_summary:
+                repair = f"{repair}\n\n{state.empty_filter_diagnostic_summary}"
+            return repair
         if state.ratio_anomaly:
             return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)
         if state.duration_anomaly:
@@ -4200,6 +4243,8 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 高风险 SQL 缺少结构化 SQL Plan，已拦截执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
+            if state.empty_filter_diagnostic_summary:
+                details = f"{details}\n\n{state.empty_filter_diagnostic_summary}"
         if tool_name == "execute_sql_query" and state.duration_anomaly_reason:
             details = f"{details}\n\n[系统检测] {state.duration_anomaly_reason}"
         if tool_name == "execute_sql_query" and state.sql_error_message:
@@ -4381,6 +4426,23 @@ class DataAgentRunner(BaseExecutor):
 
         if empty_reason:
             if state.expecting_final_sql_after_diagnostic and not is_diag:
+                from app.services.ai.empty_result_filter_diagnostic import (
+                    should_escalate_empty_after_value_correction,
+                )
+
+                if should_escalate_empty_after_value_correction(state.empty_filter_diagnostics):
+                    state.empty_sql_reason = "修正筛选值后仍为空，疑似 WHERE 筛选字段选错"
+                    state.empty_sql_result = True
+                    state.empty_sql_text = sql_text or state.empty_sql_text or ""
+                    state.expecting_final_sql_after_diagnostic = False
+                    state.diagnostic_sql_pending_final = False
+                    if state.empty_filter_diagnostic_summary:
+                        state.empty_filter_diagnostic_summary = (
+                            f"{state.empty_filter_diagnostic_summary}\n\n"
+                            "【二次空结果】已按候选值修正后仍无数据，请优先核对 WHERE 是否使用了错误的维度字段，"
+                            "必要时重新调用 get_dataset_schema 确认 term/physical_name 映射。"
+                        )
+                    return parsed_output, False
                 state.empty_sql_reason = ""
                 state.empty_sql_result = False
                 state.last_successful_sql_output = output
@@ -4439,7 +4501,123 @@ class DataAgentRunner(BaseExecutor):
         if ratio_anomaly:
             state.ratio_anomaly = True
             state.ratio_anomaly_reason = anomaly_reason
+            return parsed_output, False
+        state.empty_filter_diagnostics = []
+        state.empty_filter_diagnostic_summary = ""
         return parsed_output, True
+
+    @staticmethod
+    def _should_replace_generic_empty_failure_reply(state: _DataRunState) -> bool:
+        from app.services.ai.empty_result_filter_diagnostic import looks_like_generic_sql_failure_reply
+
+        if not looks_like_generic_sql_failure_reply(state.full_content):
+            return False
+        return bool(state.empty_sql_result or state.empty_filter_diagnostics or state.empty_sql_text)
+
+    async def _maybe_run_empty_filter_diagnostics(
+        self,
+        state: _DataRunState,
+        *,
+        tool_args: dict[str, Any],
+    ):
+        if not state.empty_sql_result:
+            return None
+        sql_text = state.empty_sql_text or str(tool_args.get("sql") or tool_args.get("query") or "")
+        from app.services.ai.empty_result_filter_diagnostic import (
+            format_repair_diagnostic_block,
+            run_automatic_filter_retry,
+            run_empty_filter_diagnostics,
+            sql_has_string_literal_filters,
+        )
+
+        if not sql_has_string_literal_filters(sql_text):
+            return None
+
+        data_source = str(tool_args.get("data_source") or "").strip()
+        dataset_name = str(tool_args.get("dataset_name") or "").strip()
+        if not data_source or not dataset_name:
+            return None
+
+        from app.core.orm import AsyncSessionLocal
+        from app.services.sql_query_execution_service import execute_sql_query_core
+
+        async def _execute_sql(**kwargs: Any) -> str:
+            async with AsyncSessionLocal() as session:
+                return await execute_sql_query_core(session, dry_run=False, **kwargs)
+
+        try:
+            diagnostics = await run_empty_filter_diagnostics(
+                sql=sql_text,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=self._current_user_id(),
+                is_admin=self._current_user_is_admin(),
+                execute_sql=_execute_sql,
+                schema_table_columns=state.schema_table_columns,
+            )
+        except Exception as exc:
+            logger.warning("[DataAgentRunner] Empty filter diagnostics skipped: %s", exc)
+            return None
+
+        state.empty_filter_diagnostics = [item.to_dict() for item in diagnostics]
+        state.empty_filter_diagnostic_summary = format_repair_diagnostic_block(diagnostics)
+
+        try:
+            retry = await run_automatic_filter_retry(
+                sql=sql_text,
+                diagnostics=diagnostics,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=self._current_user_id(),
+                is_admin=self._current_user_is_admin(),
+                execute_sql=_execute_sql,
+            )
+        except Exception as exc:
+            logger.warning("[DataAgentRunner] Empty filter auto retry skipped: %s", exc)
+            return None
+
+        if retry.attempted and retry.corrected_sql:
+            state.empty_filter_auto_retry_sql = retry.corrected_sql
+        if retry.attempted and retry.summary:
+            summary = state.empty_filter_diagnostic_summary
+            state.empty_filter_diagnostic_summary = (
+                f"{summary}\n\n{retry.summary}".strip() if summary else retry.summary
+            )
+        return retry if retry.attempted else None
+
+    def _apply_auto_retry_sql_result(
+        self,
+        state: _DataRunState,
+        *,
+        sql_text: str,
+        output: Any,
+        parsed_output: Any,
+    ) -> bool:
+        state.empty_sql_result = False
+        state.empty_sql_reason = ""
+        state.empty_sql_text = ""
+        state.expecting_final_sql_after_diagnostic = False
+        state.diagnostic_sql_pending_final = False
+        state.sql_completed = True
+        state.last_successful_sql_output = output
+        state.duration_anomaly = False
+        state.duration_anomaly_reason = ""
+        state.ratio_anomaly = False
+        state.ratio_anomaly_reason = ""
+        duration_anomaly, duration_reason = self._detect_duration_anomaly(parsed_output)
+        if duration_anomaly:
+            state.duration_anomaly = True
+            state.duration_anomaly_reason = duration_reason
+            return False
+        ratio_anomaly, anomaly_reason = self._detect_ratio_anomaly(parsed_output)
+        if ratio_anomaly:
+            state.ratio_anomaly = True
+            state.ratio_anomaly_reason = anomaly_reason
+            return False
+        normalized_sql = self._normalize_sql_text(sql_text)
+        if normalized_sql:
+            state.failed_sql_signatures.pop(normalized_sql, None)
+        return True
 
     def _schema_needs_refinement(self, tool_output: Any, *, similarity_threshold: float) -> bool:
         text = str(tool_output or "").strip()
@@ -4734,6 +4912,10 @@ class DataAgentRunner(BaseExecutor):
             "比例",
         )
         if any(marker in sql_upper for marker in ratio_markers):
+            return False
+        from app.services.ai.empty_result_filter_diagnostic import sql_has_string_literal_filters
+
+        if sql_has_string_literal_filters(sql):
             return False
         return True
 
