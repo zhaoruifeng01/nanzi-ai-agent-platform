@@ -229,6 +229,8 @@ XML 示例：
         repair_guidance: str,
         sub_queries_summary: str = "",
         join_sql: str = "",
+        schema_snippet: str = "",
+        explain_context: str = "",
     ) -> str:
         node_label = "子查询" if node_kind == "sub_query" else "内存联邦聚合 (<memory_join>)"
         extra = ""
@@ -245,10 +247,20 @@ XML 示例：
                 f"临时表名：{temp_table}\n"
                 "本轮只修正该数据集的 sub_query SQL，不要改动其他 sub_query 或 memory_join。"
             )
+        schema_focus = schema_snippet.strip() or schema_context[:3500]
+        explain_block = ""
+        if explain_context.strip():
+            explain_block = (
+                f"\n【EXPLAIN 参考（辅助理解执行/类型问题，请结合 Schema 字段类型修正 SQL）】\n"
+                f"{explain_context.strip()}\n"
+            )
         return f"""你是联邦查询 SQL 局部修复模块。用户问题与 Schema 如下。
 
-【跨数据集 Schema 定义】
-{schema_context}
+【本数据集 Schema 片段（含 repair 时 get_dataset_schema 按需检索，优先核对字段类型）】
+{schema_focus}
+
+【跨数据集 Schema 定义（完整，供交叉引用）】
+{schema_context[:6000]}
 
 【当前联邦计划（仅供参考，勿整份重写）】
 {plan_output[:8000]}
@@ -256,8 +268,11 @@ XML 示例：
 【失败节点】{node_label}
 {extra}
 
-【repair_attempt】{repair_attempt}
+【完整数据库错误信息（勿忽略 ORA-xxxxx 编号）】
+{error_text[:3000]}
 
+【repair_attempt】{repair_attempt}
+{explain_block}
 {repair_guidance}
 
 【输出格式 (MUST)】
@@ -1490,11 +1505,28 @@ XML 示例：
         "1) 报错如 ORA-01861 / ORA-01830 / literal does not match format string 时，"
         "优先检查日期字段真实类型与 SQL 中 TO_DATE、TO_CHAR、日期字面量格式是否一致。\n"
         "2) 若字段本身是 DATE/TIMESTAMP，禁止再用 TO_DATE(date_column, 'YYYY-MM-DD') 包裹；"
-        "应直接比较日期字段，或用 TO_CHAR(date_column, 'YYYY-MM-DD') 仅用于展示/分组。\n"
-        "3) 若字段是字符串日期，TO_DATE 的格式掩码必须与字段真实字符串格式一致；"
+        "应直接使用 DATE 'YYYY-MM-DD' 范围比较，例如 "
+        "`date_col >= DATE '2026-05-01' AND date_col < DATE '2026-06-01'`。\n"
+        "3) 若 Schema 显示字段是字符串/VARCHAR（常见列名 create_date 但实际存文本），"
+        "禁止对列使用 TO_CHAR/TO_DATE（易触发 ORA-01722 invalid number 或 ORA-01861）；"
+        "应改用字符串区间比较，例如 "
+        "`create_date >= '2026-05-01' AND create_date < '2026-06-01'`，"
+        "或 `SUBSTR(create_date,1,7) = '2026-05'`，格式必须与 Schema/样例值一致。\n"
+        "4) 若字段是字符串日期，TO_DATE 的格式掩码必须与字段真实字符串格式一致；"
         "不要把 'YYYY-MM-DD' 用在实际包含时间、斜杠或中文格式的字段上。\n"
-        "4) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
+        "5) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
         "不要顺手更换无关表字段。"
+    )
+
+    INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE = (
+        "【ORA-01722 / invalid number 修正指引】\n"
+        "1) 该错误常见于：对 VARCHAR/字符串列使用 TO_CHAR/TO_NUMBER/算术运算，"
+        "或 TO_DATE/TO_CHAR 格式掩码与列内实际值不匹配。\n"
+        "2) 必须先对照 Schema 中该列类型与样例值；若 create_date 等为字符串，"
+        "改用字符串比较或 SUBSTR 截取年月，不要对列套 TO_CHAR(..., 'YYYY-MM')。\n"
+        "3) 若需按月筛选且列为 DATE 类型，优先 `>= DATE 'YYYY-MM-01' AND < DATE 'YYYY-MM+1-01'`，"
+        "不要用 `TO_CHAR(date_col,'YYYY-MM')='YYYY-MM'` 除非确认列为 DATE 且此前语法已验证可行。\n"
+        "4) 禁止原样重复已失败的 TO_CHAR/TO_DATE 写法；必须换一种与 Schema 类型一致的过滤写法。"
     )
 
     TIME_RANGE_ANOMALY_REPAIR_GUIDE = (

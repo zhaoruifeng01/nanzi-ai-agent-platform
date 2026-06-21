@@ -21,6 +21,75 @@ def normalize_sql_text(sql: str) -> str:
     return " ".join(str(sql or "").strip().lower().split())
 
 
+def build_repair_schema_search_keywords(
+    failed_sql: str,
+    *,
+    dataset_name: str = "",
+    error_text: str = "",
+    sql_dialect: str = "clickhouse",
+) -> str:
+    """从失败 SQL / 错误信息 / 数据集名构造 get_dataset_schema(keywords) 检索词。"""
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        value = str(token or "").strip()
+        if not value:
+            return
+        key = value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        parts.append(value)
+
+    if dataset_name:
+        _add(dataset_name)
+
+    try:
+        from app.services.sql_query_execution_service import extract_physical_table_refs_from_select_sql
+
+        _, refs = extract_physical_table_refs_from_select_sql(failed_sql, sql_dialect)
+        for table in refs.values():
+            _add(table)
+    except Exception:
+        pass
+
+    for ident in extract_invalid_sql_identifiers(error_text):
+        _add(ident)
+        if "." in ident:
+            _add(ident.rsplit(".", 1)[-1])
+
+    return " ".join(parts[:12])
+
+
+def merge_repair_schema_snippets(
+    base_snippet: str,
+    refreshed_snippet: str,
+    *,
+    max_chars: int = 5000,
+) -> str:
+    """合并 prefetch Schema 片段与 repair 时按需检索到的 Schema。"""
+    base = str(base_snippet or "").strip()
+    refreshed = str(refreshed_snippet or "").strip()
+    if not refreshed:
+        return base[:max_chars] if base else ""
+    skip_markers = (
+        "[Tool Error]",
+        "No relevant schema info found",
+        "No authorized datasets found",
+        "metadata service unavailable",
+    )
+    if any(marker.lower() in refreshed.lower() for marker in skip_markers):
+        return base[:max_chars] if base else ""
+    if refreshed in base:
+        return base[:max_chars] if base else refreshed[:max_chars]
+    marker = "【repair 按需 get_dataset_schema 补充】"
+    combined = f"{base}\n\n{marker}\n{refreshed}".strip() if base else f"{marker}\n{refreshed}"
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n... [Schema 片段已截断]"
+    return combined
+
+
 def is_cross_dataset_scope_sql_error(message: Any) -> bool:
     text = str(message or "")
     if not text.strip():
@@ -68,6 +137,17 @@ def is_date_format_sql_error(message: str) -> bool:
         "cannot parse date",
     )
     return any(pattern in text for pattern in patterns)
+
+
+def is_invalid_number_sql_error(message: str) -> bool:
+    text = str(message or "").lower()
+    if not text.strip():
+        return False
+    return (
+        "ora-01722" in text
+        or "invalid number" in text
+        or "invalid number format model" in text
+    )
 
 
 def extract_invalid_sql_identifiers(message: str) -> list[str]:
@@ -134,7 +214,10 @@ def sql_repair_taxonomy_hint(message: str) -> str:
         focus = "移除单数据集 SQL 中的跨数据集表引用，改走联邦子查询 + 内存关联"
     elif is_date_format_sql_error(text):
         category = "date_format"
-        focus = "核对日期字段类型、日期字面量格式、TO_DATE/TO_CHAR 或时间边界表达式"
+        focus = "核对日期字段类型与 TO_DATE/TO_CHAR/DATE 字面量；字符串列勿对列套 TO_CHAR"
+    elif is_invalid_number_sql_error(text):
+        category = "invalid_number"
+        focus = "核对 VARCHAR 日期列是否误用 TO_CHAR/TO_NUMBER；改用字符串区间或 DATE 字面量范围"
     elif is_schema_reference_sql_error(text):
         category = "invalid_identifier"
         focus = "核对字段名、表名或别名引用"
@@ -300,6 +383,8 @@ def is_retryable_sql_error(error: Any) -> bool:
         return True
     if is_date_format_sql_error(text) or is_schema_reference_sql_error(text):
         return True
+    if is_invalid_number_sql_error(text):
+        return True
     return False
 
 
@@ -320,7 +405,7 @@ def build_sql_repair_guidance(
     )
     repair = (
         "【SQL 修正要求】上一轮 SQL 执行失败。"
-        f"错误信息：{error_text[:800]}\n"
+        f"错误信息：{error_text[:2000]}\n"
         f"失败 SQL：\n{failed_sql[:4000]}\n"
         f"{action}"
         "禁止原样重复提交与上次完全相同的失败 SQL。"
@@ -328,15 +413,24 @@ def build_sql_repair_guidance(
     repair += sql_repair_taxonomy_hint(error_text)
     if repeat_blocked:
         repair += (
-            "\n\n【禁止重复 SQL】上一轮已提交相同失败 SQL 并被拦截。"
-            "必须修改至少一处：列名、表名、JOIN、WHERE、时间范围或聚合逻辑。"
+            "\n\n【禁止重复 SQL】上一轮 repair 输出的 SQL 与失败 SQL 归一化后相同，已被视为无效修复。"
+            "必须改用与 Schema 字段类型一致的另一种写法（例如字符串日期列改用 'YYYY-MM-DD' 字符串区间，"
+            "DATE 列改用 DATE '...' 范围），不得再次提交相同 SQL。"
         )
     repair += invalid_identifier_repair_hint(error_text)
     repair += cross_dataset_scope_repair_hint(error_text)
     if is_schema_reference_sql_error(error_text):
         repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
+    if for_federated_node:
+        repair += (
+            "\n\n【Schema 核对要求】repair 阶段已按需调用 get_dataset_schema 检索失败 SQL 涉及的表；"
+            "必须以【本数据集 Schema 片段】中的 columns.type 与物理列名为准修正 SQL，"
+            "禁止继续臆造 TO_CHAR/TO_DATE 或英文列名。"
+        )
     if is_date_format_sql_error(error_text):
         repair += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
+    if is_invalid_number_sql_error(error_text):
+        repair += f"\n\n{DataQueryPrompts.INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE}"
     err_lower = error_text.lower()
     if TIME_RANGE_GATE_PREFIX in error_text or "相对时间" in err_lower or "时间锚点" in error_text:
         repair += (

@@ -20,12 +20,15 @@ from app.services.ai.runtime.agentscope.messages import system_user_prompt_messa
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.federated_sql_repair import (
+    build_repair_schema_search_keywords,
     build_sql_repair_guidance,
     detect_sql_error,
     is_non_retryable_permission_error,
     is_retryable_sql_error,
+    merge_repair_schema_snippets,
     normalize_sql_text,
 )
+from app.services.sql_query_execution_service import dialect_from_data_source
 from app.services.ai.time_anchor import (
     build_time_range_gate_message,
     detect_time_range_mismatch,
@@ -37,9 +40,9 @@ MAX_FEDERATED_ROWS = 1000
 # 子查询注册进 DuckDB 时的行上限。必须显著大于最终 join 输出上限，
 # 否则「先截断子查询再 join/聚合」会丢行导致关联缺失、汇总失真。
 MAX_FEDERATED_SUBQUERY_ROWS = 50000
-MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 4
-# 与单源 sql_error repair 预算对齐：按失败节点（子查询 / memory_join）分别计数。
-MAX_FEDERATED_SQL_REPAIR_PER_NODE = 5
+MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 10
+# 按失败节点（子查询 / memory_join）分别计数，每节点最多局部 repair 次数。
+MAX_FEDERATED_SQL_REPAIR_PER_NODE = 10
 
 
 def make_markdown_table(columns: list, rows: list) -> str:
@@ -226,6 +229,7 @@ class FederatedQueryExecutor:
                         failed_sql_signatures: set[str] = set()
 
                         while True:
+                            dataset = None
                             sub_log_id = f"fed_sub_{uuid.uuid4().hex[:8]}_{idx}"
                             yield {
                                 "type": "log",
@@ -361,6 +365,42 @@ class FederatedQueryExecutor:
                                 ):
                                     norm_sql = normalize_sql_text(sub_sql)
                                     repeat_blocked = norm_sql in failed_sql_signatures
+                                    explain_context = ""
+                                    schema_snippet = self._extract_schema_snippet_for_dataset(
+                                        self.schema_output,
+                                        dataset_name,
+                                    )
+                                    repair_schema_keywords = ""
+                                    try:
+                                        if dataset is not None:
+                                            schema_snippet, repair_schema_keywords = (
+                                                await self._refresh_schema_snippet_for_repair(
+                                                    session,
+                                                    failed_sql=sub_sql,
+                                                    dataset_name=dataset_name,
+                                                    error_text=error_text,
+                                                    data_source=dataset.data_source,
+                                                    base_snippet=schema_snippet,
+                                                    user_id=user_id,
+                                                    is_admin=is_admin,
+                                                )
+                                            )
+                                            explain_context = await self._fetch_subquery_explain_for_repair(
+                                                session,
+                                                sub_sql=sub_sql,
+                                                dataset=dataset,
+                                                user_id=user_id,
+                                                user_dimensions=user_dimensions,
+                                                agent_context=current_agent_context,
+                                                is_admin=is_admin,
+                                            )
+                                    except Exception as schema_exc:
+                                        logger.warning(
+                                            "[FederatedQueryExecutor] Repair schema refresh failed on %s: %s",
+                                            dataset_name,
+                                            schema_exc,
+                                            exc_info=True,
+                                        )
                                     yield {
                                         "type": "log",
                                         "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
@@ -369,7 +409,12 @@ class FederatedQueryExecutor:
                                             f"子查询 ({dataset_name}) 执行失败，"
                                             f"正在按单源 SQL repair 方式局部修正该节点 SQL"
                                             f"（第 {node_repair_count + 1}/{MAX_FEDERATED_SQL_REPAIR_PER_NODE} 次）。"
-                                            f"\n错误信息: {error_text}\nSQL:\n{sub_sql}"
+                                            + (
+                                                f"\nSchema 检索词: {repair_schema_keywords}"
+                                                if repair_schema_keywords
+                                                else ""
+                                            )
+                                            + f"\n错误信息: {error_text}\nSQL:\n{sub_sql}"
                                         ),
                                         "status": "warning",
                                     }
@@ -387,6 +432,8 @@ class FederatedQueryExecutor:
                                             repeat_blocked=repeat_blocked,
                                             sub_queries=sub_queries,
                                             join_sql=join_sql,
+                                            schema_snippet=schema_snippet,
+                                            explain_context=explain_context,
                                         )
                                         sq["sql"] = sub_sql
                                         new_norm = normalize_sql_text(sub_sql)
@@ -634,6 +681,8 @@ class FederatedQueryExecutor:
         repeat_blocked: bool,
         sub_queries: list[dict[str, str]],
         join_sql: str,
+        schema_snippet: str = "",
+        explain_context: str = "",
     ) -> str:
         repair_guidance = build_sql_repair_guidance(
             error_text,
@@ -654,6 +703,8 @@ class FederatedQueryExecutor:
             repair_guidance=repair_guidance,
             sub_queries_summary=self._summarize_subqueries_for_prompt(sub_queries),
             join_sql=join_sql,
+            schema_snippet=schema_snippet,
+            explain_context=explain_context,
         )
         messages = system_user_prompt_messages(prompt, user_prompt=user_question)
         raw = await chat_client.generate_text(messages)
@@ -661,6 +712,130 @@ class FederatedQueryExecutor:
         if not fixed_sql:
             raise ValueError(f"联邦 SQL 局部 repair 未能解析 fixed_sql。LLM 输出:\n{raw[:2000]}")
         return fixed_sql
+
+    async def _refresh_schema_snippet_for_repair(
+        self,
+        session: Any,
+        *,
+        failed_sql: str,
+        dataset_name: str,
+        error_text: str,
+        data_source: Optional[str],
+        base_snippet: str,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> tuple[str, str]:
+        """repair 时按失败 SQL 涉及表名调用 get_dataset_schema 逻辑补充 Schema。"""
+        from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
+
+        dialect = dialect_from_data_source(data_source)
+        keywords = build_repair_schema_search_keywords(
+            failed_sql,
+            dataset_name=dataset_name,
+            error_text=error_text,
+            sql_dialect=dialect,
+        )
+        if not keywords.strip():
+            return base_snippet, ""
+
+        refreshed = await fetch_dataset_schema_core(
+            session,
+            keywords=keywords,
+            user_id=int(user_id) if user_id else None,
+            is_admin=is_admin,
+        )
+        merged = merge_repair_schema_snippets(base_snippet, refreshed)
+        return merged, keywords
+
+    @staticmethod
+    def _extract_schema_snippet_for_dataset(
+        schema_output: str,
+        dataset_name: str,
+        *,
+        max_chars: int = 3500,
+    ) -> str:
+        if not schema_output or not dataset_name:
+            return ""
+        lines = schema_output.splitlines()
+        chunks: list[str] = []
+        capture = False
+        blank_run = 0
+        pattern = re.compile(rf"^\s*dataset:\s*{re.escape(dataset_name)}\s*$", re.IGNORECASE)
+        for line in lines:
+            if pattern.match(line.strip()):
+                capture = True
+                blank_run = 0
+            elif capture and re.match(r"^\s*dataset:\s*\S+", line.strip()) and not pattern.match(line.strip()):
+                break
+            if capture:
+                chunks.append(line)
+                if not line.strip():
+                    blank_run += 1
+                    if blank_run >= 2 and len(chunks) > 24:
+                        break
+                else:
+                    blank_run = 0
+                if sum(len(part) + 1 for part in chunks) > max_chars:
+                    break
+        text = "\n".join(chunks).strip()
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n... [Schema 片段已截断]"
+        return text
+
+    @staticmethod
+    def _format_explain_result_for_repair(raw: Any, explain_sql: str) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return "EXPLAIN 返回空结果。"
+        is_err, err_msg = detect_sql_error(raw)
+        if is_err:
+            return (
+                "EXPLAIN 未能生成有效计划（常与执行错误同源，请重点检查 WHERE 中的类型转换/函数）。\n"
+                f"EXPLAIN SQL:\n{explain_sql[:2000]}\n"
+                f"EXPLAIN 返回:\n{(err_msg or text)[:2000]}"
+            )
+        try:
+            parsed = json.loads(text)
+            formatted = json.dumps(parsed, ensure_ascii=False, indent=2)
+        except Exception:
+            formatted = text
+        if len(formatted) > 3000:
+            formatted = formatted[:3000] + "\n... [EXPLAIN 输出已截断]"
+        return formatted
+
+    async def _fetch_subquery_explain_for_repair(
+        self,
+        session: Any,
+        *,
+        sub_sql: str,
+        dataset: Any,
+        user_id: Optional[int],
+        user_dimensions: Any,
+        agent_context: Any,
+        is_admin: bool,
+    ) -> str:
+        explain_sql = f"EXPLAIN {str(sub_sql or '').strip()}"
+        try:
+            result = await execute_sql_query_core(
+                session,
+                sql=explain_sql,
+                data_source=dataset.data_source,
+                dataset_name=dataset.name,
+                user_id=int(user_id) if user_id else None,
+                user_dimensions=user_dimensions or None,
+                agent_context=agent_context,
+                is_admin=is_admin,
+                bypass_table_auth=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[FederatedQueryExecutor] EXPLAIN for repair failed on dataset %s: %s",
+                getattr(dataset, "name", dataset),
+                exc,
+                exc_info=True,
+            )
+            return f"EXPLAIN 调用异常: {exc}"
+        return self._format_explain_result_for_repair(result, explain_sql)
 
     @staticmethod
     def _infer_degraded_subquery_columns(
