@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 MAX_AUTO_FILTER_DIAGNOSTICS = 3
 MAX_ALTERNATIVE_COLUMN_PROBES = 2
+MAX_AUTO_FILTER_BUSINESS_RETRIES = 3
 DISTINCT_CANDIDATE_LIMIT = 20
 
 _DIMENSION_COLUMN_HINTS = (
@@ -260,6 +261,85 @@ def build_automatic_filter_corrections(
     return corrections
 
 
+def build_automatic_filter_retry_plans(
+    diagnostics: list[FilterDiagnosticResult],
+    *,
+    sql: str,
+    dialect: str = "clickhouse",
+    max_plans: int = MAX_AUTO_FILTER_BUSINESS_RETRIES,
+) -> list[tuple[list[FilterCorrection], str]]:
+    """按优先级生成最多 N 套互不重复的自动修正方案（每套对应 1 次业务 SQL 重试）。"""
+    plans: list[tuple[list[FilterCorrection], str]] = []
+    seen_sql: set[str] = {_normalize_sql(sql)}
+
+    def add_plan(corrections: list[FilterCorrection], description: str) -> None:
+        if len(plans) >= max_plans:
+            return
+        rewritten = rewrite_sql_with_filter_corrections(sql, corrections, dialect=dialect)
+        if not rewritten:
+            return
+        key = _normalize_sql(rewritten)
+        if key in seen_sql:
+            return
+        seen_sql.add(key)
+        plans.append((corrections, description))
+
+    for item in diagnostics:
+        if item.error:
+            continue
+        if item.matched_alternative_column:
+            new_values = tuple(item.matched_alternative_values or item.suggested_values or item.used_values)
+            old = item.used_values[0] if item.used_values else "?"
+            new = new_values[0] if new_values else old
+            add_plan(
+                [
+                    FilterCorrection(
+                        kind="column_swap",
+                        column=item.column,
+                        new_column=item.matched_alternative_column,
+                        operator=item.operator,
+                        old_values=item.used_values,
+                        new_values=new_values or item.used_values,
+                    )
+                ],
+                f"第{{n}}次：字段 `{item.column}` → `{item.matched_alternative_column}`，条件值 `{old}` → `{new}`",
+            )
+        for suggested in item.suggested_values:
+            old = item.used_values[0] if item.used_values else "?"
+            add_plan(
+                [
+                    FilterCorrection(
+                        kind="value_swap",
+                        column=item.column,
+                        operator=item.operator,
+                        old_values=item.used_values,
+                        new_values=(suggested,),
+                    )
+                ],
+                f"第{{n}}次：字段 `{item.column}` 条件值 `{old}` → `{suggested}`",
+            )
+        for alt_column in item.alternative_columns:
+            if _normalize_identifier(alt_column) == _normalize_identifier(item.matched_alternative_column):
+                continue
+            if _normalize_identifier(alt_column) == _normalize_identifier(item.column):
+                continue
+            old = item.used_values[0] if item.used_values else "?"
+            add_plan(
+                [
+                    FilterCorrection(
+                        kind="column_swap",
+                        column=item.column,
+                        new_column=alt_column,
+                        operator=item.operator,
+                        old_values=item.used_values,
+                        new_values=item.used_values,
+                    )
+                ],
+                f"第{{n}}次：尝试将字段 `{item.column}` 替换为 `{alt_column}`（保留条件值 `{old}`）",
+            )
+    return plans
+
+
 def rewrite_sql_with_filter_corrections(
     sql: str,
     corrections: list[FilterCorrection],
@@ -301,75 +381,91 @@ async def run_automatic_filter_retry(
     user_id: Optional[int],
     is_admin: bool,
     execute_sql,
+    max_retries: int = MAX_AUTO_FILTER_BUSINESS_RETRIES,
 ) -> AutoFilterRetryResult:
-    """平台自动改写 WHERE（换字段/换值）并重试 1 次业务 SQL。"""
+    """平台自动改写 WHERE（换字段/换值）并重试最多 3 次业务 SQL。"""
     from app.services.sql_query_execution_service import dialect_from_data_source
 
-    corrections = build_automatic_filter_corrections(diagnostics)
-    if not corrections:
-        return AutoFilterRetryResult()
-
     dialect = dialect_from_data_source(data_source)
-    corrected_sql = rewrite_sql_with_filter_corrections(sql, corrections, dialect=dialect)
-    if not corrected_sql or _normalize_sql(corrected_sql) == _normalize_sql(sql):
+    retry_plans = build_automatic_filter_retry_plans(
+        diagnostics,
+        sql=sql,
+        dialect=dialect,
+        max_plans=max(1, int(max_retries)),
+    )
+    if not retry_plans:
         return AutoFilterRetryResult(error="未能生成有效的自动修正 SQL")
 
-    summary_bits = []
-    for correction in corrections:
-        if correction.kind == "column_swap":
-            old = correction.old_values[0] if correction.old_values else "?"
-            new = correction.new_values[0] if correction.new_values else old
-            summary_bits.append(
-                f"已将 `{correction.column}` 自动替换为 `{correction.new_column}`，"
-                f"条件值 `{old}` → `{new}`"
-            )
-        else:
-            old = correction.old_values[0] if correction.old_values else "?"
-            new = correction.new_values[0] if correction.new_values else old
-            summary_bits.append(
-                f"已将字段 `{correction.column}` 的条件值 `{old}` 自动修正为 `{new}`"
-            )
-    summary = "【平台自动重试】 " + "；".join(summary_bits)
+    last_result = AutoFilterRetryResult()
+    summary_lines = ["【平台自动重试】"]
 
-    try:
-        raw = await execute_sql(
-            sql=corrected_sql,
-            data_source=data_source,
-            dataset_name=dataset_name,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
-    except Exception as exc:
-        logger.warning("[EmptyFilterDiagnostic] automatic filter retry failed: %s", exc)
-        return AutoFilterRetryResult(
+    for attempt_index, (corrections, description_template) in enumerate(retry_plans, start=1):
+        corrected_sql = rewrite_sql_with_filter_corrections(sql, corrections, dialect=dialect)
+        if not corrected_sql:
+            continue
+        description = description_template.format(n=attempt_index)
+        summary_lines.append(description)
+
+        try:
+            raw = await execute_sql(
+                sql=corrected_sql,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[EmptyFilterDiagnostic] automatic filter retry failed (attempt %s): %s",
+                attempt_index,
+                exc,
+            )
+            last_result = AutoFilterRetryResult(
+                attempted=True,
+                corrected_sql=corrected_sql,
+                summary="\n".join(summary_lines),
+                error=str(exc)[:300],
+            )
+            continue
+
+        if _looks_like_sql_error(raw):
+            last_result = AutoFilterRetryResult(
+                attempted=True,
+                corrected_sql=corrected_sql,
+                summary="\n".join(summary_lines),
+                error=str(raw)[:500],
+            )
+            continue
+
+        parsed = _try_parse_json(raw)
+        has_rows = result_has_data_rows(parsed)
+        summary = "\n".join(summary_lines)
+        if has_rows:
+            summary += f"；第 {attempt_index} 次重试已返回数据。"
+            return AutoFilterRetryResult(
+                attempted=True,
+                corrected_sql=corrected_sql,
+                raw_output=str(raw),
+                parsed_output=parsed,
+                has_rows=True,
+                summary=summary,
+            )
+
+        last_result = AutoFilterRetryResult(
             attempted=True,
             corrected_sql=corrected_sql,
-            summary=summary,
-            error=str(exc)[:300],
+            raw_output=str(raw),
+            parsed_output=parsed,
+            has_rows=False,
+            summary=summary + f"；第 {attempt_index} 次重试仍为空。",
         )
 
-    if _looks_like_sql_error(raw):
-        return AutoFilterRetryResult(
-            attempted=True,
-            corrected_sql=corrected_sql,
-            summary=summary,
-            error=str(raw)[:500],
+    if last_result.attempted:
+        last_result.summary = (last_result.summary or "\n".join(summary_lines)) + (
+            f"；共尝试 {min(len(retry_plans), max_retries)} 次业务 SQL 仍为空，请继续人工复核字段/条件。"
         )
-
-    parsed = _try_parse_json(raw)
-    has_rows = result_has_data_rows(parsed)
-    if has_rows:
-        summary += "；自动重试已返回数据。"
-    else:
-        summary += "；自动重试仍为空，请继续人工复核字段/条件。"
-    return AutoFilterRetryResult(
-        attempted=True,
-        corrected_sql=corrected_sql,
-        raw_output=str(raw),
-        parsed_output=parsed,
-        has_rows=has_rows,
-        summary=summary,
-    )
+        return last_result
+    return AutoFilterRetryResult(error="未能生成有效的自动修正 SQL")
 
 
 def format_repair_diagnostic_block(diagnostics: list[FilterDiagnosticResult]) -> str:

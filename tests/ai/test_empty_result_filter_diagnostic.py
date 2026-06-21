@@ -189,3 +189,78 @@ def test_rewrite_sql_with_filter_corrections_column_and_value():
         dialect="mysql",
     )
     assert rewritten == "SELECT jfmc FROM zf_view_resroom WHERE region_name = '上海市' ORDER BY jfmc"
+
+
+def test_build_automatic_filter_retry_plans_limits_to_three():
+    from app.services.ai.empty_result_filter_diagnostic import (
+        FilterDiagnosticResult,
+        build_automatic_filter_retry_plans,
+    )
+
+    sql = "SELECT room_name FROM demo WHERE gxqy = '上海'"
+    plans = build_automatic_filter_retry_plans(
+        [
+            FilterDiagnosticResult(
+                column="gxqy",
+                table="demo",
+                operator="=",
+                used_values=("上海",),
+                diagnostic_sql="x",
+                matched_alternative_column="region_name",
+                matched_alternative_values=["上海市"],
+                suggested_values=["上海市", "上海城区"],
+                alternative_columns=["region_name", "city_name", "province_name"],
+            )
+        ],
+        sql=sql,
+        dialect="mysql",
+        max_plans=3,
+    )
+    assert len(plans) == 3
+    sqls = {
+        __import__(
+            "app.services.ai.empty_result_filter_diagnostic",
+            fromlist=["rewrite_sql_with_filter_corrections"],
+        ).rewrite_sql_with_filter_corrections(sql, corrections, dialect="mysql")
+        for corrections, _ in plans
+    }
+    assert len(sqls) == 3
+
+
+@pytest.mark.asyncio
+async def test_run_automatic_filter_retry_tries_until_success():
+    from app.services.ai.empty_result_filter_diagnostic import (
+        FilterDiagnosticResult,
+        run_automatic_filter_retry,
+    )
+
+    attempts: list[str] = []
+
+    async def fake_execute_sql(*, sql, **kwargs):
+        attempts.append(sql)
+        if len(attempts) < 3:
+            return '{"items": [], "total": 0}'
+        return '{"items": [["room-a"]], "total": 1}'
+
+    result = await run_automatic_filter_retry(
+        sql="SELECT room_name FROM demo WHERE gxqy = '上海'",
+        diagnostics=[
+            FilterDiagnosticResult(
+                column="gxqy",
+                table="demo",
+                operator="=",
+                used_values=("上海",),
+                diagnostic_sql="x",
+                suggested_values=["上海市", "上海城区", "上海市区"],
+            )
+        ],
+        data_source="mysql_aiagent",
+        dataset_name="demo",
+        user_id=1,
+        is_admin=False,
+        execute_sql=fake_execute_sql,
+        max_retries=3,
+    )
+    assert result.has_rows is True
+    assert len(attempts) == 3
+    assert "第 3 次重试已返回数据" in result.summary
