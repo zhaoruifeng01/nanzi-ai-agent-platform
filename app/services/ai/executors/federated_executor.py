@@ -23,7 +23,10 @@ from app.services.ai.executors.prompts import DataQueryPrompts
 logger = logging.getLogger(__name__)
 
 MAX_FEDERATED_ROWS = 1000
-MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 2
+# 子查询注册进 DuckDB 时的行上限。必须显著大于最终 join 输出上限，
+# 否则「先截断子查询再 join/聚合」会丢行导致关联缺失、汇总失真。
+MAX_FEDERATED_SUBQUERY_ROWS = 50000
+MAX_FEDERATED_PLAN_REPAIR_ROUNDS = 4
 
 
 def make_markdown_table(columns: list, rows: list) -> str:
@@ -66,10 +69,18 @@ class FederatedQueryExecutor:
         _repair_attempt: int = 0,
         _repair_context: Optional[Dict[str, Any]] = None,
         _original_user_question: Optional[str] = None,
+        _subquery_cache: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from app.services.ai.runtime.agentscope.trace_context import TraceSpanContext
 
         original_user_question = _original_user_question or user_question
+        # 跨 repair 轮复用已成功的子查询结果，避免每轮重跑全部子查询造成的重复 DB 负载。
+        # key = (dataset_name, 归一化 SQL)，仅命中完全相同的成功子查询才复用。
+        if _subquery_cache is None:
+            _subquery_cache = {}
+        # 记录本次执行中发生的「降级留空 / 行截断」情况，最终注入 synthesis，避免把不完整结果当完整结论解读。
+        degraded_datasets: list[str] = []
+        truncated_notes: list[str] = []
         
         async with TraceSpanContext(
             trace_buffer=self.trace_buffer,
@@ -87,6 +98,7 @@ class FederatedQueryExecutor:
                 "status": "pending",
             }
             
+            plan_output = ""
             try:
                 llm = await AgentConfigProvider.get_configured_llm(
                     streaming=False,
@@ -130,6 +142,37 @@ class FederatedQueryExecutor:
                 
             except Exception as e:
                 logger.error("[FederatedQueryExecutor] Plan generation failed: %s", e, exc_info=True)
+                # 计划生成/XML 解析失败时，只要还有 repair 预算就重试一轮（把原始输出回灌让 LLM 自纠），
+                # 不再像以前那样直接 abort。
+                if _repair_attempt < MAX_FEDERATED_PLAN_REPAIR_ROUNDS:
+                    yield {
+                        "type": "log",
+                        "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                        "title": "修复联邦查询计划",
+                        "details": (
+                            "联邦计划生成或 XML 解析失败，正在基于错误重新生成完整联邦计划。"
+                            f"\n错误信息: {str(e)}"
+                        ),
+                        "status": "warning",
+                    }
+                    repair_context = {
+                        "stage": "联邦计划生成",
+                        "dataset_name": "plan",
+                        "failed_sql": "",
+                        "error": str(e),
+                        "previous_plan": plan_output,
+                    }
+                    async for chunk in self.execute(
+                        runtime_messages,
+                        system_prompt,
+                        original_user_question,
+                        _repair_attempt=_repair_attempt + 1,
+                        _repair_context=repair_context,
+                        _original_user_question=original_user_question,
+                        _subquery_cache=_subquery_cache,
+                    ):
+                        yield chunk
+                    return
                 yield {
                     "type": "log",
                     "id": plan_log_id,
@@ -189,39 +232,58 @@ class FederatedQueryExecutor:
                                 if not has_perm:
                                     raise PermissionError(f"无权访问数据集: '{dataset_name}' (ID: {dataset.id})")
                             
-                            # 物理执行子查询
-                            async with TraceSpanContext(
-                                trace_buffer=self.trace_buffer,
-                                event_type="tool_call",
-                                span_name="execute_sql_query",
-                                tool_name="execute_sql_query",
-                                tool_input={"sql": sub_sql, "data_source": dataset.data_source, "dataset_name": dataset.name}
-                            ) as sub_span:
-                                res_str = await execute_sql_query_core(
-                                    session,
-                                    sql=sub_sql,
-                                    data_source=dataset.data_source,
-                                    dataset_name=dataset.name,
-                                    user_id=int(user_id) if user_id else None,
-                                    user_dimensions=user_dimensions or None,
-                                    agent_context=current_agent_context,
-                                    is_admin=is_admin,
-                                    bypass_table_auth=False,
-                                )
-                                sub_span.set_output(res_str)
+                            # 跨 repair 轮缓存命中：相同 (数据集, SQL) 已成功执行过，直接复用结果，避免重跑。
+                            cache_key = f"{dataset.name}::{self._normalize_sub_sql(sub_sql)}"
+                            cached_res = _subquery_cache.get(cache_key)
+                            cache_hit = cached_res is not None
+                            if cache_hit:
+                                res_str = cached_res
+                            else:
+                                # 物理执行子查询
+                                async with TraceSpanContext(
+                                    trace_buffer=self.trace_buffer,
+                                    event_type="tool_call",
+                                    span_name="execute_sql_query",
+                                    tool_name="execute_sql_query",
+                                    tool_input={"sql": sub_sql, "data_source": dataset.data_source, "dataset_name": dataset.name}
+                                ) as sub_span:
+                                    res_str = await execute_sql_query_core(
+                                        session,
+                                        sql=sub_sql,
+                                        data_source=dataset.data_source,
+                                        dataset_name=dataset.name,
+                                        user_id=int(user_id) if user_id else None,
+                                        user_dimensions=user_dimensions or None,
+                                        agent_context=current_agent_context,
+                                        is_admin=is_admin,
+                                        bypass_table_auth=False,
+                                    )
+                                    sub_span.set_output(res_str)
                             
                             if self._is_sql_tool_error_result(res_str):
                                 raise ValueError(res_str)
                             
+                            # 成功结果写入缓存供后续 repair 轮复用
+                            _subquery_cache[cache_key] = res_str
+                            
                             res_data = json.loads(res_str)
                             col_names = [col["name"] for col in res_data.get("columns", [])]
                             raw_items = res_data.get("items") or res_data.get("rows") or []
-                            items = self._limit_rows(raw_items)
-                            limit_note = (
-                                f"（原始返回 {len(raw_items)} 行，已截断到 {MAX_FEDERATED_ROWS} 行）"
-                                if len(raw_items) > len(items)
-                                else ""
-                            )
+                            # 注意：子查询结果用更宽松的上限注册，保证 join/聚合的正确性；
+                            # 只有最终 join 输出才收敛到 MAX_FEDERATED_ROWS。
+                            items = self._limit_rows(raw_items, max_rows=MAX_FEDERATED_SUBQUERY_ROWS)
+                            if len(raw_items) > len(items):
+                                limit_note = (
+                                    f"（原始返回 {len(raw_items)} 行，已截断到 {MAX_FEDERATED_SUBQUERY_ROWS} 行，"
+                                    "join/聚合结果可能不完整）"
+                                )
+                                truncated_notes.append(
+                                    f"数据集 '{dataset_name}' 子查询返回 {len(raw_items)} 行，"
+                                    f"已截断到 {MAX_FEDERATED_SUBQUERY_ROWS} 行参与关联"
+                                )
+                            else:
+                                limit_note = ""
+                            cache_note = "（命中子查询结果缓存，未重跑）" if cache_hit else ""
                             
                             # 注册临时表到 DuckDB
                             df = pd.DataFrame(items, columns=col_names)
@@ -231,7 +293,7 @@ class FederatedQueryExecutor:
                                 "type": "log",
                                 "id": sub_log_id,
                                 "title": f"执行子查询 ({dataset_name})",
-                                "details": f"子查询执行成功。已导入临时表 '{temp_table}' ({len(items)} 行数据){limit_note}。\nSQL:\n{sub_sql}",
+                                "details": f"子查询执行成功{cache_note}。已导入临时表 '{temp_table}' ({len(items)} 行数据){limit_note}。\nSQL:\n{sub_sql}",
                                 "status": "success",
                             }
                             
@@ -266,6 +328,7 @@ class FederatedQueryExecutor:
                                         _repair_attempt=_repair_attempt + 1,
                                         _repair_context=repair_context,
                                         _original_user_question=original_user_question,
+                                        _subquery_cache=_subquery_cache,
                                     ):
                                         yield chunk
                                     return
@@ -323,9 +386,11 @@ class FederatedQueryExecutor:
                                         _repair_attempt=_repair_attempt + 1,
                                         _repair_context=repair_context,
                                         _original_user_question=original_user_question,
+                                        _subquery_cache=_subquery_cache,
                                     ):
                                         yield chunk
                                     return
+                                degraded_datasets.append(dataset_name)
                                 yield {
                                     "type": "log",
                                     "id": sub_log_id,
@@ -393,11 +458,13 @@ class FederatedQueryExecutor:
                     raw_join_rows = duck_res.fetchall()
                     join_rows = self._limit_rows(raw_join_rows)
                     columns = self._columns_from_duckdb_description(duck_res.description)
-                    limit_note = (
-                        f"（原始产出 {len(raw_join_rows)} 行，已截断到 {MAX_FEDERATED_ROWS} 行）"
-                        if len(raw_join_rows) > len(join_rows)
-                        else ""
-                    )
+                    if len(raw_join_rows) > len(join_rows):
+                        limit_note = f"（原始产出 {len(raw_join_rows)} 行，已截断到 {MAX_FEDERATED_ROWS} 行）"
+                        truncated_notes.append(
+                            f"最终关联结果共 {len(raw_join_rows)} 行，仅展示前 {MAX_FEDERATED_ROWS} 行"
+                        )
+                    else:
+                        limit_note = ""
                     
                     final_data = {
                         "columns": columns,
@@ -442,6 +509,7 @@ class FederatedQueryExecutor:
                             _repair_attempt=_repair_attempt + 1,
                             _repair_context=repair_context,
                             _original_user_question=original_user_question,
+                            _subquery_cache=_subquery_cache,
                         ):
                             yield chunk
                         return
@@ -474,8 +542,13 @@ class FederatedQueryExecutor:
                 except Exception as e:
                     logger.warning("[FederatedQueryExecutor] Failed to save last data result: %s", e)
 
-                # 调用 LLM 做最终的分析和可视化
-                synthesis_prompt = DataQueryPrompts.build_federated_synthesis_prompt(original_user_question, final_md_table)
+                # 调用 LLM 做最终的分析和可视化（附带数据完整性提示，避免把降级/截断结果当完整结论）
+                data_caveats = self._build_data_caveats(degraded_datasets, truncated_notes)
+                synthesis_prompt = DataQueryPrompts.build_federated_synthesis_prompt(
+                    original_user_question,
+                    final_md_table,
+                    data_caveats=data_caveats,
+                )
                 
                 # 流式输出总结（synthesis_prompt 已含用户问题，user_prompt 用默认值避免重复）
                 llm_stream = await AgentConfigProvider.get_configured_llm(
@@ -532,9 +605,17 @@ class FederatedQueryExecutor:
         )
         if any(marker in lower for marker in non_retryable_markers):
             return False
+        # 复用单源链路的日期/字段引用 detector，保持判定口径一致
+        try:
+            from app.services.ai.runners.data_agent_runner import DataAgentRunner
+            if DataAgentRunner._is_date_format_sql_error(text) or DataAgentRunner._is_schema_reference_sql_error(text):
+                return True
+        except Exception:
+            pass
         retryable_markers = (
             "[validation failed]",
             "[performance blocked]",
+            "[tool_error]",
             "ora-",
             "unknown column",
             "unknown table",
@@ -545,6 +626,20 @@ class FederatedQueryExecutor:
             "no such column",
             "no such table",
             "does not exist",
+            # GROUP BY / 聚合类
+            "not a group by",
+            "group by expression",
+            "ora-00979",
+            # 连接 / 超时 / 网络类（瞬时或可改写的执行错误）
+            "timeout",
+            "timed out",
+            "lock wait",
+            "connection",
+            "connect",
+            "数据库连接",
+            "执行超时",
+            "除零",
+            "division by zero",
         )
         return any(marker in lower for marker in retryable_markers)
 
@@ -576,6 +671,28 @@ class FederatedQueryExecutor:
         previous_plan = str(repair_context.get("previous_plan") or "").strip()
         stage = str(repair_context.get("stage") or "联邦查询执行").strip()
         dataset_name = str(repair_context.get("dataset_name") or "").strip()
+        # 命中日期/时间格式或字段引用类错误时，复用单源链路同一套 detector 追加专项修正指引，
+        # 避免 LLM 在 repair 时反复生成同样的 TO_DATE 包裹或臆造字段导致再次失败。
+        targeted_guides = ""
+        is_date_err = False
+        is_schema_err = False
+        try:
+            from app.services.ai.runners.data_agent_runner import DataAgentRunner
+            is_date_err = DataAgentRunner._is_date_format_sql_error(error)
+            is_schema_err = DataAgentRunner._is_schema_reference_sql_error(error)
+        except Exception:
+            error_lower = error.lower()
+            is_date_err = any(
+                m in error_lower for m in ("ora-01861", "ora-01830", "literal does not match format string")
+            )
+            is_schema_err = any(
+                m in error_lower
+                for m in ("unknown column", "unknown table", "invalid identifier", "no such column", "no such table")
+            )
+        if is_date_err:
+            targeted_guides += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
+        if is_schema_err:
+            targeted_guides += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
         return (
             f"{base_prompt}\n\n"
             "【上一轮联邦计划执行失败，需要 repair 后重试】\n"
@@ -594,6 +711,7 @@ class FederatedQueryExecutor:
             "4. 如果错误发生在 `<memory_join>`，请同步校正各 `<sub_query>` 的投影别名与 `<memory_join>` 引用字段，"
             "确保临时表字段一致。\n"
             "5. 不得通过扩大权限、跨数据集直连 JOIN、外部文件访问或写操作绕过平台约束。"
+            f"{targeted_guides}"
         )
 
     def _current_user_id(self) -> Optional[int]:
@@ -630,6 +748,26 @@ class FederatedQueryExecutor:
         if not isinstance(rows, list):
             return []
         return rows[:max_rows]
+
+    @staticmethod
+    def _normalize_sub_sql(sql: str) -> str:
+        """子查询缓存 key 用的归一化（小写 + 折叠空白），仅用于完全相同 SQL 的复用判定。"""
+        return " ".join(str(sql or "").strip().lower().split())
+
+    @staticmethod
+    def _build_data_caveats(degraded_datasets: list[str], truncated_notes: list[str]) -> str:
+        """汇总降级/截断情况，供 synthesis prompt 显式标注数据完整性，避免把不完整结果当完整结论。"""
+        parts: list[str] = []
+        if degraded_datasets:
+            uniq = list(dict.fromkeys(degraded_datasets))
+            parts.append(
+                "以下关联数据集查询失败，相关字段已降级留空，可能缺失："
+                + "、".join(uniq)
+            )
+        if truncated_notes:
+            uniq_notes = list(dict.fromkeys(truncated_notes))
+            parts.append("以下数据存在行数截断，统计/汇总口径可能不完整：" + "；".join(uniq_notes))
+        return "\n".join(parts)
 
     @staticmethod
     def _validate_memory_join_sql(sql: str) -> Optional[str]:

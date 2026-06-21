@@ -22,10 +22,11 @@ class SQLSandboxResult:
 
 class SQLSandboxGate:
     """
-    SQL 安全与性能沙箱网关：
-    1. 静态校验：校验 JOIN 是否有 ON/USING 条件（防隐式/显式笛卡尔积）；
-    2. 自动限制：对无 LIMIT 的纯明细查询自动追加 LIMIT 150 限制以防止 OOM；
-    3. 动态预检：通过 EXPLAIN 评估估计的扫描行数（Rows），熔断大于 5,000,000 行的超大慢查询。
+    SQL 性能沙箱网关（与权威只读/安全校验 validate_sql 互补）：
+    1. 多语句拦截：仅允许单条查询；
+    2. 静态校验：校验 JOIN（含逗号隐式连接）是否有 ON/USING 条件（防隐式/显式笛卡尔积）；
+    3. 动态预检：通过 EXPLAIN 评估预估扫描行数（Rows），熔断大于 5,000,000 行的超大慢查询。
+    注：行数上限由下游本地执行（MAX_LOCAL_SQL_ROWS）统一兜底，本网关不再追加 LIMIT。
     """
 
     @classmethod
@@ -42,26 +43,39 @@ class SQLSandboxGate:
             return SQLSandboxResult(allowed=True, optimized_sql=sql)
 
         # 1. 静态 AST 解析与校验
+        # 说明：解析失败/异常时这里放行，由紧随其后的权威门禁 validate_sql 统一拦截
+        # （validate_sql 同样基于 sqlglot 解析，无法解析的 SQL 会被判为语法错误而拒绝），
+        # 因此本网关只承担「性能/笛卡尔积」职责，不重复做语法/只读校验。
         try:
             parsed = sqlglot.parse(sql_clean, read=dialect)
         except ParseError as e:
-            # 语法解析错误保留到后续专用的 SQL 语法校验步骤处理
-            logger.warning(f"[SQL Sandbox] Failed to parse SQL AST, skipping static check: {e}")
+            logger.warning(f"[SQL Sandbox] Failed to parse SQL AST, defer to validate_sql: {e}")
             return SQLSandboxResult(allowed=True, optimized_sql=sql)
         except Exception as e:
-            logger.warning(f"[SQL Sandbox] Unexpected AST parse failure: {e}")
+            logger.warning(f"[SQL Sandbox] Unexpected AST parse failure, defer to validate_sql: {e}")
             return SQLSandboxResult(allowed=True, optimized_sql=sql)
 
-        if not parsed or len(parsed) != 1:
+        # 多语句必须拦截（不依赖下游）：避免分号拼接的注入/写操作绕过性能与安全网关。
+        if parsed and len(parsed) > 1:
+            return SQLSandboxResult(
+                allowed=False,
+                message="[Performance Blocked] 检测到多语句 SQL，仅允许单条只读查询。",
+                optimized_sql=sql,
+            )
+        if not parsed:
             return SQLSandboxResult(allowed=True, optimized_sql=sql)
 
         expression = parsed[0]
 
         # 1.1 校验 JOIN 的笛卡尔积风险（显式/隐式连接必须存在 ON 或 USING）
+        # 注意：逗号隐式连接 `FROM a, b` 在 sqlglot 中也会解析为不带 ON/USING 的 Join 节点，
+        # 因此同样会被下方的「缺失关联条件」分支拦截。
         for join_node in expression.find_all(exp.Join):
             # sqlglot 中, CROSS join 或是 NATURAL join 属于显式无条件，但这里我们主要限制普通的 JOIN / INNER JOIN / LEFT JOIN
+            # 注意：不同 sqlglot 版本可能把 CROSS 放在 method 或 kind 上，需同时判断（逗号隐式连接也常被解析为 kind=CROSS）。
             method = (join_node.args.get("method") or "").upper()
-            if method == "CROSS":
+            kind = (join_node.args.get("kind") or "").upper()
+            if method == "CROSS" or kind == "CROSS":
                 # 显式 CROSS JOIN 仍然有极高的全表笛卡尔积风险
                 return SQLSandboxResult(
                     allowed=False,

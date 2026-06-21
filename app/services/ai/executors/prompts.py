@@ -110,11 +110,15 @@ class DataQueryPrompts:
 4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
 5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
 6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
-7. 在编写 SQL 时，请注意：
+7. 子查询排序与粒度（重要，影响结果正确性）：
+   - 第一个 `<sub_query>` 必须是「驱动表/事实表」（数据量最大、含核心度量或主键的那张表），其余维表/补充表放后面。
+   - 子查询应尽量在各自数据集内先聚合到关联粒度（grain）再返回，不要把整张明细表拉到内存里再 join，避免行数膨胀与截断失真。
+   - 若子查询可能返回大量行，请显式 `ORDER BY` 关联键/排序键，保证截断时行为确定。
+8. 在编写 SQL 时，请注意：
    - 字段名和表名必须与 Schema 中严格一致。
    - 子查询的 SQL 中禁止使用跨库的 Join。
    - 每个 `<sub_query>` 的 SQL 必须使用上方【数据集与 SQL 方言对照表】中对应数据集的数据库语法。
-   - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）。
+   - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）；最终聚合/汇总必须在 `<memory_join>` 中完成。
    - 为了防止 SQL 语句中的特殊字符（如比较运算符 <、>、& 等）破坏 XML 格式，请将所有 SQL 语句使用 <![CDATA[ ... ]]> 包裹。
 
 【输出格式】
@@ -147,12 +151,24 @@ XML 示例：
 """
 
     @staticmethod
-    def build_federated_synthesis_prompt(user_question: str, final_result_md: str) -> str:
+    def build_federated_synthesis_prompt(
+        user_question: str,
+        final_result_md: str,
+        data_caveats: str = "",
+    ) -> str:
+        caveat_block = ""
+        if data_caveats and data_caveats.strip():
+            caveat_block = (
+                "\n【数据完整性提示（必须在结论中如实反映，不得忽略）】\n"
+                f"{data_caveats.strip()}\n"
+                "请在总结中明确说明上述数据缺失或截断对结论的影响，"
+                "不要把不完整的数据当作完整、精确的结论给出。\n"
+            )
         return f"""你是一个数据分析专家。
 已经完成了跨数据集的联邦查询计算，以下是最终的计算结果：
 
 {final_result_md}
-
+{caveat_block}
 请结合该结果，直接针对用户的问题进行专业的总结和解读。
 【输出规范】
 1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。

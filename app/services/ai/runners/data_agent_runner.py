@@ -95,6 +95,7 @@ DATA_REPAIR_BUDGETS = {
     "schema_ambiguous": 1,
     "sql_plan_missing": 1,
     "sql_static_risk": 1,
+    "sql_sandbox_blocked": 2,
     "sql_error": 5,
     "failed_sql_repeat": 1,
     "schema_refresh_after_sql_error": 2,
@@ -161,8 +162,11 @@ def _looks_like_explicit_federated_query(user_question: str) -> bool:
     )
     if any(term in q for term in explicit_terms):
         return True
-    has_join_action = any(term in q for term in ("关联", "join", "连接", "合并"))
-    has_multi_source_hint = any(term in q for term in ("数据集", "数据源", "库", "表"))
+    # 弱启发式收敛：仅当「关联动作」与明确的多源名词（数据集/数据源）同现才升级。
+    # 此前把裸「表」「库」「连接/合并」纳入会大量误升级（如单数据集内的多表 JOIN、
+    # “数据库连接”“合并报表”等），且 schema enrich 常带 2+ dataset 放大了误判。
+    has_join_action = any(term in q for term in ("关联", "join", "联结"))
+    has_multi_source_hint = any(term in q for term in ("数据集", "数据源"))
     return has_join_action and has_multi_source_hint
 
 
@@ -215,6 +219,7 @@ class _DataRunState:
     no_authorized_schema: bool = False
     empty_sql_result: bool = False
     empty_sql_reason: str = ""
+    empty_sql_text: str = ""
     expecting_final_sql_after_diagnostic: bool = False
     diagnostic_sql_pending_final: bool = False
     sql_error: bool = False
@@ -3267,6 +3272,7 @@ class DataAgentRunner(BaseExecutor):
                 or state.empty_sql_result
                 or state.sql_plan_missing
                 or state.sql_static_risk
+                or state.sql_sandbox_blocked
                 or state.sql_repeat_gate_block
                 or state.failed_sql_repeat_gate_block
                 or state.ratio_anomaly
@@ -3624,6 +3630,8 @@ class DataAgentRunner(BaseExecutor):
             return "schema_miss"
         if state.schema_needs_refinement:
             return "schema_refinement"
+        if state.sql_sandbox_blocked:
+            return "sql_sandbox_blocked"
         if state.sql_static_risk:
             return "sql_static_risk"
         if state.sql_plan_missing:
@@ -3788,11 +3796,9 @@ class DataAgentRunner(BaseExecutor):
                 repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
             return repair
         if state.empty_sql_result:
-            return (
-                "【空结果复查要求】上一轮 execute_sql_query 执行成功但返回空结果。"
-                f"原因：{state.empty_sql_reason}\n"
-                "请先用诊断 SQL 复查筛选值、时间范围、子查询或 JOIN 条件，再执行最终 SQL。"
-                "在最终 SQL 返回有效结果前禁止直接回答用户。"
+            return DataQueryPrompts.empty_result_recheck(
+                state.empty_sql_reason,
+                executed_sql=state.empty_sql_text,
             )
         if state.ratio_anomaly:
             return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)
@@ -3860,6 +3866,7 @@ class DataAgentRunner(BaseExecutor):
         state.sql_error_message = ""
         state.empty_sql_result = False
         state.empty_sql_reason = ""
+        state.empty_sql_text = ""
         state.sql_plan_missing = False
         state.sql_before_schema = False
         state.sql_static_risk = False
@@ -4328,6 +4335,7 @@ class DataAgentRunner(BaseExecutor):
             else:
                 state.empty_sql_reason = empty_reason
                 state.empty_sql_result = True
+                state.empty_sql_text = sql_text or ""
             return parsed_output, False
 
         state.empty_sql_reason = ""
@@ -4596,6 +4604,8 @@ class DataAgentRunner(BaseExecutor):
             return False, ""
 
         # 剔除可能会误判成功数据集明细中包含“失败/错误”普通文本记录的过宽正则，仅保留系统/数据库底层强报错特征词
+        # 说明：此分支只在 output 非结构化 JSON 成功结果时才会到达（上方已 return False），
+        # 因此可较安全地扩展数据库底层错误特征词，避免漏判 sql_error 而跳过修复。
         error_patterns = [
             r"unknown column",
             r"unknown table",
@@ -4606,6 +4616,26 @@ class DataAgentRunner(BaseExecutor):
             r"unauthorized",
             r"SQL Syntax Error",
             r"SQL Validation Failed",
+            # Oracle 通用错误码（ORA-00904/00942/00979/01722/01861 等）
+            r"\bORA-\d{3,5}\b",
+            # 字段/表/标识符
+            r"invalid identifier",
+            r"invalid number",
+            r"no such (?:column|table)",
+            r"does not exist",
+            r"not a group by",
+            # 解析/类型
+            r"cannot parse",
+            r"literal does not match",
+            # 连接/超时/锁
+            r"\btimed?\s*out\b",
+            r"\btimeout\b",
+            r"lock wait",
+            r"connection (?:refused|reset|closed|error)",
+            # 运算
+            r"division by zero",
+            # ClickHouse 错误码：如 "Code: 47. DB::Exception"
+            r"\bCode:\s*\d+\.\s*DB::Exception",
         ]
         if any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in error_patterns):
             return True, text[:1000]

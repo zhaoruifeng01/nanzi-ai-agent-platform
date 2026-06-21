@@ -685,19 +685,23 @@ async def test_federated_executor_repairs_failed_secondary_subquery_before_degra
     hr_error = "[TOOL_ERROR] 本地执行 SQL 失败，错误信息: Unknown column 'bad_col'"
     hr_result = json.dumps({"columns": [{"name": "id"}, {"name": "name"}], "items": [[1, "Alice"]]})
 
+    # repair 轮的 user_ds 子查询 SQL 与首轮完全一致，会命中子查询结果缓存而不再重跑，
+    # 因此 execute_sql_query_core 只会被调用 3 次：user_ok -> hr_fail -> (repair) hr_ok。
+    sql_exec_mock = AsyncMock(side_effect=[user_result, hr_error, hr_result])
     with patch("app.services.ai.executors.federated_executor.AgentConfigProvider.get_configured_llm", side_effect=mock_get_llm), \
          patch("app.services.ai.executors.federated_executor.chat_client_from_handle", side_effect=fake_chat_client_from_handle), \
          patch("app.services.ai.executors.federated_executor.AsyncSessionLocal") as mock_session_cls, \
          patch("app.services.permission_service.PermissionService.check_permission", side_effect=mock_check_permission), \
          patch("app.services.metadata_service.MetadataService.get_dataset_by_name", side_effect=mock_get_dataset_by_name), \
          patch("app.services.ai.runtime.agentscope.trace_context.TraceSpanContext", FakeTraceSpanContext), \
-         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", AsyncMock(side_effect=[user_result, hr_error, user_result, hr_result])):
+         patch("app.services.ai.executors.federated_executor.execute_sql_query_core", sql_exec_mock):
         mock_session_cls.return_value.__aenter__.return_value = MagicMock()
 
         chunks = []
         async for chunk in FederatedQueryExecutor(runner, "", ["user_ds", "hr_ds"]).execute([], "", "test"):
             chunks.append(chunk)
 
+    assert sql_exec_mock.await_count == 3
     assert mock_llm_client.generate_text.await_count == 2
     assert any(chunk.get("title") == "修复联邦查询计划" for chunk in chunks)
     assert not any("已自动降级" in str(chunk.get("details") or chunk.get("content") or "") for chunk in chunks)
