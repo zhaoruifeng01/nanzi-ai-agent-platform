@@ -80,27 +80,7 @@ class SQLSandboxGate:
                     optimized_sql=sql
                 )
 
-        # 1.2 对无 LIMIT 的纯明细查询自动注入 LIMIT 500
         optimized_sql = sql_clean
-        if isinstance(expression, exp.Select):
-            # 判断是否是纯明细查询：既没有 GROUP BY，也没有任何 AggFunc (如 sum, count 等)
-            has_group_by = expression.args.get("group") is not None
-            has_agg_func = expression.find(exp.AggFunc) is not None
-            has_limit = expression.args.get("limit") is not None
-
-            # Oracle 兼容性处理：如果包含 rownum 条件，则视作已有 limit 限制
-            if not has_limit and dialect == "oracle":
-                if "rownum" in sql_clean.lower():
-                    has_limit = True
-
-            if not has_group_by and not has_agg_func and not has_limit:
-                try:
-                    # 动态追加 limit
-                    expression = expression.limit(500)
-                    optimized_sql = expression.sql(dialect=dialect)
-                    logger.info(f"[SQL Sandbox] Auto-injected LIMIT 500 for plain SELECT query.")
-                except Exception as limit_err:
-                    logger.warning(f"[SQL Sandbox] Failed to inject limit via sqlglot: {limit_err}")
 
         # 2. 动态 EXPLAIN 预检 Rows 估算
         # 如果是 Explain 本身、或者 Dry Run，则不需要再进行 Explain 预检
