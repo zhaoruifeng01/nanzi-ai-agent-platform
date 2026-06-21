@@ -423,6 +423,21 @@ async def execute_sql_query_core(
                 return f"[Validation Failed] SQL语法错误: {error_str}"
             return f"[Security Error] Failed to apply data permissions: {error_str}"
 
+    # SQL 性能与安全沙箱网关预检
+    try:
+        from app.services.ai.sql_sandbox_gate import SQLSandboxGate
+        sandbox_res = await SQLSandboxGate.verify_and_optimize(
+            session,
+            sql=sql,
+            data_source=data_source,
+            dialect=dialect,
+        )
+        if not sandbox_res.allowed:
+            return sandbox_res.message
+        sql = sandbox_res.optimized_sql
+    except Exception as sandbox_err:
+        logger.warning(f"[SQL Sandbox] Pre-check failed or skipped: {sandbox_err}")
+
     error = validate_sql(sql, dialect=dialect)
     if error:
         return f"[Validation Failed] {error}"

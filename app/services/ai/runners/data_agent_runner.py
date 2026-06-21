@@ -224,6 +224,8 @@ class _DataRunState:
     sql_fatal_emitted: bool = False
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
+    sql_sandbox_blocked: bool = False
+    sql_sandbox_blocked_reason: str = ""
     sql_repeat_gate_block: bool = False
     failed_sql_repeat_gate_block: bool = False
     requires_sql_plan: bool = False
@@ -590,6 +592,10 @@ class DataAgentRunner(BaseExecutor):
     @staticmethod
     def _is_sql_static_gate_block(output: Any) -> bool:
         return str(output or "").startswith(SQL_STATIC_GATE_PREFIX)
+
+    @staticmethod
+    def _is_sql_sandbox_gate_block(output: Any) -> bool:
+        return str(output or "").startswith("[Performance Blocked]")
 
     @staticmethod
     def _is_failed_sql_repeat_gate_block(output: Any) -> bool:
@@ -1313,6 +1319,7 @@ class DataAgentRunner(BaseExecutor):
                         and not self._is_sql_repeat_gate_block(result)
                         and not self._is_sql_static_gate_block(result)
                         and not self._is_sql_plan_gate_block(result)
+                        and not self._is_sql_sandbox_gate_block(result)
                     ):
                         parsed_output = self._try_parse_json_output(result)
                         empty_reason = self._detect_empty_result(parsed_output)
@@ -3488,6 +3495,7 @@ class DataAgentRunner(BaseExecutor):
             or state.duration_anomaly
             or state.diagnostic_sql_pending_final
             or state.tool_loop_fuse_triggered
+            or state.sql_sandbox_blocked
             or self._is_schema_fatal(state)
         )
         if state.full_content or state.ready_to_answer or not has_guard_condition:
@@ -3539,6 +3547,13 @@ class DataAgentRunner(BaseExecutor):
                 "💡 **建议您可以尝试**：\n"
                 "1. 明确时间限制（如“查询最近3天”、“本周内”）。\n"
                 "2. 避免使用过于宽泛的“全部”或“所有”类型查询，缩小范围后重试。"
+            )
+        elif state.sql_sandbox_blocked:
+            content = (
+                "该查询因性能或安全风险已被系统前置网关自动拦截。\n\n"
+                "💡 **建议您可以尝试**：\n"
+                f"1. {state.sql_sandbox_blocked_reason}\n"
+                "2. 精确限定时间范围（如“查询最近3天”、“本周内”）以降低扫描数据量。"
             )
         elif state.ratio_anomaly:
             content = (
@@ -3709,6 +3724,15 @@ class DataAgentRunner(BaseExecutor):
                 "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、避免 SELECT *、"
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
             )
+        if state.sql_sandbox_blocked:
+            return (
+                "【SQL 性能与安全阻断修正要求】上一轮 execute_sql_query 被前置安全沙箱网关拦截。\n"
+                f"拦截原因：{state.sql_sandbox_blocked_reason}\n"
+                "请修正 SQL 后重新调用 execute_sql_query。修正指南：\n"
+                "1. 若提示含有笛卡尔积，请检查 JOIN 并补充 ON 或 USING 关联条件；\n"
+                "2. 若提示估算扫描行数（Rows）过大，请添加有效的主键/索引列过滤、或加入特定时间范围条件以缩窄扫描区间。\n"
+                "修正并执行成功前禁止直接回答用户。"
+            )
         if state.sql_plan_missing:
             return (
                 "【SQL Plan 补充要求】上一轮 execute_sql_query 因缺少结构化 SQL Plan 被平台拦截。\n"
@@ -3836,6 +3860,8 @@ class DataAgentRunner(BaseExecutor):
         state.sql_before_schema = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.sql_sandbox_blocked = False
+        state.sql_sandbox_blocked_reason = ""
         state.failed_sql_repeat_gate_block = False
         if repair_kind in {"empty_sql_result", "ratio_anomaly"}:
             state.expecting_final_sql_after_diagnostic = True
@@ -3890,6 +3916,8 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="get_dataset_schema")
         if state.sql_plan_missing:
             return None
+        if state.sql_sandbox_blocked:
+            return ToolChoice(mode="execute_sql_query")
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
         if state.failed_sql_repeat_gate_block:
@@ -3931,6 +3959,8 @@ class DataAgentRunner(BaseExecutor):
             return "确认数据集或指标口径"
         if state.schema_refresh_required and not state.schema_refreshed_after_sql_error:
             return "必须先重查数据集定义"
+        if state.sql_sandbox_blocked:
+            return "修正性能超限 SQL"
         if state.sql_static_risk:
             return "修正高风险 SQL"
         if state.sql_plan_missing:
@@ -4059,6 +4089,8 @@ class DataAgentRunner(BaseExecutor):
                         )
             elif self._is_failed_sql_repeat_gate_block(output):
                 details = truncate_for_context(str(output or ""), max_len=1000)
+            elif self._is_sql_sandbox_gate_block(output):
+                details = self._build_sql_error_tool_details(output, tool_args)
             elif state.sql_error:
                 details = self._build_sql_error_tool_details(output, tool_args)
             else:
@@ -4099,6 +4131,8 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and self._is_sql_static_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在高风险执行特征，已拦截执行。"
+        if tool_name == "execute_sql_query" and self._is_sql_sandbox_gate_block(output):
+            details = f"{details}\n\n[系统检测] SQL 存在性能安全风险（超限或笛卡尔积），已被沙箱网关拦截。"
         if tool_name == "execute_sql_query" and self._is_sql_plan_gate_block(output):
             details = f"{details}\n\n[系统检测] 高风险 SQL 缺少结构化 SQL Plan，已拦截执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
@@ -4200,6 +4234,12 @@ class DataAgentRunner(BaseExecutor):
             return parsed, False
         if self._is_sql_static_gate_block(output):
             state.sql_static_risk = True
+            state.sql_error = False
+            state.sql_error_message = ""
+            return output, False
+        if self._is_sql_sandbox_gate_block(output):
+            state.sql_sandbox_blocked = True
+            state.sql_sandbox_blocked_reason = str(output or "").replace("[Performance Blocked]", "").strip()
             state.sql_error = False
             state.sql_error_message = ""
             return output, False
