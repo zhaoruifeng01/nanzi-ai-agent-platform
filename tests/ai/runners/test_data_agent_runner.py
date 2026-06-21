@@ -3118,6 +3118,32 @@ def test_sql_static_risk_ignores_risky_patterns_inside_literals(data_config):
         "SELECT id FROM demo ORDER BY created_at DESC AND ROWNUM <= 10"
     )
 
+    # 新增关于子查询与 CTE 的 SELECT * 校验用例
+    # 1. 允许：外层 SELECT *，但内层子查询指定了具体字段
+    assert DataAgentRunner._detect_sql_static_risk(
+        "SELECT * FROM (SELECT col1, col2 FROM demo) AS x"
+    ) == ""
+
+    # 2. 允许：外层 SELECT *，但内层 CTE 指定了具体字段
+    assert DataAgentRunner._detect_sql_static_risk(
+        "WITH cte AS (SELECT col1, col2 FROM demo) SELECT * FROM cte"
+    ) == ""
+
+    # 3. 拦截：外层不是 SELECT *，但内层子查询是物理表 SELECT *
+    assert DataAgentRunner._detect_sql_static_risk(
+        "SELECT col1 FROM (SELECT * FROM demo) AS x"
+    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
+
+    # 4. 拦截：JOIN 子查询中包含物理表 SELECT *
+    assert DataAgentRunner._detect_sql_static_risk(
+        "SELECT a.col1, b.col2 FROM t1 AS a JOIN (SELECT * FROM demo) AS b ON a.id = b.id"
+    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
+
+    # 5. 拦截：嵌套子查询里依然是物理表 SELECT *
+    assert DataAgentRunner._detect_sql_static_risk(
+        "SELECT * FROM (SELECT * FROM demo) AS x"
+    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
+
 
 def test_schema_reference_sql_error_requires_schema_refresh(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState

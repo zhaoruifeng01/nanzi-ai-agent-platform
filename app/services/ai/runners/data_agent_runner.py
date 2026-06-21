@@ -74,6 +74,11 @@ from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
 
+class UpgradeToFederatedQuery(Exception):
+    def __init__(self, sql: str, datasets: set[str]):
+        self.sql = sql
+        self.datasets = datasets
+
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
 SQL_REPEAT_GATE_PREFIX = "[SQL_REPEAT_GATE]"
 SQL_STATIC_GATE_PREFIX = "[SQL_STATIC_GATE]"
@@ -1684,6 +1689,57 @@ class DataAgentRunner(BaseExecutor):
                 "status": "error",
                 "content": "当前会话正在处理中，请稍后再试。",
             }
+        except UpgradeToFederatedQuery as e:
+            turn_cls.turn_type = DataQueryTurnType.FEDERATED_DATA_QUERY
+            yield {
+                "type": "log",
+                "id": f"chatbi_turn_upgrade_{uuid.uuid4().hex[:8]}",
+                "title": "ChatBI 请求类别升级",
+                "details": f"检测到 SQL 触发跨数据集限制，自动升级为联邦查询。涉及数据集: {', '.join(sorted(e.datasets))}",
+                "status": "success",
+                "category": "intent",
+                "turn_type": turn_cls.turn_type.value,
+                "execution_time_ms": 0,
+            }
+            
+            from app.core.orm import AsyncSessionLocal
+            from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
+            async with AsyncSessionLocal() as session:
+                schema_output = await fetch_dataset_schema_core(
+                    session,
+                    keywords=", ".join(sorted(e.datasets)),
+                    user_id=self._runtime_user_id(),
+                    is_admin=bool(self.user_info.get("is_admin") if self.user_info else False),
+                    api_key=None,
+                )
+            
+            self._last_run_state = _DataRunState(requires_fresh_data=True)
+            from app.services.ai.executors.federated_executor import FederatedQueryExecutor
+            from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
+            
+            executor = FederatedQueryExecutor(
+                agent_runner=self,
+                schema_output=schema_output,
+                datasets=sorted(list(e.datasets)),
+            )
+            federated_content = ""
+            async for chunk in executor.execute(
+                runtime_messages=runtime_messages,
+                system_prompt=system_content,
+                user_question=self._standalone_query,
+            ):
+                if chunk.get("content"):
+                    federated_content += chunk["content"]
+                yield chunk
+            if federated_content:
+                deduped = finalize_visible_reply(federated_content)
+                if deduped != federated_content:
+                    logger.warning(
+                        "[DataAgentRunner][Federated] Collapsed duplicated content (%d -> %d chars)",
+                        len(federated_content), len(deduped),
+                    )
+                    yield {"type": "retraction", "content": deduped}
+            return
 
     async def _run_native_agent_turn(
         self,
@@ -3131,6 +3187,33 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                if state.sql_error and "不属于当前指定的数据集" in (state.sql_error_message or ""):
+                    from app.services.sql_query_execution_service import (
+                        extract_physical_table_refs_from_select_sql,
+                        dialect_from_data_source
+                    )
+                    from app.core.orm import AsyncSessionLocal
+                    from app.models.metadata import MetaTable, MetaDataset
+                    from sqlalchemy import select
+                    
+                    sql = tool_args.get("sql", "")
+                    dialect = dialect_from_data_source(tool_args.get("data_source", ""))
+                    _, refs = extract_physical_table_refs_from_select_sql(sql, dialect)
+                    
+                    datasets = set()
+                    if refs:
+                        table_names = [name.lower() for name in refs.values()]
+                        async with AsyncSessionLocal() as session:
+                            stmt = (
+                                select(MetaDataset.name)
+                                .join(MetaTable, MetaTable.dataset_id == MetaDataset.id)
+                                .where(MetaTable.physical_name.in_(table_names), MetaTable.status == 1)
+                            )
+                            res = await session.execute(stmt)
+                            datasets = {r for r in res.scalars().all() if r}
+                    
+                    if len(datasets) > 1:
+                        raise UpgradeToFederatedQuery(sql=sql, datasets=datasets)
                 enrichment_result = None
                 if should_save_followup:
                     output, parsed_output, enrichment_result = await self._maybe_enrich_sql_tool_result(
@@ -4292,7 +4375,62 @@ class DataAgentRunner(BaseExecutor):
         sql_upper = " ".join(sql_clean.upper().split())
         if not sql_upper.startswith(("SELECT ", "WITH ")):
             return "只允许执行只读 SELECT 查询"
-        if re.search(r"\bSELECT\s+\*", sql_upper):
+
+        # 1. 拦截直接作用于物理表的 SELECT *，放行子查询/CTE 的 SELECT *
+        import sqlglot
+        from sqlglot import exp
+
+        has_star_on_physical = False
+        try:
+            parsed = sqlglot.parse(sql_text, read="clickhouse")
+            if parsed:
+                for expression in parsed:
+                    if not expression:
+                        continue
+
+                    # 搜集 CTE 别名
+                    cte_aliases = set()
+                    for with_expr in expression.find_all(exp.With):
+                        for cte in with_expr.expressions:
+                            if isinstance(cte, exp.CTE) and cte.alias:
+                                cte_aliases.add(cte.alias.lower())
+
+                    # 遍历 AST 中的所有 Select 节点
+                    for select_node in expression.find_all(exp.Select):
+                        has_star = False
+                        for projection in select_node.expressions:
+                            if isinstance(projection, exp.Star):
+                                has_star = True
+                                break
+                            if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
+                                has_star = True
+                                break
+
+                        if has_star:
+                            # 检查 FROM 数据源
+                            from_clause = select_node.args.get("from_")
+                            if from_clause and isinstance(from_clause.this, exp.Table):
+                                table_name = from_clause.this.name.lower()
+                                if table_name not in cte_aliases:
+                                    has_star_on_physical = True
+                                    break
+
+                            # 检查 JOIN 数据源
+                            joins = select_node.args.get("joins") or []
+                            for join in joins:
+                                if isinstance(join.this, exp.Table):
+                                    table_name = join.this.name.lower()
+                                    if table_name not in cte_aliases:
+                                        has_star_on_physical = True
+                                        break
+                        if has_star_on_physical:
+                            break
+            else:
+                has_star_on_physical = bool(re.search(r"\bSELECT\s+\*", sql_upper))
+        except Exception:
+            has_star_on_physical = bool(re.search(r"\bSELECT\s+\*", sql_upper))
+
+        if has_star_on_physical:
             return "SELECT * 会扩大返回范围，请只查询必要字段"
 
         # 2. 限制 ORDER BY 误杀：排除在 ORDER BY 子句中包含 CASE 的合理情况
