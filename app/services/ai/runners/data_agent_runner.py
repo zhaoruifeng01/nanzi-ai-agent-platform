@@ -1766,22 +1766,32 @@ class DataAgentRunner(BaseExecutor):
                 "turn_type": turn_cls.turn_type.value,
                 "execution_time_ms": 0,
             }
-            
-            from app.core.orm import AsyncSessionLocal
-            from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
-            async with AsyncSessionLocal() as session:
-                schema_output = await fetch_dataset_schema_core(
-                    session,
-                    keywords=", ".join(sorted(e.datasets)),
-                    user_id=self._runtime_user_id(),
-                    is_admin=bool(self.user_info.get("is_admin") if self.user_info else False),
-                    api_key=None,
+
+            # 优先复用当前轮已预拉取的 Schema（prefetched_schema_output），避免多一次 IO。
+            # 仅当预拉取结果为空时（极少发生：schema 预拉取失败或 UpgradeToFederatedQuery
+            # 在 schema 预拉取之前就抛出）才重新拉取。
+            schema_output = prefetched_schema_output or ""
+            if not schema_output.strip():
+                from app.core.orm import AsyncSessionLocal
+                from app.services.chatbi_dataset_schema_service import fetch_dataset_schema_core
+                async with AsyncSessionLocal() as session:
+                    schema_output = await fetch_dataset_schema_core(
+                        session,
+                        keywords=", ".join(sorted(e.datasets)),
+                        user_id=self._runtime_user_id(),
+                        is_admin=bool(self.user_info.get("is_admin") if self.user_info else False),
+                        api_key=None,
+                    )
+            else:
+                logger.info(
+                    "[DataAgentRunner][Federated] UpgradeToFederatedQuery: 复用已有 prefetched schema (%d chars)，跳过重新拉取。",
+                    len(schema_output),
                 )
-            
+
             self._last_run_state = _DataRunState(requires_fresh_data=True)
             from app.services.ai.executors.federated_executor import FederatedQueryExecutor
             from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
-            
+
             executor = FederatedQueryExecutor(
                 agent_runner=self,
                 schema_output=schema_output,
