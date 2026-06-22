@@ -518,9 +518,9 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 | 文件 | 职责 |
 |------|------|
 | `app/services/ai/executors/data_executor.py` | 薄封装 |
-| `app/services/ai/runners/data_agent_runner.py` | ChatBI 守卫（schema 前置、SQL 修复、复用上一轮结果） |
+| `app/services/ai/runners/data_agent_runner.py` | ChatBI 守卫（结构化业务意图帧、schema 前置、SQL 修复、复用上一轮结果） |
 
-在 AgentScope ReAct 之上叠加 `_DataRunState` 护栏；事件映射与 Assistant 共用 `event_stream.py`。
+在 AgentScope ReAct 之上叠加 `_DataRunState` 护栏；新查数会先生成 `DataQueryIntentFrame`，用于 Schema keywords 派生、字段绑定自检、空结果语义修复，并通过“用户需求分析”trace 卡片展示；事件映射与 Assistant 共用 `event_stream.py`。
 
 ChatBI 流式正文中的 `<sql_plan>{...}</sql_plan>` 由前端 `MessageRenderer.vue` + `SqlPlanCard.vue`（`sqlPlan.ts`）解析为结构化卡片，与后端 G6 门禁配合。
 

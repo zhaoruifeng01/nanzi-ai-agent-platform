@@ -32,6 +32,16 @@ from app.services.ai.chatbi_sql_user_messages import (
     format_empty_filter_result_content,
     map_sql_tool_error_for_user,
 )
+from app.services.ai.data_query_semantic_intent import (
+    DataQuerySemanticIntent,
+    build_semantic_intent_prompt,
+    derive_keywords_from_semantic_intent,
+    format_empty_result_semantic_repair_context,
+    format_semantic_intent_context,
+    parse_semantic_intent_payload,
+    semantic_intent_from_dict,
+    semantic_intent_to_dict,
+)
 from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.time_anchor import (
     TIME_RANGE_GATE_PREFIX,
@@ -352,6 +362,7 @@ class DataAgentRunner(BaseExecutor):
         self._fewshot_examples: List[Dict[str, Any]] = []
         self._standalone_query = ""
         self._schema_search_keywords = ""
+        self._semantic_intent: DataQuerySemanticIntent | None = None
         self._schema_similarity_threshold: float | None = None
         self._requires_sql_query = True
 
@@ -402,6 +413,7 @@ class DataAgentRunner(BaseExecutor):
             "max_steps": max_steps,
             "standalone_query": self._standalone_query,
             "schema_search_keywords": self._schema_search_keywords,
+            "semantic_intent": semantic_intent_to_dict(self._semantic_intent),
             "requires_fresh_data": self._requires_fresh_data,
             "requires_sql_query": bool(getattr(self, "_requires_sql_query", True)),
         }
@@ -428,6 +440,7 @@ class DataAgentRunner(BaseExecutor):
         )
         runner._standalone_query = str(runner_context.get("standalone_query") or "")
         runner._schema_search_keywords = str(runner_context.get("schema_search_keywords") or "")
+        runner._semantic_intent = semantic_intent_from_dict(runner_context.get("semantic_intent"))
         runner._requires_fresh_data = bool(runner_context.get("requires_fresh_data", True))
         runner._requires_sql_query = bool(runner_context.get("requires_sql_query", True))
         return runner
@@ -1585,6 +1598,7 @@ class DataAgentRunner(BaseExecutor):
                 user_question,
                 self._standalone_query,
                 self._fewshot_examples,
+                runtime_messages=runtime_messages,
             )
             system_content += (
                 "\n\n【Schema 检索词规划】本轮已结合"
@@ -1593,13 +1607,15 @@ class DataAgentRunner(BaseExecutor):
                 "首次检索数据集定义时，请优先使用这些 keywords；这些词仅用于检索元数据，不代表最终 SQL 表字段已确认。"
                 f"\n【独立查数问题】{self._standalone_query}"
             )
+            semantic_intent_context = format_semantic_intent_context(self._semantic_intent)
+            if semantic_intent_context:
+                system_content += f"\n\n{semantic_intent_context}"
             yield {
                 "type": "log",
                 "id": need_analysis_log_id,
                 "title": "用户需求分析",
-                "details": (
-                    "已完成用户需求分析，并生成问题关键词。"
-                    f"\n问题关键词: {self._schema_search_keywords or self._standalone_query or user_question}"
+                "details": self._format_need_analysis_success_details(
+                    self._schema_search_keywords or self._standalone_query or user_question
                 ),
                 "status": "success",
                 "execution_time_ms": (time.time() - need_analysis_start) * 1000,
@@ -2263,34 +2279,14 @@ class DataAgentRunner(BaseExecutor):
         user_question: str,
         standalone_query: str,
         examples: List[Dict[str, Any]],
+        runtime_messages: List[Any] | None = None,
     ) -> str:
         fallback_query = self._clean_schema_fallback_query((standalone_query or user_question or "").strip())[:300]
-        if len(fallback_query) < 12 and re.match(r"^[\u4e00-\u9fa5\w\s-]+$", fallback_query):
-            query_lower = fallback_query.lower()
-            sql_keywords = {"select", "show", "list", "查询", "列出", "展示", "显示", "获取", "查一下", "统计"}
-            if not any(kw in query_lower for kw in sql_keywords):
-                logger.info(
-                    "[DataAgentRunner] Schema keyword planner bypassed for query: %s",
-                    fallback_query
-                )
-                return fallback_query
-        prompt = (
-            "你是 ChatBI 的元数据检索词规划器。你的任务不是生成 SQL，而是为 get_dataset_schema(keywords) "
-            "生成最适合检索数据集/表/字段/指标定义的短关键词。\n\n"
-            "要求：\n"
-            "1. 结合用户原始问题、独立查数问题 and 命中的历史案例；若没有历史案例，也必须从用户需求中抽取关键词。\n"
-            "2. 优先保留业务对象/实体、指标、维度、时间字段含义，以及历史案例中出现过的物理表名/字段名。\n"
-            "3. 去掉无助于元数据检索的动作词、礼貌词、排序数量描述和 SQL 生成意图。\n"
-            "4. 不要生成 SQL，不要编造案例中没有出现的新物理表名。\n"
-            "5. keywords 必须是空格分隔的关键词短语，优先 3 到 10 个词；不要输出完整查询句子。\n"
-            "6. 严禁直接输出用户原始的长句子或问题原句，必须将其拆解为多个空格分隔的核心业务名词。\n"
-            "   - 反例：如果输入为“分析注册用户在注册后 7 天内的活跃情况”，你绝对不能返回 `{\"keywords\": \"分析注册用户在注册后 7 天内的活跃情况\"}`。\n"
-            "   - 正例：高品质的输出应为 `{\"keywords\": \"注册用户 活跃\"}`。\n"
-            "7. 只返回 JSON。示例：{\"keywords\":\"商品 销售额 省份 product_order_detail product_name sales_amount\"}。\n"
-            "8. keywords 不能为空，禁止输出 `...`、`关键词`、`N/A` 这类占位符。\n\n"
-            f"【用户原始问题】\n{user_question}\n\n"
-            f"【独立查数问题】\n{standalone_query}\n\n"
-            f"【命中的历史案例线索】\n{self._example_schema_keyword_context(examples)}"
+        prompt = build_semantic_intent_prompt(
+            user_question=user_question,
+            standalone_query=standalone_query,
+            example_context=self._example_schema_keyword_context(examples),
+            conversation_context=self._semantic_intent_recent_context(runtime_messages or []),
         )
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
@@ -2304,20 +2300,46 @@ class DataAgentRunner(BaseExecutor):
                 tool_name="schema_keyword_planner",
             )
             content = (getattr(response, "content", "") or "").strip()
-            data = {}
-            try:
-                data = json.loads(content)
-            except Exception:
-                match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-                if match:
-                    data = json.loads(match.group())
-            keywords = str(data.get("keywords") or "").strip()
+            intent = parse_semantic_intent_payload(content, fallback_question=standalone_query or user_question)
+            self._semantic_intent = intent if intent.has_content() else None
+            keywords = (intent.keywords if intent else "").strip()
             if self._is_invalid_schema_search_keywords(keywords):
+                derived_keywords = derive_keywords_from_semantic_intent(self._semantic_intent)
+                if derived_keywords and not self._is_invalid_schema_search_keywords(derived_keywords):
+                    if self._semantic_intent:
+                        self._semantic_intent.keywords = derived_keywords
+                    return derived_keywords[:300]
+                if self._semantic_intent:
+                    self._semantic_intent.keywords = fallback_query
                 return fallback_query
             return keywords[:300]
         except Exception as e:
             logger.warning("[DataAgentRunner] Failed to plan schema search keywords: %s", e)
+            self._semantic_intent = None
             return fallback_query
+
+    @staticmethod
+    def _semantic_intent_recent_context(runtime_messages: List[Any]) -> str:
+        lines: list[str] = []
+        for message in list(runtime_messages or [])[-7:-1]:
+            if not isinstance(message, (HumanMessage, AIMessage)):
+                continue
+            content = getattr(message, "content", "") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            content = re.sub(r"\s+", " ", content).strip()
+            if not content:
+                continue
+            role = "用户" if isinstance(message, HumanMessage) else "助手"
+            lines.append(f"{role}: {content[:220]}")
+        return "\n".join(lines)
+
+    def _format_need_analysis_success_details(self, keywords: str) -> str:
+        details = f"已完成用户需求分析，并生成问题关键词。\n问题关键词: {keywords}"
+        semantic_intent_context = format_semantic_intent_context(self._semantic_intent)
+        if semantic_intent_context:
+            details = f"{details}\n\n{semantic_intent_context}"
+        return details
 
     @staticmethod
     def _is_invalid_schema_search_keywords(keywords: str) -> bool:
@@ -3886,6 +3908,12 @@ class DataAgentRunner(BaseExecutor):
             )
             if state.empty_filter_diagnostic_summary:
                 repair = f"{repair}\n\n{state.empty_filter_diagnostic_summary}"
+            semantic_repair = format_empty_result_semantic_repair_context(
+                self._semantic_intent,
+                diagnostics=state.empty_filter_diagnostics,
+            )
+            if semantic_repair:
+                repair = f"{repair}\n\n{semantic_repair}"
             return repair
         if state.ratio_anomaly:
             return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)

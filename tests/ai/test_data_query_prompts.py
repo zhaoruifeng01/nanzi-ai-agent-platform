@@ -1,4 +1,8 @@
+import pytest
+
 from app.services.ai.executors.prompts import DataQueryPrompts
+
+pytestmark = pytest.mark.no_infrastructure
 
 
 def test_build_clarification_fallback_for_followup_missing_context():

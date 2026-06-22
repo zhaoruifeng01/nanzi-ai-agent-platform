@@ -455,6 +455,257 @@ async def test_data_agent_runner_system_content_includes_sql_plan_when_enabled(d
 
 
 @pytest.mark.asyncio
+async def test_schema_keyword_planner_stores_structured_semantic_intent(data_config, monkeypatch):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            class Response:
+                content = (
+                    '{"keywords":"机房 剩余机柜数 上海 区域",'
+                    '"goal":"查询上海区域所有机房的剩余机柜数",'
+                    '"metrics":["剩余机柜数"],"dimensions":["机房"],'
+                    '"filters":[{"phrase":"上海区域","semantic_type":"geographic_region",'
+                    '"expected_column_types":["区域","gxqy","region","area"],'
+                    '"avoid_column_types":["shipName"],"relation":"parent_region_or_scope"}],'
+                    '"time_range":"无","grain":"机房"}'
+                )
+
+            return Response()
+
+    async def fake_get_configured_llm(*args, **kwargs):
+        return FakeModel()
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-data-intent", trace_buffer=[])
+
+    keywords = await runner._plan_schema_search_keywords(
+        "查询上海区域所有机房的剩余机柜数",
+        "查询上海区域所有机房的剩余机柜数",
+        [],
+    )
+
+    assert keywords == "机房 剩余机柜数 上海 区域"
+    assert runner._semantic_intent is not None
+    assert runner._semantic_intent.metrics == ["剩余机柜数"]
+    assert runner._semantic_intent.filters[0].phrase == "上海区域"
+    assert "gxqy" in runner._semantic_intent.filters[0].expected_column_types
+
+
+@pytest.mark.asyncio
+async def test_schema_keyword_planner_does_not_bypass_short_business_query(data_config, monkeypatch):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    calls = {"count": 0}
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            calls["count"] += 1
+
+            class Response:
+                content = (
+                    '{"keywords":"上海 机房",'
+                    '"goal":"查询上海机房",'
+                    '"metrics":[],"dimensions":["机房"],'
+                    '"filters":[{"phrase":"上海","semantic_type":"geographic_region",'
+                    '"expected_column_types":["区域","gxqy"],'
+                    '"avoid_column_types":["shipName"],"relation":"parent_region_or_scope"}]}'
+                )
+
+            return Response()
+
+    async def fake_get_configured_llm(*args, **kwargs):
+        return FakeModel()
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-short-intent", trace_buffer=[])
+
+    keywords = await runner._plan_schema_search_keywords("上海机房", "上海机房", [])
+
+    assert calls["count"] == 1
+    assert keywords == "上海 机房"
+    assert runner._semantic_intent is not None
+    assert runner._semantic_intent.filters[0].relation == "parent_region_or_scope"
+
+
+@pytest.mark.asyncio
+async def test_schema_keyword_planner_derives_keywords_from_intent_when_llm_keywords_invalid(data_config, monkeypatch):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            class Response:
+                content = (
+                    '{"keywords":"关键词",'
+                    '"goal":"查询上海区域所有机房的剩余机柜数",'
+                    '"metrics":["剩余机柜数"],"dimensions":["机房"],'
+                    '"filters":[{"phrase":"上海区域","semantic_type":"geographic_region",'
+                    '"expected_column_types":["区域","gxqy","region","area"],'
+                    '"avoid_column_types":["shipName"],"relation":"parent_region_or_scope"}],'
+                    '"grain":"机房"}'
+                )
+
+            return Response()
+
+    async def fake_get_configured_llm(*args, **kwargs):
+        return FakeModel()
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-derived-keywords", trace_buffer=[])
+
+    keywords = await runner._plan_schema_search_keywords(
+        "查询上海区域所有机房的剩余机柜数",
+        "查询上海区域所有机房的剩余机柜数",
+        [],
+    )
+
+    assert keywords == "剩余机柜数 机房 上海区域 区域 gxqy region area"
+    assert runner._semantic_intent is not None
+    assert runner._semantic_intent.keywords == keywords
+
+
+@pytest.mark.asyncio
+async def test_schema_keyword_planner_includes_recent_context_in_semantic_intent_prompt(data_config, monkeypatch):
+    from app.services.ai.runtime.agentscope.compat import AIMessage, HumanMessage
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    captured = {}
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            captured["prompt"] = getattr(messages[0], "content", "")
+
+            class Response:
+                content = (
+                    '{"keywords":"北京 机房 剩余机柜数",'
+                    '"goal":"查询北京区域所有机房的剩余机柜数",'
+                    '"metrics":["剩余机柜数"],"dimensions":["机房"],'
+                    '"filters":[{"phrase":"北京区域","semantic_type":"geographic_region",'
+                    '"expected_column_types":["区域","gxqy"],'
+                    '"avoid_column_types":["shipName"],"relation":"parent_region_or_scope"}]}'
+                )
+
+            return Response()
+
+    async def fake_get_configured_llm(*args, **kwargs):
+        return FakeModel()
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    runner = DataAgentRunner(config=data_config, trace_id="trace-context-intent", trace_buffer=[])
+    runtime_messages = [
+        HumanMessage(content="查询上海区域所有机房的剩余机柜数"),
+        AIMessage(content="已查询上海区域所有机房的剩余机柜数。"),
+        HumanMessage(content="那北京的呢"),
+    ]
+
+    keywords = await runner._plan_schema_search_keywords(
+        "那北京的呢",
+        "查询北京区域所有机房的剩余机柜数",
+        [],
+        runtime_messages=runtime_messages,
+    )
+
+    assert keywords == "北京 机房 剩余机柜数"
+    assert "【最近对话上下文】" in captured["prompt"]
+    assert "用户: 查询上海区域所有机房的剩余机柜数" in captured["prompt"]
+    assert "助手: 已查询上海区域所有机房的剩余机柜数。" in captured["prompt"]
+    assert "【最新提问优先级】" in captured["prompt"]
+
+
+def test_empty_result_repair_includes_structured_semantic_intent(data_config):
+    from app.services.ai.data_query_semantic_intent import (
+        DataQuerySemanticIntent,
+        SemanticIntentFilter,
+    )
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-empty-intent", trace_buffer=[])
+    runner._semantic_intent = DataQuerySemanticIntent(
+        goal="查询上海区域所有机房的剩余机柜数",
+        keywords="机房 剩余机柜数 上海 区域",
+        metrics=["剩余机柜数"],
+        dimensions=["机房"],
+        filters=[
+            SemanticIntentFilter(
+                phrase="上海区域",
+                semantic_type="geographic_region",
+                expected_column_types=["区域", "gxqy", "region", "area"],
+                avoid_column_types=["shipName"],
+                relation="parent_region_or_scope",
+            )
+        ],
+    )
+    state = _DataRunState(
+        empty_sql_result=True,
+        empty_sql_reason="SQL 执行成功但返回空结果",
+        empty_sql_text="SELECT shipName, spareCabinet FROM demo WHERE shipName LIKE '%上海%'",
+        empty_filter_diagnostics=[
+            {
+                "column": "shipName",
+                "used_values": ["上海"],
+                "candidates": ["外高桥", "金桥B8", "临港123期", "唐镇"],
+                "alternative_columns": ["cc_username", "ccname", "gxqy"],
+            }
+        ],
+        empty_filter_diagnostic_summary="【平台自动筛选诊断】候选值未直接包含上海。",
+    )
+
+    repair = runner._build_repair_message(state)
+
+    assert "空结果语义复核" in repair
+    assert "上海区域" in repair
+    assert "父级/范围条件" in repair
+    assert "gxqy" in repair
+    assert "不能仅因候选值不包含原词就判定无数据" in repair
+
+
+def test_need_analysis_success_details_includes_structured_semantic_intent(data_config):
+    from app.services.ai.data_query_semantic_intent import (
+        DataQuerySemanticIntent,
+        SemanticIntentFilter,
+    )
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-need-analysis-intent", trace_buffer=[])
+    runner._semantic_intent = DataQuerySemanticIntent(
+        goal="查询上海区域所有机房的剩余机柜数",
+        keywords="机房 剩余机柜数 上海 区域",
+        metrics=["剩余机柜数"],
+        dimensions=["机房"],
+        filters=[
+            SemanticIntentFilter(
+                phrase="上海区域",
+                semantic_type="geographic_region",
+                expected_column_types=["区域", "gxqy", "region", "area"],
+                avoid_column_types=["shipName"],
+                relation="parent_region_or_scope",
+            )
+        ],
+        grain="机房",
+    )
+
+    details = runner._format_need_analysis_success_details("机房 剩余机柜数 上海 区域")
+
+    assert "问题关键词: 机房 剩余机柜数 上海 区域" in details
+    assert "结构化业务意图" in details
+    assert "上海区域" in details
+    assert "优先绑定字段语义" in details
+    assert "gxqy" in details
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_system_content_replaces_dataset_menu(data_config, monkeypatch):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
 
@@ -3962,7 +4213,7 @@ async def test_data_agent_runner_replaces_generic_failure_reply_for_empty_filter
 
 
 def test_is_trusted_empty_result_rejects_string_literal_filter(data_config):
-    from app.services.ai.runners.data_agent_runner import _DataRunState
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-trusted-empty", trace_buffer=[])
     state = _DataRunState()
