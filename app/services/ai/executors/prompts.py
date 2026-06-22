@@ -125,6 +125,7 @@ class DataQueryPrompts:
 3. 你不能直接在单个 SQL 中跨数据集 Join。你必须为每个数据集编写一个独立的子查询（`<sub_query>`），将其结果存入一个内存临时表（`temp_table`）。
 4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
    禁止在子查询里通过 IN / EXISTS / JOIN 引用其他数据集的表（例如 HR_ds 子查询里写 `IN (SELECT ... FROM visit_view)` 且 visit_view 属于 crm_ds）；跨数据集过滤必须在 `<memory_join>` 对临时表完成。
+   ⚠️ 特别注意「想提早过滤大表」的场景：即使你担心某个数据集的表数据量很大，也 **严禁** 在该数据集的 `<sub_query>` 中写 `WHERE id IN (SELECT ... FROM 另一数据集的表)` 来提前过滤。正确做法是让该子查询全量返回（或按自身条件过滤），过滤关联逻辑统一放到 `<memory_join>` 的 JOIN / WHERE 条件中完成。
 5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
 6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
 7. 子查询排序与粒度（重要，影响结果正确性）：
@@ -140,6 +141,41 @@ class DataQueryPrompts:
 9. 相对时间（上月/本月/今年/最近N天等）必须严格使用下方【当前时间锚点】换算出的 YYYY-MM-DD 起止日期写入各 `<sub_query>` 的 WHERE 条件，禁止臆测年份或月份。
 
 {build_data_query_time_anchor_block()}
+
+【🚨 高频错误：跨数据集过滤——正反例对比（必读！）】
+场景：查询跟进记录（CRM 数据集）并关联销售人员姓名（HR 数据集），且 HR 表数据量大，想只拉取有过跟进的人员。
+
+❌ 错误写法（会导致子查询报错，触发 repair，严禁使用）：
+在 HR 数据集的 <sub_query> 中，用 IN 引用了 CRM 数据集的表：
+  <sub_query dataset_name="HR_ds" temp_table="t_sales">
+    SELECT ID, LASTNAME FROM HRMRESOURCE
+    WHERE ID IN (SELECT DISTINCT FOLLOW_UP_PERSON FROM VIEW_AI_VISIT_LOG)
+    -- ❌ VIEW_AI_VISIT_LOG 属于 CRM 数据集，不属于 HR_ds，此处跨数据集引表！
+  </sub_query>
+
+✅ 正确写法（跨数据集的过滤关联统一在 <memory_join> 完成）：
+  <!-- 子查询 1：只在 CRM 数据集内查询 -->
+  <sub_query dataset_name="crm_ds" temp_table="t_visit_log">
+    <![CDATA[
+    SELECT ID, FOLLOW_UP_PERSON, FOLLOW_UP_DATE FROM VIEW_AI_VISIT_LOG
+    WHERE FOLLOW_UP_DATE >= '2026-06-01'
+    ]]>
+  </sub_query>
+  <!-- 子查询 2：只在 HR 数据集内查询，无需也不允许在此做跨库过滤 -->
+  <sub_query dataset_name="HR_ds" temp_table="t_sales">
+    <![CDATA[
+    SELECT ID, LOGINID, LASTNAME, FIRSTNAME FROM HRMRESOURCE
+    ]]>
+  </sub_query>
+  <!-- 关联过滤统一在内存 JOIN 阶段完成，INNER JOIN 会自动过滤掉无跟进记录的人员 -->
+  <memory_join>
+    <![CDATA[
+    SELECT v.ID, v.FOLLOW_UP_DATE, s.LASTNAME, s.FIRSTNAME
+    FROM t_visit_log v
+    INNER JOIN t_sales s ON v.FOLLOW_UP_PERSON = s.ID
+    ORDER BY v.FOLLOW_UP_DATE DESC
+    ]]>
+  </memory_join>
 
 【输出格式】
 只输出一个 `<multi_dataset_plan>` XML 区块，不要输出任何其他的解释文字、不要包裹 Markdown 标记之外的内容。
