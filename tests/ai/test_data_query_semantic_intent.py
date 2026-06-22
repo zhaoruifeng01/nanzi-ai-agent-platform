@@ -1,0 +1,111 @@
+import pytest
+
+pytestmark = pytest.mark.no_infrastructure
+
+
+def test_parse_semantic_intent_payload_keeps_filter_roles():
+    from app.services.ai.data_query_semantic_intent import parse_semantic_intent_payload
+
+    payload = """
+    {"keywords":"机房 剩余机柜数 上海 区域",
+     "goal":"查询上海区域所有机房的剩余机柜数",
+     "metrics":["剩余机柜数"],
+     "dimensions":["机房"],
+     "filters":[
+       {"phrase":"上海区域","semantic_type":"geographic_region",
+        "expected_column_types":["区域","地域","gxqy","region","area"],
+        "avoid_column_types":["机房名称","shipName"],
+        "relation":"parent_region_or_scope"}
+     ],
+     "time_range":"无",
+     "grain":"机房"}
+    """
+
+    intent = parse_semantic_intent_payload(payload, fallback_question="查询上海区域所有机房的剩余机柜数")
+
+    assert intent.keywords == "机房 剩余机柜数 上海 区域"
+    assert intent.metrics == ["剩余机柜数"]
+    assert intent.dimensions == ["机房"]
+    assert intent.filters[0].phrase == "上海区域"
+    assert intent.filters[0].semantic_type == "geographic_region"
+    assert "gxqy" in intent.filters[0].expected_column_types
+    assert "shipName" in intent.filters[0].avoid_column_types
+    assert intent.filters[0].relation == "parent_region_or_scope"
+
+
+def test_format_semantic_intent_context_guides_field_binding():
+    from app.services.ai.data_query_semantic_intent import (
+        DataQuerySemanticIntent,
+        SemanticIntentFilter,
+        format_semantic_intent_context,
+    )
+
+    intent = DataQuerySemanticIntent(
+        goal="查询上海区域所有机房的剩余机柜数",
+        keywords="机房 剩余机柜数 上海 区域",
+        metrics=["剩余机柜数"],
+        dimensions=["机房"],
+        filters=[
+            SemanticIntentFilter(
+                phrase="上海区域",
+                semantic_type="geographic_region",
+                expected_column_types=["区域", "gxqy", "region", "area"],
+                avoid_column_types=["shipName"],
+                relation="parent_region_or_scope",
+            )
+        ],
+        grain="机房",
+    )
+
+    block = format_semantic_intent_context(intent)
+
+    assert "结构化业务意图" in block
+    assert "上海区域" in block
+    assert "geographic_region" in block
+    assert "优先绑定字段语义" in block
+    assert "gxqy" in block
+    assert "避免误绑" in block
+    assert "shipName" in block
+
+
+def test_format_empty_result_semantic_repair_context_mentions_parent_child_relationship():
+    from app.services.ai.data_query_semantic_intent import (
+        DataQuerySemanticIntent,
+        SemanticIntentFilter,
+        format_empty_result_semantic_repair_context,
+    )
+
+    intent = DataQuerySemanticIntent(
+        goal="查询上海区域所有机房的剩余机柜数",
+        keywords="机房 剩余机柜数 上海 区域",
+        metrics=["剩余机柜数"],
+        dimensions=["机房"],
+        filters=[
+            SemanticIntentFilter(
+                phrase="上海区域",
+                semantic_type="geographic_region",
+                expected_column_types=["区域", "gxqy", "region", "area"],
+                avoid_column_types=["shipName"],
+                relation="parent_region_or_scope",
+            )
+        ],
+    )
+
+    block = format_empty_result_semantic_repair_context(
+        intent,
+        diagnostics=[
+            {
+                "column": "shipName",
+                "used_values": ["上海"],
+                "candidates": ["外高桥", "金桥B8", "临港123期", "唐镇"],
+                "alternative_columns": ["cc_username", "ccname", "gxqy"],
+            }
+        ],
+    )
+
+    assert "空结果语义复核" in block
+    assert "父级/范围条件" in block
+    assert "上海区域" in block
+    assert "shipName" in block
+    assert "gxqy" in block
+    assert "不能仅因候选值不包含原词就判定无数据" in block

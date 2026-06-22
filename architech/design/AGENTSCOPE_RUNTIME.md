@@ -80,9 +80,10 @@ AgentService.chat_completion_stream()
 
 在 AgentScope ReAct 之上，`DataAgentRunner._DataRunState` 显式守卫：
 
-- 新查数：平台自动 `get_dataset_schema`，再 `execute_sql_query`
+- 新查数：平台先生成 `DataQueryIntentFrame`（业务目标、指标、维度、筛选语义、时间范围、粒度），再由意图帧派生/校验 `get_dataset_schema` 检索词，最后 `execute_sql_query`
+- `DataQueryIntentFrame` 会注入 ReAct 上下文用于字段绑定自检，并在“用户需求分析”trace 卡片中展示可读摘要
 - 查数完成前拦截最终回答（`blocked_content`）
-- SQL 错误 / 空结果 / 缺 SQL 计划 → `repair_message` 再跑一轮 `reply_stream`
+- SQL 错误 / 空结果 / 缺 SQL 计划 → `repair_message` 再跑一轮 `reply_stream`；空结果修复会结合 `DataQueryIntentFrame` 判断错值、错字段、别名、父级范围或分类条件
 - 复用上一轮结果 → 跳过 Agent，走 `synthesis_llm` 直出
 
 详见 [CHAT_BI_DESIGN.md](./CHAT_BI_DESIGN.md)、[agent_execution_flow_review.md](./agent_execution_flow_review.md)。

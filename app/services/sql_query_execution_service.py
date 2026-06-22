@@ -448,4 +448,8 @@ async def execute_sql_query_core(
     if auth_check_only:
         return json.dumps({"allowed": True}, ensure_ascii=False)
 
-    return await call_external_sql_api(sql, data_source=data_source)
+    return await call_external_sql_api(
+        sql,
+        data_source=data_source,
+        cache_scope=str(user_id_eff) if user_id_eff is not None else None,
+    )

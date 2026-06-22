@@ -37,6 +37,22 @@ class SharedPrompts:
         "禁止在图表或后续分析段落之前提前输出 quick 按钮。"
     )
 
+    QUICK_SUGGESTIONS_FORMAT = (
+        "【Quick 追问建议 (MUST)】\n"
+        "1. 在回答结束时给出 2-3 个后续追问建议。\n"
+        "2. **输出顺序**：先完成正文、表格、```chart``` 图表，再单独一行写数据来源说明，"
+        "**最后**再输出 quick 区块；禁止把 quick 建议与数据来源写在同一行。\n"
+        "3. **格式**：禁止输出裸文本 `quick: ...` 或单独一行 `quick:问题`；"
+        "必须使用下列 Markdown 结构，每条建议独占一行：\n"
+        "### 💬 您可能还想了解\n"
+        "---\n"
+        "- [🙋 {简短标签}](quick:{完整可发送提问文本})\n"
+        "- [🙋 {简短标签}](quick:{完整可发送提问文本})\n"
+        "4. `quick:` 链接目标必须是完整、可直接发送的中文问题句；"
+        "列表项前缀必须带 🙋，且必须写成 Markdown 链接 `- [🙋 ...](quick:...)`，"
+        "前端才会渲染为可点击按钮。"
+    )
+
     # 非图片附件信息块的标题（紧跟在用户消息后）
     NON_IMAGE_ATTACHMENT_HEADER = "\n\n【用户随附上传了非图片附件信息】："
 
@@ -108,14 +124,22 @@ class DataQueryPrompts:
 2. 数据集关联数据源，一个数据集下的所有表都是同一个数据源。不同的数据集可能代表不同的物理数据库实例。
 3. 你不能直接在单个 SQL 中跨数据集 Join。你必须为每个数据集编写一个独立的子查询（`<sub_query>`），将其结果存入一个内存临时表（`temp_table`）。
 4. 在 `<sub_query>` 的 SQL 中，必须只能使用该 `dataset_name` 对应的数据集下的物理表。
+   禁止在子查询里通过 IN / EXISTS / JOIN 引用其他数据集的表（例如 HR_ds 子查询里写 `IN (SELECT ... FROM visit_view)` 且 visit_view 属于 crm_ds）；跨数据集过滤必须在 `<memory_join>` 对临时表完成。
 5. 每个 `<sub_query>` 必须有 `dataset_name` 属性（填入对应的数据集名称）和 `temp_table` 属性（填入你为其命名的临时表，如 `t_energy`, `t_device` 等）。
 6. 在所有子查询执行完后，编写一个 `<memory_join>` 节点，在该节点中，编写一条标准 SQL (支持 DuckDB 语法) 来对所有的临时表进行关联、过滤、分组、聚合或排序计算，输出用户想要的结果。
-7. 在编写 SQL 时，请注意：
+7. 子查询排序与粒度（重要，影响结果正确性）：
+   - 第一个 `<sub_query>` 必须是「驱动表/事实表」（数据量最大、含核心度量或主键的那张表），其余维表/补充表放后面。
+   - 子查询应尽量在各自数据集内先聚合到关联粒度（grain）再返回，不要把整张明细表拉到内存里再 join，避免行数膨胀与截断失真。
+   - 若子查询可能返回大量行，请显式 `ORDER BY` 关联键/排序键，保证截断时行为确定。
+8. 在编写 SQL 时，请注意：
    - 字段名和表名必须与 Schema 中严格一致。
    - 子查询的 SQL 中禁止使用跨库的 Join。
    - 每个 `<sub_query>` 的 SQL 必须使用上方【数据集与 SQL 方言对照表】中对应数据集的数据库语法。
-   - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）。
+   - `<memory_join>` 的 SQL 对临时表操作，使用 DuckDB 语法（支持 field::DATE、STRFTIME 等）；最终聚合/汇总必须在 `<memory_join>` 中完成。
    - 为了防止 SQL 语句中的特殊字符（如比较运算符 <、>、& 等）破坏 XML 格式，请将所有 SQL 语句使用 <![CDATA[ ... ]]> 包裹。
+9. 相对时间（上月/本月/今年/最近N天等）必须严格使用下方【当前时间锚点】换算出的 YYYY-MM-DD 起止日期写入各 `<sub_query>` 的 WHERE 条件，禁止臆测年份或月份。
+
+{build_data_query_time_anchor_block()}
 
 【输出格式】
 只输出一个 `<multi_dataset_plan>` XML 区块，不要输出任何其他的解释文字、不要包裹 Markdown 标记之外的内容。
@@ -147,17 +171,127 @@ XML 示例：
 """
 
     @staticmethod
-    def build_federated_synthesis_prompt(user_question: str, final_result_md: str) -> str:
+    def build_federated_synthesis_prompt(
+        user_question: str,
+        final_result_md: str,
+        data_caveats: str = "",
+        dataset_names: Optional[List[str]] = None,
+        column_label_guide: str = "",
+    ) -> str:
+        caveat_block = ""
+        if data_caveats and data_caveats.strip():
+            caveat_block = (
+                "\n【数据完整性提示（必须在结论中如实反映，不得忽略）】\n"
+                f"{data_caveats.strip()}\n"
+                "请在总结中明确说明上述数据缺失或截断对结论的影响，"
+                "不要把不完整的数据当作完整、精确的结论给出。\n"
+            )
+        dataset_block = ""
+        if dataset_names:
+            names = "、".join(
+                str(name).strip()
+                for name in dataset_names
+                if str(name).strip()
+            )
+            if names:
+                dataset_block = (
+                    f"\n【参与查询的数据集】\n{names}\n"
+                    "数据来源说明必须使用上述数据集名称；若涉及多个数据集，用顿号列出全部名称。\n"
+                )
+        column_label_block = ""
+        if column_label_guide.strip():
+            column_label_block = (
+                "\n【结果列中文表头对照（输出表格 MUST 使用中文表头）】\n"
+                f"{column_label_guide.strip()}\n"
+                "下方结果预览表头已按元数据术语映射为中文；你在正文或新建表格中不得再使用英文/拼音物理列名作为表头，"
+                "未映射列请按业务语义译为中文。\n"
+            )
         return f"""你是一个数据分析专家。
 已经完成了跨数据集的联邦查询计算，以下是最终的计算结果：
 
 {final_result_md}
-
+{caveat_block}{dataset_block}{column_label_block}
 请结合该结果，直接针对用户的问题进行专业的总结和解读。
 【输出规范】
 1. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
-2. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
-3. ECharts 图表必须使用标准 ECharts Option 配置。
+2. 输出中的所有 Markdown 表格表头 MUST 使用中文业务术语，禁止保留 visit_id、FOLLOW_UP_DATE 等英文/拼音物理列名。
+3. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
+4. ECharts 图表必须使用标准 ECharts Option 配置；图表 series / legend / tooltip 中的维度名也 MUST 使用中文表头。
+5. **数据源与引用说明 (MUST)**：在正文、表格与 ```chart``` 图表之后、quick 区块之前，单独一行注明数据归属的数据集名称（例如：`（* 数据来源：{{数据集名称}}）`）；多数据集用顿号列出；禁止与 quick 建议混在同一行。
+
+{SharedPrompts.QUICK_SUGGESTIONS_FORMAT}
+
+【当前用户问题】
+{user_question}
+"""
+
+    @staticmethod
+    def build_federated_node_repair_prompt(
+        *,
+        node_kind: str,
+        user_question: str,
+        schema_context: str,
+        plan_output: str,
+        dataset_name: str,
+        temp_table: str,
+        failed_sql: str,
+        error_text: str,
+        repair_attempt: int,
+        repair_guidance: str,
+        sub_queries_summary: str = "",
+        join_sql: str = "",
+        schema_snippet: str = "",
+        explain_context: str = "",
+    ) -> str:
+        node_label = "子查询" if node_kind == "sub_query" else "内存联邦聚合 (<memory_join>)"
+        extra = ""
+        if node_kind == "memory_join" and sub_queries_summary:
+            extra = (
+                f"\n【当前各子查询临时表概览】\n{sub_queries_summary}\n"
+                f"当前 memory_join SQL：\n{join_sql[:4000]}\n"
+                "若错误来自字段/别名不一致，可只在 memory_join 中修正引用；"
+                "若根因在子查询投影，请在 repair 说明中指出需同步调整的别名，但本轮只输出修正后的 memory_join SQL。"
+            )
+        elif node_kind == "sub_query":
+            extra = (
+                f"\n数据集：{dataset_name}\n"
+                f"临时表名：{temp_table}\n"
+                "本轮只修正该数据集的 sub_query SQL，不要改动其他 sub_query 或 memory_join。"
+            )
+        schema_focus = schema_snippet.strip() or schema_context[:3500]
+        explain_block = ""
+        if explain_context.strip():
+            explain_block = (
+                f"\n【EXPLAIN 参考（辅助理解执行/类型问题，请结合 Schema 字段类型修正 SQL）】\n"
+                f"{explain_context.strip()}\n"
+            )
+        return f"""你是联邦查询 SQL 局部修复模块。用户问题与 Schema 如下。
+
+【本数据集 Schema 片段（含 repair 时 get_dataset_schema 按需检索，优先核对字段类型）】
+{schema_focus}
+
+【跨数据集 Schema 定义（完整，供交叉引用）】
+{schema_context[:6000]}
+
+【当前联邦计划（仅供参考，勿整份重写）】
+{plan_output[:8000]}
+
+【失败节点】{node_label}
+{extra}
+
+【完整数据库错误信息（勿忽略 ORA-xxxxx 编号）】
+{error_text[:3000]}
+
+【repair_attempt】{repair_attempt}
+{explain_block}
+{repair_guidance}
+
+【输出格式 (MUST)】
+只输出一个 `<fixed_sql>` 区块，内含修正后的 SQL，必须使用 CDATA：
+<fixed_sql><![CDATA[
+修正后的 SQL
+]]></fixed_sql>
+不要输出解释文字，不要输出完整 multi_dataset_plan。
 
 【当前用户问题】
 {user_question}
@@ -1382,11 +1516,38 @@ XML 示例：
         "1) 报错如 ORA-01861 / ORA-01830 / literal does not match format string 时，"
         "优先检查日期字段真实类型与 SQL 中 TO_DATE、TO_CHAR、日期字面量格式是否一致。\n"
         "2) 若字段本身是 DATE/TIMESTAMP，禁止再用 TO_DATE(date_column, 'YYYY-MM-DD') 包裹；"
-        "应直接比较日期字段，或用 TO_CHAR(date_column, 'YYYY-MM-DD') 仅用于展示/分组。\n"
-        "3) 若字段是字符串日期，TO_DATE 的格式掩码必须与字段真实字符串格式一致；"
+        "应直接使用 DATE 'YYYY-MM-DD' 范围比较，例如 "
+        "`date_col >= DATE '2026-05-01' AND date_col < DATE '2026-06-01'`。\n"
+        "3) 若 Schema 显示字段是字符串/VARCHAR（常见列名 create_date 但实际存文本），"
+        "禁止对列使用 TO_CHAR/TO_DATE（易触发 ORA-01722 invalid number 或 ORA-01861）；"
+        "应改用字符串区间比较，例如 "
+        "`create_date >= '2026-05-01' AND create_date < '2026-06-01'`，"
+        "或 `SUBSTR(create_date,1,7) = '2026-05'`，格式必须与 Schema/样例值一致。\n"
+        "4) 若字段是字符串日期，TO_DATE 的格式掩码必须与字段真实字符串格式一致；"
         "不要把 'YYYY-MM-DD' 用在实际包含时间、斜杠或中文格式的字段上。\n"
-        "4) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
+        "5) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
         "不要顺手更换无关表字段。"
+    )
+
+    INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE = (
+        "【ORA-01722 / invalid number 修正指引】\n"
+        "1) 该错误常见于：对 VARCHAR/字符串列使用 TO_CHAR/TO_NUMBER/算术运算，"
+        "或 TO_DATE/TO_CHAR 格式掩码与列内实际值不匹配。\n"
+        "2) 必须先对照 Schema 中该列类型与样例值；若 create_date 等为字符串，"
+        "改用字符串比较或 SUBSTR 截取年月，不要对列套 TO_CHAR(..., 'YYYY-MM')。\n"
+        "3) 若需按月筛选且列为 DATE 类型，优先 `>= DATE 'YYYY-MM-01' AND < DATE 'YYYY-MM+1-01'`，"
+        "不要用 `TO_CHAR(date_col,'YYYY-MM')='YYYY-MM'` 除非确认列为 DATE 且此前语法已验证可行。\n"
+        "4) 禁止原样重复已失败的 TO_CHAR/TO_DATE 写法；必须换一种与 Schema 类型一致的过滤写法。"
+    )
+
+    TIME_RANGE_ANOMALY_REPAIR_GUIDE = (
+        "【相对时间范围修正指引】\n"
+        "1) 必须严格使用 system prompt 中【当前时间锚点】给出的起止日期重写 WHERE 时间条件，"
+        "禁止凭记忆或训练数据臆测年份/月份（例如把「上个月」写成去年同月）。\n"
+        "2) SQL 中必须写出具体 YYYY-MM-DD 起止日期，并与锚点区间完全一致或为其子区间。\n"
+        "3) 仅修正时间过滤相关表达式（日期字面量、TO_DATE、DATE '...'、时间边界），不要改动无关字段或业务口径。\n"
+        "4) 若用户问题本身已给出明确绝对年月（如「2025年5月」），才允许使用对应绝对日期；"
+        "相对时间词（上月/本月/今年等）不得自行换算到其他年份。"
     )
 
     # 元数据服务（RAGFlow）不可用时的硬终止回复
@@ -1471,7 +1632,9 @@ XML 示例：
             "1) 若 SQL 中存在文本筛选（LIKE / = / IN），先查询该字段的候选值或相近值，验证用户口语条件是否对应真实数据值。\n"
             "2) 若 SQL 使用 CTE、子查询或多表 JOIN，优先执行分段计数诊断 SQL，定位是哪一段变为空。\n"
             "3) 若发现筛选值、JOIN 主表或条件过严导致空结果，请基于诊断结果重新执行 1 次修正后的最终 SQL。\n"
-            "4) 若复核后仍为空，才允许在最终回答中说明：SQL 已执行成功，但按复核后的条件仍未返回匹配数据。"
+            "4) 若已修正筛选取值后仍为空，必须优先怀疑 WHERE 字段是否选错，对照 get_dataset_schema 中的 term/physical_name 更换维度字段。\n"
+            "5) 若复核后仍为空，才允许在最终回答中说明：SQL 已执行成功，但按复核后的条件仍未返回匹配数据。\n"
+            "6) 禁止将空结果描述为「技术故障」或「暂时无法获取结果」；应说明筛选条件与库内候选值的差异。"
         )
 
     @classmethod

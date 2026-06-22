@@ -71,9 +71,16 @@ def validate_sql(sql: str, dialect: str = "clickhouse") -> Optional[str]:
 
     return None
 
-async def call_external_sql_api(sql: str, data_source: Optional[str] = None) -> str:
+async def call_external_sql_api(
+    sql: str,
+    data_source: Optional[str] = None,
+    cache_scope: Optional[str] = None,
+) -> str:
     """
     执行物理 SQL 查询的统一入口：支持本地 Adapter 直连与远程 API 调用的双层分流控制。
+
+    cache_scope: 结果缓存的隔离作用域（通常为执行用户 id）。必须传入，
+    否则不同用户在行级权限场景下可能复用到彼此的缓存结果，造成跨用户数据泄露。
     """
     # Dynamic Config
     from app.services.config_service import ConfigService
@@ -105,8 +112,10 @@ async def call_external_sql_api(sql: str, data_source: Optional[str] = None) -> 
     timeout = float(timeout_str) if timeout_str else 60.0
 
     # 2. Check Cache (TTL 60s)
-    # Cache Key 必须包含执行模式，避免 local/remote 切换时复用到另一种模式的结果。
-    cache_key = f"sql_result:{execution_mode}:{hashlib.md5((sql + (data_source or '')).encode()).hexdigest()}"
+    # Cache Key 必须包含执行模式（避免 local/remote 切换复用）与用户作用域（避免跨用户复用行级结果）。
+    scope = str(cache_scope) if cache_scope is not None and str(cache_scope).strip() else "anon"
+    cache_digest = hashlib.md5((scope + "|" + sql + "|" + (data_source or "")).encode()).hexdigest()
+    cache_key = f"sql_result:{execution_mode}:{scope}:{cache_digest}"
     redis_client = await get_redis()
 
     if redis_client:

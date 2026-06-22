@@ -28,9 +28,27 @@ from app.services.ai.executors.common import (
     extract_tokens_from_message,
     normalize_messages_for_llm,
 )
-from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
+from app.services.ai.chatbi_sql_user_messages import (
+    format_empty_filter_result_content,
+    map_sql_tool_error_for_user,
+)
+from app.services.ai.data_query_semantic_intent import (
+    DataQuerySemanticIntent,
+    build_semantic_intent_prompt,
+    derive_keywords_from_semantic_intent,
+    format_empty_result_semantic_repair_context,
+    format_semantic_intent_context,
+    parse_semantic_intent_payload,
+    semantic_intent_from_dict,
+    semantic_intent_to_dict,
+)
 from app.services.ai.executors.prompts import DataQueryPrompts
-from app.services.ai.time_anchor import build_data_query_time_anchor_block
+from app.services.ai.time_anchor import (
+    TIME_RANGE_GATE_PREFIX,
+    build_data_query_time_anchor_block,
+    build_time_range_gate_message,
+    detect_time_range_mismatch,
+)
 from app.services.ai.multimodal_support import (
     ensure_multimodal_compatible,
     resolve_runtime_model_name,
@@ -95,7 +113,9 @@ DATA_REPAIR_BUDGETS = {
     "schema_ambiguous": 1,
     "sql_plan_missing": 1,
     "sql_static_risk": 1,
-    "sql_error": 5,
+    "time_range_anomaly": 1,
+    "sql_sandbox_blocked": 2,
+    "sql_error": 8,
     "failed_sql_repeat": 1,
     "schema_refresh_after_sql_error": 2,
     "empty_sql_result": 1,
@@ -161,8 +181,11 @@ def _looks_like_explicit_federated_query(user_question: str) -> bool:
     )
     if any(term in q for term in explicit_terms):
         return True
-    has_join_action = any(term in q for term in ("关联", "join", "连接", "合并"))
-    has_multi_source_hint = any(term in q for term in ("数据集", "数据源", "库", "表"))
+    # 弱启发式收敛：仅当「关联动作」与明确的多源名词（数据集/数据源）同现才升级。
+    # 此前把裸「表」「库」「连接/合并」纳入会大量误升级（如单数据集内的多表 JOIN、
+    # “数据库连接”“合并报表”等），且 schema enrich 常带 2+ dataset 放大了误判。
+    has_join_action = any(term in q for term in ("关联", "join", "联结"))
+    has_multi_source_hint = any(term in q for term in ("数据集", "数据源"))
     return has_join_action and has_multi_source_hint
 
 
@@ -215,6 +238,10 @@ class _DataRunState:
     no_authorized_schema: bool = False
     empty_sql_result: bool = False
     empty_sql_reason: str = ""
+    empty_sql_text: str = ""
+    empty_filter_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    empty_filter_diagnostic_summary: str = ""
+    empty_filter_auto_retry_sql: str = ""
     expecting_final_sql_after_diagnostic: bool = False
     diagnostic_sql_pending_final: bool = False
     sql_error: bool = False
@@ -224,6 +251,8 @@ class _DataRunState:
     sql_fatal_emitted: bool = False
     sql_static_risk: bool = False
     sql_static_risk_reason: str = ""
+    time_range_anomaly: bool = False
+    time_range_anomaly_reason: str = ""
     sql_sandbox_blocked: bool = False
     sql_sandbox_blocked_reason: str = ""
     sql_repeat_gate_block: bool = False
@@ -241,7 +270,10 @@ class _DataRunState:
     current_text_block_emitted: bool = False
     halt_current_react: bool = False
     last_successful_sql_output: Any = None
+    last_successful_sql_args: dict[str, Any] = field(default_factory=dict)
     successful_sqls: dict[str, Any] = field(default_factory=dict)
+    sql_citation_counter: int = 0
+    emitted_sql_citation_signatures: list[str] = field(default_factory=list)
     ratio_anomaly: bool = False          # SQL 结果含超阈值比率（>1.5 或负值），触发对账修复
     ratio_anomaly_reason: str = ""       # 异常说明，用于修复提示词
     duration_anomaly: bool = False       # 时延/时长/时间差字段结果明显反常，触发 SQL 复核
@@ -300,6 +332,7 @@ class _DataRunState:
             and self.sql_completed
             and not self.sql_before_schema
             and not self.sql_static_risk
+            and not self.time_range_anomaly
             and not self.sql_error
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
@@ -332,6 +365,7 @@ class DataAgentRunner(BaseExecutor):
         self._fewshot_examples: List[Dict[str, Any]] = []
         self._standalone_query = ""
         self._schema_search_keywords = ""
+        self._semantic_intent: DataQuerySemanticIntent | None = None
         self._schema_similarity_threshold: float | None = None
         self._requires_sql_query = True
 
@@ -382,6 +416,7 @@ class DataAgentRunner(BaseExecutor):
             "max_steps": max_steps,
             "standalone_query": self._standalone_query,
             "schema_search_keywords": self._schema_search_keywords,
+            "semantic_intent": semantic_intent_to_dict(self._semantic_intent),
             "requires_fresh_data": self._requires_fresh_data,
             "requires_sql_query": bool(getattr(self, "_requires_sql_query", True)),
         }
@@ -408,6 +443,7 @@ class DataAgentRunner(BaseExecutor):
         )
         runner._standalone_query = str(runner_context.get("standalone_query") or "")
         runner._schema_search_keywords = str(runner_context.get("schema_search_keywords") or "")
+        runner._semantic_intent = semantic_intent_from_dict(runner_context.get("semantic_intent"))
         runner._requires_fresh_data = bool(runner_context.get("requires_fresh_data", True))
         runner._requires_sql_query = bool(runner_context.get("requires_sql_query", True))
         return runner
@@ -592,6 +628,10 @@ class DataAgentRunner(BaseExecutor):
     @staticmethod
     def _is_sql_static_gate_block(output: Any) -> bool:
         return str(output or "").startswith(SQL_STATIC_GATE_PREFIX)
+
+    @staticmethod
+    def _is_time_range_gate_block(output: Any) -> bool:
+        return str(output or "").startswith(TIME_RANGE_GATE_PREFIX)
 
     @staticmethod
     def _is_sql_sandbox_gate_block(output: Any) -> bool:
@@ -1195,6 +1235,7 @@ class DataAgentRunner(BaseExecutor):
                 and not state.empty_sql_result
                 and not state.sql_plan_missing
                 and not state.sql_static_risk
+                and not state.time_range_anomaly
                 and not state.sql_repeat_gate_block
                 and not state.failed_sql_repeat_gate_block
                 and not state.ratio_anomaly
@@ -1289,6 +1330,15 @@ class DataAgentRunner(BaseExecutor):
                 if preflight_error:
                     return preflight_error
 
+                time_range_risk = detect_time_range_mismatch(
+                    self._standalone_query or "",
+                    current_sql,
+                )
+                if time_range_risk:
+                    state.time_range_anomaly = True
+                    state.time_range_anomaly_reason = time_range_risk
+                    return build_time_range_gate_message(time_range_risk)
+
                 static_risk = ""
                 if not (state.requires_sql_plan and not state.sql_plan_seen):
                     static_risk = self._detect_sql_static_risk(current_sql)
@@ -1318,6 +1368,7 @@ class DataAgentRunner(BaseExecutor):
                         and not self._is_schema_gate_block(result)
                         and not self._is_sql_repeat_gate_block(result)
                         and not self._is_sql_static_gate_block(result)
+                        and not self._is_time_range_gate_block(result)
                         and not self._is_sql_plan_gate_block(result)
                         and not self._is_sql_sandbox_gate_block(result)
                     ):
@@ -1550,6 +1601,7 @@ class DataAgentRunner(BaseExecutor):
                 user_question,
                 self._standalone_query,
                 self._fewshot_examples,
+                runtime_messages=runtime_messages,
             )
             system_content += (
                 "\n\n【Schema 检索词规划】本轮已结合"
@@ -1558,13 +1610,15 @@ class DataAgentRunner(BaseExecutor):
                 "首次检索数据集定义时，请优先使用这些 keywords；这些词仅用于检索元数据，不代表最终 SQL 表字段已确认。"
                 f"\n【独立查数问题】{self._standalone_query}"
             )
+            semantic_intent_context = format_semantic_intent_context(self._semantic_intent)
+            if semantic_intent_context:
+                system_content += f"\n\n{semantic_intent_context}"
             yield {
                 "type": "log",
                 "id": need_analysis_log_id,
                 "title": "用户需求分析",
-                "details": (
-                    "已完成用户需求分析，并生成问题关键词。"
-                    f"\n问题关键词: {self._schema_search_keywords or self._standalone_query or user_question}"
+                "details": self._format_need_analysis_success_details(
+                    self._schema_search_keywords or self._standalone_query or user_question
                 ),
                 "status": "success",
                 "execution_time_ms": (time.time() - need_analysis_start) * 1000,
@@ -1610,13 +1664,17 @@ class DataAgentRunner(BaseExecutor):
 
                 # 跨数据集联邦查询动态升级检测：必须有显式跨数据集意图，schema 补全本身只作为辅助证据。
                 datasets = sorted(_extract_schema_dataset_names(prefetched_schema_output))
-                if _should_upgrade_to_federated_query(prefetched_schema_output, self._standalone_query):
+                classified_as_federated = (
+                    turn_cls.turn_type == DataQueryTurnType.FEDERATED_DATA_QUERY
+                    and len(datasets) > 1
+                )
+                if classified_as_federated or _should_upgrade_to_federated_query(prefetched_schema_output, self._standalone_query):
                     turn_cls.turn_type = DataQueryTurnType.FEDERATED_DATA_QUERY
                     yield {
                         "type": "log",
                         "id": f"chatbi_turn_upgrade_{uuid.uuid4().hex[:8]}",
                         "title": "ChatBI 请求类别升级",
-                        "details": f"检测到请求涉及跨数据集联合查询 (共 {len(datasets)} 个数据集: {', '.join(datasets)})，已自动升级为跨数据集联邦查询。",
+                        "details": f"检测到请求涉及跨数据集联合查询 (共 {len(datasets)} 个数据集: {', '.join(datasets)})，已进入跨数据集联邦查询。",
                         "status": "success",
                         "category": "intent",
                         "turn_type": turn_cls.turn_type.value,
@@ -1981,6 +2039,8 @@ class DataAgentRunner(BaseExecutor):
                     reason="repair-loop content followed by a repair condition",
                 ):
                     yield chunk
+            if state.full_content and self._should_replace_generic_empty_failure_reply(state):
+                state.full_content = format_empty_filter_result_content(state.empty_filter_diagnostics)
             if state.full_content:
                 deduped = finalize_visible_reply(state.full_content)
                 if deduped != state.full_content:
@@ -2222,34 +2282,14 @@ class DataAgentRunner(BaseExecutor):
         user_question: str,
         standalone_query: str,
         examples: List[Dict[str, Any]],
+        runtime_messages: List[Any] | None = None,
     ) -> str:
         fallback_query = self._clean_schema_fallback_query((standalone_query or user_question or "").strip())[:300]
-        if len(fallback_query) < 12 and re.match(r"^[\u4e00-\u9fa5\w\s-]+$", fallback_query):
-            query_lower = fallback_query.lower()
-            sql_keywords = {"select", "show", "list", "查询", "列出", "展示", "显示", "获取", "查一下", "统计"}
-            if not any(kw in query_lower for kw in sql_keywords):
-                logger.info(
-                    "[DataAgentRunner] Schema keyword planner bypassed for query: %s",
-                    fallback_query
-                )
-                return fallback_query
-        prompt = (
-            "你是 ChatBI 的元数据检索词规划器。你的任务不是生成 SQL，而是为 get_dataset_schema(keywords) "
-            "生成最适合检索数据集/表/字段/指标定义的短关键词。\n\n"
-            "要求：\n"
-            "1. 结合用户原始问题、独立查数问题 and 命中的历史案例；若没有历史案例，也必须从用户需求中抽取关键词。\n"
-            "2. 优先保留业务对象/实体、指标、维度、时间字段含义，以及历史案例中出现过的物理表名/字段名。\n"
-            "3. 去掉无助于元数据检索的动作词、礼貌词、排序数量描述和 SQL 生成意图。\n"
-            "4. 不要生成 SQL，不要编造案例中没有出现的新物理表名。\n"
-            "5. keywords 必须是空格分隔的关键词短语，优先 3 到 10 个词；不要输出完整查询句子。\n"
-            "6. 严禁直接输出用户原始的长句子或问题原句，必须将其拆解为多个空格分隔的核心业务名词。\n"
-            "   - 反例：如果输入为“分析注册用户在注册后 7 天内的活跃情况”，你绝对不能返回 `{\"keywords\": \"分析注册用户在注册后 7 天内的活跃情况\"}`。\n"
-            "   - 正例：高品质的输出应为 `{\"keywords\": \"注册用户 活跃\"}`。\n"
-            "7. 只返回 JSON。示例：{\"keywords\":\"商品 销售额 省份 product_order_detail product_name sales_amount\"}。\n"
-            "8. keywords 不能为空，禁止输出 `...`、`关键词`、`N/A` 这类占位符。\n\n"
-            f"【用户原始问题】\n{user_question}\n\n"
-            f"【独立查数问题】\n{standalone_query}\n\n"
-            f"【命中的历史案例线索】\n{self._example_schema_keyword_context(examples)}"
+        prompt = build_semantic_intent_prompt(
+            user_question=user_question,
+            standalone_query=standalone_query,
+            example_context=self._example_schema_keyword_context(examples),
+            conversation_context=self._semantic_intent_recent_context(runtime_messages or []),
         )
         try:
             model = await AgentConfigProvider.get_configured_llm(streaming=False, config=self.config)
@@ -2263,20 +2303,46 @@ class DataAgentRunner(BaseExecutor):
                 tool_name="schema_keyword_planner",
             )
             content = (getattr(response, "content", "") or "").strip()
-            data = {}
-            try:
-                data = json.loads(content)
-            except Exception:
-                match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-                if match:
-                    data = json.loads(match.group())
-            keywords = str(data.get("keywords") or "").strip()
+            intent = parse_semantic_intent_payload(content, fallback_question=standalone_query or user_question)
+            self._semantic_intent = intent if intent.has_content() else None
+            keywords = (intent.keywords if intent else "").strip()
             if self._is_invalid_schema_search_keywords(keywords):
+                derived_keywords = derive_keywords_from_semantic_intent(self._semantic_intent)
+                if derived_keywords and not self._is_invalid_schema_search_keywords(derived_keywords):
+                    if self._semantic_intent:
+                        self._semantic_intent.keywords = derived_keywords
+                    return derived_keywords[:300]
+                if self._semantic_intent:
+                    self._semantic_intent.keywords = fallback_query
                 return fallback_query
             return keywords[:300]
         except Exception as e:
             logger.warning("[DataAgentRunner] Failed to plan schema search keywords: %s", e)
+            self._semantic_intent = None
             return fallback_query
+
+    @staticmethod
+    def _semantic_intent_recent_context(runtime_messages: List[Any]) -> str:
+        lines: list[str] = []
+        for message in list(runtime_messages or [])[-7:-1]:
+            if not isinstance(message, (HumanMessage, AIMessage)):
+                continue
+            content = getattr(message, "content", "") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            content = re.sub(r"\s+", " ", content).strip()
+            if not content:
+                continue
+            role = "用户" if isinstance(message, HumanMessage) else "助手"
+            lines.append(f"{role}: {content[:220]}")
+        return "\n".join(lines)
+
+    def _format_need_analysis_success_details(self, keywords: str) -> str:
+        details = f"已完成用户需求分析，并生成问题关键词。\n问题关键词: {keywords}"
+        semantic_intent_context = format_semantic_intent_context(self._semantic_intent)
+        if semantic_intent_context:
+            details = f"{details}\n\n{semantic_intent_context}"
+        return details
 
     @staticmethod
     def _is_invalid_schema_search_keywords(keywords: str) -> bool:
@@ -3194,6 +3260,44 @@ class DataAgentRunner(BaseExecutor):
                     tool_args=tool_args,
                     output=output,
                 )
+                auto_retry = await self._maybe_run_empty_filter_diagnostics(state, tool_args=tool_args)
+                if auto_retry and auto_retry.has_rows:
+                    should_save_followup = self._apply_auto_retry_sql_result(
+                        state,
+                        sql_text=auto_retry.corrected_sql,
+                        output=auto_retry.raw_output,
+                        parsed_output=auto_retry.parsed_output,
+                    )
+                    output = auto_retry.raw_output
+                    parsed_output = auto_retry.parsed_output
+                    state.tool_outputs[tool_id] = output
+                    yield {
+                        "type": "log",
+                        "id": f"{tool_id}:empty_filter_auto_retry",
+                        "title": "平台自动修正筛选并重试",
+                        "details": (
+                            f"{auto_retry.summary}\n\n```sql\n{auto_retry.corrected_sql}\n```"
+                            if auto_retry.corrected_sql
+                            else auto_retry.summary
+                        ),
+                        "status": "success",
+                        "execution_time_ms": 0,
+                    }
+                elif auto_retry and auto_retry.attempted:
+                    if auto_retry.corrected_sql:
+                        state.empty_sql_text = auto_retry.corrected_sql
+                    yield {
+                        "type": "log",
+                        "id": f"{tool_id}:empty_filter_auto_retry",
+                        "title": "平台自动修正筛选并重试",
+                        "details": (
+                            f"{auto_retry.summary}\n\n```sql\n{auto_retry.corrected_sql}\n```"
+                            if auto_retry.corrected_sql
+                            else auto_retry.summary
+                        ),
+                        "status": "warning",
+                        "execution_time_ms": 0,
+                    }
                 if state.sql_error and "不属于当前指定的数据集" in (state.sql_error_message or ""):
                     from app.services.sql_query_execution_service import (
                         extract_physical_table_refs_from_select_sql,
@@ -3257,12 +3361,28 @@ class DataAgentRunner(BaseExecutor):
                             "status": "success",
                             "execution_time_ms": 0,
                         }
+                    citation_args = dict(tool_args)
+                    if auto_retry and getattr(auto_retry, "corrected_sql", None):
+                        citation_args["sql"] = auto_retry.corrected_sql
+                    state.last_successful_sql_args = citation_args
+                    from app.services.ai.chatbi_citation_utils import maybe_build_chatbi_sql_citation_event
+
+                    citation_event = maybe_build_chatbi_sql_citation_event(
+                        state,
+                        tool_call_id=tool_id,
+                        tool_args=citation_args,
+                        parsed_output=parsed_output,
+                    )
+                    if citation_event:
+                        yield citation_event
             self._record_tool_call_signature(state, tool_name, tool_args)
             state.halt_current_react = (
                 state.sql_error
                 or state.empty_sql_result
                 or state.sql_plan_missing
                 or state.sql_static_risk
+                or state.time_range_anomaly
+                or state.sql_sandbox_blocked
                 or state.sql_repeat_gate_block
                 or state.failed_sql_repeat_gate_block
                 or state.ratio_anomaly
@@ -3490,6 +3610,7 @@ class DataAgentRunner(BaseExecutor):
             or state.sql_error
             or state.empty_sql_result
             or state.sql_static_risk
+            or state.time_range_anomaly
             or state.failed_sql_repeat_gate_block
             or state.ratio_anomaly
             or state.duration_anomaly
@@ -3534,19 +3655,19 @@ class DataAgentRunner(BaseExecutor):
                 "2. 若问题较复杂，可拆成更具体的单指标/单表问题。"
             )
         elif state.empty_sql_result:
-            content = (
-                "抱歉，系统在当前数据集中未查询到符合条件的数据。\n\n"
-                "💡 **建议您可以尝试**：\n"
-                "1. 检查提问中是否包含不正确的筛选条件（如时间范围不正确、拼写错误或不存在的项目名称）。\n"
-                "2. 换个提问方式，或适当放宽时间范围重试（例如将精确时间改为模糊时间，如“本月”）。\n"
-                "3. 确认当前选中的数据集是否包含您想查询的信息。"
-            )
+            content = format_empty_filter_result_content(state.empty_filter_diagnostics)
         elif state.sql_static_risk:
             content = (
                 "该查询涉及的数据量过大或超出安全规范，已被系统自动拦截。\n\n"
                 "💡 **建议您可以尝试**：\n"
                 "1. 明确时间限制（如“查询最近3天”、“本周内”）。\n"
                 "2. 避免使用过于宽泛的“全部”或“所有”类型查询，缩小范围后重试。"
+            )
+        elif state.time_range_anomaly:
+            content = (
+                "查询 SQL 中的时间范围与您问题里的相对时间不一致，已被系统拦截。\n\n"
+                f"原因：{state.time_range_anomaly_reason}\n\n"
+                "💡 **建议**：请确认问题中的时间表述（如「上个月」「本月」），系统将按当前日期自动换算后再查数。"
             )
         elif state.sql_sandbox_blocked:
             content = (
@@ -3620,8 +3741,12 @@ class DataAgentRunner(BaseExecutor):
             return "schema_miss"
         if state.schema_needs_refinement:
             return "schema_refinement"
+        if state.sql_sandbox_blocked:
+            return "sql_sandbox_blocked"
         if state.sql_static_risk:
             return "sql_static_risk"
+        if state.time_range_anomaly:
+            return "time_range_anomaly"
         if state.sql_plan_missing:
             return "sql_plan_missing"
         if state.failed_sql_repeat_gate_block:
@@ -3724,6 +3849,16 @@ class DataAgentRunner(BaseExecutor):
                 "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、避免 SELECT *、"
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
             )
+        if state.time_range_anomaly:
+            time_anchor = build_data_query_time_anchor_block()
+            return (
+                "【相对时间范围修正要求】上一轮 execute_sql_query 因 SQL 时间范围与问题中的相对时间不一致被平台拦截。\n"
+                f"原因：{state.time_range_anomaly_reason}\n\n"
+                f"{time_anchor}\n\n"
+                f"{DataQueryPrompts.TIME_RANGE_ANOMALY_REPAIR_GUIDE}\n"
+                "请仅修正 WHERE 中的日期起止条件后重新调用 execute_sql_query；"
+                "修正并执行成功前禁止直接回答用户。"
+            )
         if state.sql_sandbox_blocked:
             return (
                 "【SQL 性能与安全阻断修正要求】上一轮 execute_sql_query 被前置安全沙箱网关拦截。\n"
@@ -3784,12 +3919,19 @@ class DataAgentRunner(BaseExecutor):
                 repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
             return repair
         if state.empty_sql_result:
-            return (
-                "【空结果复查要求】上一轮 execute_sql_query 执行成功但返回空结果。"
-                f"原因：{state.empty_sql_reason}\n"
-                "请先用诊断 SQL 复查筛选值、时间范围、子查询或 JOIN 条件，再执行最终 SQL。"
-                "在最终 SQL 返回有效结果前禁止直接回答用户。"
+            repair = DataQueryPrompts.empty_result_recheck(
+                state.empty_sql_reason,
+                executed_sql=state.empty_sql_text,
             )
+            if state.empty_filter_diagnostic_summary:
+                repair = f"{repair}\n\n{state.empty_filter_diagnostic_summary}"
+            semantic_repair = format_empty_result_semantic_repair_context(
+                self._semantic_intent,
+                diagnostics=state.empty_filter_diagnostics,
+            )
+            if semantic_repair:
+                repair = f"{repair}\n\n{semantic_repair}"
+            return repair
         if state.ratio_anomaly:
             return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)
         if state.duration_anomaly:
@@ -3856,10 +3998,13 @@ class DataAgentRunner(BaseExecutor):
         state.sql_error_message = ""
         state.empty_sql_result = False
         state.empty_sql_reason = ""
+        state.empty_sql_text = ""
         state.sql_plan_missing = False
         state.sql_before_schema = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.time_range_anomaly = False
+        state.time_range_anomaly_reason = ""
         state.sql_sandbox_blocked = False
         state.sql_sandbox_blocked_reason = ""
         state.failed_sql_repeat_gate_block = False
@@ -3872,7 +4017,10 @@ class DataAgentRunner(BaseExecutor):
         state.duration_anomaly_reason = ""
         # 彻底清空上一轮的 SQL 缓存，并重置 Schema 未命中状态，防范修复过程中的 Gate 误拦截
         state.last_successful_sql_output = None
+        state.last_successful_sql_args = {}
         state.successful_sqls = {}
+        state.sql_citation_counter = 0
+        state.emitted_sql_citation_signatures = []
         state.schema_miss = False
         state.schema_needs_refinement = False
         # schema_miss_count 不重置，跨轮累计用于连续未命中达到阈值后终止
@@ -3920,6 +4068,8 @@ class DataAgentRunner(BaseExecutor):
             return ToolChoice(mode="execute_sql_query")
         if state.sql_static_risk:
             return ToolChoice(mode="execute_sql_query")
+        if state.time_range_anomaly:
+            return ToolChoice(mode="execute_sql_query")
         if state.failed_sql_repeat_gate_block:
             return ToolChoice(mode="required")
         if state.ratio_anomaly:
@@ -3963,6 +4113,8 @@ class DataAgentRunner(BaseExecutor):
             return "修正性能超限 SQL"
         if state.sql_static_risk:
             return "修正高风险 SQL"
+        if state.time_range_anomaly:
+            return "修正 SQL 时间范围"
         if state.sql_plan_missing:
             return "补充 SQL 计划"
         if state.failed_sql_repeat_gate_block:
@@ -4131,12 +4283,16 @@ class DataAgentRunner(BaseExecutor):
             details = f"{details}\n\n[系统检测] 已有成功非空查数结果，已拦截重复 SQL 执行。"
         if tool_name == "execute_sql_query" and self._is_sql_static_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在高风险执行特征，已拦截执行。"
+        if tool_name == "execute_sql_query" and self._is_time_range_gate_block(output):
+            details = f"{details}\n\n[系统检测] SQL 时间范围与相对时间锚点不一致，已拦截执行。"
         if tool_name == "execute_sql_query" and self._is_sql_sandbox_gate_block(output):
             details = f"{details}\n\n[系统检测] SQL 存在性能安全风险（超限或笛卡尔积），已被沙箱网关拦截。"
         if tool_name == "execute_sql_query" and self._is_sql_plan_gate_block(output):
             details = f"{details}\n\n[系统检测] 高风险 SQL 缺少结构化 SQL Plan，已拦截执行。"
         if tool_name == "execute_sql_query" and state.empty_sql_reason:
             details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
+            if state.empty_filter_diagnostic_summary:
+                details = f"{details}\n\n{state.empty_filter_diagnostic_summary}"
         if tool_name == "execute_sql_query" and state.duration_anomaly_reason:
             details = f"{details}\n\n[系统检测] {state.duration_anomaly_reason}"
         if tool_name == "execute_sql_query" and state.sql_error_message:
@@ -4237,6 +4393,14 @@ class DataAgentRunner(BaseExecutor):
             state.sql_error = False
             state.sql_error_message = ""
             return output, False
+        if self._is_time_range_gate_block(output):
+            state.time_range_anomaly = True
+            if not state.time_range_anomaly_reason:
+                text = str(output or "").replace(TIME_RANGE_GATE_PREFIX, "").strip()
+                state.time_range_anomaly_reason = text[:800]
+            state.sql_error = False
+            state.sql_error_message = ""
+            return output, False
         if self._is_sql_sandbox_gate_block(output):
             state.sql_sandbox_blocked = True
             state.sql_sandbox_blocked_reason = str(output or "").replace("[Performance Blocked]", "").strip()
@@ -4310,6 +4474,23 @@ class DataAgentRunner(BaseExecutor):
 
         if empty_reason:
             if state.expecting_final_sql_after_diagnostic and not is_diag:
+                from app.services.ai.empty_result_filter_diagnostic import (
+                    should_escalate_empty_after_value_correction,
+                )
+
+                if should_escalate_empty_after_value_correction(state.empty_filter_diagnostics):
+                    state.empty_sql_reason = "修正筛选值后仍为空，疑似 WHERE 筛选字段选错"
+                    state.empty_sql_result = True
+                    state.empty_sql_text = sql_text or state.empty_sql_text or ""
+                    state.expecting_final_sql_after_diagnostic = False
+                    state.diagnostic_sql_pending_final = False
+                    if state.empty_filter_diagnostic_summary:
+                        state.empty_filter_diagnostic_summary = (
+                            f"{state.empty_filter_diagnostic_summary}\n\n"
+                            "【二次空结果】已按候选值修正后仍无数据，请优先核对 WHERE 是否使用了错误的维度字段，"
+                            "必要时重新调用 get_dataset_schema 确认 term/physical_name 映射。"
+                        )
+                    return parsed_output, False
                 state.empty_sql_reason = ""
                 state.empty_sql_result = False
                 state.last_successful_sql_output = output
@@ -4324,6 +4505,7 @@ class DataAgentRunner(BaseExecutor):
             else:
                 state.empty_sql_reason = empty_reason
                 state.empty_sql_result = True
+                state.empty_sql_text = sql_text or ""
             return parsed_output, False
 
         state.empty_sql_reason = ""
@@ -4343,6 +4525,8 @@ class DataAgentRunner(BaseExecutor):
         state.diagnostic_sql_pending_final = False
         state.sql_static_risk = False
         state.sql_static_risk_reason = ""
+        state.time_range_anomaly = False
+        state.time_range_anomaly_reason = ""
         state.sql_repeat_gate_block = False
         state.failed_sql_repeat_gate_block = False
         normalized_sql = self._normalize_sql_text(sql_text)
@@ -4365,7 +4549,123 @@ class DataAgentRunner(BaseExecutor):
         if ratio_anomaly:
             state.ratio_anomaly = True
             state.ratio_anomaly_reason = anomaly_reason
+            return parsed_output, False
+        state.empty_filter_diagnostics = []
+        state.empty_filter_diagnostic_summary = ""
         return parsed_output, True
+
+    @staticmethod
+    def _should_replace_generic_empty_failure_reply(state: _DataRunState) -> bool:
+        from app.services.ai.empty_result_filter_diagnostic import looks_like_generic_sql_failure_reply
+
+        if not looks_like_generic_sql_failure_reply(state.full_content):
+            return False
+        return bool(state.empty_sql_result or state.empty_filter_diagnostics or state.empty_sql_text)
+
+    async def _maybe_run_empty_filter_diagnostics(
+        self,
+        state: _DataRunState,
+        *,
+        tool_args: dict[str, Any],
+    ):
+        if not state.empty_sql_result:
+            return None
+        sql_text = state.empty_sql_text or str(tool_args.get("sql") or tool_args.get("query") or "")
+        from app.services.ai.empty_result_filter_diagnostic import (
+            format_repair_diagnostic_block,
+            run_automatic_filter_retry,
+            run_empty_filter_diagnostics,
+            sql_has_string_literal_filters,
+        )
+
+        if not sql_has_string_literal_filters(sql_text):
+            return None
+
+        data_source = str(tool_args.get("data_source") or "").strip()
+        dataset_name = str(tool_args.get("dataset_name") or "").strip()
+        if not data_source or not dataset_name:
+            return None
+
+        from app.core.orm import AsyncSessionLocal
+        from app.services.sql_query_execution_service import execute_sql_query_core
+
+        async def _execute_sql(**kwargs: Any) -> str:
+            async with AsyncSessionLocal() as session:
+                return await execute_sql_query_core(session, dry_run=False, **kwargs)
+
+        try:
+            diagnostics = await run_empty_filter_diagnostics(
+                sql=sql_text,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=self._current_user_id(),
+                is_admin=self._current_user_is_admin(),
+                execute_sql=_execute_sql,
+                schema_table_columns=state.schema_table_columns,
+            )
+        except Exception as exc:
+            logger.warning("[DataAgentRunner] Empty filter diagnostics skipped: %s", exc)
+            return None
+
+        state.empty_filter_diagnostics = [item.to_dict() for item in diagnostics]
+        state.empty_filter_diagnostic_summary = format_repair_diagnostic_block(diagnostics)
+
+        try:
+            retry = await run_automatic_filter_retry(
+                sql=sql_text,
+                diagnostics=diagnostics,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=self._current_user_id(),
+                is_admin=self._current_user_is_admin(),
+                execute_sql=_execute_sql,
+            )
+        except Exception as exc:
+            logger.warning("[DataAgentRunner] Empty filter auto retry skipped: %s", exc)
+            return None
+
+        if retry.attempted and retry.corrected_sql:
+            state.empty_filter_auto_retry_sql = retry.corrected_sql
+        if retry.attempted and retry.summary:
+            summary = state.empty_filter_diagnostic_summary
+            state.empty_filter_diagnostic_summary = (
+                f"{summary}\n\n{retry.summary}".strip() if summary else retry.summary
+            )
+        return retry if retry.attempted else None
+
+    def _apply_auto_retry_sql_result(
+        self,
+        state: _DataRunState,
+        *,
+        sql_text: str,
+        output: Any,
+        parsed_output: Any,
+    ) -> bool:
+        state.empty_sql_result = False
+        state.empty_sql_reason = ""
+        state.empty_sql_text = ""
+        state.expecting_final_sql_after_diagnostic = False
+        state.diagnostic_sql_pending_final = False
+        state.sql_completed = True
+        state.last_successful_sql_output = output
+        state.duration_anomaly = False
+        state.duration_anomaly_reason = ""
+        state.ratio_anomaly = False
+        state.ratio_anomaly_reason = ""
+        duration_anomaly, duration_reason = self._detect_duration_anomaly(parsed_output)
+        if duration_anomaly:
+            state.duration_anomaly = True
+            state.duration_anomaly_reason = duration_reason
+            return False
+        ratio_anomaly, anomaly_reason = self._detect_ratio_anomaly(parsed_output)
+        if ratio_anomaly:
+            state.ratio_anomaly = True
+            state.ratio_anomaly_reason = anomaly_reason
+            return False
+        normalized_sql = self._normalize_sql_text(sql_text)
+        if normalized_sql:
+            state.failed_sql_signatures.pop(normalized_sql, None)
+        return True
 
     def _schema_needs_refinement(self, tool_output: Any, *, similarity_threshold: float) -> bool:
         text = str(tool_output or "").strip()
@@ -4592,6 +4892,8 @@ class DataAgentRunner(BaseExecutor):
             return False, ""
 
         # 剔除可能会误判成功数据集明细中包含“失败/错误”普通文本记录的过宽正则，仅保留系统/数据库底层强报错特征词
+        # 说明：此分支只在 output 非结构化 JSON 成功结果时才会到达（上方已 return False），
+        # 因此可较安全地扩展数据库底层错误特征词，避免漏判 sql_error 而跳过修复。
         error_patterns = [
             r"unknown column",
             r"unknown table",
@@ -4602,6 +4904,26 @@ class DataAgentRunner(BaseExecutor):
             r"unauthorized",
             r"SQL Syntax Error",
             r"SQL Validation Failed",
+            # Oracle 通用错误码（ORA-00904/00942/00979/01722/01861 等）
+            r"\bORA-\d{3,5}\b",
+            # 字段/表/标识符
+            r"invalid identifier",
+            r"invalid number",
+            r"no such (?:column|table)",
+            r"does not exist",
+            r"not a group by",
+            # 解析/类型
+            r"cannot parse",
+            r"literal does not match",
+            # 连接/超时/锁
+            r"\btimed?\s*out\b",
+            r"\btimeout\b",
+            r"lock wait",
+            r"connection (?:refused|reset|closed|error)",
+            # 运算
+            r"division by zero",
+            # ClickHouse 错误码：如 "Code: 47. DB::Exception"
+            r"\bCode:\s*\d+\.\s*DB::Exception",
         ]
         if any(re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) for pattern in error_patterns):
             return True, text[:1000]
@@ -4638,6 +4960,10 @@ class DataAgentRunner(BaseExecutor):
             "比例",
         )
         if any(marker in sql_upper for marker in ratio_markers):
+            return False
+        from app.services.ai.empty_result_filter_diagnostic import sql_has_string_literal_filters
+
+        if sql_has_string_literal_filters(sql):
             return False
         return True
 

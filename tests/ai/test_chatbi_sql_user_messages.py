@@ -1,7 +1,9 @@
 import pytest
 
 from app.services.ai.chatbi_sql_user_messages import (
+    EMPTY_FILTER_RESULT_FALLBACK_CONTENT,
     GENERIC_SQL_ERROR_CONTENT,
+    format_empty_filter_result_content,
     map_sql_tool_error_for_user,
 )
 
@@ -68,3 +70,28 @@ def test_map_sql_tool_error_for_user_generic_fallback():
     presentation = map_sql_tool_error_for_user("some opaque upstream failure")
     assert presentation.specific is False
     assert presentation.content == GENERIC_SQL_ERROR_CONTENT
+
+
+def test_format_empty_filter_result_content_with_diagnostics():
+    content = format_empty_filter_result_content(
+        [
+            {
+                "column": "gxqy",
+                "table": "zf_view_resroom",
+                "operator": "=",
+                "used_values": ["上海"],
+                "diagnostic_sql": "SELECT DISTINCT gxqy FROM zf_view_resroom LIMIT 20",
+                "candidates": ["上海市", "北京市"],
+                "suggested_values": ["上海市"],
+                "error": "",
+            }
+        ]
+    )
+    assert "未返回数据" in content
+    assert "上海市" in content
+    assert content != GENERIC_SQL_ERROR_CONTENT
+
+
+def test_format_empty_filter_result_content_fallback():
+    assert format_empty_filter_result_content(None) == EMPTY_FILTER_RESULT_FALLBACK_CONTENT
+
