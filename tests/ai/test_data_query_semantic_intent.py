@@ -84,19 +84,54 @@ def test_build_semantic_intent_prompt_warns_intent_frame_is_not_schema():
     assert "SQL 的 FROM/JOIN/字段必须以 get_dataset_schema 返回为准" in prompt
 
 
-def test_parse_semantic_intent_payload_keeps_all_scope_list_query_narrow():
+def test_parse_semantic_intent_payload_preserves_complex_filters():
     from app.services.ai.data_query_semantic_intent import parse_semantic_intent_payload
 
+    # 用户问：所有北京在用的机房列表
+    # 期望：“北京”和“在用”作为合法筛选不被误杀，但“所有”等纯范围词要过滤
     payload = """
-    {"keywords":"机房，列表，设施管理，数据中心，物理位置",
+    {"keywords":"北京 在用 虚拟机 列表",
+     "goal":"查一下所有北京在用状态的虚拟机",
+     "metrics":[],
+     "dimensions":["虚拟机", "配置"],
+     "filters":[
+       {"phrase":"北京","semantic_type":"geographic_region","relation":"exact_value"},
+       {"phrase":"在用","semantic_type":"status","relation":"exact_value"},
+       {"phrase":"所有","relation":"parent_region_or_scope"}
+     ],
+     "time_range":"无",
+     "grain":"明细粒度"}
+    """
+
+    intent = parse_semantic_intent_payload(payload, fallback_question="列出所有北京在用状态的虚拟机")
+
+    # keywords 保留了合理的同义词和主语
+    assert "虚拟机" in intent.keywords
+    assert "北京" in intent.keywords
+    
+    # filters 移除了纯噪声 filter("所有")，但保留了包含具体过滤逻辑的 "北京" 和 "在用"
+    phrases = [f.phrase for f in intent.filters]
+    assert "北京" in phrases
+    assert "在用" in phrases
+    assert "所有" not in phrases
+
+    # dimensions 保留了推导出的 "配置"
+    assert "虚拟机" in intent.dimensions
+    assert "配置" in intent.dimensions
+
+
+def test_parse_semantic_intent_payload_cleans_only_pure_scope_filters():
+    from app.services.ai.data_query_semantic_intent import parse_semantic_intent_payload
+
+    # 全量查询：所有机房列表
+    payload = """
+    {"keywords":"机房 列表",
      "goal":"获取所有机房的基础信息列表",
      "metrics":[],
-     "dimensions":["机房名称","机房位置","机房状态","机房ID"],
+     "dimensions":["机房"],
      "filters":[
-       {"phrase":"所有机房","semantic_type":"entity",
-        "expected_column_types":["机房名称","机房ID","facility_name","dc_name"],
-        "avoid_column_types":["机房状态","机房等级","具体机房名称"],
-        "relation":"parent_region_or_scope"}
+       {"phrase":"所有","relation":"parent_region_or_scope"},
+       {"phrase":"全部的","relation":"parent_region_or_scope"}
      ],
      "time_range":"无",
      "grain":"明细粒度"}
@@ -105,47 +140,12 @@ def test_parse_semantic_intent_payload_keeps_all_scope_list_query_narrow():
     intent = parse_semantic_intent_payload(payload, fallback_question="查一下所有机房的列表")
 
     assert intent.keywords == "机房 列表"
+    # filters 中的纯噪声范围词全部被过滤
     assert intent.filters == []
     assert intent.dimensions == ["机房"]
-    assert "设施管理" not in intent.keywords
-    assert "数据中心" not in intent.keywords
-    assert "物理位置" not in intent.keywords
 
 
-def test_parse_semantic_intent_payload_cleans_space_separated_expanded_keywords():
-    from app.services.ai.data_query_semantic_intent import parse_semantic_intent_payload
-
-    payload = """
-    {"keywords":"机房 列表 设施管理 数据中心 物理位置",
-     "goal":"查一下所有机房的列表",
-     "metrics":[],
-     "dimensions":["机房名称","物理位置"],
-     "filters":[{"phrase":"所有机房","relation":"parent_region_or_scope"}]}
-    """
-
-    intent = parse_semantic_intent_payload(payload, fallback_question="查一下所有机房的列表")
-
-    assert intent.keywords == "机房 列表"
-    assert intent.filters == []
-
-
-def test_parse_semantic_intent_payload_handles_full_scope_particle():
-    from app.services.ai.data_query_semantic_intent import parse_semantic_intent_payload
-
-    payload = """
-    {"keywords":"全部的机房 列表 数据中心",
-     "goal":"查一下全部的机房列表",
-     "dimensions":["机房名称"],
-     "filters":[{"phrase":"全部的机房","relation":"parent_region_or_scope"}]}
-    """
-
-    intent = parse_semantic_intent_payload(payload, fallback_question="查一下全部的机房列表")
-
-    assert intent.keywords == "机房 列表"
-    assert intent.filters == []
-
-
-def test_build_semantic_intent_prompt_warns_not_to_expand_list_query_scope():
+def test_build_semantic_intent_prompt_has_core_constraints_and_few_shot():
     from app.services.ai.data_query_semantic_intent import build_semantic_intent_prompt
 
     prompt = build_semantic_intent_prompt(
@@ -154,9 +154,11 @@ def test_build_semantic_intent_prompt_warns_not_to_expand_list_query_scope():
         "",
     )
 
-    assert "不要扩大用户问题范围" in prompt
-    assert "所有/全部" in prompt
-    assert "不要把全量范围词输出为 filters" in prompt
+    assert "【核心约束原则】" in prompt
+    assert "严禁脑补与需求扩大化" in prompt
+    assert "【示例对比学习】" in prompt
+    assert "示例一：无额外筛选条件的全量明细列表查询" in prompt
+    assert "示例二：带具体筛选条件的列表查询" in prompt
 
 
 def test_format_empty_result_semantic_repair_context_mentions_parent_child_relationship():

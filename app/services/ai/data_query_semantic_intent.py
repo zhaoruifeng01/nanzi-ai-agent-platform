@@ -73,21 +73,13 @@ def _as_str_list(value: Any, *, max_items: int = 8, max_len: int = 40) -> list[s
     return items
 
 
-_FULL_SCOPE_PREFIX_RE = re.compile(r"^(?:所有的|全部的|所有|全部|全量)(.+)$")
 _LIST_QUERY_HINT_RE = re.compile(r"(?:列表|清单|明细|列出|展示|显示)")
-
-
-def _strip_full_scope_prefix(text: str) -> str:
-    cleaned = _as_clean_str(text)
-    match = _FULL_SCOPE_PREFIX_RE.match(cleaned)
-    if not match:
-        return cleaned
-    return _as_clean_str(match.group(1).lstrip("的"))
 
 
 def _is_full_scope_phrase(text: str) -> bool:
     cleaned = _as_clean_str(text)
-    return cleaned in {"所有", "全部", "全量"} or bool(_FULL_SCOPE_PREFIX_RE.match(cleaned))
+    # 仅移除纯度极高、没有任何过滤属性的噪音词，防止将“所有北京的”等过滤词错误移去
+    return cleaned in {"所有", "全部", "全量", "所有的", "全部的", "全量的"}
 
 
 def _is_full_scope_list_query(question: str) -> bool:
@@ -102,71 +94,67 @@ def _split_keywords(text: str) -> list[str]:
 
 
 def _infer_full_scope_subject(question: str, filters: list[SemanticIntentFilter]) -> str:
+    # 尝试在被错归类为 filter 的项中提取潜在的主语
     for item in filters:
-        if _is_full_scope_phrase(item.phrase):
-            subject = _strip_full_scope_prefix(item.phrase)
-            if subject:
-                return subject
+        phrase = _as_clean_str(item.phrase)
+        if phrase in {"所有", "全部", "全量", "所有的", "全部的", "全量的"}:
+            continue
+        for prefix in ["所有的", "全部的", "全量的", "所有", "全部", "全量"]:
+            if phrase.startswith(prefix) and len(phrase) > len(prefix):
+                return _as_clean_str(phrase[len(prefix):].lstrip("的"))
     match = re.search(r"(?:所有|全部|全量)(?:的)?([^，,。？?\s]+?)(?:的)?(?:列表|清单|明细)", question)
     if match:
         return _as_clean_str(match.group(1))
     return ""
 
 
-def _keyword_is_user_anchored(keyword: str, question: str, subject: str) -> bool:
-    if not keyword:
-        return False
-    if keyword in question:
-        return True
-    if subject and keyword == subject:
-        return True
-    return False
-
-
 def _sanitize_intent_scope(intent: DataQuerySemanticIntent, *, fallback_question: str = "") -> DataQuerySemanticIntent:
     question = _as_clean_str(fallback_question or intent.goal, max_len=240)
-    original_filters = list(intent.filters)
+    
+    # 1. 移除纯粹的“所有/全部”等没有真实业务约束力的空洞 filter
     intent.filters = [item for item in intent.filters if not _is_full_scope_phrase(item.phrase)]
 
     if not _is_full_scope_list_query(question):
         return intent
 
-    subject = _infer_full_scope_subject(question, original_filters)
+    subject = _infer_full_scope_subject(question, intent.filters)
+    
+    # 2. 清除 keywords 里的范围词前缀与噪声词，并插入主语和“列表”字样作为兜底 keywords
     user_anchored_keywords: list[str] = []
     seen_keywords: set[str] = set()
     for keyword in _split_keywords(intent.keywords):
-        normalized = _strip_full_scope_prefix(keyword)
-        if not _keyword_is_user_anchored(normalized, question, subject):
+        normalized = _as_clean_str(keyword)
+        for prefix in ["所有的", "全部的", "全量的", "所有", "全部", "全量"]:
+            if normalized.startswith(prefix) and len(normalized) > len(prefix):
+                normalized = _as_clean_str(normalized[len(prefix):].lstrip("的"))
+                break
+        if not normalized or _is_full_scope_phrase(normalized):
             continue
         if normalized in seen_keywords:
             continue
         seen_keywords.add(normalized)
         user_anchored_keywords.append(normalized)
-    if subject and subject not in seen_keywords:
+        
+    if subject and subject not in seen_keywords and not _is_full_scope_phrase(subject):
         user_anchored_keywords.insert(0, subject)
         seen_keywords.add(subject)
     if "列表" in question and "列表" not in seen_keywords:
         user_anchored_keywords.append("列表")
+        
     if user_anchored_keywords:
         intent.keywords = " ".join(user_anchored_keywords[:8])
 
-    if subject:
-        explicit_dimensions: list[str] = []
-        seen_dimensions: set[str] = set()
-        for dimension in intent.dimensions:
-            text = _as_clean_str(dimension)
-            if not text:
-                continue
-            if text in question or (subject and text != subject and text.replace(subject, "") in question):
-                if text not in seen_dimensions:
-                    seen_dimensions.add(text)
-                    explicit_dimensions.append(text)
-                continue
-            if subject not in seen_dimensions:
-                seen_dimensions.add(subject)
-                explicit_dimensions.append(subject)
-        if explicit_dimensions:
-            intent.dimensions = explicit_dimensions[:8]
+    # 3. 维度清洗：移除空值和重复，不再强行剔除推导维度，保留大模型对关联维度的泛化推导能力
+    cleaned_dimensions: list[str] = []
+    seen_dimensions: set[str] = set()
+    for dimension in intent.dimensions:
+        text = _as_clean_str(dimension)
+        if not text or text in seen_dimensions:
+            continue
+        seen_dimensions.add(text)
+        cleaned_dimensions.append(text)
+    if cleaned_dimensions:
+        intent.dimensions = cleaned_dimensions[:8]
 
     return intent
 
@@ -312,9 +300,7 @@ def build_semantic_intent_prompt(
     return (
         "你是 ChatBI 的结构化业务意图分析器。你的任务不是生成 SQL，而是在执行 get_dataset_schema 和 SQL 之前，"
         "把用户查数需求拆成可复核的业务意图帧。\n\n"
-        "请识别：业务目标、指标、维度、筛选条件、时间范围、聚合粒度，以及每个筛选条件应优先绑定的字段语义。"
-        "特别注意地点、组织、客户、系统、环境、等级、状态等口语词可能是父级范围、别名或业务分类，"
-        "不要把父级范围词机械绑定到明细名称字段。\n\n"
+        "请识别：业务目标、指标、维度、筛选条件、时间范围、聚合粒度，以及每个筛选条件应优先绑定的字段语义。\n\n"
         "只返回 JSON，不要 Markdown。格式如下：\n"
         '{"keywords":"用于 get_dataset_schema 的 3-10 个关键词",'
         '"goal":"用户业务目标","metrics":["指标"],"dimensions":["维度"],'
@@ -323,17 +309,47 @@ def build_semantic_intent_prompt(
         '"avoid_column_types":["容易误绑的字段语义或物理名"],'
         '"relation":"exact_value|alias|parent_region_or_scope|category_scope|contains|unknown"}],'
         '"time_range":"时间范围或无","grain":"聚合粒度或明细粒度","reasoning":"一句话说明"}\n\n'
-        "约束：\n"
-        "1. keywords 必须适合检索数据集/表/字段/指标定义，不要输出完整问题原句。\n"
-        "2. DataQueryIntentFrame 不是数据库 Schema，不得编造物理表名、物理字段名或 JOIN 键；"
-        "SQL 的 FROM/JOIN/字段必须以 get_dataset_schema 返回为准。\n"
-        "3. expected_column_types 只能写字段语义或候选字段名线索，例如 区域/gxqy/region/area；"
-        "这些线索不是已确认物理字段名。\n"
-        "4. avoid_column_types 用于指出容易误绑字段，例如 地域条件不要优先绑到机房名称/shipName。\n"
-        "5. 不要扩大用户问题范围：用户只问列表/清单时，不要擅自加入状态、位置、等级、设施管理、数据中心等未明确要求的属性或场景。\n"
-        "6. “所有/全部/全量 + 对象 + 列表/清单/明细”表示全量查询范围，不是筛选条件；"
-        "不要把全量范围词输出为 filters，keywords 也应优先保留用户原话中的对象词和列表/清单词。\n"
-        "7. 若无法判断字段语义，relation 使用 unknown，但不要编造具体数据值。\n\n"
+        "【核心约束原则】\n"
+        "1. 严格限制 keywords 和 dimensions，严禁脑补与需求扩大化：\n"
+        "   - keywords 必须严格基于用户原始问题中显式提到的核心实体词、特征属性词或明确要求的主题词进行提取，禁止做无根据的行业联想扩展（例如：用户问“机房列表”，则仅提取“机房 列表”，禁止自行联想扩展出“设施管理”、“数据中心”、“物理位置”等无关行业词汇）。\n"
+        "   - dimensions 必须是用户原始问题中显式提到或强烈暗示的维度（例如：用户问“各区域的销售额”，则 dimensions 包含“区域”）。如果用户仅请求了“所有/全部 + 对象 + 列表/明细”（如“所有机房列表”），而没有提到任何具体的属性或维度，则 dimensions 只能输出对应的对象实体名称本身（如“机房”），严禁擅自脑补或补充其他具体属性字段（如“机房状态”、“机房位置”等）作为 dimensions。\n"
+        "2. 正确区分“全量范围”与“过滤条件”：\n"
+        "   - filters 仅用于表示过滤/筛选条件（即限制数据范围的具体条件，如特定的时间、特定的空间、特定的状态、特定的属性取值等）。\n"
+        "   - “所有/全部/全量 + 对象”表示的是全量查询范围，而不是筛选条件。不要把代表全量范围的词（如“所有机房”、“全部设备”）输出到 filters 中。\n"
+        "3. DataQueryIntentFrame 不是数据库 Schema，不得编造物理表名、物理字段名或 JOIN 键；SQL 的 FROM/JOIN/字段必须以 get_dataset_schema 返回为准。\n"
+        "4. expected_column_types 只能写字段语义或候选字段名线索，例如 区域/gxqy/region/area；这些线索不是已确认物理字段名。\n"
+        "5. avoid_column_types 用于指出容易误绑字段，例如 地域条件不要优先绑到机房名称/shipName。\n"
+        "6. 若无法判断字段语义，relation 使用 unknown，但不要编造具体数据值。\n\n"
+        "【示例对比学习】\n"
+        "示例一：无额外筛选条件的全量明细列表查询\n"
+        "用户原始问题：\"查一下所有机房的列表\"\n"
+        "期望 JSON 输出：\n"
+        "{\n"
+        '  "keywords": "机房 列表",\n'
+        '  "goal": "获取所有机房的基础信息列表",\n'
+        '  "metrics": [],\n'
+        '  "dimensions": ["机房"],\n'
+        '  "filters": [],\n'
+        '  "time_range": "无",\n'
+        '  "grain": "明细粒度",\n'
+        '  "reasoning": "用户只要求获取所有机房的基础信息列表，没有提及任何具体的属性字段（如状态或位置），也没有过滤限制条件（“所有机房”代表全量范围，不应提取为 filter）。"\n'
+        "}\n\n"
+        "示例二：带具体筛选条件的列表查询\n"
+        "用户原始问题：\"列出所有北京在用状态的虚拟机\"\n"
+        "期望 JSON 输出：\n"
+        "{\n"
+        '  "keywords": "北京 在用 虚拟机 列表",\n'
+        '  "goal": "获取所有北京在用状态的虚拟机明细列表",\n'
+        '  "metrics": [],\n'
+        '  "dimensions": ["虚拟机"],\n'
+        '  "filters": [\n'
+        '    {"phrase": "北京", "semantic_type": "geographic_region", "expected_column_types": ["区域", "city", "region"], "relation": "exact_value"},\n'
+        '    {"phrase": "在用", "semantic_type": "status", "expected_column_types": ["状态", "status"], "relation": "exact_value"}\n'
+        '  ],\n'
+        '  "time_range": "无",\n'
+        '  "grain": "明细粒度",\n'
+        '  "reasoning": "用户要求获取虚拟机的明细列表，但限定了北京地域和在用状态，应将其作为 filters 提取。而“所有”表示全量范围，不应作为 filter 提取。"\n'
+        "}\n\n"
         f"【用户原始问题】\n{user_question}\n\n"
         f"【独立查数问题】\n{standalone_query}\n\n"
         f"【命中的历史案例线索】\n{example_context}"

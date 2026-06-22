@@ -174,5 +174,4 @@
 | AgentService 主函数拆分与重构 (AgentService Refactoring) | `app/services/ai/agent_service.py` | 验证将 `_run_chat_turn_stream` 重构为 `_resolve_and_verify_agent`、`_inject_skills`、`_load_memory_context`、`_dispatch_executor` 四个子模块以提高可读性和维护性。 | ✅ 已完成 | 2026-06-22 |
 | 联邦查询空结果快捷建议 (Federated Empty Result Quick Tips) | `app/services/ai/executors/federated_executor.py` | 验证当跨源联邦聚合数据行数为空时，自动在 Markdown 结果末尾追加快捷引导建议（“查看子查询行数”、“放宽时间范围”等）以提高用户排查体验。 | ✅ 已完成 | 2026-06-22 |
 | 联邦查询前置静态升级去噪优化 (Federated Query Preflight De-noise) | `app/services/ai/runners/data_agent_runner.py`, `tests/ai/runners/test_data_agent_runner.py` | 优化联邦查询前置静态拦截条件，收紧启发式规则为确凿的跨源特征词匹配，防范因 RAG 检索背景噪声导致的单数据集内多表 JOIN 误判升级。 | ✅ 通过 | 2026-06-22 |
-
-
+| ChatBI 意图全量列表防脑补与后置清洗优化 (ChatBI Scope Intent Optimization) | `tests/ai/test_data_query_semantic_intent.py` | **全量列表意图防脑补与后置清洗优化**：验证全量明细列表查询意图不被脑补扩展额外字段与关键词（Prompt 双向对比 Few-Shot 约束）；验证 Python 过滤不误杀“北京的”、“在用的”等具体过滤条件（改写正则匹配为精确噪声词判定）；验证大模型同义词转换与 dimensions 提取不受字面量子串包含逻辑误杀；单元测试 100% 通过。 | ✅ 通过 | 2026-06-22 |
