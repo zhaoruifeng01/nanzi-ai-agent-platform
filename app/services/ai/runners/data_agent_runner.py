@@ -148,6 +148,24 @@ SCHEMA_RETRY_STOPWORDS = (
     "本月",
     "上月",
     "最近",
+    "为您",
+    "到以下",
+    "以下",
+    "数据",
+    "信息",
+    "详情",
+    "quick",
+    "详细",
+    "筛选",
+    "状态",
+    "正常",
+    "导出",
+    "点击",
+    "确认",
+    "选择",
+    "按钮",
+    "卡片",
+    "为您找到",
 )
 SCHEMA_RETRY_SUFFIXES = ("列表", "清单", "明细", "统计")
 _SQL_RESULT_DISPLAY_MAX_ROWS = 15
@@ -1128,6 +1146,8 @@ class DataAgentRunner(BaseExecutor):
             return ""
         cleaned = re.sub(r"\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}日?", " ", cleaned)
         cleaned = re.sub(r"\d{1,2}月\d{0,2}日?", " ", cleaned)
+        # 滤除 Emoji 表情及其他非中英文数字杂质符号
+        cleaned = re.sub(r"[^\w\s\u4e00-\u9fff]+", " ", cleaned)
         for word in SCHEMA_RETRY_STOPWORDS:
             cleaned = cleaned.replace(word, " ")
         cleaned = re.sub(r"[?？!！。；;：:，,、\[\]（）(){}<>《》\"'`]+", " ", cleaned)
@@ -1220,12 +1240,20 @@ class DataAgentRunner(BaseExecutor):
         state: _DataRunState,
         user_question: str = "",
     ) -> None:
-        retry_keywords = self._build_controlled_schema_retry_keywords(
-            state.last_schema_keywords,
-            self._schema_search_keywords,
-            self._standalone_query,
-            user_question,
-        )
+        sources = []
+        if state.last_schema_keywords:
+            sources.append(state.last_schema_keywords)
+        if self._schema_search_keywords:
+            sources.append(self._schema_search_keywords)
+
+        # 只有在已提炼的核心检索词均为空时，才落入独立问题及原始输入兜底，以切断原始输入中的 UI 垃圾词对重试词的污染
+        if not sources:
+            if self._standalone_query:
+                sources.append(self._standalone_query)
+            if user_question:
+                sources.append(user_question)
+
+        retry_keywords = self._build_controlled_schema_retry_keywords(*sources)
         state.controlled_schema_retry_keywords = retry_keywords
         state.pending_schema_retry = bool(retry_keywords.strip())
 
