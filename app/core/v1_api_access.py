@@ -6,7 +6,7 @@ from starlette.routing import Match
 
 V1_API_PREFIX = "/api/v1"
 
-# 权限页可分配的外部 API（运行时路由扫描失败时的静态兜底）
+# 权限页可分配的外部 API 静态列表
 ASSIGNABLE_V1_API_RESOURCES: list[dict[str, str]] = [
     {
         "id": "GET:/api/v1/users/profile",
@@ -35,12 +35,9 @@ ASSIGNABLE_V1_API_RESOURCES: list[dict[str, str]] = [
 ]
 
 
-def is_assignable_v1_api_path(path: str) -> bool:
-    return (
-        path.startswith(f"{V1_API_PREFIX}/users")
-        or path.startswith(f"{V1_API_PREFIX}/schema")
-        or path == f"{V1_API_PREFIX}/chatbi/sql/execute"
-    )
+def get_assignable_v1_api_resources() -> list[dict[str, str]]:
+    """Return the static list of permission-assignable V1 external APIs."""
+    return [dict(item) for item in ASSIGNABLE_V1_API_RESOURCES]
 
 
 def build_api_resource_id(method: str, path: str) -> str:
@@ -120,10 +117,9 @@ def is_v1_api_whitelisted(path: str) -> bool:
 
 def build_api_permission_alias_map(app: FastAPI) -> dict[str, str]:
     """Map any known API permission alias to its canonical resource ID."""
-    from app.services.api_discovery_service import ApiDiscoveryService
-
+    del app
     alias_map: dict[str, str] = {}
-    for resource in ApiDiscoveryService.get_assignable_v1_api_resources(app):
+    for resource in get_assignable_v1_api_resources():
         canonical_id = str(resource.get("id") or "")
         if not canonical_id:
             continue

@@ -561,14 +561,13 @@ async def reset_user_api_key(
 
 @router.get("/resources/available")
 async def get_available_resources(
-    request: Request,
     admin: dict = Depends(require_permission("element", "element:user:edit")),
     db: AsyncSession = Depends(get_db_session)
 ):
     """
     Get all available resources for permission assignment.
     """
-    from app.services.api_discovery_service import ApiDiscoveryService
+    from app.core.v1_api_access import get_assignable_v1_api_resources
     from app.services.metadata_service import MetadataService
     from app.models.agent import AIAgent
     
@@ -585,8 +584,8 @@ async def get_available_resources(
     meta_datasets = await MetadataService.get_datasets(db)
     datasets = [{"id": str(d.id), "name": d.display_name or d.name, "key": str(d.id)} for d in meta_datasets]
     
-    # 3. APIs (runtime scan with static fallback for multi-instance / split deployments)
-    apis = ApiDiscoveryService.get_assignable_v1_api_resources(request.app)
+    # 3. APIs
+    apis = get_assignable_v1_api_resources()
 
     return {
         "agents": agents,

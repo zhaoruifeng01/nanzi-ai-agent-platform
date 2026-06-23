@@ -1704,9 +1704,17 @@ async def test_data_agent_runner_rewrites_contextual_query_and_plans_schema_keyw
             self.prompts.append(prompt)
             if "查询改写器" in prompt:
                 return AIMessage(content="查询上海机房本月 PUE 趋势")
-            if "元数据检索词规划器" in prompt:
+            if "结构化业务意图分析器" in prompt:
                 assert "查询上海机房本月 PUE 趋势" in prompt
-                return AIMessage(content='{"keywords":"上海机房 PUE 本月 趋势 pue_daily room_name"}')
+                return AIMessage(
+                    content=(
+                        '{"keywords":"上海机房 PUE 本月 趋势 pue_daily room_name",'
+                        '"goal":"查询上海机房本月 PUE 趋势",'
+                        '"metrics":["PUE"],'
+                        '"dimensions":["机房"],'
+                        '"filters":[],"time_range":"本月","grain":"日"}'
+                    )
+                )
             return AIMessage(content="")
 
     planner = FakePlannerLLM()
@@ -1751,7 +1759,10 @@ async def test_data_agent_runner_rewrites_contextual_query_and_plans_schema_keyw
                         ToolCallBlock(
                             id="call_sql",
                             name="execute_sql_query",
-                            input='{"sql": "SELECT id FROM pue LIMIT 1", "data_source": "mysql_oa", "dataset_name": "pue"}',
+                            input=(
+                                '{"sql": "SELECT day, pue FROM pue_daily WHERE room_name=\'上海机房\' LIMIT 10", '
+                                '"data_source": "mysql_oa", "dataset_name": "pue"}'
+                            ),
                         )
                     ],
                     is_last=True,
@@ -1800,7 +1811,7 @@ async def test_data_agent_runner_rewrites_contextual_query_and_plans_schema_keyw
         return "table_name: pue_daily\ncolumns: day, pue, room_name"
 
     async def fake_sql(sql, data_source, dataset_name):
-        return [{"ok": 1}]
+        return {"rows": [{"day": "2026-06-01", "pue": 1.21}], "total": 1}
 
     from app.services.ai.tools.registry import ToolRegistry
 
@@ -1811,6 +1822,10 @@ async def test_data_agent_runner_rewrites_contextual_query_and_plans_schema_keyw
     )
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_configured_llm",
+        fake_get_configured_llm,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
         fake_get_configured_llm,
     )
     monkeypatch.setattr(
@@ -1836,6 +1851,10 @@ async def test_data_agent_runner_rewrites_contextual_query_and_plans_schema_keyw
     monkeypatch.setattr(
         "app.services.chatbi_example_service.ExampleService.record_usage",
         AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.chatbi.tool_gate_wrapper.detect_time_range_mismatch",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setitem(ToolRegistry._registry, "get_dataset_schema", fake_schema)
     monkeypatch.setitem(ToolRegistry._registry, "execute_sql_query", fake_sql)
@@ -4238,7 +4257,7 @@ async def test_data_agent_runner_blocks_string_filter_empty_sql_result_for_reche
     with patch.object(
         DataAgentRunner,
         "_maybe_run_empty_filter_diagnostics",
-        new=AsyncMock(),
+        new=AsyncMock(return_value=None),
     ) as mock_diag:
         events = []
         async for chunk in runner._stream_agentscope_events(
@@ -4326,7 +4345,7 @@ async def test_data_agent_runner_blocks_complex_empty_sql_result_for_recheck(dat
 
     assert not any(event.get("content") == "没有数据" for event in events if isinstance(event, dict))
     assert any(
-        "未查询到符合条件的数据" in event.get("content", "")
+        "按当前筛选条件未返回数据" in event.get("content", "")
         for event in events
         if isinstance(event, dict)
     )

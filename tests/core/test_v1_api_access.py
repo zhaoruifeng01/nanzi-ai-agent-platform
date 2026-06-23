@@ -58,13 +58,15 @@ def test_assignable_v1_api_resources_constant_has_three_entries():
     }
 
 
-def test_get_assignable_v1_api_resources_uses_static_fallback_when_scan_empty():
-    from fastapi import FastAPI
+def test_get_assignable_v1_api_resources_returns_static_list():
+    from app.core.v1_api_access import get_assignable_v1_api_resources
 
-    from app.services.api_discovery_service import ApiDiscoveryService
-
-    empty_app = FastAPI()
-    apis = ApiDiscoveryService.get_assignable_v1_api_resources(empty_app)
+    apis = get_assignable_v1_api_resources()
 
     assert len(apis) == 3
-    assert apis[0]["id"] == "GET:/api/v1/users/profile"
+    assert {api["id"] for api in apis} == {
+        "GET:/api/v1/users/profile",
+        "POST:/api/v1/schema",
+        "POST:/api/v1/chatbi/sql/execute",
+    }
+    assert apis[0] is not get_assignable_v1_api_resources()[0]
