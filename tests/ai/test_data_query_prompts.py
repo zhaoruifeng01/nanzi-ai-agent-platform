@@ -5,6 +5,90 @@ from app.services.ai.executors.prompts import DataQueryPrompts
 pytestmark = pytest.mark.no_infrastructure
 
 
+@pytest.mark.parametrize(
+    ("question", "reasoning", "expected"),
+    [
+        ("你好", "当前请求不是明确的 ChatBI 查数请求", DataQueryPrompts.CLARIFICATION_SCENARIO_NON_DATA),
+        (
+            "可视化一下",
+            "检测到结果追问但没有可信的近期可复用结构化查询结果",
+            DataQueryPrompts.CLARIFICATION_SCENARIO_MISSING_REUSE,
+        ),
+        (
+            "分析一下",
+            "最近对话上下文不足",
+            DataQueryPrompts.CLARIFICATION_SCENARIO_MISSING_CONTEXT,
+        ),
+        (
+            "还是数据查询需求",
+            "用户强调仍是查数",
+            DataQueryPrompts.CLARIFICATION_SCENARIO_INTENT_CALIBRATION,
+        ),
+        (
+            "统计 PUE",
+            "需要用户补充查数信息",
+            DataQueryPrompts.CLARIFICATION_SCENARIO_VAGUE_QUERY,
+        ),
+    ],
+)
+def test_resolve_clarification_scenario(question, reasoning, expected):
+    assert DataQueryPrompts.resolve_clarification_scenario(question, reasoning) == expected
+
+
+def test_should_skip_clarification_llm_for_stable_scenarios():
+    assert DataQueryPrompts.should_skip_clarification_llm(
+        DataQueryPrompts.CLARIFICATION_SCENARIO_NON_DATA
+    )
+    assert DataQueryPrompts.should_skip_clarification_llm(
+        DataQueryPrompts.CLARIFICATION_SCENARIO_MISSING_REUSE
+    )
+    assert not DataQueryPrompts.should_skip_clarification_llm(
+        DataQueryPrompts.CLARIFICATION_SCENARIO_VAGUE_QUERY
+    )
+
+
+def test_build_clarification_response_uses_rule_lead_and_quick():
+    content = DataQueryPrompts.build_clarification_response(
+        "统计各机房上周 PUE 排名",
+        "需要用户补充查数信息",
+        "",
+    )
+    assert "### ℹ️ 为什么需要补充信息" in content
+    assert "### 💬 您可以这样继续" in content
+    assert "(quick:" in content
+    assert "PUE" in content
+
+
+def test_sanitize_clarification_lead_strips_reason_and_quick():
+    raw = (
+        "### ℹ️ 为什么需要补充信息\n- **触发原因：** x\n"
+        "请先补充时间范围。\n\n"
+        "### 💬 您可以这样继续\n"
+        "- [🙋 test](quick:查询 PUE)"
+    )
+    assert DataQueryPrompts.sanitize_clarification_lead(raw) == "请先补充时间范围。"
+
+
+def test_is_valid_clarification_lead_rejects_pseudo_data_query():
+    assert not DataQueryPrompts.is_valid_clarification_lead(
+        "建议您查询当前用户信息。",
+        "我是谁",
+        "身份确认",
+    )
+
+
+def test_clarification_lead_prompt_does_not_require_reason_block():
+    prompt = DataQueryPrompts.clarification_lead_generation_prompt(
+        DataQueryPrompts.CLARIFICATION_SCENARIO_VAGUE_QUERY,
+        "统计 PUE",
+        "需要用户补充查数信息",
+        "无",
+    )
+    assert "已识别缺口" in prompt
+    assert "不要输出标题、列表、quick 按钮" in prompt
+    assert "必须先输出" not in prompt
+
+
 def test_build_clarification_fallback_for_followup_missing_context():
     content = DataQueryPrompts.build_clarification_fallback(
         "可视化分析一下",

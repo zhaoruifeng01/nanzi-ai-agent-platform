@@ -425,6 +425,125 @@ XML 示例：
             return excerpt[:max_chars] + "\n... [对话过长已截断]"
         return excerpt
 
+    # Clarification scenario keys (resolved in code, not by LLM)
+    CLARIFICATION_SCENARIO_NON_DATA = "non_data"
+    CLARIFICATION_SCENARIO_MISSING_REUSE = "missing_reuse"
+    CLARIFICATION_SCENARIO_MISSING_CONTEXT = "missing_context"
+    CLARIFICATION_SCENARIO_INTENT_CALIBRATION = "intent_calibration"
+    CLARIFICATION_SCENARIO_VAGUE_QUERY = "vague_query"
+
+    _PSEUDO_DATA_QUERY_PATTERNS = (
+        r"查询当前用户",
+        r"查一下我的信息",
+        r"查询我的个人信息",
+        r"查询用户信息",
+    )
+
+    @classmethod
+    def resolve_clarification_scenario(cls, user_question: str, reasoning: str) -> str:
+        q = str(user_question or "").strip()
+        reasoning_text = cls._sanitize_reasoning_for_user(reasoning)
+        if cls._looks_like_intent_calibration_signal(q, reasoning_text):
+            return cls.CLARIFICATION_SCENARIO_INTENT_CALIBRATION
+        if cls._is_non_data_general_intent(q, reasoning_text):
+            return cls.CLARIFICATION_SCENARIO_NON_DATA
+        if any(keyword in reasoning_text for keyword in ("可复用", "结构化查询结果", "结果追问")):
+            return cls.CLARIFICATION_SCENARIO_MISSING_REUSE
+        if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
+            return cls.CLARIFICATION_SCENARIO_MISSING_CONTEXT
+        return cls.CLARIFICATION_SCENARIO_VAGUE_QUERY
+
+    @classmethod
+    def should_skip_clarification_llm(cls, scenario: str) -> bool:
+        """Rule-based lead + quick is sufficient; skip LLM for latency and format stability."""
+        return scenario in {
+            cls.CLARIFICATION_SCENARIO_NON_DATA,
+            cls.CLARIFICATION_SCENARIO_MISSING_REUSE,
+            cls.CLARIFICATION_SCENARIO_MISSING_CONTEXT,
+        }
+
+    @classmethod
+    def _looks_like_intent_calibration_signal(cls, user_question: str, reasoning: str) -> bool:
+        q = str(user_question or "").strip()
+        reasoning_text = str(reasoning or "")
+        calibration_phrases = (
+            "还是数据查询",
+            "不对，是查数",
+            "不对，是数据",
+            "用数据查",
+            "重新用数据查",
+            "数据查询需求",
+            "是查数",
+            "还是查数",
+            "重新查数",
+        )
+        if any(phrase in q for phrase in calibration_phrases):
+            return True
+        reasoning_signals = ("意图校准", "纠正意图", "澄清需求", "误判为", "非查数误判")
+        return any(signal in reasoning_text for signal in reasoning_signals)
+
+    @classmethod
+    def format_clarification_gaps_for_prompt(cls, user_question: str, reasoning: str) -> str:
+        gaps = cls._infer_clarification_gaps(user_question, reasoning)
+        if not gaps:
+            return "无"
+        return "、".join(gaps)
+
+    @classmethod
+    def clarification_lead_generation_prompt(
+        cls,
+        scenario: str,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str,
+        *,
+        user_profile: Optional[str] = None,
+    ) -> str:
+        """Ask LLM for 1–2 sentence lead only; reason block and quick buttons come from code."""
+        prefix = f"{user_profile}\n\n" if user_profile else ""
+        gaps_block = cls.format_clarification_gaps_for_prompt(user_question, reasoning)
+        reasoning_text = reasoning or "需要用户补充查数信息"
+
+        scenario_intro = {
+            cls.CLARIFICATION_SCENARIO_VAGUE_QUERY: (
+                "【场景】模糊查数请求，需引导用户补充关键信息后再查数。"
+            ),
+            cls.CLARIFICATION_SCENARIO_INTENT_CALIBRATION: (
+                "【场景】用户在做意图校准（如强调「还是查数/是数据查询」）。"
+                "请引导其重述完整查数问题，并回溯【最近对话】中上一次真实业务诉求。"
+            ),
+        }.get(
+            scenario,
+            "【场景】需补充信息后才能继续查数。",
+        )
+
+        calibration_extra = ""
+        if scenario == cls.CLARIFICATION_SCENARIO_INTENT_CALIBRATION:
+            calibration_extra = (
+                "\n- 禁止围绕当前这句校准语本身做建议；应合并历史中的真实查数对象、指标与时间范围。"
+            )
+
+        return prefix + f"""你是 ChatBI 数据查询助手的澄清引导模块。
+
+{scenario_intro}
+
+【已识别缺口】{gaps_block}
+【系统判断原因】{reasoning_text}
+【最近对话】
+{history_excerpt}
+
+【当前用户问题】
+{user_question}
+
+任务：只输出 1-2 句自然中文引导语。
+- 不要输出标题、列表、quick 按钮或 `### ℹ️ 为什么需要补充信息` 区块（系统会自动添加）。
+- 结合【当前用户问题】与【已识别缺口】说明还缺什么、如何补充。
+- 若上文有 `<USER_PROFILE>` 且含用户称呼，可礼貌使用真实姓名。
+- 禁止输出与用户当前问题无关的其他业务域示例；不要编造对话中未出现的具体数值。
+- 禁止把身份/闲聊改写成「查询当前用户信息」等伪查数问题。{calibration_extra}
+- 只输出 Markdown 正文，不要 JSON，不要用代码块包裹全文。
+"""
+
     @staticmethod
     def clarification_generation_prompt(
         user_question: str,
@@ -432,42 +551,88 @@ XML 示例：
         history_excerpt: str,
         user_profile: Optional[str] = None,
     ) -> str:
-        prefix = ""
-        if user_profile:
-            prefix = f"{user_profile}\n\n"
-        return prefix + f"""你是 ChatBI 数据查询助手的澄清引导模块。
+        """Backward-compatible alias; prefer clarification_lead_generation_prompt + build_clarification_response."""
+        return DataQueryPrompts.clarification_lead_generation_prompt(
+            DataQueryPrompts.CLARIFICATION_SCENARIO_VAGUE_QUERY,
+            user_question,
+            reasoning,
+            history_excerpt,
+            user_profile=user_profile,
+        )
 
-用户当前问题还不足以直接查数，或无法安全复用上一轮结果。请结合最近对话和系统判断原因：
-1. **必须先输出** `### ℹ️ 为什么需要补充信息` 区块，用 3 条列表说明：
-   - **触发原因：** 一句话说明系统为何没有直接查数（例如：非明确查数、缺少可复用结果、时间/指代模糊等）。
-   - **具体情况：** 结合【当前用户问题】和【系统判断原因】解释还缺什么。若系统在前文提供了 `<USER_PROFILE>` 信息且有用户的称呼（如真实姓名 Display Name 等），请在具体情况或引导说明中，礼貌、亲切地用其称呼和指代用户（例如：「具体情况： 陈小龙，您重复询问了‘我是谁呢’，这属于通用问答或身份识别范畴...」），避免冷冰冰的称谓，让用户感受到智能体是在与其进行专属对话。
-   - **您可以这样改：** 告诉用户应在原问题中补充哪些信息。
-2. 再用 1 句话引导用户选择下方建议或补充说明。
-3. 给出 2-3 个**围绕当前用户问题**的追问建议，供用户一键点击发送。
-4. 若【当前用户问题】属于身份确认、闲聊、通用问答等非查数需求：
-   - 在「您可以这样改」或单独说明中提示：可点击输入框上方 **切换智能体**，选择「全能助手」或其他专用智能体，或点击 [⚡ 切换智能体](quick:/switch_to_auto) 切换到自动路由模式。
-   - **禁止**把身份/闲聊问题改写成「查询当前用户信息」等伪查数问题；下方 quick 建议应优先引导切换智能体或给出真实查数示例。
-   - 若给出切换智能体的 quick 建议，必须且只能将其格式写作 `- [⚡ 切换智能体](quick:/switch_to_auto)`。
+    @classmethod
+    def sanitize_clarification_lead(cls, text: str) -> str:
+        body = str(text or "").strip()
+        if not body:
+            return ""
+        if "### ℹ️ 为什么需要补充信息" in body:
+            _, _, remainder = body.partition("### ℹ️ 为什么需要补充信息")
+            body = remainder.strip()
+            lines = body.splitlines()
+            while lines and (
+                not lines[0].strip() or lines[0].strip().startswith("- **")
+            ):
+                lines.pop(0)
+            body = "\n".join(lines).strip()
+        if "### 💬" in body:
+            body = body.split("### 💬", 1)[0].strip()
+        cleaned_lines: list[str] = []
+        for line in body.splitlines():
+            if "(quick:" in line.lower():
+                continue
+            if line.strip().startswith("- **"):
+                continue
+            cleaned_lines.append(line)
+        return "\n".join(cleaned_lines).strip()
 
-输出要求：
-- 只输出 Markdown，不要 JSON，不要代码块包裹全文。
-- 必须以 `### ℹ️ 为什么需要补充信息` 开头，然后再写引导语与 `### 💬 您可以这样继续`。
-- 每个建议必须是列表项，格式严格为：`- [🙋 简短标签](quick:完整可发送问题)`，或在提供切换智能体建议时使用：`- [⚡ 切换智能体](quick:/switch_to_auto)`。
-- `quick:` 括号内必须是完整、可直接发送的系统指令或中文问题，应是对【当前用户问题】的改写、补全或口径澄清。
-- **禁止**输出与用户当前问题无关的其他业务域示例（例如用户问 Token 时不得推荐 PUE/告警等无关问题）。
-- 优先结合最近对话中的业务对象、指标、时间范围定制建议；仅当用户只是寒暄且未提出具体问题时，才可给通用查数能力示例。
-- 不要编造对话中未出现的具体数值。
-- quick 追问按钮区块必须放在整段回答最末尾，位于所有图表之后。
+    @classmethod
+    def is_valid_clarification_lead(
+        cls,
+        lead: str,
+        user_question: str,
+        reasoning: str,
+    ) -> bool:
+        cleaned = cls.sanitize_clarification_lead(lead)
+        if not cleaned or len(cleaned) > 480:
+            return False
+        if cls.has_quick_suggestions(cleaned):
+            return False
+        if "### ℹ️" in cleaned:
+            return False
+        lowered = cleaned.lower()
+        if any(re.search(pattern, cleaned, flags=re.IGNORECASE) for pattern in cls._PSEUDO_DATA_QUERY_PATTERNS):
+            return False
+        if cls._is_non_data_general_intent(user_question, reasoning):
+            if any(token in lowered for token in ("select ", "from ", "sql", "查数查询")):
+                return False
+        return True
 
-【系统判断原因】
-{reasoning or "需要用户补充查数信息"}
-
-【最近对话】
-{history_excerpt}
-
-【当前用户问题】
-{user_question}
-"""
+    @classmethod
+    def build_clarification_response(
+        cls,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str = "",
+        *,
+        lead: str | None = None,
+    ) -> str:
+        """Assemble clarification: reason block (code) + lead + rule-based quick buttons."""
+        lead_text = (
+            cls.sanitize_clarification_lead(lead)
+            if lead
+            else cls._build_contextual_clarification_lead(
+                user_question, reasoning, history_excerpt
+            )
+        )
+        variants = cls._build_contextual_clarification_quick_variants(
+            user_question,
+            reasoning,
+            history_excerpt,
+        )
+        buttons = [cls.quick_button(label, target) for label, target in variants[:3]]
+        suggestions = "\n".join(buttons)
+        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
+        return f"{reason_block}\n{lead_text}\n\n### 💬 您可以这样继续\n{suggestions}"
 
     @staticmethod
     def dataset_navigation_generation_prompt(dataset_menu: str) -> str:
@@ -808,6 +973,17 @@ XML 示例：
                     "fix": "请重新说明要分析的对象和时间范围，或先发一次完整的数据查询。",
                 },
             ),
+            (
+                ("意图校准", "纠正意图", "非查数误判", "误判为"),
+                {
+                    "title": "当前表述更像意图校准，需重述完整查数问题",
+                    "detail": (
+                        "您当前这句话主要是在纠正或强调「仍是数据查询」，"
+                        "尚未给出可直接执行的完整业务对象、指标和时间范围。"
+                    ),
+                    "fix": "请结合上一轮真实业务诉求，合并成一句独立、完整的查数问题。",
+                },
+            ),
         ]
 
         for keywords, payload in trigger_rules:
@@ -965,7 +1141,12 @@ XML 示例：
         return deduped[:3]
 
     @classmethod
-    def _build_contextual_clarification_lead(cls, user_question: str, reasoning: str) -> str:
+    def _build_contextual_clarification_lead(
+        cls,
+        user_question: str,
+        reasoning: str,
+        history_excerpt: str = "",
+    ) -> str:
         q = str(user_question or "").strip()
         topic = cls._truncate_for_display(q, 56)
         reasoning_text = str(reasoning or "")
@@ -985,6 +1166,23 @@ XML 示例：
                     "请补充要分析的对象或时间范围："
                 )
             return "最近对话里暂时没有足够明确的数据上下文，请补充您想分析的对象或时间范围："
+
+        if cls._looks_like_intent_calibration_signal(q, reasoning_text):
+            last_topic = cls._extract_last_user_topic(history_excerpt, q)
+            if last_topic:
+                return (
+                    f"您当前是在校准查数意图。请结合上一轮「{last_topic}」"
+                    "的真实业务诉求，重述一句完整、可直接查数的问题："
+                )
+            if topic:
+                return (
+                    f"您当前是在校准查数意图。请把「{topic}」整理成一句"
+                    "完整、可直接查数的独立问题："
+                )
+            return (
+                "您当前是在校准查数意图。请结合上一轮对话中的真实业务诉求，"
+                "重述一句完整、可直接查数的问题："
+            )
 
         if cls._is_non_data_general_intent(q, reasoning_text):
             return cls.CLARIFICATION_CAPABILITY_ONBOARDING
@@ -1028,6 +1226,21 @@ XML 示例：
             add("基于上一轮查询结果", f"基于刚才的查询结果，{q or '继续分析'}")
             if q:
                 add(f"先查数再分析：{topic_label}", f"请先完成一次数据查询，再{q}")
+            return variants[:3]
+
+        if cls._looks_like_intent_calibration_signal(q, reasoning_text):
+            if last_topic:
+                query_action = last_topic
+                if not query_action.startswith(
+                    ("查询", "查一下", "查下", "获取", "显示", "展示", "看看", "搜", "统计")
+                ):
+                    query_action = f"查询{query_action}"
+                add(
+                    f"重述完整诉求：{cls._truncate_for_display(last_topic, 14)}",
+                    query_action,
+                )
+            if q and not cls._is_non_data_general_intent(q, reasoning_text):
+                add(f"合并后重问：{topic_label}", q)
             return variants[:3]
 
         if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
@@ -1101,16 +1314,11 @@ XML 示例：
         reasoning: str,
         history_excerpt: str = "",
     ) -> str:
-        lead = cls._build_contextual_clarification_lead(user_question, reasoning)
-        variants = cls._build_contextual_clarification_quick_variants(
+        return cls.build_clarification_response(
             user_question,
             reasoning,
             history_excerpt,
         )
-        buttons = [cls.quick_button(label, target) for label, target in variants]
-        suggestions = "\n".join(buttons[:3])
-        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
-        return f"{reason_block}\n{lead}\n\n### 💬 您可以这样继续\n{suggestions}"
 
     @classmethod
     def build_missing_reusable_result_fallback(

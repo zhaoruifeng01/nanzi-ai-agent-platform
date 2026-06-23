@@ -448,7 +448,7 @@ class DataAgentRunner(BaseExecutor):
         return await chatbi_schema_prefetch.resolve_standalone_query_for_new_data_query(self, user_question, runtime_messages)
 
     async def _generate_clarification_content(self, *, user_question: str, history: List[Dict[str, str]], reasoning: str) -> str:
-        return chatbi_clarification.generate_clarification_content(self, user_question=user_question, history=history, reasoning=reasoning)
+        return await chatbi_clarification.generate_clarification_content(self, user_question=user_question, history=history, reasoning=reasoning)
 
     async def _yield_contextual_clarification(self, *, user_question: str, history: List[Dict[str, str]], reasoning: str) -> AsyncGenerator[Dict[str, Any], None]:
         async for _chunk in chatbi_clarification.yield_contextual_clarification(self, user_question=user_question, history=history, reasoning=reasoning):

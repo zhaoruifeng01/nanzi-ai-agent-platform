@@ -1072,6 +1072,73 @@ async def test_data_agent_runner_clarifies_non_data_request_without_native_agent
 
 
 @pytest.mark.asyncio
+async def test_generate_clarification_content_returns_string_not_coroutine(data_config):
+    import inspect
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-clarify-str", trace_buffer=[])
+    content = await runner._generate_clarification_content(
+        user_question="你好，你是谁",
+        history=[],
+        reasoning="当前请求不是明确的 ChatBI 查数请求，需要用户补充想查询的业务数据、指标、维度或时间范围",
+    )
+    assert not inspect.iscoroutine(content)
+    assert isinstance(content, str)
+    assert "### ℹ️ 为什么需要补充信息" in content
+    assert "(quick:" in content
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_clarifies_non_data_with_real_content(data_config, monkeypatch):
+    from app.services.ai.data_query_turn_classifier import (
+        DataQueryTurnClassification,
+        DataQueryTurnType,
+    )
+    from app.services.ai.intent_service import IntentType
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    clarify_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.CLARIFICATION_OR_NON_DATA,
+        reasoning="用户是在打招呼，不需要查数",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.GENERAL,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return clarify_turn, None, 0.0
+
+    async def forbidden_build_agent(*args, **kwargs):
+        raise AssertionError("clarification flow must not build the native AgentScope agent")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-clarify-real",
+        trace_buffer=[],
+    )
+    monkeypatch.setattr(runner, "_build_native_agent", forbidden_build_agent)
+
+    events = []
+    async for chunk in runner.execute([{"role": "user", "content": "你好，你是谁"}]):
+        events.append(chunk)
+
+    content_chunks = [
+        chunk.get("content", "")
+        for chunk in events
+        if isinstance(chunk.get("content"), str) and chunk.get("content")
+    ]
+    assert content_chunks, "clarification must emit visible content chunk"
+    assert any("### ℹ️ 为什么需要补充信息" in content for content in content_chunks)
+    assert any("(quick:" in content for content in content_chunks)
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_checks_multimodal_compatibility_before_native_model(
     data_config,
     monkeypatch,
