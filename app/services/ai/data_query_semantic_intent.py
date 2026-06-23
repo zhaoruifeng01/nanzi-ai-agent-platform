@@ -311,44 +311,44 @@ def build_semantic_intent_prompt(
         '"time_range":"时间范围或无","grain":"聚合粒度或明细粒度","reasoning":"一句话说明"}\n\n'
         "【核心约束原则】\n"
         "1. 严格限制 keywords 和 dimensions，严禁脑补与需求扩大化：\n"
-        "   - keywords 必须严格基于用户原始问题中显式提到的核心实体词、特征属性词或明确要求的主题词进行提取，禁止做无根据的行业联想扩展（例如：用户问“机房列表”，则仅提取“机房 列表”，禁止自行联想扩展出“设施管理”、“数据中心”、“物理位置”等无关行业词汇）。\n"
-        "   - dimensions 必须是用户原始问题中显式提到或强烈暗示的维度（例如：用户问“各区域的销售额”，则 dimensions 包含“区域”）。如果用户仅请求了“所有/全部 + 对象 + 列表/明细”（如“所有机房列表”），而没有提到任何具体的属性或维度，则 dimensions 只能输出对应的对象实体名称本身（如“机房”），严禁擅自脑补或补充其他具体属性字段（如“机房状态”、“机房位置”等）作为 dimensions。\n"
+        "   - keywords 必须严格基于用户原始问题中显式提到的核心实体词、特征属性词或明确要求的主题词进行提取，禁止做无根据的行业联想扩展（例如：用户问“客户列表”，则仅提取“客户 列表”，禁止自行联想扩展出“CRM”、“会员体系”、“组织架构”等无关行业词汇）。\n"
+        "   - dimensions 必须是用户原始问题中显式提到或强烈暗示的维度（例如：用户问“各区域的销售额”，则 dimensions 包含“区域”）。如果用户仅请求了“所有/全部 + 对象 + 列表/明细”（如“所有客户列表”），而没有提到任何具体的属性或维度，则 dimensions 只能输出对应的对象实体名称本身（如“客户”），严禁擅自脑补或补充其他具体属性字段（如“客户等级”、“客户地址”等）作为 dimensions。\n"
         "2. 正确区分“全量范围”与“过滤条件”：\n"
         "   - filters 仅用于表示过滤/筛选条件（即限制数据范围的具体条件，如特定的时间、特定的空间、特定的状态、特定的属性取值等）。\n"
-        "   - “所有/全部/全量 + 对象”表示的是全量查询范围，而不是筛选条件。不要把代表全量范围的词（如“所有机房”、“全部设备”）输出到 filters 中。\n"
+        "   - “所有/全部/全量 + 对象”表示的是全量查询范围，而不是筛选条件。不要把代表全量范围的词（如“所有客户”、“全部产品”）输出到 filters 中。\n"
         "3. DataQueryIntentFrame 不是数据库 Schema，不得编造物理表名、物理字段名或 JOIN 键；SQL 的 FROM/JOIN/字段必须以 get_dataset_schema 返回为准。\n"
-        "4. expected_column_types 只能写字段语义或候选字段名线索，例如 区域/gxqy/region/area；这些线索不是已确认物理字段名。\n"
-        "5. avoid_column_types 用于指出容易误绑字段，例如 地域条件不要优先绑到机房名称/shipName。\n"
+        "4. expected_column_types 只能写字段语义或候选字段名线索，例如 区域/region/area/province/city；这些线索不是已确认物理字段名，须以 Schema 返回为准。\n"
+        "5. avoid_column_types 用于指出容易误绑字段，例如 地域/组织条件不要优先绑到实体名称/name/title 等展示字段。\n"
         "6. 若无法判断字段语义，relation 使用 unknown，但不要编造具体数据值。\n\n"
         "【示例对比学习】\n"
         "示例一：无额外筛选条件的全量明细列表查询\n"
-        "用户原始问题：\"查一下所有机房的列表\"\n"
+        "用户原始问题：\"查一下所有客户的列表\"\n"
         "期望 JSON 输出：\n"
         "{\n"
-        '  "keywords": "机房 列表",\n'
-        '  "goal": "获取所有机房的基础信息列表",\n'
+        '  "keywords": "客户 列表",\n'
+        '  "goal": "获取所有客户的基础信息列表",\n'
         '  "metrics": [],\n'
-        '  "dimensions": ["机房"],\n'
+        '  "dimensions": ["客户"],\n'
         '  "filters": [],\n'
         '  "time_range": "无",\n'
         '  "grain": "明细粒度",\n'
-        '  "reasoning": "用户只要求获取所有机房的基础信息列表，没有提及任何具体的属性字段（如状态或位置），也没有过滤限制条件（“所有机房”代表全量范围，不应提取为 filter）。"\n'
+        '  "reasoning": "用户只要求获取所有客户的基础信息列表，没有提及任何具体的属性字段（如等级或地址），也没有过滤限制条件（“所有客户”代表全量范围，不应提取为 filter）。"\n'
         "}\n\n"
         "示例二：带具体筛选条件的列表查询\n"
-        "用户原始问题：\"列出所有北京在用状态的虚拟机\"\n"
+        "用户原始问题：\"列出所有北京在售状态的产品\"\n"
         "期望 JSON 输出：\n"
         "{\n"
-        '  "keywords": "北京 在用 虚拟机 列表",\n'
-        '  "goal": "获取所有北京在用状态的虚拟机明细列表",\n'
+        '  "keywords": "北京 在售 产品 列表",\n'
+        '  "goal": "获取所有北京在售状态的产品明细列表",\n'
         '  "metrics": [],\n'
-        '  "dimensions": ["虚拟机"],\n'
+        '  "dimensions": ["产品"],\n'
         '  "filters": [\n'
-        '    {"phrase": "北京", "semantic_type": "geographic_region", "expected_column_types": ["区域", "city", "region"], "relation": "exact_value"},\n'
-        '    {"phrase": "在用", "semantic_type": "status", "expected_column_types": ["状态", "status"], "relation": "exact_value"}\n'
+        '    {"phrase": "北京", "semantic_type": "geographic_region", "expected_column_types": ["区域", "city", "region", "province"], "relation": "exact_value"},\n'
+        '    {"phrase": "在售", "semantic_type": "status", "expected_column_types": ["状态", "status"], "relation": "exact_value"}\n'
         '  ],\n'
         '  "time_range": "无",\n'
         '  "grain": "明细粒度",\n'
-        '  "reasoning": "用户要求获取虚拟机的明细列表，但限定了北京地域和在用状态，应将其作为 filters 提取。而“所有”表示全量范围，不应作为 filter 提取。"\n'
+        '  "reasoning": "用户要求获取产品的明细列表，但限定了北京地域和在售状态，应将其作为 filters 提取。而“所有”表示全量范围，不应作为 filter 提取。"\n'
         "}\n\n"
         f"【用户原始问题】\n{user_question}\n\n"
         f"【独立查数问题】\n{standalone_query}\n\n"

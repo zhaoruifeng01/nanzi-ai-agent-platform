@@ -1,14 +1,70 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytz
 
 _WEEKDAYS_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
-_DEFAULT_TIMEZONE = "Asia/Shanghai"
 TIME_RANGE_GATE_PREFIX = "[TIME_RANGE_GATE]"
+
+
+@lru_cache(maxsize=1)
+def get_default_timezone() -> str:
+    """Return host IANA timezone for ChatBI time anchors (cached after first resolve)."""
+    tz_env = (os.environ.get("TZ") or "").strip()
+    if tz_env:
+        candidate = tz_env.lstrip(":")
+        if candidate:
+            try:
+                ZoneInfo(candidate)
+                return candidate
+            except ZoneInfoNotFoundError:
+                pass
+
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is not None:
+        key = getattr(local_tz, "key", None)
+        if isinstance(key, str) and key:
+            return key
+
+    from_localtime = _timezone_from_localtime_link()
+    if from_localtime:
+        return from_localtime
+
+    return "UTC"
+
+
+def _timezone_from_localtime_link() -> str | None:
+    """Resolve IANA timezone from /etc/localtime symlink (macOS/Linux)."""
+    link = Path("/etc/localtime")
+    if not link.exists():
+        return None
+    try:
+        target = link.resolve(strict=False)
+    except OSError:
+        return None
+    parts = target.parts
+    if "zoneinfo" not in parts:
+        return None
+    idx = parts.index("zoneinfo")
+    name = "/".join(parts[idx + 1 :])
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return None
+    return name
+
+
+def _coalesce_timezone(timezone: str | None) -> str:
+    return timezone or get_default_timezone()
 
 
 def _resolve_now(timezone: str, now: datetime | None) -> datetime:
@@ -31,11 +87,12 @@ def _next_month_start(day: date) -> date:
 
 
 def build_data_query_time_anchor_block(
-    timezone: str = _DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Build a deterministic time anchor block for ChatBI / Data Agent prompts."""
-    resolved = _resolve_now(timezone, now)
+    tz_name = _coalesce_timezone(timezone)
+    resolved = _resolve_now(tz_name, now)
     today = resolved.date()
     weekday_str = _WEEKDAYS_CN[today.weekday()]
     now_str = resolved.strftime(f"%Y-%m-%d %H:%M:%S {weekday_str}")
@@ -56,7 +113,7 @@ def build_data_query_time_anchor_block(
 
     return (
         "[当前时间锚点]\n"
-        f"- 基准时区：{timezone}\n"
+        f"- 基准时区：{tz_name}\n"
         f"- 当前时刻：{now_str}\n"
         f"- 今天：{today.isoformat()}\n"
         f"- 昨天：{yesterday.isoformat()}\n"
@@ -122,10 +179,11 @@ def has_explicit_absolute_time(text: str) -> bool:
 
 
 def _anchor_calendar(
-    timezone: str = _DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, date]:
-    resolved = _resolve_now(timezone, now)
+    tz_name = _coalesce_timezone(timezone)
+    resolved = _resolve_now(tz_name, now)
     today = resolved.date()
     yesterday = today - timedelta(days=1)
     week_start = today - timedelta(days=today.weekday())
@@ -158,7 +216,7 @@ def _anchor_calendar(
 def resolve_relative_time_expectation(
     user_question: str,
     *,
-    timezone: str = _DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     now: datetime | None = None,
 ) -> RelativeTimeExpectation | None:
     """从用户问题解析最主要的相对时间期望区间；无相对词或已有绝对时间则返回 None。"""
@@ -245,16 +303,17 @@ def detect_time_range_mismatch(
     user_question: str,
     sql: str,
     *,
-    timezone: str = _DEFAULT_TIMEZONE,
+    timezone: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """
     检测 SQL 时间过滤是否与用户相对时间 + 当前时间锚点不一致。
     返回非空字符串表示应拦截并进入 repair；空字符串表示通过或未校验。
     """
+    tz_name = _coalesce_timezone(timezone)
     expectation = resolve_relative_time_expectation(
         user_question,
-        timezone=timezone,
+        timezone=tz_name,
         now=now,
     )
     if expectation is None:

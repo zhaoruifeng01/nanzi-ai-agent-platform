@@ -437,7 +437,7 @@ async def test_route_query_datacenter_list_uses_chatbi(mock_agents_metadata):
 
     routed_messages = mock_chat.generate_text.call_args[0][0]
     system_prompt = routed_messages[0].content[0].text
-    assert "机房列表、设备清单、工单记录、告警/故障历史、操作日志等离散记录或数据列表" in system_prompt
+    assert "客户/员工/产品/工单/审批等业务记录或数据列表" in system_prompt
 
 
 @pytest.mark.asyncio

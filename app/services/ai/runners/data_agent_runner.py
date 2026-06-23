@@ -1385,7 +1385,7 @@ class DataAgentRunner(BaseExecutor):
                     state.sql_static_risk_reason = static_risk
                     return (
                         f"{SQL_STATIC_GATE_PREFIX} SQL 存在高风险执行特征，已阻止执行：{static_risk}\n"
-                        "请收窄时间范围、补充 LIMIT、避免 SELECT *，或修正 JOIN 条件后重新调用 execute_sql_query。"
+                        "请收窄时间范围、补充 LIMIT，或修正 JOIN 条件后重新调用 execute_sql_query。"
                     )
 
                 if current_sql_normalized and current_sql_normalized in state.successful_sqls:
@@ -3894,7 +3894,7 @@ class DataAgentRunner(BaseExecutor):
             return (
                 "【SQL 静态风险修正要求】上一轮 execute_sql_query 被平台拦截，"
                 f"原因：{state.sql_static_risk_reason}\n"
-                "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、避免 SELECT *、"
+                "请修正 SQL 后重新调用 execute_sql_query，例如补充时间范围、限制返回行数、"
                 "或补齐 JOIN 条件。修正并执行成功前禁止直接回答用户。"
             )
         if state.time_range_anomaly:
@@ -4764,64 +4764,7 @@ class DataAgentRunner(BaseExecutor):
         if not sql_upper.startswith(("SELECT ", "WITH ")):
             return "只允许执行只读 SELECT 查询"
 
-        # 1. 拦截直接作用于物理表的 SELECT *，放行子查询/CTE 的 SELECT *
-        import sqlglot
-        from sqlglot import exp
-
-        has_star_on_physical = False
-        try:
-            parsed = sqlglot.parse(sql_text, read="clickhouse")
-            if parsed:
-                for expression in parsed:
-                    if not expression:
-                        continue
-
-                    # 搜集 CTE 别名
-                    cte_aliases = set()
-                    for with_expr in expression.find_all(exp.With):
-                        for cte in with_expr.expressions:
-                            if isinstance(cte, exp.CTE) and cte.alias:
-                                cte_aliases.add(cte.alias.lower())
-
-                    # 遍历 AST 中的所有 Select 节点
-                    for select_node in expression.find_all(exp.Select):
-                        has_star = False
-                        for projection in select_node.expressions:
-                            if isinstance(projection, exp.Star):
-                                has_star = True
-                                break
-                            if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
-                                has_star = True
-                                break
-
-                        if has_star:
-                            # 检查 FROM 数据源
-                            from_clause = select_node.args.get("from_")
-                            if from_clause and isinstance(from_clause.this, exp.Table):
-                                table_name = from_clause.this.name.lower()
-                                if table_name not in cte_aliases:
-                                    has_star_on_physical = True
-                                    break
-
-                            # 检查 JOIN 数据源
-                            joins = select_node.args.get("joins") or []
-                            for join in joins:
-                                if isinstance(join.this, exp.Table):
-                                    table_name = join.this.name.lower()
-                                    if table_name not in cte_aliases:
-                                        has_star_on_physical = True
-                                        break
-                        if has_star_on_physical:
-                            break
-            else:
-                has_star_on_physical = bool(re.search(r"\bSELECT\s+\*", sql_upper))
-        except Exception:
-            has_star_on_physical = bool(re.search(r"\bSELECT\s+\*", sql_upper))
-
-        if has_star_on_physical:
-            return "SELECT * 会扩大返回范围，请只查询必要字段"
-
-        # 2. 限制 ORDER BY 误杀：排除在 ORDER BY 子句中包含 CASE 的合理情况
+        # 1. 限制 ORDER BY 误杀：排除在 ORDER BY 子句中包含 CASE 的合理情况
         if re.search(r"\bORDER\s+BY\b(?:(?!\bCASE\b)[\s\S]){0,400}\bAND\b[\s\S]{0,120}\b(ROWNUM|LIMIT)\b", sql_upper):
             return (
                 "ORDER BY 后不能接 AND ROWNUM/LIMIT；"
@@ -4829,7 +4772,7 @@ class DataAgentRunner(BaseExecutor):
                 "MySQL/ClickHouse 请用 ORDER BY ... LIMIT N"
             )
 
-        # 3. 兼容 CROSS JOIN、USING 以及复杂子查询字数溢出
+        # 2. 兼容 CROSS JOIN、USING 以及复杂子查询字数溢出
         if " JOIN " in f" {sql_upper} ":
             if " CROSS JOIN " not in f" {sql_upper} " and " NATURAL JOIN " not in f" {sql_upper} ":
                 if not re.search(r"\bJOIN\b[\s\S]{1,400}\b(ON|USING)\b", sql_upper):

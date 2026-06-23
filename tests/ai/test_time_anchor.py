@@ -1,18 +1,37 @@
 import pytest
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytz
 
-from app.services.ai.time_anchor import build_data_query_time_anchor_block
+from app.services.ai.time_anchor import build_data_query_time_anchor_block, get_default_timezone
 
 pytestmark = pytest.mark.no_infrastructure
 
+TZ_NAME = "Asia/Shanghai"
+
+
+def test_get_default_timezone_honors_tz_env(monkeypatch):
+    get_default_timezone.cache_clear()
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    assert get_default_timezone() == "Asia/Shanghai"
+    get_default_timezone.cache_clear()
+
+
+def test_timezone_from_localtime_link_returns_iana_name():
+    from app.services.ai.time_anchor import _timezone_from_localtime_link
+
+    name = _timezone_from_localtime_link()
+    if name is None:
+        pytest.skip("/etc/localtime not available in this environment")
+    ZoneInfo(name)
+
 
 def test_build_data_query_time_anchor_block_uses_anchor_dates():
-    tz = pytz.timezone("Asia/Shanghai")
+    tz = pytz.timezone(TZ_NAME)
     now = tz.localize(datetime(2026, 6, 10, 14, 30, 0))
 
-    block = build_data_query_time_anchor_block(now=now)
+    block = build_data_query_time_anchor_block(timezone=TZ_NAME, now=now)
 
     assert "[当前时间锚点]" in block
     assert "当前时刻：2026-06-10 14:30:00 星期三" in block
@@ -29,10 +48,10 @@ def test_build_data_query_time_anchor_block_uses_anchor_dates():
 
 
 def test_build_data_query_time_anchor_block_year_boundary_month():
-    tz = pytz.timezone("Asia/Shanghai")
+    tz = pytz.timezone(TZ_NAME)
     now = tz.localize(datetime(2026, 1, 5, 9, 0, 0))
 
-    block = build_data_query_time_anchor_block(now=now)
+    block = build_data_query_time_anchor_block(timezone=TZ_NAME, now=now)
 
     assert "上月：2025-12-01 至 2025-12-31" in block
     assert "本周（周一至今天）：2026-01-05 至 2026-01-05" in block

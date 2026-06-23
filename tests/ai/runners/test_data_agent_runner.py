@@ -2481,7 +2481,7 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
     ], state)
 
     output = await wrapped.callable(
-        sql="SELECT * FROM very_large_fact",
+        sql="SELECT a.id FROM large_a a JOIN large_b b",
         data_source="mysql_aiagent",
         dataset_name="demo",
     )
@@ -2489,7 +2489,7 @@ async def test_execute_sql_wrapper_blocks_high_risk_sql_before_tool_call(data_co
     assert called is False
     assert str(output).startswith(SQL_STATIC_GATE_PREFIX)
     assert state.sql_static_risk is True
-    assert "SELECT *" in state.sql_static_risk_reason
+    assert "JOIN" in state.sql_static_risk_reason
 
 
 @pytest.mark.asyncio
@@ -2872,12 +2872,13 @@ async def test_data_agent_runner_sql_static_gate_takes_precedence_over_repeat_ca
         empty_sql_result=False,
         sql_error=False,
     )
-    state.successful_sqls["select * from demo"] = '{"columns": [{"name": "id"}], "items": [[1]]}'
+    risky_sql = "SELECT a.id FROM t1 a JOIN t2 b"
     runner = DataAgentRunner(config=data_config, trace_id="trace-static-before-repeat", trace_buffer=[])
+    state.successful_sqls[runner._normalize_sql_text(risky_sql)] = '{"columns": [{"name": "id"}], "items": [[1]]}'
     wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
 
     result = await wrapped.invoke(
-        {"sql": "SELECT * FROM demo", "data_source": "mysql_aiagent", "dataset_name": "demo"}
+        {"sql": risky_sql, "data_source": "mysql_aiagent", "dataset_name": "demo"}
     )
 
     assert call_count == 0
@@ -3492,39 +3493,22 @@ def test_sql_static_risk_ignores_risky_patterns_inside_literals(data_config):
     assert DataAgentRunner._detect_sql_static_risk(
         "SELECT name FROM demo WHERE note = 'ORDER BY x AND ROWNUM <= 1'"
     ) == ""
-    assert (
-        DataAgentRunner._detect_sql_static_risk("SELECT * FROM demo")
-        == "SELECT * 会扩大返回范围，请只查询必要字段"
-    )
+    assert DataAgentRunner._detect_sql_static_risk("SELECT * FROM demo") == ""
     assert "ORDER BY 后不能接 AND ROWNUM" in DataAgentRunner._detect_sql_static_risk(
         "SELECT id FROM demo ORDER BY created_at DESC AND ROWNUM <= 10"
     )
-
-    # 新增关于子查询与 CTE 的 SELECT * 校验用例
-    # 1. 允许：外层 SELECT *，但内层子查询指定了具体字段
     assert DataAgentRunner._detect_sql_static_risk(
         "SELECT * FROM (SELECT col1, col2 FROM demo) AS x"
     ) == ""
-
-    # 2. 允许：外层 SELECT *，但内层 CTE 指定了具体字段
     assert DataAgentRunner._detect_sql_static_risk(
         "WITH cte AS (SELECT col1, col2 FROM demo) SELECT * FROM cte"
     ) == ""
-
-    # 3. 拦截：外层不是 SELECT *，但内层子查询是物理表 SELECT *
     assert DataAgentRunner._detect_sql_static_risk(
         "SELECT col1 FROM (SELECT * FROM demo) AS x"
-    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
-
-    # 4. 拦截：JOIN 子查询中包含物理表 SELECT *
-    assert DataAgentRunner._detect_sql_static_risk(
-        "SELECT a.col1, b.col2 FROM t1 AS a JOIN (SELECT * FROM demo) AS b ON a.id = b.id"
-    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
-
-    # 5. 拦截：嵌套子查询里依然是物理表 SELECT *
+    ) == ""
     assert DataAgentRunner._detect_sql_static_risk(
         "SELECT * FROM (SELECT * FROM demo) AS x"
-    ) == "SELECT * 会扩大返回范围，请只查询必要字段"
+    ) == ""
 
 
 def test_schema_reference_sql_error_requires_schema_refresh(data_config):
