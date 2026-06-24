@@ -107,6 +107,36 @@ def test_sql_schema_preflight_error_unknown_column():
     assert "missing" in err
 
 
+def test_sql_schema_preflight_error_unqualified_unknown_column():
+    schema = {
+        "view_ai_culeopp": [
+            "OPP_CODE",
+            "CLUE_CODE",
+            "OPP_STATUS",
+            "opp_customer_name",
+            "CREATE_DATE",
+        ]
+    }
+    sql = (
+        "SELECT customer_name, opp_status FROM VIEW_AI_CULEOPP "
+        "WHERE create_date >= DATE '2026-05-01'"
+    )
+    err = build_sql_schema_preflight_error(sql, schema, dialect="oracle")
+    assert "SQL 预检失败" in err
+    assert "customer_name" in err.lower()
+    assert "opp_customer_name" in err or "OPP_CODE" in err
+
+
+def test_sql_schema_preflight_allows_unqualified_known_column():
+    schema = {"view_ai_culeopp": ["OPP_CODE", "OPP_STATUS", "CREATE_DATE"]}
+    sql = (
+        "SELECT opp_code, opp_status FROM VIEW_AI_CULEOPP "
+        "WHERE create_date >= '2026-05-01'"
+    )
+    err = build_sql_schema_preflight_error(sql, schema, dialect="oracle")
+    assert err == ""
+
+
 def test_collect_preflight_unknown_tables():
     schema = {"view_ai_visit_log": ["id", "follow_up_date"]}
     sql = (

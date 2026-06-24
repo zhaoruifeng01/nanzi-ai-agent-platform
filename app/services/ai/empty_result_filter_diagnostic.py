@@ -12,6 +12,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
+from app.services.ai.sql_dialect_limit import apply_dialect_row_limit
+
 logger = logging.getLogger(__name__)
 
 MAX_AUTO_FILTER_DIAGNOSTICS = 3
@@ -159,9 +161,8 @@ def build_distinct_diagnostic_sql(
     table_name = _quote_identifier(table, dialect=dialect)
     column_name = _quote_identifier(column, dialect=dialect)
     safe_limit = max(1, min(int(limit), DISTINCT_CANDIDATE_LIMIT))
-    if dialect == "oracle":
-        return f"SELECT DISTINCT {column_name} FROM {table_name} FETCH FIRST {safe_limit} ROWS ONLY"
-    return f"SELECT DISTINCT {column_name} FROM {table_name} LIMIT {safe_limit}"
+    inner = f"SELECT DISTINCT {column_name} FROM {table_name}"
+    return apply_dialect_row_limit(inner, dialect=dialect, limit=safe_limit, max_limit=DISTINCT_CANDIDATE_LIMIT)
 
 
 
@@ -536,6 +537,11 @@ def format_empty_filter_guard_message(diagnostics: list[FilterDiagnosticResult])
         used = "、".join(f"「{value}」" for value in item.used_values) or "当前条件"
         preview = "、".join(f"「{value}」" for value in item.candidates[:6])
         hint = f"字段 `{item.column}` 使用了 {used}，库内常见取值为：{preview}"
+        all_values_match = bool(item.used_values) and all(
+            literal_matches_candidates(value, item.candidates) for value in item.used_values
+        )
+        if all_values_match and not item.suggested_values:
+            hint += "；该取值在库内存在，空结果更可能由其他筛选条件、时间范围或 JOIN 导致"
         if item.suggested_values:
             suggested = "、".join(f"「{value}」" for value in item.suggested_values)
             hint += f"；您是否想查询 {suggested}？"
@@ -552,10 +558,10 @@ def format_empty_filter_guard_message(diagnostics: list[FilterDiagnosticResult])
         "SQL 已成功执行，但按当前筛选条件未返回数据。\n\n"
         f"平台已自动核对筛选字段候选值：\n{joined}\n\n"
         "💡 **建议您可以尝试**：\n"
-        "1. 确认口语条件是否与上述库内取值一致（如「上海」vs「上海市」）。\n"
-        "2. 若已修正取值仍无数据，请核对是否选错了 WHERE 字段（对照 Schema 中的维度字段 term）。\n"
+        "1. 对照上方库内常见取值，确认筛选值是否完全一致（含大小写、空格、前后缀等）。\n"
+        "2. 若取值看似正确仍无数据，请核对是否选错了 WHERE 字段（对照 Schema 中的维度字段 term）。\n"
         "3. 适当放宽或修正筛选条件后重新提问。\n"
-        "4. 若仍无数据，可能确实不存在符合该条件的记录。"
+        "4. 若仍无数据，可能确实不存在同时满足全部条件的记录。"
     )
 
 

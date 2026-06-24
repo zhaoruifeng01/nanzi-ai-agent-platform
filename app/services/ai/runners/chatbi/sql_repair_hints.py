@@ -7,8 +7,8 @@ import re
 from app.services.ai.runners.chatbi.sql_gates import (
     extract_invalid_sql_identifiers,
     is_cross_dataset_scope_sql_error,
-    is_date_format_sql_error,
     is_schema_reference_sql_error,
+    is_where_condition_sql_error,
 )
 
 
@@ -45,9 +45,9 @@ def sql_repair_taxonomy_hint(message: str) -> str:
     if is_cross_dataset_scope_sql_error(text):
         category = "cross_dataset_scope"
         focus = "移除单数据集 SQL 中的跨数据集表引用，改走联邦查询或仅查询外键等待维度补全"
-    elif is_date_format_sql_error(text):
-        category = "date_format"
-        focus = "核对日期字段类型、日期字面量格式、TO_DATE/TO_CHAR 或时间边界表达式"
+    elif is_where_condition_sql_error(text):
+        category = "where_condition_mismatch"
+        focus = "先读取源表 WHERE 相关列真实样例，再按样例格式重写比较/转换表达式"
     elif is_schema_reference_sql_error(text):
         category = "invalid_identifier"
         focus = "核对字段名、表名或别名引用"

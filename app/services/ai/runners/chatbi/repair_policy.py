@@ -13,9 +13,10 @@ from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
 from app.services.ai.runners.chatbi.constants import DATA_REPAIR_BUDGETS, MAX_DATA_REPAIR_ROUNDS
 from app.services.ai.runners.chatbi.run_state import DataRunState
 from app.services.ai.runners.chatbi.schema_fatal import is_schema_fatal
-from app.services.ai.runners.chatbi.sql_gates import (
-    is_date_format_sql_error,
-    is_schema_reference_sql_error,
+from app.services.ai.runners.chatbi.sql_gates import is_schema_reference_sql_error
+from app.services.ai.where_condition_sample_diagnostic import (
+    build_where_condition_probe_repair_hint,
+    is_where_condition_sql_error,
 )
 from app.services.ai.runners.chatbi.sql_repair_hints import (
     cross_dataset_scope_repair_hint,
@@ -193,8 +194,14 @@ def build_repair_message(
         repair += invalid_identifier_repair_hint(error_text)
         if is_schema_reference_sql_error(error_text):
             repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
-        if is_date_format_sql_error(error_text):
-            repair += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
+        if is_where_condition_sql_error(error_text):
+            repair += f"\n\n{DataQueryPrompts.WHERE_CONDITION_PROBE_REPAIR_GUIDE}"
+            if state.where_condition_diagnostic_summary:
+                repair += f"\n\n{state.where_condition_diagnostic_summary}"
+            else:
+                repair += build_where_condition_probe_repair_hint(
+                    state.last_failed_sql_text,
+                )
         repair += cross_dataset_scope_repair_hint(error_text)
         return repair
     if state.sql_error:
@@ -217,8 +224,14 @@ def build_repair_message(
         repair += cross_dataset_scope_repair_hint(error_text)
         if is_schema_reference_sql_error(error_text):
             repair += f"\n\n{DataQueryPrompts.SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE}"
-        if is_date_format_sql_error(error_text):
-            repair += f"\n\n{DataQueryPrompts.DATE_FORMAT_SQL_ERROR_REPAIR_GUIDE}"
+        if is_where_condition_sql_error(error_text):
+            repair += f"\n\n{DataQueryPrompts.WHERE_CONDITION_PROBE_REPAIR_GUIDE}"
+            if state.where_condition_diagnostic_summary:
+                repair += f"\n\n{state.where_condition_diagnostic_summary}"
+            else:
+                repair += build_where_condition_probe_repair_hint(
+                    state.last_failed_sql_text,
+                )
         if "invalid expression" in err_lower or "unexpected token" in err_lower:
             repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
         return repair
@@ -304,6 +317,10 @@ def reset_state_for_repair(state: DataRunState) -> None:
     state.empty_sql_result = False
     state.empty_sql_reason = ""
     state.empty_sql_text = ""
+    state.where_condition_diagnostics = []
+    state.where_condition_diagnostic_summary = ""
+    state.where_condition_auto_retry_sql = ""
+    state.last_failed_sql_text = ""
     state.sql_plan_missing = False
     state.sql_before_schema = False
     state.sql_static_risk = False

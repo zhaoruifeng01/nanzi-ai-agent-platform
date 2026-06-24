@@ -28,14 +28,18 @@ from app.services.ai.federated_column_labels import (
     merge_column_term_maps,
 )
 from app.services.ai.federated_sql_repair import (
+    build_degraded_temp_table_memory_join_hint,
     build_repair_schema_search_keywords,
     build_sql_repair_guidance,
     detect_sql_error,
+    infer_select_columns_regex_fallback,
     is_cross_dataset_scope_sql_error,
     is_non_retryable_permission_error,
     is_retryable_sql_error,
     merge_repair_schema_snippets,
     normalize_sql_text,
+    parse_fixed_sql_from_llm_response,
+    try_deterministic_invalid_identifier_repair,
 )
 from app.services.sql_query_execution_service import dialect_from_data_source
 from app.services.ai.time_anchor import (
@@ -278,7 +282,14 @@ class FederatedQueryExecutor:
                     "status": "error",
                 }
                 yield {
-                    "content": f"\n❌ 跨源联邦查询计划编排失败：{str(e)}",
+                    "content": (
+                        "❌ 抱歉，在编排跨数据集查询计划时遇到了阻碍，暂时无法继续。\n\n"
+                        "💡 **建议您可以尝试**：\n"
+                        "1. 适当简化提问的表述，避免过于复杂的跨多数据集交叉分析。\n"
+                        "2. 补充更明确的数据集名称、业务板块或系统名称。\n\n"
+                        f"> **底层报错信息：**\n"
+                        f"> {str(e)}"
+                    ),
                     "status": "error"
                 }
                 return
@@ -302,6 +313,7 @@ class FederatedQueryExecutor:
                     perm_service = PermissionService(session)
                     subquery_citation_sources: list[dict[str, Any]] = []
                     temp_table_schemas: dict[str, list[str]] = {}
+                    degraded_temp_tables: set[str] = set()
 
                     for idx, sq in enumerate(sub_queries):
                         dataset_name = sq["dataset_name"]
@@ -489,109 +501,165 @@ class FederatedQueryExecutor:
                                     return
 
                                 can_local_repair = is_retryable_sql_error(error_text)
-                                if (
-                                    can_local_repair
-                                    and node_repair_count < MAX_FEDERATED_SQL_REPAIR_PER_NODE
-                                ):
-                                    norm_sql = normalize_sql_text(sub_sql)
-                                    repeat_blocked = norm_sql in failed_sql_signatures
-                                    explain_context = ""
-                                    schema_snippet = self._extract_schema_snippet_for_dataset(
-                                        self.schema_output,
-                                        dataset_name,
-                                    )
-                                    repair_schema_keywords = ""
-                                    try:
-                                        if dataset is not None:
-                                            schema_snippet, repair_schema_keywords = (
-                                                await self._refresh_schema_snippet_for_repair(
+                                execute_failed_norm = normalize_sql_text(sub_sql)
+                                repaired_for_retry = False
+                                if can_local_repair:
+                                    while node_repair_count < MAX_FEDERATED_SQL_REPAIR_PER_NODE:
+                                        norm_sql = normalize_sql_text(sub_sql)
+                                        dialect = (
+                                            dialect_from_data_source(dataset.data_source)
+                                            if dataset is not None
+                                            else None
+                                        )
+                                        det_sql = try_deterministic_invalid_identifier_repair(
+                                            sub_sql,
+                                            error_text,
+                                            sql_dialect=dialect,
+                                        )
+                                        if det_sql and normalize_sql_text(det_sql) != norm_sql:
+                                            sub_sql = det_sql
+                                            sq["sql"] = sub_sql
+                                            node_repair_count += 1
+                                            yield {
+                                                "type": "log",
+                                                "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                                "title": "联邦子查询 SQL 修正结果",
+                                                "details": (
+                                                    "修正方式: deterministic（优先规则修复无效字段）\n"
+                                                    f"修正后 SQL:\n{sub_sql}"
+                                                ),
+                                                "status": "warning",
+                                            }
+                                            if normalize_sql_text(sub_sql) != execute_failed_norm:
+                                                repaired_for_retry = True
+                                                break
+
+                                        repeat_blocked = norm_sql in failed_sql_signatures
+                                        explain_context = ""
+                                        schema_snippet = self._extract_schema_snippet_for_dataset(
+                                            self.schema_output,
+                                            dataset_name,
+                                        )
+                                        repair_schema_keywords = ""
+                                        try:
+                                            if dataset is not None:
+                                                schema_snippet, repair_schema_keywords = (
+                                                    await self._refresh_schema_snippet_for_repair(
+                                                        session,
+                                                        failed_sql=sub_sql,
+                                                        dataset_name=dataset_name,
+                                                        error_text=error_text,
+                                                        data_source=dataset.data_source,
+                                                        base_snippet=schema_snippet,
+                                                        user_id=user_id,
+                                                        is_admin=is_admin,
+                                                    )
+                                                )
+                                                explain_context = await self._fetch_subquery_explain_for_repair(
                                                     session,
-                                                    failed_sql=sub_sql,
-                                                    dataset_name=dataset_name,
-                                                    error_text=error_text,
-                                                    data_source=dataset.data_source,
-                                                    base_snippet=schema_snippet,
+                                                    sub_sql=sub_sql,
+                                                    dataset=dataset,
                                                     user_id=user_id,
+                                                    user_dimensions=user_dimensions,
+                                                    agent_context=current_agent_context,
                                                     is_admin=is_admin,
                                                 )
+                                        except Exception as schema_exc:
+                                            logger.warning(
+                                                "[FederatedQueryExecutor] Repair schema refresh failed on %s: %s",
+                                                dataset_name,
+                                                schema_exc,
+                                                exc_info=True,
                                             )
-                                            explain_context = await self._fetch_subquery_explain_for_repair(
-                                                session,
-                                                sub_sql=sub_sql,
-                                                dataset=dataset,
-                                                user_id=user_id,
-                                                user_dimensions=user_dimensions,
-                                                agent_context=current_agent_context,
-                                                is_admin=is_admin,
-                                            )
-                                    except Exception as schema_exc:
-                                        logger.warning(
-                                            "[FederatedQueryExecutor] Repair schema refresh failed on %s: %s",
-                                            dataset_name,
-                                            schema_exc,
-                                            exc_info=True,
-                                        )
-                                    yield {
-                                        "type": "log",
-                                        "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
-                                        "title": "修复联邦子查询 SQL",
-                                        "details": (
-                                            f"子查询 ({dataset_name}) 执行失败，"
-                                            f"正在按单源 SQL repair 方式局部修正该节点 SQL"
-                                            f"（第 {node_repair_count + 1}/{MAX_FEDERATED_SQL_REPAIR_PER_NODE} 次）。"
-                                            + (
-                                                f"\nSchema 检索词: {repair_schema_keywords}"
-                                                if repair_schema_keywords
-                                                else ""
-                                            )
-                                            + f"\n错误信息: {error_text}\nSQL:\n{sub_sql}"
-                                        ),
-                                        "status": "warning",
-                                    }
-                                    try:
-                                        sub_sql = await self._repair_federated_node_sql(
-                                            chat_client,
-                                            node_kind="sub_query",
-                                            user_question=original_user_question,
-                                            plan_output=plan_output,
-                                            dataset_name=dataset_name,
-                                            temp_table=temp_table,
-                                            failed_sql=sub_sql,
-                                            error_text=error_text,
-                                            repair_attempt=node_repair_count + 1,
-                                            repeat_blocked=repeat_blocked,
-                                            sub_queries=sub_queries,
-                                            join_sql=join_sql,
-                                            schema_snippet=schema_snippet,
-                                            explain_context=explain_context,
-                                            _total_llm_calls=_total_llm_calls,
-                                        )
-                                        sq["sql"] = sub_sql
-                                        new_norm = normalize_sql_text(sub_sql)
-                                        if new_norm == norm_sql:
-                                            failed_sql_signatures.add(norm_sql)
-                                        node_repair_count += 1
-                                        continue
-                                    except FederatedLLMLimitExceededError as limit_err:
                                         yield {
                                             "type": "log",
-                                            "id": sub_log_id,
-                                            "title": "联邦查询已中止",
-                                            "details": str(limit_err),
-                                            "status": "error",
+                                            "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                            "title": "修复联邦子查询 SQL",
+                                            "details": (
+                                                f"子查询 ({dataset_name}) 执行失败，"
+                                                f"正在按单源 SQL repair 方式局部修正该节点 SQL"
+                                                f"（第 {node_repair_count + 1}/{MAX_FEDERATED_SQL_REPAIR_PER_NODE} 次）。"
+                                                + (
+                                                    f"\nSchema 检索词: {repair_schema_keywords}"
+                                                    if repair_schema_keywords
+                                                    else ""
+                                                )
+                                                + f"\n错误信息: {error_text}\n[Executed SQL]:\n{sub_sql}"
+                                            ),
+                                            "status": "warning",
                                         }
+                                        try:
+                                            repaired_sql = await self._repair_federated_node_sql(
+                                                chat_client,
+                                                node_kind="sub_query",
+                                                user_question=original_user_question,
+                                                plan_output=plan_output,
+                                                dataset_name=dataset_name,
+                                                temp_table=temp_table,
+                                                failed_sql=sub_sql,
+                                                error_text=error_text,
+                                                repair_attempt=node_repair_count + 1,
+                                                repeat_blocked=repeat_blocked,
+                                                sub_queries=sub_queries,
+                                                join_sql=join_sql,
+                                                schema_snippet=schema_snippet,
+                                                explain_context=explain_context,
+                                                _total_llm_calls=_total_llm_calls,
+                                            )
+                                        except FederatedLLMLimitExceededError as limit_err:
+                                            yield {
+                                                "type": "log",
+                                                "id": sub_log_id,
+                                                "title": "联邦查询已中止",
+                                                "details": str(limit_err),
+                                                "status": "error",
+                                            }
+                                            yield {
+                                                "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                                                "status": "error",
+                                            }
+                                            return
+                                        except Exception as repair_err:
+                                            logger.error(
+                                                "[FederatedQueryExecutor] Subquery local repair failed: %s",
+                                                repair_err,
+                                                exc_info=True,
+                                            )
+                                            error_text = str(repair_err)
+                                            break
+
+                                        repair_source = "LLM"
+                                        if normalize_sql_text(repaired_sql) == norm_sql:
+                                            det_sql = try_deterministic_invalid_identifier_repair(
+                                                sub_sql,
+                                                error_text,
+                                                sql_dialect=dialect,
+                                            )
+                                            if det_sql and normalize_sql_text(det_sql) != norm_sql:
+                                                repaired_sql = det_sql
+                                                repair_source = "deterministic"
+                                            else:
+                                                failed_sql_signatures.add(norm_sql)
+
+                                        sub_sql = repaired_sql
+                                        sq["sql"] = sub_sql
+                                        node_repair_count += 1
                                         yield {
-                                            "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
-                                            "status": "error",
+                                            "type": "log",
+                                            "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                            "title": "联邦子查询 SQL 修正结果",
+                                            "details": (
+                                                f"修正方式: {repair_source}\n"
+                                                f"修正后 SQL:\n{sub_sql}"
+                                            ),
+                                            "status": "warning",
                                         }
-                                        return
-                                    except Exception as repair_err:
-                                        logger.error(
-                                            "[FederatedQueryExecutor] Subquery local repair failed: %s",
-                                            repair_err,
-                                            exc_info=True,
-                                        )
-                                        error_text = str(repair_err)
+                                        if normalize_sql_text(sub_sql) != execute_failed_norm:
+                                            repaired_for_retry = True
+                                            break
+
+                                if repaired_for_retry:
+                                    continue
 
                                 if is_primary:
                                     yield {
@@ -603,13 +671,19 @@ class FederatedQueryExecutor:
                                     }
                                     yield {
                                         "content": (
-                                            f"\n❌ 跨源联邦主表子查询失败（数据集: '{dataset_name}'）：{error_text}"
+                                            f"❌ 抱歉，在获取主数据集「{dataset_name}」的数据时遇到了问题，查询被迫终止。\n\n"
+                                            "💡 **建议您可以尝试**：\n"
+                                            "1. 确认您是否拥有该数据集下表及字段的访问权限。\n"
+                                            "2. 检查提问中涉及的过滤条件是否在主数据集中真实存在。\n\n"
+                                            f"> **底层报错信息：**\n"
+                                            f"> {error_text}"
                                         ),
                                         "status": "error",
                                     }
                                     return
 
                                 degraded_datasets.append(dataset_name)
+                                degraded_temp_tables.add(temp_table)
                                 yield {
                                     "type": "log",
                                     "id": sub_log_id,
@@ -630,6 +704,10 @@ class FederatedQueryExecutor:
                                 col_names = self._infer_degraded_subquery_columns(
                                     sub_sql, dataset_name, dataset_dialect_map
                                 )
+                                if not col_names:
+                                    col_names = list(inferred_temp_schemas.get(temp_table) or [])
+                                if not col_names:
+                                    col_names = ["_degraded"]
                                 df = pd.DataFrame(columns=col_names)
                                 duckdb_conn.register(temp_table, df)
                                 temp_table_schemas[temp_table] = list(col_names)
@@ -709,16 +787,16 @@ class FederatedQueryExecutor:
                             ),
                             "status": "success",
                         }
-                        # 联邦结果为空时给出明确提示，引导用户排查条件
-                        if not join_rows:
+                        # 联邦结果为空：若无降级数据集则直接提示；若有降级则继续 synthesis 结合 caveats 解读
+                        if not join_rows and not degraded_datasets:
                             yield {
                                 "content": (
-                                    "SQL 已成功执行跨源关联，但按当前条件未匹配到任何数据行。\n\n"
+                                    "已成功在多个数据源中帮您进行了查找和关联比对，但按您目前的筛选条件，没有找到符合要求的数据。\n\n"
                                     "**可能原因：**\n"
-                                    "1. 各数据集子查询的关联键（如人员 ID、客户编码）在实际数据中不存在交集。\n"
-                                    "2. WHERE 条件中的时间范围、状态值等字段取值可能与库中实际数据不匹配。\n"
-                                    "3. 某个子查询因条件过于严格导致返回空集，关联后自然为空。\n\n"
-                                    "**建议：** 适当放宽筛选条件或逐步核查各子查询单独执行时的返回行数。\n\n"
+                                    "1. 涉及的多个数据集之间没有找到对应的匹配信息（例如在该时段内，这批人员没有产生对应的订单或维保记录）。\n"
+                                    "2. 筛选条件可能过严（比如指定的时间范围、特定状态在数据库中刚好没有对应数据）。\n"
+                                    "3. 其中某一部分的数据本身就是空的，因而合并后也无法展示数据。\n\n"
+                                    "**建议：** 您可以尝试放宽查询的时间范围，或放宽其他的筛选条件重新试试。\n\n"
                                     "**快捷建议：**\n"
                                     "- [🔍 查看各子查询行数](quick:帮我检查刚才联邦查询中各个子查询单独执行时的返回行数)\n"
                                     "- [📅 放宽时间范围重试](quick:放宽时间范围，重新查询刚才的联邦数据)"
@@ -734,79 +812,138 @@ class FederatedQueryExecutor:
                             e,
                             exc_info=True,
                         )
-                        if (
-                            is_retryable_sql_error(error_text)
-                            and join_repair_count < MAX_FEDERATED_SQL_REPAIR_PER_NODE
-                        ):
-                            norm_sql = normalize_sql_text(join_sql)
-                            repeat_blocked = norm_sql in join_failed_signatures
-                            if repeat_blocked:
-                                join_sql, auto_fixed = self._maybe_auto_fix_memory_join_sql(
+                        if is_retryable_sql_error(error_text):
+                            execute_failed_norm = normalize_sql_text(join_sql)
+                            repaired_for_retry = False
+                            while join_repair_count < MAX_FEDERATED_SQL_REPAIR_PER_NODE:
+                                norm_sql = normalize_sql_text(join_sql)
+                                if norm_sql in join_failed_signatures:
+                                    join_sql, auto_fixed = self._maybe_auto_fix_memory_join_sql(
+                                        join_sql,
+                                        temp_table_schemas,
+                                    )
+                                    if auto_fixed and normalize_sql_text(join_sql) != norm_sql:
+                                        join_repair_count += 1
+                                        yield {
+                                            "type": "log",
+                                            "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                            "title": "自动修正联邦聚合 SQL",
+                                            "details": (
+                                                "检测到 memory_join 重复引用子查询未 SELECT 的列，"
+                                                "已自动从 ORDER BY 移除无效排序键。\n"
+                                                f"修正后 SQL:\n{join_sql}"
+                                            ),
+                                            "status": "warning",
+                                        }
+                                        if normalize_sql_text(join_sql) != execute_failed_norm:
+                                            repaired_for_retry = True
+                                        break
+
+                                det_sql = try_deterministic_invalid_identifier_repair(
                                     join_sql,
-                                    temp_table_schemas,
+                                    error_text,
+                                    sql_dialect="duckdb",
                                 )
-                                if auto_fixed and normalize_sql_text(join_sql) != norm_sql:
+                                if det_sql and normalize_sql_text(det_sql) != norm_sql:
+                                    join_sql = det_sql
                                     join_repair_count += 1
                                     yield {
                                         "type": "log",
                                         "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
-                                        "title": "自动修正联邦聚合 SQL",
+                                        "title": "联邦聚合 SQL 修正结果",
                                         "details": (
-                                            "检测到 memory_join 重复引用子查询未 SELECT 的列，"
-                                            "已自动从 ORDER BY 移除无效排序键。\n"
+                                            "修正方式: deterministic（优先规则修复无效字段）\n"
                                             f"修正后 SQL:\n{join_sql}"
                                         ),
                                         "status": "warning",
                                     }
-                                    continue
-                            yield {
-                                "type": "log",
-                                "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
-                                "title": "修复联邦聚合 SQL",
-                                "details": (
-                                    "内存联邦聚合 SQL 执行失败，正在局部修正 memory_join SQL"
-                                    f"（第 {join_repair_count + 1}/{MAX_FEDERATED_SQL_REPAIR_PER_NODE} 次）。"
-                                    f"\n错误信息: {error_text}\nSQL:\n{join_sql}"
-                                ),
-                                "status": "warning",
-                            }
-                            try:
-                                join_sql = await self._repair_federated_node_sql(
-                                    chat_client,
-                                    node_kind="memory_join",
-                                    user_question=original_user_question,
-                                    plan_output=plan_output,
-                                    dataset_name="federated",
-                                    temp_table="",
-                                    failed_sql=join_sql,
-                                    error_text=error_text,
-                                    repair_attempt=join_repair_count + 1,
-                                    repeat_blocked=repeat_blocked,
-                                    sub_queries=sub_queries,
-                                    join_sql=join_sql,
-                                    temp_table_schemas=temp_table_schemas,
-                                    _total_llm_calls=_total_llm_calls,
-                                )
-                                new_norm = normalize_sql_text(join_sql)
-                                if new_norm == norm_sql:
-                                    join_failed_signatures.add(norm_sql)
-                                join_repair_count += 1
-                                continue
-                            except FederatedLLMLimitExceededError as limit_err:
+                                    if normalize_sql_text(join_sql) != execute_failed_norm:
+                                        repaired_for_retry = True
+                                    break
+
+                                repeat_blocked = norm_sql in join_failed_signatures
                                 yield {
                                     "type": "log",
-                                    "id": join_log_id,
-                                    "title": "联邦查询已中止",
-                                    "details": str(limit_err),
-                                    "status": "error",
+                                    "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                    "title": "修复联邦聚合 SQL",
+                                    "details": (
+                                        "内存联邦聚合 SQL 执行失败，正在局部修正 memory_join SQL"
+                                        f"（第 {join_repair_count + 1}/{MAX_FEDERATED_SQL_REPAIR_PER_NODE} 次）。"
+                                        f"\n错误信息: {error_text}\n[Executed SQL]:\n{join_sql}"
+                                    ),
+                                    "status": "warning",
                                 }
+                                try:
+                                    repaired_join_sql = await self._repair_federated_node_sql(
+                                        chat_client,
+                                        node_kind="memory_join",
+                                        user_question=original_user_question,
+                                        plan_output=plan_output,
+                                        dataset_name="federated",
+                                        temp_table="",
+                                        failed_sql=join_sql,
+                                        error_text=error_text,
+                                        repair_attempt=join_repair_count + 1,
+                                        repeat_blocked=repeat_blocked,
+                                        sub_queries=sub_queries,
+                                        join_sql=join_sql,
+                                        temp_table_schemas=temp_table_schemas,
+                                        degraded_temp_tables=degraded_temp_tables,
+                                        _total_llm_calls=_total_llm_calls,
+                                    )
+                                except FederatedLLMLimitExceededError as limit_err:
+                                    yield {
+                                        "type": "log",
+                                        "id": join_log_id,
+                                        "title": "联邦查询已中止",
+                                        "details": str(limit_err),
+                                        "status": "error",
+                                    }
+                                    yield {
+                                        "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
+                                        "status": "error",
+                                    }
+                                    return
+                                except Exception as repair_err:
+                                    logger.error(
+                                        "[FederatedQueryExecutor] Memory join local repair failed: %s",
+                                        repair_err,
+                                        exc_info=True,
+                                    )
+                                    error_text = str(repair_err)
+                                    break
+
+                                repair_source = "LLM"
+                                if normalize_sql_text(repaired_join_sql) == norm_sql:
+                                    det_sql = try_deterministic_invalid_identifier_repair(
+                                        join_sql,
+                                        error_text,
+                                        sql_dialect="duckdb",
+                                    )
+                                    if det_sql and normalize_sql_text(det_sql) != norm_sql:
+                                        repaired_join_sql = det_sql
+                                        repair_source = "deterministic"
+                                    else:
+                                        join_failed_signatures.add(norm_sql)
+
+                                join_sql = repaired_join_sql
+                                join_repair_count += 1
                                 yield {
-                                    "content": "❌ 联邦查询执行超过最大 LLM 调用次数限制，已自动中止。请尝试简化查询或联系管理员。",
-                                    "status": "error",
+                                    "type": "log",
+                                    "id": f"fed_repair_{uuid.uuid4().hex[:8]}",
+                                    "title": "联邦聚合 SQL 修正结果",
+                                    "details": (
+                                        f"修正方式: {repair_source}\n"
+                                        f"修正后 SQL:\n{join_sql}"
+                                    ),
+                                    "status": "warning",
                                 }
-                                return
-                            except Exception as repair_err:
-                                error_text = str(repair_err)
+                                if normalize_sql_text(join_sql) != execute_failed_norm:
+                                    repaired_for_retry = True
+                                    break
+
+                            if repaired_for_retry:
+                                continue
                         yield {
                             "type": "log",
                             "id": join_log_id,
@@ -815,7 +952,14 @@ class FederatedQueryExecutor:
                             "status": "error",
                         }
                         yield {
-                            "content": f"\n❌ 内存联邦计算失败：{error_text}",
+                            "content": (
+                                "❌ 抱歉，在对多个数据集的数据进行合并汇总计算时遇到了阻碍，暂时无法得出结论。\n\n"
+                                "💡 **建议您可以尝试**：\n"
+                                "1. 确认多个数据源之间是否存在可对应的公共关联字段。\n"
+                                "2. 适当减少一次性关联的数据集数量，分步进行提问。\n\n"
+                                f"> **底层报错信息：**\n"
+                                f"> {error_text}"
+                            ),
                             "status": "error",
                         }
                         return
@@ -912,30 +1056,20 @@ class FederatedQueryExecutor:
                 duckdb_conn.close()
 
     @staticmethod
-    def _parse_fixed_sql_response(raw: str) -> str:
-        text = str(raw or "").strip()
-        match = re.search(r"<fixed_sql>(.*?)</fixed_sql>", text, re.DOTALL | re.IGNORECASE)
-        content = match.group(1).strip() if match else text
-        if content.startswith("<![CDATA[") and content.endswith("]]>"):
-            content = content[9:-3].strip()
-        elif content.startswith("<![CDATA["):
-            content = content[9:].strip()
-        elif content.endswith("]]>"):
-            content = content[:-3].strip()
-        return html.unescape(content).strip()
-
-    @staticmethod
     def _summarize_subqueries_for_prompt(
         sub_queries: list[dict[str, str]],
         temp_table_schemas: dict[str, list[str]] | None = None,
+        degraded_temp_tables: set[str] | None = None,
     ) -> str:
         lines: list[str] = []
+        degraded = degraded_temp_tables or set()
         for sq in sub_queries:
             temp_table = str(sq.get("temp_table") or "")
             cols = (temp_table_schemas or {}).get(temp_table)
             col_part = f", columns=[{', '.join(cols)}]" if cols else ""
+            degraded_part = ", status=已降级留空(0行)" if temp_table in degraded else ""
             lines.append(
-                f"- dataset={sq.get('dataset_name')}, temp_table={temp_table}{col_part}, "
+                f"- dataset={sq.get('dataset_name')}, temp_table={temp_table}{col_part}{degraded_part}, "
                 f"sql={str(sq.get('sql') or '')[:500]}"
             )
         return "\n".join(lines)
@@ -958,6 +1092,7 @@ class FederatedQueryExecutor:
         schema_snippet: str = "",
         explain_context: str = "",
         temp_table_schemas: dict[str, list[str]] | None = None,
+        degraded_temp_tables: set[str] | None = None,
         _total_llm_calls: Optional[list[int]] = None,
     ) -> str:
         if _total_llm_calls is not None:
@@ -986,16 +1121,20 @@ class FederatedQueryExecutor:
             sub_queries_summary=self._summarize_subqueries_for_prompt(
                 sub_queries,
                 temp_table_schemas,
+                degraded_temp_tables,
             ),
             join_sql=join_sql,
             schema_snippet=schema_snippet,
             explain_context=explain_context,
         )
+        if node_kind == "memory_join":
+            prompt += build_degraded_temp_table_memory_join_hint(
+                temp_table_schemas,
+                degraded_temp_tables,
+            )
         messages = system_user_prompt_messages(prompt, user_prompt=user_question)
         raw = await chat_client.generate_text(messages)
-        fixed_sql = self._parse_fixed_sql_response(raw)
-        if not fixed_sql:
-            raise ValueError(f"联邦 SQL 局部 repair 未能解析 fixed_sql。LLM 输出:\n{raw[:2000]}")
+        fixed_sql = parse_fixed_sql_from_llm_response(raw)
         return fixed_sql
 
     async def _refresh_schema_snippet_for_repair(
@@ -1160,6 +1299,8 @@ class FederatedQueryExecutor:
                 parse_err,
                 exc_info=True,
             )
+        if not col_names:
+            col_names = infer_select_columns_regex_fallback(sub_sql)
         return col_names
 
     @staticmethod
@@ -1498,18 +1639,20 @@ class FederatedQueryExecutor:
     def _parse_federated_plan(self, xml_content: str) -> tuple[list[dict], str]:
         """解析联邦 XML 执行计划，采用正则表达式容错提取"""
         sub_queries = []
-        
-        # 匹配 <sub_query dataset_name="..." temp_table="...">SQL</sub_query>
+
         sub_query_matches = re.finditer(
-            r'<sub_query\s+dataset_name=["\']([^"\']+)["\']\s+temp_table=["\']([^"\']+)["\']\s*>(.*?)</sub_query>',
+            r"<sub_query\s+([^>]+)>(.*?)</sub_query>",
             xml_content,
-            re.DOTALL | re.IGNORECASE
+            re.DOTALL | re.IGNORECASE,
         )
-        
+
         for m in sub_query_matches:
-            ds_name = m.group(1).strip()
-            temp_tb = m.group(2).strip()
-            sql_content = m.group(3).strip()
+            attrs = m.group(1)
+            ds_name = self._extract_xml_attribute(attrs, "dataset_name")
+            temp_tb = self._extract_xml_attribute(attrs, "temp_table")
+            if not ds_name or not temp_tb:
+                continue
+            sql_content = m.group(2).strip()
             
             # 去掉 CDATA 包裹
             if sql_content.startswith("<![CDATA[") and sql_content.endswith("]]>"):
@@ -1542,3 +1685,12 @@ class FederatedQueryExecutor:
             join_sql = html.unescape(join_sql).strip()
             
         return sub_queries, join_sql
+
+    @staticmethod
+    def _extract_xml_attribute(attrs: str, name: str) -> str:
+        match = re.search(
+            rf'{re.escape(name)}\s*=\s*["\']([^"\']+)["\']',
+            str(attrs or ""),
+            flags=re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else ""

@@ -63,6 +63,27 @@ def test_format_repair_diagnostic_block_includes_candidates():
     assert "技术故障" in block
 
 
+def test_format_empty_filter_guard_message_when_value_already_in_candidates():
+    from app.services.ai.empty_result_filter_diagnostic import FilterDiagnosticResult
+
+    message = format_empty_filter_guard_message(
+        [
+            FilterDiagnosticResult(
+                column="status",
+                table="demo",
+                operator="=",
+                used_values=("error",),
+                diagnostic_sql="SELECT DISTINCT status FROM demo LIMIT 20",
+                candidates=["error", "failed", "pending", "success"],
+                suggested_values=[],
+            )
+        ]
+    )
+    assert "未返回数据" in message
+    assert "该取值在库内存在" in message
+    assert "上海" not in message
+
+
 def test_format_empty_filter_guard_message():
     from app.services.ai.empty_result_filter_diagnostic import FilterDiagnosticResult
 
@@ -81,6 +102,7 @@ def test_format_empty_filter_guard_message():
     )
     assert "未返回数据" in message
     assert "上海市" in message
+    assert "上海」vs「上海市" not in message
     assert "技术问题" not in message
 
 

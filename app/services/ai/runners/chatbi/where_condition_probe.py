@@ -1,0 +1,100 @@
+"""ChatBI WHERE 条件样例探查：SQL 因 WHERE 类型/格式错误失败后自动读源表样例。"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.services.ai.runners.chatbi.run_state import DataRunState
+from app.services.ai.where_condition_sample_diagnostic import (
+    AutoWhereFormatRetryResult,
+    format_where_condition_repair_block,
+    is_where_condition_sql_error,
+    run_automatic_where_format_retry,
+    run_where_condition_diagnostics,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def maybe_run_where_condition_diagnostics(
+    runner: Any,
+    state: DataRunState,
+    *,
+    tool_args: dict[str, Any],
+) -> AutoWhereFormatRetryResult | None:
+    """
+    WHERE 相关 SQL 执行失败后：
+    1) 自动探查源表样例
+    2) 若能推断出格式修正，自动改写 WHERE 并重试 1 次业务 SQL
+    """
+    if not state.sql_error:
+        return None
+    error_message = str(state.last_sql_error_summary or state.sql_error_message or "")
+    if not is_where_condition_sql_error(error_message):
+        return None
+
+    sql_text = (
+        state.last_failed_sql_text
+        or str(tool_args.get("sql") or tool_args.get("query") or "")
+    ).strip()
+    if not sql_text:
+        return None
+
+    data_source = str(tool_args.get("data_source") or "").strip()
+    dataset_name = str(tool_args.get("dataset_name") or "").strip()
+    if not data_source or not dataset_name:
+        return None
+
+    from app.core.orm import AsyncSessionLocal
+    from app.services.sql_query_execution_service import execute_sql_query_core
+
+    async def _execute_sql(**kwargs: Any) -> str:
+        async with AsyncSessionLocal() as session:
+            return await execute_sql_query_core(session, dry_run=False, **kwargs)
+
+    try:
+        diagnostics = await run_where_condition_diagnostics(
+            sql=sql_text,
+            data_source=data_source,
+            dataset_name=dataset_name,
+            user_id=runner._current_user_id(),
+            is_admin=runner._current_user_is_admin(),
+            execute_sql=_execute_sql,
+            error_message=error_message,
+        )
+    except Exception as exc:
+        logger.warning("[DataAgentRunner] WHERE condition diagnostics skipped: %s", exc)
+        return None
+
+    if not diagnostics:
+        return None
+
+    state.where_condition_diagnostics = [item.to_dict() for item in diagnostics]
+    state.where_condition_diagnostic_summary = format_where_condition_repair_block(diagnostics)
+
+    try:
+        retry = await run_automatic_where_format_retry(
+            sql=sql_text,
+            diagnostics=diagnostics,
+            data_source=data_source,
+            dataset_name=dataset_name,
+            user_id=runner._current_user_id(),
+            is_admin=runner._current_user_is_admin(),
+            execute_sql=_execute_sql,
+            error_message=error_message,
+        )
+    except Exception as exc:
+        logger.warning("[DataAgentRunner] WHERE auto retry skipped: %s", exc)
+        return AutoWhereFormatRetryResult(probe_summary=state.where_condition_diagnostic_summary)
+
+    if retry.probe_summary:
+        state.where_condition_diagnostic_summary = retry.probe_summary
+    if retry.summary:
+        summary = state.where_condition_diagnostic_summary
+        state.where_condition_diagnostic_summary = (
+            f"{summary}\n\n{retry.summary}".strip() if summary else retry.summary
+        )
+    if retry.corrected_sql:
+        state.where_condition_auto_retry_sql = retry.corrected_sql
+    return retry if (retry.attempted or retry.probe_summary) else None

@@ -68,6 +68,57 @@ async def stream_agentscope_events(
                 output=output,
             )
             auto_retry = await runner._maybe_run_empty_filter_diagnostics(state, tool_args=tool_args)
+            where_retry = None
+            if state.sql_error:
+                where_retry = await runner._maybe_run_where_condition_diagnostics(
+                    state, tool_args=tool_args
+                )
+                if where_retry and state.where_condition_diagnostic_summary:
+                    yield {
+                        "type": "log",
+                        "id": f"{tool_id}:where_condition_probe",
+                        "title": "平台自动探查 WHERE 字段样例",
+                        "details": state.where_condition_diagnostic_summary,
+                        "status": "success" if where_retry.has_rows else "warning",
+                        "execution_time_ms": 0,
+                    }
+            if where_retry and where_retry.has_rows:
+                should_save_followup = runner._apply_auto_retry_sql_result(
+                    state,
+                    sql_text=where_retry.corrected_sql,
+                    output=where_retry.raw_output,
+                    parsed_output=where_retry.parsed_output,
+                )
+                output = where_retry.raw_output
+                parsed_output = where_retry.parsed_output
+                state.tool_outputs[tool_id] = output
+                state.sql_error = False
+                state.sql_error_message = ""
+                yield {
+                    "type": "log",
+                    "id": f"{tool_id}:where_condition_auto_retry",
+                    "title": "平台自动修正 WHERE 并重试",
+                    "details": (
+                        f"{where_retry.summary}\n\n```sql\n{where_retry.corrected_sql}\n```"
+                        if where_retry.corrected_sql
+                        else where_retry.summary
+                    ),
+                    "status": "success",
+                    "execution_time_ms": 0,
+                }
+            elif where_retry and where_retry.attempted:
+                yield {
+                    "type": "log",
+                    "id": f"{tool_id}:where_condition_auto_retry",
+                    "title": "平台自动修正 WHERE 并重试",
+                    "details": (
+                        f"{where_retry.summary}\n\n```sql\n{where_retry.corrected_sql}\n```"
+                        if where_retry.corrected_sql
+                        else where_retry.summary
+                    ),
+                    "status": "warning",
+                    "execution_time_ms": 0,
+                }
             if auto_retry and auto_retry.has_rows:
                 should_save_followup = runner._apply_auto_retry_sql_result(
                     state,

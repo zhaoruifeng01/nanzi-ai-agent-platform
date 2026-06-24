@@ -89,7 +89,11 @@ class DataRunState:
     sql_query_binding: Any | None = None
     failed_sql_signatures: dict[str, int] = field(default_factory=dict)
     last_failed_sql_normalized: str = ""
+    last_failed_sql_text: str = ""
     last_sql_error_summary: str = ""
+    where_condition_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    where_condition_diagnostic_summary: str = ""
+    where_condition_auto_retry_sql: str = ""
     schema_refresh_required: bool = False
     schema_refreshed_after_sql_error: bool = False
 

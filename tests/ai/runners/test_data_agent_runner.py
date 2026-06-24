@@ -3826,25 +3826,29 @@ def test_sql_error_repair_message_for_cross_dataset_scope_guides_federated_path(
     assert "姓名/部门" in repair
 
 
-def test_sql_error_repair_message_for_date_format_error_includes_date_guidance(data_config):
+def test_sql_error_repair_message_for_date_format_error_includes_where_probe(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
 
     runner = DataAgentRunner(config=data_config, trace_id="trace-sql-date-repair", trace_buffer=[])
+    failed_sql = (
+        "SELECT * FROM VIEW_AI_CULEOPP opp "
+        "WHERE opp.CREATE_DATE >= DATE '2026-05-01'"
+    )
     state = _DataRunState(
         requires_fresh_data=True,
         schema_completed=True,
         sql_error=True,
         sql_error_message="[TOOL_ERROR] ORA-01861: literal does not match format string",
         last_sql_error_summary="[TOOL_ERROR] ORA-01861: literal does not match format string",
-        last_failed_sql_normalized="select lifecycle_date from bill",
+        last_failed_sql_text=failed_sql,
+        last_failed_sql_normalized="select * from view_ai_culeopp",
     )
 
     repair = runner._build_repair_message(state)
 
-    assert "日期/时间格式修正指引" in repair
-    assert "ORA-01861" in repair
-    assert "TO_DATE" in repair
-    assert "TO_CHAR" in repair
+    assert "WHERE 条件样例探查" in repair
+    assert "ORA-01861" in repair or "01861" in repair
+    assert "CREATE_DATE" in repair
 
 
 def test_failed_sql_repeat_fuses_at_two_after_prior_failure(data_config):
