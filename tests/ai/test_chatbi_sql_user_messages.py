@@ -93,5 +93,7 @@ def test_format_empty_filter_result_content_with_diagnostics():
 
 
 def test_format_empty_filter_result_content_fallback():
-    assert format_empty_filter_result_content(None) == EMPTY_FILTER_RESULT_FALLBACK_CONTENT
+    content = format_empty_filter_result_content(None)
+    assert content == EMPTY_FILTER_RESULT_FALLBACK_CONTENT
+    assert "上海" not in content
 

@@ -60,6 +60,7 @@ from app.services.ai.runners.chatbi import few_shot as chatbi_few_shot
 from app.services.ai.runners.chatbi import system_prompt as chatbi_system_prompt
 from app.services.ai.runners.chatbi import agent_builder as chatbi_agent_builder
 from app.services.ai.runners.chatbi import empty_filter as chatbi_empty_filter
+from app.services.ai.runners.chatbi import where_condition_probe as chatbi_where_condition_probe
 from app.services.ai.runners.chatbi import resume_stream as chatbi_resume_stream
 from app.services.ai.runners.chatbi import followup_data as chatbi_followup_data
 
@@ -611,6 +612,11 @@ class DataAgentRunner(BaseExecutor):
 
     async def _maybe_run_empty_filter_diagnostics(self, state: _DataRunState, *, tool_args: dict[str, Any]):
         return await chatbi_empty_filter.maybe_run_empty_filter_diagnostics(self, state, tool_args=tool_args)
+
+    async def _maybe_run_where_condition_diagnostics(self, state: _DataRunState, *, tool_args: dict[str, Any]):
+        return await chatbi_where_condition_probe.maybe_run_where_condition_diagnostics(
+            self, state, tool_args=tool_args
+        )
 
     def _apply_auto_retry_sql_result(self, state: _DataRunState, *, sql_text: str, output: Any, parsed_output: Any) -> bool:
         return chatbi_empty_filter.apply_auto_retry_sql_result(self, state, sql_text=sql_text, output=output, parsed_output=parsed_output)

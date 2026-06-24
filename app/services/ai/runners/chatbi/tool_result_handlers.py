@@ -309,7 +309,10 @@ def apply_sql_tool_result(
                 state.failed_sql_signatures.get(normalized_sql, 0) + 1
             )
             state.last_failed_sql_normalized = normalized_sql
+        state.last_failed_sql_text = sql_text or state.last_failed_sql_text or ""
         state.last_sql_error_summary = str(state.sql_error_message or "")[:800]
+        state.where_condition_diagnostics = []
+        state.where_condition_diagnostic_summary = ""
         if (
             runner._is_schema_reference_sql_error(state.sql_error_message)
             and not runner._is_sql_schema_preflight_error(output)
@@ -383,6 +386,9 @@ def apply_sql_tool_result(
     state.schema_refresh_required = False
     state.schema_refreshed_after_sql_error = False
     state.last_sql_error_summary = ""
+    state.last_failed_sql_text = ""
+    state.where_condition_diagnostics = []
+    state.where_condition_diagnostic_summary = ""
     state.last_successful_sql_output = output
     duration_anomaly, duration_reason = runner._detect_duration_anomaly(parsed_output)
     if duration_anomaly:

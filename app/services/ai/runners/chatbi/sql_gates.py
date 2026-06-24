@@ -129,19 +129,49 @@ def extract_invalid_sql_identifiers(message: str) -> list[str]:
 
 
 def is_date_format_sql_error(message: str) -> bool:
-    text = str(message or "").lower()
-    if not text.strip():
-        return False
-    patterns = (
-        "ora-01861",
-        "ora-01830",
-        "literal does not match format string",
-        "date format",
-        "datetime format",
-        "cannot parse datetime",
-        "cannot parse date",
+    from app.services.ai.where_condition_sample_diagnostic import is_date_format_sql_error as _is_date
+
+    return _is_date(message)
+
+
+def is_where_condition_sql_error(message: str) -> bool:
+    from app.services.ai.where_condition_sample_diagnostic import is_where_condition_sql_error as _is_where
+
+    return _is_where(message)
+
+
+def build_where_condition_probe_repair_hint(failed_sql: str, *, dialect: str = "oracle") -> str:
+    from app.services.ai.where_condition_sample_diagnostic import (
+        build_where_condition_probe_repair_hint as _build_hint,
     )
-    return any(pattern in text for pattern in patterns)
+
+    return _build_hint(failed_sql, dialect=dialect)
+
+
+def extract_where_predicate_columns_from_sql(sql: str, *, dialect: str = "oracle") -> list[tuple[str, str]]:
+    from app.services.ai.where_condition_sample_diagnostic import (
+        extract_where_predicate_columns_from_sql as _extract,
+    )
+
+    return [(item.table, item.column) for item in _extract(sql, dialect=dialect)]
+
+
+def build_where_sample_probe_sql(
+    failed_sql: str,
+    *,
+    dialect: str = "oracle",
+) -> str:
+    from app.services.ai.where_condition_sample_diagnostic import build_where_sample_probe_plans
+
+    plans = build_where_sample_probe_plans(failed_sql, dialect=dialect)
+    if not plans:
+        return ""
+    return plans[0][2]
+
+
+extract_date_filter_columns_from_sql = extract_where_predicate_columns_from_sql
+build_date_format_probe_sql = build_where_sample_probe_sql
+build_date_format_probe_repair_hint = build_where_condition_probe_repair_hint
 
 
 def normalize_sql_identifier(identifier: str) -> str:
@@ -403,8 +433,9 @@ def build_schema_binding_summary(output: Any) -> str:
         return ""
     lines = [
         "【Schema Binding 摘要】",
-        "以下为本轮 SQL 允许优先绑定的物理表与字段，请先完成“业务含义 -> 物理字段”的映射再生成 SQL。",
-        "字段后括号内为类型/样例值；写 WHERE 时必须与类型一致。",
+        "以下为本轮 SQL 允许优先绑定的物理表与字段；括号前英文名为 columns.name（SQL 必须使用的物理列名），",
+        "term 为中文业务术语仅供理解，禁止写入 SQL。",
+        "请先完成「业务含义 -> columns.name」映射再生成 SQL；字段后括号内为类型/样例值，写 WHERE 时必须与类型一致。",
     ]
     date_hints: list[str] = []
     for table, columns in list(table_columns.items())[:8]:
@@ -420,7 +451,11 @@ def build_schema_binding_summary(output: Any) -> str:
         lines.append("日期字段写法：")
         for hint in date_hints[:12]:
             lines.append(f"  - {hint}")
-    lines.append("约束：禁止使用未列出的字段；若用户口径无法绑定到上述字段，请先重查 Schema 或澄清，不要臆造英文列名。")
+    lines.append(
+        "约束：SQL 只能使用上述 columns.name（括号前英文名）；"
+        "禁止使用 term 或臆造 CUSTOMER_NAME、NAME 等未列出的列名；"
+        "若用户口径无法绑定到上述 name，请先重查 Schema 或澄清。"
+    )
     return "\n".join(lines)
 
 
@@ -638,6 +673,31 @@ def _build_preflight_alias_map(
     return alias_to_table, table_displays, ""
 
 
+def _format_preflight_invalid_column_error(
+    *,
+    qualifier: str,
+    col_name: str,
+    table_display: str,
+    allowed_columns: list[str],
+    unqualified: bool = False,
+) -> str:
+    available = ", ".join(allowed_columns[:40])
+    if unqualified:
+        return (
+            "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
+            f'ORA-00904: "{col_name.upper()}": invalid identifier。'
+            f"字段 {col_name} 不在本轮 Schema 已绑定表 {table_display} 的 columns.name 列表中。"
+            f"可用字段：{available}。"
+            "请改用 Schema 中 columns.name 的原文字符串，禁止臆造 CUSTOMER_NAME、NAME 等未列出列名。"
+        )
+    return (
+        "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
+        f'ORA-00904: "{qualifier.upper()}"."{col_name.upper()}": invalid identifier。'
+        f"字段 {qualifier}.{col_name} 不在 get_dataset_schema 返回的表 {table_display} 字段列表中。"
+        f"可用字段：{available}。请替换或删除该字段后再调用 execute_sql_query。"
+    )
+
+
 def _preflight_column_reference_error(
     sql: str,
     schema_table_columns: dict[str, list[str]],
@@ -646,6 +706,26 @@ def _preflight_column_reference_error(
     *,
     dialect: str | None = None,
 ) -> str:
+    referenced_tables = sorted(set(alias_to_table.values()))
+
+    def _check_column(table_norm: str, col_name: str, *, unqualified: bool) -> str:
+        allowed_columns = schema_table_columns.get(table_norm) or []
+        if not allowed_columns:
+            return ""
+        allowed_norms = {normalize_sql_identifier(item) for item in allowed_columns}
+        column_norm = normalize_sql_identifier(col_name)
+        if column_norm in allowed_norms:
+            return ""
+        table_display = table_displays.get(table_norm) or table_norm
+        qualifier = "" if unqualified else table_norm
+        return _format_preflight_invalid_column_error(
+            qualifier=qualifier,
+            col_name=col_name,
+            table_display=table_display,
+            allowed_columns=allowed_columns,
+            unqualified=unqualified,
+        )
+
     if dialect:
         try:
             import sqlglot
@@ -653,31 +733,43 @@ def _preflight_column_reference_error(
 
             parsed = sqlglot.parse(sql, read=dialect)
             if parsed and len(parsed) == 1:
-                for column in parsed[0].find_all(exp.Column):
+                root = parsed[0]
+                for column in root.find_all(exp.Column):
                     col_name = str(column.name or "").strip().strip('"').strip("'")
                     if not col_name or col_name == "*":
                         continue
                     table_ref = column.table
-                    if not table_ref:
+                    if table_ref:
+                        qualifier_norm = normalize_sql_identifier(str(table_ref))
+                        table_norm = alias_to_table.get(qualifier_norm)
+                        if not table_norm:
+                            continue
+                        err = _check_column(table_norm, col_name, unqualified=False)
+                        if err:
+                            return err
                         continue
-                    qualifier_norm = normalize_sql_identifier(str(table_ref))
-                    table_norm = alias_to_table.get(qualifier_norm)
-                    if not table_norm:
+                    if not referenced_tables:
                         continue
-                    allowed_columns = schema_table_columns.get(table_norm) or []
-                    if not allowed_columns:
+                    found_in = [
+                        table_norm
+                        for table_norm in referenced_tables
+                        if normalize_sql_identifier(col_name)
+                        in {normalize_sql_identifier(item) for item in (schema_table_columns.get(table_norm) or [])}
+                    ]
+                    if found_in:
                         continue
-                    allowed_norms = {normalize_sql_identifier(item) for item in allowed_columns}
-                    column_norm = normalize_sql_identifier(col_name)
-                    if column_norm not in allowed_norms:
-                        table_display = table_displays.get(table_norm) or table_norm
-                        available = ", ".join(allowed_columns[:40])
-                        return (
-                            "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
-                            f'ORA-00904: "{qualifier_norm.upper()}"."{col_name.upper()}": invalid identifier。'
-                            f"字段 {qualifier_norm}.{col_name} 不在 get_dataset_schema 返回的表 {table_display} 字段列表中。"
-                            f"可用字段：{available}。请替换或删除该字段后再调用 execute_sql_query。"
-                        )
+                    if len(referenced_tables) == 1:
+                        return _check_column(referenced_tables[0], col_name, unqualified=True)
+                    table_names = ", ".join(table_displays.get(t, t) for t in referenced_tables[:4])
+                    sample_cols = schema_table_columns.get(referenced_tables[0]) or []
+                    available = ", ".join(sample_cols[:40])
+                    return (
+                        "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
+                        f'ORA-00904: "{col_name.upper()}": invalid identifier。'
+                        f"字段 {col_name} 不在本轮 SQL 引用的任一 Schema 表（{table_names}）的 columns.name 列表中。"
+                        f"可用字段示例：{available}。"
+                        "请改用 Schema 中 columns.name，或 JOIN 到拥有该列的正确表并加表别名。"
+                    )
                 return ""
         except Exception:
             pass
@@ -688,20 +780,31 @@ def _preflight_column_reference_error(
         table_norm = alias_to_table.get(qualifier_norm)
         if not table_norm:
             continue
-        allowed_columns = schema_table_columns.get(table_norm) or []
-        if not allowed_columns:
-            continue
-        allowed_norms = {normalize_sql_identifier(item) for item in allowed_columns}
-        column_norm = normalize_sql_identifier(column)
-        if column_norm not in allowed_norms:
-            table_display = table_displays.get(table_norm) or table_norm
-            available = ", ".join(allowed_columns[:40])
-            return (
-                "[TOOL_ERROR] SQL 预检失败：字段/表引用错误。"
-                f'ORA-00904: "{qualifier.upper()}"."{column.upper()}": invalid identifier。'
-                f"字段 {qualifier}.{column} 不在 get_dataset_schema 返回的表 {table_display} 字段列表中。"
-                f"可用字段：{available}。请替换或删除该字段后再调用 execute_sql_query。"
-            )
+        err = _check_column(table_norm, column, unqualified=False)
+        if err:
+            return err
+
+    if len(referenced_tables) == 1:
+        table_norm = referenced_tables[0]
+        select_match = re.search(
+            r"\bSELECT\b(.*?)\bFROM\b",
+            sql_for_preflight,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if select_match:
+            select_part = select_match.group(1)
+            if "*" not in select_part:
+                for token in re.findall(r"\b([A-Za-z_][\w$]*)\b", select_part):
+                    token_norm = normalize_sql_identifier(token)
+                    if token_norm in _PREFLIGHT_RESERVED_ALIASES:
+                        continue
+                    if token_norm in {normalize_sql_identifier(alias) for alias in alias_to_table}:
+                        continue
+                    if token_norm in {normalize_sql_identifier(table) for table in referenced_tables}:
+                        continue
+                    err = _check_column(table_norm, token, unqualified=True)
+                    if err:
+                        return err
     return ""
 
 
@@ -769,6 +872,9 @@ def is_diagnostic_sql(sql: str) -> bool:
         return True
     if "COUNT(" in sql_upper and "GROUP BY" not in sql_upper:
         return True
+    if " IS NOT NULL" in sql_upper and ("ROWNUM <=" in sql_upper or " LIMIT " in sql_upper or "FETCH FIRST" in sql_upper):
+        if re.search(r"\bSELECT\b[\s\S]{0,200}\bFROM\b", sql_upper):
+            return True
     return False
 
 

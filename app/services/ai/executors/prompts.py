@@ -380,7 +380,8 @@ XML 示例：
         "6. 用户只是要求基于上一轮结果做解释、可视化、保存、导出时，可复用上一轮结构化结果，不强制重新查数。\n"
         "7. 长期记忆中的业务别名、组织别名、地点别名可用于用户意图归一化；"
         "若记忆指出“用户称呼 A = 数据标准名 B”，生成 SQL 的筛选值应优先使用 B，并在回答中说明已按标准名 B 查询。"
-        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回为准。\n"
+        "但 SQL 中的表名、字段名、指标定义必须以 get_dataset_schema 返回的 columns.name / table_name 为准；"
+        "term 仅为业务说明，禁止写入 SQL。\n"
         "8. SQL 的 FROM/JOIN 只能使用 get_dataset_schema 返回的 table_name（物理表名）；"
         "schema 中的 table_desc、列 term、metrics_scope、数据集中文名等均为业务说明，严禁直接当作表名；"
         "指标块（metrics）仅提供计算口径参考，不含表结构，禁止把指标块或 metrics_scope 当作可查询的表。\n"
@@ -1535,6 +1536,7 @@ XML 示例：
         return (
             f"【已自动执行 get_dataset_schema】检索词：{keywords}\n"
             f"【数据集定义】\n{raw}\n\n"
+            f"{DataQueryPrompts.SCHEMA_COLUMN_NAMING_GUIDE}\n\n"
             "平台已在 Agent 推理开始前自动完成 Schema 检索。你现在应基于以上内容构建 SQL，"
             "并调用 execute_sql_query 查数；除非结果明显不匹配，禁止再次调用 get_dataset_schema，"
             "禁止使用 Grep/Read/Bash 等文件工具查找元数据。"
@@ -1545,17 +1547,31 @@ XML 示例：
         "【下一步强制动作】你已经拿到 Schema。现在禁止输出任何解释性文字，必须立刻发起 execute_sql_query 查数。\n"
         "要求：\n"
         "1) 直接通过大模型底层的原生 tools 参数发起 execute_sql_query 工具调用，切忌直接在文本中手写 XML 结构；\n"
-        "2) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算。"
+        "2) SQL 必须遵循 Grain-first：先聚合到 grain_keys，再 JOIN，再计算；\n"
+        "3) 列名只能使用 Schema 中 columns.name，禁止使用 term 或臆造的英文名。"
     )
 
     # 字段/表/标识符引用错误后的 SQL 修复指引（unknown column/table 等）
+    SCHEMA_COLUMN_NAMING_GUIDE = (
+        "【字段命名硬约束 — 写 SQL 前必读】\n"
+        "1) SQL 中的表名 MUST 使用 Schema 里 table_name；列名 MUST 使用 columns 下 name 的原文字符串（大小写一致）。\n"
+        "2) columns.term / desc 仅用于理解业务含义，禁止写入 SQL（不要把「客户名称」翻译成 CUSTOMER_NAME）。\n"
+        "3) 禁止臆造 Schema 未列出的英文列名（如 CUSTOMER_NAME、NAME、CREATE_TIME）；"
+        "若用户业务词无法映射到某个 name，先重查 Schema 或澄清，不得猜测。\n"
+        "4) 写 SQL 前先完成映射：用户说的每个业务词 → 具体哪张表的哪个 columns.name；"
+        "跨表字段必须带表别名（如 c.CUSTOMER_NAME），禁止在错误的表上 SELECT 该列。\n"
+        "5) WHERE/JOIN 必须对照 columns.type：字符串日期列用 'YYYY-MM-DD' 区间，DATE 列才用 DATE '...'；"
+        "禁止把名称列（VARCHAR）与 ID 列（Int64）直接 JOIN。"
+    )
+
     SCHEMA_REFERENCE_SQL_ERROR_REPAIR_GUIDE = (
         "【字段/表引用修正指引】\n"
-        "1) 不要凭记忆臆造物理列名或 JOIN 键；必须以 get_dataset_schema 返回的字段定义为准。\n"
-        "2) 重点核对：SELECT 列、JOIN ON 条件、WHERE 筛选字段、GROUP BY 键是否与 Schema 一致。\n"
-        "3) 若报错涉及 unknown column/table/invalid identifier 等，优先重查 Schema，"
+        "1) 不要凭记忆臆造物理列名或 JOIN 键；必须以 get_dataset_schema 返回的 columns.name 为准。\n"
+        "2) 重点核对：SELECT 列、JOIN ON 条件、WHERE 筛选字段、GROUP BY 键是否与 Schema 的 name 一致。\n"
+        "3) 若报错涉及 unknown column/table/invalid identifier 等，优先在 Schema 中查找 columns.name，"
         "再修改 SQL 中的列名、表别名或关联键；禁止原样重复失败 SQL。\n"
-        "4) 若 Schema 中仅有中文术语，请使用术语对应的物理字段名，不要直接写未定义的英文列名。\n"
+        "4) term（中文术语）不是列名；若报错列名不在 Schema 的 name 列表中，"
+        "必须换成 listed name 或 JOIN 到拥有该 name 的正确表，不要直接写未定义的英文列名。\n"
         "5) 若报错涉及 ClickHouse 时间解析错误 (如 Cannot parse datetime... While executing MergeTreeThread)，"
         "通常是由于 String 类型的日期字段包含空值或非法格式脏数据导致转换失败。此时【必须】使用 "
         "toDateTimeOrNull(column_name) 替换 toDateTime(column_name) 来进行容错，避免执行崩溃。"
@@ -1577,6 +1593,18 @@ XML 示例：
         "不要把 'YYYY-MM-DD' 用在实际包含时间、斜杠或中文格式的字段上。\n"
         "5) 修复时只改日期字段、日期字面量、TO_DATE/TO_CHAR 或时间边界表达式，"
         "不要顺手更换无关表字段。"
+    )
+
+    WHERE_CONDITION_PROBE_REPAIR_GUIDE = (
+        "【WHERE 条件样例探查修正指引】\n"
+        "1) 当 ORA-01861 / ORA-01722 / literal does not match format string 等错误表明 "
+        "WHERE 中列的实际存储格式与 SQL 写法不一致时，禁止继续猜测 DATE/TO_DATE/字符串区间。\n"
+        "2) 平台会（或已）自动从源表读取 WHERE 相关列的真实样例行；"
+        "必须按样例值的实际格式重写比较方式，而不是仅依赖 Schema 中的 type 标注。\n"
+        "3) 样例为 '2026-05-01 10:00:00' 等字符串 → 用同格式字符串区间；"
+        "样例确为 DATE → 用 DATE 'YYYY-MM-DD'；禁止对 VARCHAR 列套 TO_DATE/TO_CHAR。\n"
+        "4) 若样例显示 ID/编码为纯数字字符串而 JOIN 另一侧为数值，需 CAST/TO_NUMBER 或改 JOIN 键写法。\n"
+        "5) 只修正 WHERE/JOIN ON 中与样例不匹配的条件，不要顺手改 SELECT 列或无关业务口径。"
     )
 
     INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE = (
