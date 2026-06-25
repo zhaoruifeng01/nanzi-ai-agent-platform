@@ -313,7 +313,15 @@ def apply_sql_tool_result(
         state.last_sql_error_summary = str(state.sql_error_message or "")[:800]
         state.where_condition_diagnostics = []
         state.where_condition_diagnostic_summary = ""
-        if (
+        if runner._is_sql_schema_preflight_error(output):
+            if normalized_sql:
+                state.preflight_fail_signatures[normalized_sql] = (
+                    state.preflight_fail_signatures.get(normalized_sql, 0) + 1
+                )
+                if state.preflight_fail_signatures[normalized_sql] >= 2:
+                    state.schema_refresh_required = True
+                    state.schema_refreshed_after_sql_error = False
+        elif (
             runner._is_schema_reference_sql_error(state.sql_error_message)
             and not runner._is_sql_schema_preflight_error(output)
         ):
@@ -359,16 +367,14 @@ def apply_sql_tool_result(
 
     state.empty_sql_reason = ""
     state.empty_sql_result = False
-    if is_diag and state.expecting_final_sql_after_diagnostic:
-        if (
-            state.diagnostic_sql_pending_final
-            and runner._result_has_data_rows(parsed_output)
-        ):
-            state.expecting_final_sql_after_diagnostic = False
-            state.diagnostic_sql_pending_final = False
-        else:
+    if is_diag:
+        if runner._result_has_data_rows(parsed_output):
+            # Diagnostic SQL only samples candidate values; never treat it as the final answer.
             state.diagnostic_sql_pending_final = True
+            state.expecting_final_sql_after_diagnostic = True
             return parsed_output, False
+        # Empty diagnostic probe: keep exploring instead of marking business SQL complete.
+        return parsed_output, False
 
     state.expecting_final_sql_after_diagnostic = False
     state.diagnostic_sql_pending_final = False

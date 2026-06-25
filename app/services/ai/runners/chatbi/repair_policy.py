@@ -16,7 +16,9 @@ from app.services.ai.runners.chatbi.schema_fatal import is_schema_fatal
 from app.services.ai.runners.chatbi.sql_gates import is_schema_reference_sql_error
 from app.services.ai.where_condition_sample_diagnostic import (
     build_where_condition_probe_repair_hint,
+    is_invalid_number_sql_error,
     is_where_condition_sql_error,
+    schema_column_hints_from_bindings,
 )
 from app.services.ai.runners.chatbi.sql_repair_hints import (
     cross_dataset_scope_repair_hint,
@@ -95,6 +97,15 @@ def record_repair_attempt(state: DataRunState) -> None:
     if not kind:
         return
     state.repair_attempts[kind] = state.repair_attempts.get(kind, 0) + 1
+
+
+def _where_probe_repair_hint(state: DataRunState, *, error_text: str) -> str:
+    return build_where_condition_probe_repair_hint(
+        state.last_failed_sql_text,
+        schema_table_columns=state.schema_table_columns or None,
+        schema_column_hints=schema_column_hints_from_bindings(state.table_bindings) or None,
+        error_message=error_text,
+    )
 
 
 def build_repair_message(
@@ -199,9 +210,9 @@ def build_repair_message(
             if state.where_condition_diagnostic_summary:
                 repair += f"\n\n{state.where_condition_diagnostic_summary}"
             else:
-                repair += build_where_condition_probe_repair_hint(
-                    state.last_failed_sql_text,
-                )
+                repair += _where_probe_repair_hint(state, error_text=error_text)
+            if is_invalid_number_sql_error(error_text):
+                repair += f"\n\n{DataQueryPrompts.INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE}"
         repair += cross_dataset_scope_repair_hint(error_text)
         return repair
     if state.sql_error:
@@ -229,9 +240,9 @@ def build_repair_message(
             if state.where_condition_diagnostic_summary:
                 repair += f"\n\n{state.where_condition_diagnostic_summary}"
             else:
-                repair += build_where_condition_probe_repair_hint(
-                    state.last_failed_sql_text,
-                )
+                repair += _where_probe_repair_hint(state, error_text=error_text)
+            if is_invalid_number_sql_error(error_text):
+                repair += f"\n\n{DataQueryPrompts.INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE}"
         if "invalid expression" in err_lower or "unexpected token" in err_lower:
             repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
         return repair
@@ -259,7 +270,14 @@ def build_repair_message(
             "修正 SQL 后重新调用 execute_sql_query。修正并执行成功前禁止直接回答用户。"
         )
     if state.tool_loop_fuse_triggered:
-        return ""
+        reason = (state.tool_loop_fuse_reason or "").strip()
+        return (
+            "【工具循环熔断复核】检测到重复或无效的工具调用模式，已自动中止当前 ReAct 流。\n"
+            f"原因：{reason[:600]}\n"
+            "请停止重复提交相同工具参数；必须更换 get_dataset_schema 的 keywords，"
+            "或修正 execute_sql_query 的 SQL（字段、WHERE、JOIN、时间范围至少改一处）后重试。"
+            "禁止在未完成有效查数前直接回答用户。"
+        )
     if state.diagnostic_sql_pending_final:
         return (
             "【最终 SQL 执行要求】上一轮 execute_sql_query 是诊断 SQL，只能用于定位候选值、"
@@ -330,7 +348,9 @@ def reset_state_for_repair(state: DataRunState) -> None:
     state.sql_sandbox_blocked = False
     state.sql_sandbox_blocked_reason = ""
     state.failed_sql_repeat_gate_block = False
-    if repair_kind in {"empty_sql_result", "ratio_anomaly"}:
+    state.preflight_fail_signatures = {}
+    state.platform_auto_sql_attempts = 0
+    if repair_kind in {"empty_sql_result", "ratio_anomaly", "duration_anomaly"}:
         state.expecting_final_sql_after_diagnostic = True
     state.diagnostic_sql_pending_final = False
     state.ratio_anomaly = False
@@ -372,6 +392,10 @@ def build_repair_title(state: DataRunState) -> str:
         return "补充 SQL 计划"
     if state.failed_sql_repeat_gate_block:
         return "修正重复失败 SQL"
+    if state.sql_error:
+        return "修正 SQL 执行错误"
+    if state.empty_sql_result:
+        return "空结果筛选复核"
     if state.ratio_anomaly:
         return "比率/占比异常复核"
     if state.duration_anomaly:
@@ -448,7 +472,13 @@ def resolve_repair_tool_choice(state: DataRunState) -> Any | None:
         return ToolChoice(mode="required")
     if state.duration_anomaly:
         return ToolChoice(mode="execute_sql_query")
-    if state.sql_error or state.empty_sql_result or state.diagnostic_sql_pending_final:
+    if state.tool_loop_fuse_triggered:
+        if state.schema_completed:
+            return ToolChoice(mode="execute_sql_query")
+        return ToolChoice(mode="get_dataset_schema")
+    if state.empty_sql_result or state.diagnostic_sql_pending_final:
+        return ToolChoice(mode="execute_sql_query")
+    if state.sql_error:
         return ToolChoice(mode="required")
     if (
         state.requires_fresh_data
