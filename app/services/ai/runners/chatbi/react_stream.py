@@ -264,7 +264,6 @@ async def stream_agentscope_events(
             or state.sql_sandbox_blocked
             or state.sql_repeat_gate_block
             or state.failed_sql_repeat_gate_block
-            or state.ratio_anomaly
             or state.duration_anomaly
             or state.diagnostic_sql_pending_final
             or state.tool_loop_fuse_triggered
@@ -423,7 +422,6 @@ async def emit_final_guard(
         or state.sql_static_risk
         or state.time_range_anomaly
         or state.failed_sql_repeat_gate_block
-        or state.ratio_anomaly
         or state.duration_anomaly
         or state.diagnostic_sql_pending_final
         or state.tool_loop_fuse_triggered
@@ -486,13 +484,6 @@ async def emit_final_guard(
             "💡 **建议您可以尝试**：\n"
             f"1. {state.sql_sandbox_blocked_reason}\n"
             "2. 精确限定时间范围（如“查询最近3天”、“本周内”）以降低扫描数据量。"
-        )
-    elif state.ratio_anomaly:
-        content = (
-            "计算出的占比/比率数据疑似存在异常，为保证数据准确性，已自动拦截该次回答。\n\n"
-            "💡 **建议您可以尝试**：\n"
-            "1. 重新检查提问中涉及的比较口径（如“同比”、“环比”或时段先后顺序是否表述清晰）。\n"
-            "2. 重新核对提问内容并以简化的表述重新提问。"
         )
     elif state.duration_anomaly:
         content = (
