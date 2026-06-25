@@ -138,7 +138,6 @@ class DataRunState:
             and not self.sql_error
             and not self.empty_sql_result
             and not self.diagnostic_sql_pending_final
-            and not self.ratio_anomaly
             and not self.duration_anomaly
             and not self.tool_loop_fuse_triggered
         )

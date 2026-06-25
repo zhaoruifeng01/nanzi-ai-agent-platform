@@ -982,13 +982,6 @@ class FederatedQueryExecutor:
                                 raise ValueError(
                                     f"{FEDERATED_JOIN_RESULT_ANOMALY} 时长/时延结果异常：{duration_reason}"
                                 )
-                            ratio_anomaly, ratio_reason = (
-                                self.agent_runner._detect_ratio_anomaly(parsed_join)
-                            )
-                            if ratio_anomaly:
-                                raise ValueError(
-                                    f"{FEDERATED_JOIN_RESULT_ANOMALY} 比率/占比结果异常：{ratio_reason}"
-                                )
                         yield {
                             "type": "log",
                             "id": join_log_id,
@@ -1208,13 +1201,12 @@ class FederatedQueryExecutor:
                             }
                             yield {
                                 "content": (
-                                    "为保证数据准确性，联邦关联结果中存在明显异常的时长、时延或占比/比率指标，"
+                                    "为保证数据准确性，联邦关联结果中存在明显异常的时长或时延指标，"
                                     "平台已拦截该次回答。\n\n"
                                     f"原因：{error_text.replace(FEDERATED_JOIN_RESULT_ANOMALY, '').strip()}\n\n"
                                     "💡 **建议您可以尝试**：\n"
                                     "1. 检查 SQL 中时间字段相减方向、时区口径与单位换算。\n"
-                                    "2. 检查占比/比率字段的分子分母口径是否一致。\n"
-                                    "3. 适当简化关联条件或缩小时间范围后重新提问。"
+                                    "2. 适当简化关联条件或缩小时间范围后重新提问。"
                                 ),
                                 "status": "error",
                             }

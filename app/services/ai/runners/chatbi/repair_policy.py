@@ -55,8 +55,6 @@ def current_repair_kind(state: DataRunState) -> str:
         return "sql_error"
     if state.empty_sql_result:
         return "empty_sql_result"
-    if state.ratio_anomaly:
-        return "ratio_anomaly"
     if state.duration_anomaly:
         return "duration_anomaly"
     if state.tool_loop_fuse_triggered:
@@ -260,8 +258,6 @@ def build_repair_message(
         if semantic_repair:
             repair = f"{repair}\n\n{semantic_repair}"
         return repair
-    if state.ratio_anomaly:
-        return DataQueryPrompts.ratio_anomaly_recheck(state.ratio_anomaly_reason)
     if state.duration_anomaly:
         return (
             "【时间差/时延结果异常复核】上一轮 execute_sql_query 返回了明显异常的时间差、"
@@ -350,11 +346,9 @@ def reset_state_for_repair(state: DataRunState) -> None:
     state.failed_sql_repeat_gate_block = False
     state.preflight_fail_signatures = {}
     state.platform_auto_sql_attempts = 0
-    if repair_kind in {"empty_sql_result", "ratio_anomaly", "duration_anomaly"}:
+    if repair_kind in {"empty_sql_result", "duration_anomaly"}:
         state.expecting_final_sql_after_diagnostic = True
     state.diagnostic_sql_pending_final = False
-    state.ratio_anomaly = False
-    state.ratio_anomaly_reason = ""
     state.duration_anomaly = False
     state.duration_anomaly_reason = ""
     state.last_successful_sql_output = None
@@ -396,8 +390,6 @@ def build_repair_title(state: DataRunState) -> str:
         return "修正 SQL 执行错误"
     if state.empty_sql_result:
         return "空结果筛选复核"
-    if state.ratio_anomaly:
-        return "比率/占比异常复核"
     if state.duration_anomaly:
         return "时间差/时延异常复核"
     if state.tool_loop_fuse_triggered:
@@ -467,8 +459,6 @@ def resolve_repair_tool_choice(state: DataRunState) -> Any | None:
     if state.time_range_anomaly:
         return ToolChoice(mode="execute_sql_query")
     if state.failed_sql_repeat_gate_block:
-        return ToolChoice(mode="required")
-    if state.ratio_anomaly:
         return ToolChoice(mode="required")
     if state.duration_anomaly:
         return ToolChoice(mode="execute_sql_query")

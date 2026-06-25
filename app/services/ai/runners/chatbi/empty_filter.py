@@ -110,17 +110,10 @@ def apply_auto_retry_sql_result(
     state.last_successful_sql_output = output
     state.duration_anomaly = False
     state.duration_anomaly_reason = ""
-    state.ratio_anomaly = False
-    state.ratio_anomaly_reason = ""
     duration_anomaly, duration_reason = runner._detect_duration_anomaly(parsed_output)
     if duration_anomaly:
         state.duration_anomaly = True
         state.duration_anomaly_reason = duration_reason
-        return False
-    ratio_anomaly, anomaly_reason = runner._detect_ratio_anomaly(parsed_output)
-    if ratio_anomaly:
-        state.ratio_anomaly = True
-        state.ratio_anomaly_reason = anomaly_reason
         return False
     normalized_sql = runner._normalize_sql_text(sql_text)
     if normalized_sql:

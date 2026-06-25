@@ -55,7 +55,6 @@ def tool_call_made_progress(state: DataRunState, tool_name: str) -> bool:
             and not state.time_range_anomaly
             and not state.sql_repeat_gate_block
             and not state.failed_sql_repeat_gate_block
-            and not state.ratio_anomaly
             and not state.duration_anomaly
             and not state.diagnostic_sql_pending_final
         )

@@ -403,11 +403,6 @@ def apply_sql_tool_result(
         return parsed_output, False
     state.duration_anomaly = False
     state.duration_anomaly_reason = ""
-    ratio_anomaly, anomaly_reason = runner._detect_ratio_anomaly(parsed_output)
-    if ratio_anomaly:
-        state.ratio_anomaly = True
-        state.ratio_anomaly_reason = anomaly_reason
-        return parsed_output, False
     state.empty_filter_diagnostics = []
     state.empty_filter_diagnostic_summary = ""
     return parsed_output, True
