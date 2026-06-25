@@ -6,15 +6,33 @@ from app.services.ai.tools.agent_delegate_tool import (
     sub_agent_call,
     clean_sub_agent_output,
     _extract_delegation_text,
+    finalize_delegation_output,
+    resolve_delegation_permission_options,
+    EMPTY_DELEGATION_RESULT_MESSAGE,
+    DELEGATION_INTERRUPT_MESSAGES,
 )
 from app.core.context import AgentContext, set_agent_context
 from app.schemas.agent import ChatConfig
 
 pytestmark = pytest.mark.no_infrastructure
 
+_DISPATCH_PATCH = "app.services.ai.tools.agent_delegate_tool._dispatch_sub_agent_executor"
+
 ID_MAIN_KB = "11111111111111111111111111111111"
 ID_SUB_KB = "22222222222222222222222222222222"
 ID_FRONTEND_KB = "33333333333333333333333333333333"
+
+
+@contextmanager
+def _mock_delegation_runtime_config():
+    with patch(
+        "app.services.ai.tools.agent_delegate_tool._resolve_delegation_timeout_seconds",
+        AsyncMock(return_value=60.0),
+    ), patch(
+        "app.services.ai.tools.agent_delegate_tool._resolve_delegation_result_max_chars",
+        AsyncMock(return_value=8000),
+    ):
+        yield
 
 
 @contextmanager
@@ -57,6 +75,25 @@ def test_extract_delegation_text():
     assert _extract_delegation_text({"type": "error", "content": "fail"}) == "fail"
     assert _extract_delegation_text({"text": "alt"}) == "alt"
     assert _extract_delegation_text({"type": "log", "title": "step"}) == ""
+
+
+def test_finalize_delegation_output_empty():
+    assert finalize_delegation_output("") == EMPTY_DELEGATION_RESULT_MESSAGE
+    assert finalize_delegation_output("   ") == EMPTY_DELEGATION_RESULT_MESSAGE
+
+
+def test_finalize_delegation_output_truncation():
+    long_text = "x" * 5000
+    result = finalize_delegation_output(long_text, max_chars=100)
+    assert len(result) < 200
+    assert "截断" in result
+
+
+def test_resolve_delegation_permission_options_forces_allow():
+    assert resolve_delegation_permission_options({"approval_mode": "ask"}) == {
+        "approval_mode": "allow",
+    }
+    assert resolve_delegation_permission_options(None) == {"approval_mode": "allow"}
 
 
 @pytest.mark.asyncio
@@ -108,9 +145,10 @@ async def test_sub_agent_call_normal_execution_and_log_forwarding():
     mock_get_config = AsyncMock(return_value=sub_config)
     mock_dispatch = AsyncMock(return_value=mock_executor)
 
-    with _mock_system_agents_session([mock_agent]), \
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
          patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", mock_get_config), \
-         patch("app.services.ai.dispatcher.AgentDispatcher.dispatch", mock_dispatch), \
+         patch(_DISPATCH_PATCH, mock_dispatch), \
          patch("app.services.permission_service.PermissionService.check_permission", AsyncMock(return_value=True)):
 
         res = await sub_agent_call.func(agent_name="chat-bi", query="查询数据")
@@ -153,7 +191,8 @@ async def test_sub_agent_call_self_delegation():
     )
     mock_get_config = AsyncMock(return_value=sub_config)
 
-    with _mock_system_agents_session([mock_agent]), \
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
          patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", mock_get_config):
 
         res = await sub_agent_call.func(agent_name="chat-bi", query="test")
@@ -173,6 +212,7 @@ async def test_sub_agent_call_context_inheritance_and_user_info():
         user_id=100,
         is_admin=False,
         api_key="sk-main-key",
+        permission_options={"approval_mode": "ask"},
         user_dimensions={
             "user_name": "test_user",
             "real_name": "Test User",
@@ -214,9 +254,10 @@ async def test_sub_agent_call_context_inheritance_and_user_info():
     mock_executor.execute = mock_execute
     mock_dispatch = AsyncMock(return_value=mock_executor)
 
-    with _mock_system_agents_session([mock_agent]), \
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
          patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", mock_get_config), \
-         patch("app.services.ai.dispatcher.AgentDispatcher.dispatch", mock_dispatch) as patched_dispatch, \
+         patch(_DISPATCH_PATCH, mock_dispatch) as patched_dispatch, \
          patch("app.services.permission_service.PermissionService.check_permission", AsyncMock(return_value=True)):
 
         res = await sub_agent_call.func(agent_name="chat-bi", query="查询数据")
@@ -234,6 +275,85 @@ async def test_sub_agent_call_context_inheritance_and_user_info():
             "org_path": "/ROOT/DEPT01",
             "extra_data": {"role_level": 3},
         }
+        assert kwargs["permission_options"] == {"approval_mode": "allow"}
+
+    set_agent_context(None)
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_call_empty_output_returns_guidance():
+    main_ctx = AgentContext(
+        agent_id="main",
+        agent_name="MainAgent",
+        delegation_depth=0,
+    )
+    set_agent_context(main_ctx)
+
+    async def mock_execute(history):
+        yield {"type": "log", "title": "only logs", "status": "success"}
+
+    mock_executor = MagicMock()
+    mock_executor.execute = mock_execute
+
+    sub_config = ChatConfig(
+        agent_id="sub-123",
+        agent_name="chat-bi",
+        agent_display_name="数据查询助手",
+        system_prompt="sub",
+        tools=[],
+        capabilities=[],
+        model_name="test",
+        temperature=0.0,
+    )
+    mock_agent = _make_system_agent(agent_id="sub-123", name="chat-bi", display_name="数据查询助手")
+
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
+         patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", AsyncMock(return_value=sub_config)), \
+         patch(_DISPATCH_PATCH, AsyncMock(return_value=mock_executor)), \
+         patch("app.services.permission_service.PermissionService.check_permission", AsyncMock(return_value=True)):
+
+        res = await sub_agent_call.func(agent_name="chat-bi", query="查询数据")
+        assert res == EMPTY_DELEGATION_RESULT_MESSAGE
+
+    set_agent_context(None)
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_call_permission_interrupt_returns_error():
+    main_ctx = AgentContext(
+        agent_id="main",
+        agent_name="MainAgent",
+        delegation_depth=0,
+    )
+    set_agent_context(main_ctx)
+
+    async def mock_execute(history):
+        yield {"type": "permission_required", "permission_request_id": "req-1"}
+
+    mock_executor = MagicMock()
+    mock_executor.execute = mock_execute
+
+    sub_config = ChatConfig(
+        agent_id="sub-123",
+        agent_name="chat-bi",
+        agent_display_name="数据查询助手",
+        system_prompt="sub",
+        tools=[],
+        capabilities=[],
+        model_name="test",
+        temperature=0.0,
+    )
+    mock_agent = _make_system_agent(agent_id="sub-123", name="chat-bi", display_name="数据查询助手")
+
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
+         patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", AsyncMock(return_value=sub_config)), \
+         patch(_DISPATCH_PATCH, AsyncMock(return_value=mock_executor)), \
+         patch("app.services.permission_service.PermissionService.check_permission", AsyncMock(return_value=True)):
+
+        res = await sub_agent_call.func(agent_name="chat-bi", query="查询数据")
+        assert res == DELEGATION_INTERRUPT_MESSAGES["permission_required"]
 
     set_agent_context(None)
 
@@ -285,9 +405,10 @@ async def test_sub_agent_call_timeout_generator_closed():
             pass
         raise asyncio.TimeoutError()
 
-    with _mock_system_agents_session([mock_agent]), \
+    with _mock_delegation_runtime_config(), \
+         _mock_system_agents_session([mock_agent]), \
          patch("app.services.ai.agent_manager.AgentManagerService.get_active_agent_config", mock_get_config), \
-         patch("app.services.ai.dispatcher.AgentDispatcher.dispatch", mock_dispatch), \
+         patch(_DISPATCH_PATCH, mock_dispatch), \
          patch("asyncio.wait_for", mock_wait_for):
 
         res = await sub_agent_call.func(agent_name="chat-bi", query="查询数据")

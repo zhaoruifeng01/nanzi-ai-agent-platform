@@ -94,6 +94,7 @@ class BaseExecutor(ABC):
                 user_dimensions=user_dims,
                 trace_buffer=self.trace_buffer or [],
                 delegation_depth=0,
+                permission_options=dict(self.permission_options or {}),
             )
             set_agent_context(ctx)
         return ctx

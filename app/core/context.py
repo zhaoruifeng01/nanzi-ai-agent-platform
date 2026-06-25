@@ -43,6 +43,9 @@ class AgentContext(BaseModel):
     # Delegation control
     delegation_depth: int = 0
 
+    # Runtime tool approval (inherited by sub_agent_call delegation)
+    permission_options: Dict[str, Any] = Field(default_factory=dict)
+
     # Queue for streaming sub-agent log/progress chunks back to client
     event_queue: Optional[Any] = None
 
