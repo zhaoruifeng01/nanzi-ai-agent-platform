@@ -164,11 +164,191 @@ def is_invalid_number_sql_error(message: str) -> bool:
     )
 
 
+@dataclass
+class SchemaColumnHint:
+    """Schema 列元信息（仅用于确定探查哪些列；样例值仍从库内 SELECT 获取）。"""
+
+    name: str
+    col_type: str = ""
+    examples: list[str] = field(default_factory=list)
+
+
+def schema_column_hints_from_bindings(table_bindings: dict[str, Any] | None) -> dict[str, list[SchemaColumnHint]]:
+    """从 run_state.table_bindings 提取列名/类型/示例，供探查列推断使用。"""
+    hints: dict[str, list[SchemaColumnHint]] = {}
+    for binding in (table_bindings or {}).values():
+        table_name = str(getattr(binding, "physical_name", "") or "").strip()
+        if not table_name:
+            continue
+        columns = getattr(binding, "columns", None) or []
+        table_hints: list[SchemaColumnHint] = []
+        for column in columns:
+            name = str(getattr(column, "name", "") or "").strip()
+            if not name:
+                continue
+            examples = getattr(column, "examples", None) or []
+            table_hints.append(
+                SchemaColumnHint(
+                    name=name,
+                    col_type=str(getattr(column, "col_type", "") or "").strip(),
+                    examples=[str(item).strip() for item in examples if str(item).strip()],
+                )
+            )
+        if table_hints:
+            hints[table_name] = table_hints
+    return hints
+
+
+_STRING_LIKE_COLUMN_TYPES = frozenset({
+    "varchar", "varchar2", "char", "nchar", "nvarchar", "nvarchar2", "text", "string", "clob",
+})
+_DATE_LIKE_COLUMN_TYPES = frozenset({
+    "date", "datetime", "timestamp", "timestamptz", "datetime2", "smalldatetime",
+})
+_NUMERIC_LIKE_COLUMN_TYPES = frozenset({
+    "number", "numeric", "int", "integer", "float", "double", "decimal", "bigint", "smallint",
+})
+_WHERE_PROBE_NAME_TOKENS = (
+    "date",
+    "time",
+    "month",
+    "year",
+    "day",
+    "_at",
+    "_on",
+)
+
+
+def _normalize_table_key(name: str) -> str:
+    return re.sub(r"[`\"'\[\]]", "", str(name or "").strip()).lower()
+
+
+def _normalize_column_type(col_type: str) -> str:
+    return re.sub(r"\([^)]*\)", "", str(col_type or "").strip()).strip().lower()
+
+
+def _resolve_schema_column_names(
+    table: str,
+    schema_table_columns: dict[str, list[str]] | None,
+) -> list[str]:
+    if not schema_table_columns:
+        return []
+    table_key = _normalize_table_key(table)
+    columns = schema_table_columns.get(table) or schema_table_columns.get(table_key) or []
+    if columns:
+        return [str(item).strip() for item in columns if str(item).strip()]
+    for key, values in schema_table_columns.items():
+        if _normalize_table_key(key) == table_key:
+            return [str(item).strip() for item in values if str(item).strip()]
+    return []
+
+
+def _resolve_schema_column_hints(
+    table: str,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None,
+) -> list[SchemaColumnHint]:
+    if not schema_column_hints:
+        return []
+    table_key = _normalize_table_key(table)
+    hints = schema_column_hints.get(table) or schema_column_hints.get(table_key) or []
+    if hints:
+        return list(hints)
+    for key, values in schema_column_hints.items():
+        if _normalize_table_key(key) == table_key:
+            return list(values)
+    return []
+
+
+def _column_appears_in_sql(column: str, sql_text: str) -> bool:
+    col = str(column or "").strip()
+    if not col:
+        return False
+    return bool(re.search(rf"(?<![\w.]){re.escape(col)}(?![\w])", sql_text, flags=re.IGNORECASE))
+
+
+def _looks_like_date_example(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\d{4}[-/年]\d{1,2}", text)
+        or re.search(r"\d{4}-\d{2}-\d{2}", text)
+        or re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}", text)
+    )
+
+
+def _score_schema_column_for_where_probe(
+    hint: SchemaColumnHint,
+    *,
+    sql_text: str,
+    error_message: str,
+) -> int:
+    name = str(hint.name or "").strip()
+    if not name:
+        return 0
+    col_type = _normalize_column_type(hint.col_type)
+    lowered = name.lower()
+    score = 0
+    if _column_appears_in_sql(name, sql_text):
+        score += 10
+    if any(token in lowered for token in _WHERE_PROBE_NAME_TOKENS):
+        score += 2
+    if any(_looks_like_date_example(item) for item in hint.examples):
+        score += 2
+    if is_date_format_sql_error(error_message):
+        if col_type in _DATE_LIKE_COLUMN_TYPES or col_type in _STRING_LIKE_COLUMN_TYPES:
+            score += 3
+    if is_invalid_number_sql_error(error_message):
+        if col_type in _STRING_LIKE_COLUMN_TYPES:
+            score += 2
+        if col_type in _NUMERIC_LIKE_COLUMN_TYPES:
+            score += 1
+        if lowered.startswith("is_") or lowered.endswith("_flag") or lowered.endswith("_status"):
+            score += 2
+    return score
+
+
+def infer_probe_columns_from_schema(
+    table: str,
+    sql_text: str,
+    *,
+    error_message: str = "",
+    schema_table_columns: dict[str, list[str]] | None = None,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None = None,
+    max_columns: int = MAX_WHERE_PROBE_COLUMNS,
+) -> list[str]:
+    """从 Schema 推断应探查的列：优先 SQL 中出现 + 与错误类型相关的列。"""
+    hints = _resolve_schema_column_hints(table, schema_column_hints)
+    if not hints and schema_table_columns:
+        hints = [
+            SchemaColumnHint(name=name)
+            for name in _resolve_schema_column_names(table, schema_table_columns)
+        ]
+    if not hints:
+        return []
+
+    scored: list[tuple[int, str]] = []
+    for hint in hints:
+        column_score = _score_schema_column_for_where_probe(
+            hint,
+            sql_text=sql_text,
+            error_message=error_message,
+        )
+        if column_score <= 0:
+            continue
+        scored.append((column_score, hint.name))
+    scored.sort(key=lambda item: (-item[0], item[1].lower()))
+    return [name for _, name in scored[: max(1, max_columns)]]
+
+
 def extract_where_predicate_columns_from_sql(
     sql: str,
     *,
     dialect: str = "oracle",
     max_columns: int = MAX_WHERE_PROBE_COLUMNS,
+    schema_table_columns: dict[str, list[str]] | None = None,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None = None,
+    error_message: str = "",
 ) -> list[WherePredicateRef]:
     """从失败 SQL 的 WHERE 中提取参与比较/过滤的列（不限于日期）。"""
     text = str(sql or "").strip()
@@ -187,8 +367,6 @@ def extract_where_predicate_columns_from_sql(
         key = (tbl.lower(), col.lower())
         if key in seen:
             return False
-        if len(found) >= max_columns:
-            return False
         seen.add(key)
         found.append(WherePredicateRef(table=tbl, column=col, operator=operator))
         return True
@@ -199,23 +377,54 @@ def extract_where_predicate_columns_from_sql(
         if where:
             for predicate in where.find_all(exp.Predicate):
                 _collect_predicate_columns(predicate, _add)
-                if len(found) >= max_columns:
-                    break
     except (ParseError, ValueError, TypeError):
         pass
 
     if not found:
-        _extract_where_predicate_columns_fallback(text, main_table, _add, max_columns=max_columns)
+        _extract_where_predicate_columns_fallback(text, main_table, _add, max_columns=max_columns * 3)
 
-    if found:
-        return found[:max_columns]
+    schema_columns = infer_probe_columns_from_schema(
+        main_table,
+        text,
+        error_message=error_message,
+        schema_table_columns=schema_table_columns,
+        schema_column_hints=schema_column_hints,
+        max_columns=max_columns * 2,
+    )
+    for column in schema_columns:
+        if _column_appears_in_sql(column, text):
+            _add(main_table, column)
 
-    # 兜底：若 WHERE 解析失败，至少尝试主表常见时间/状态列名
-    for col in ("CREATE_DATE", "create_date", "UPDATE_DATE", "update_date", "STATUS", "status"):
-        if col.lower() in text.lower():
-            if not _add(main_table, col):
-                break
-    return found[:max_columns]
+    if not found:
+        for column in schema_columns:
+            _add(main_table, column)
+
+    return _prioritize_where_probe_columns(found, text)[:max_columns]
+
+
+def _prioritize_where_probe_columns(
+    refs: list[WherePredicateRef],
+    sql_text: str,
+) -> list[WherePredicateRef]:
+    """优先探查 DATE/TO_DATE/TO_CHAR 相关列，避免 billing_status 等占满 4 列配额。"""
+    upper = str(sql_text or "").upper()
+
+    def score(ref: WherePredicateRef) -> tuple[int, int]:
+        col = ref.column.upper()
+        col_quoted = re.escape(col)
+        date_score = 0
+        if re.search(rf"\bDATE\s+'[^']+'", upper) and col in upper:
+            if re.search(rf"\b{col_quoted}\s*(?:>=|<=|>|<|=)", upper, flags=re.IGNORECASE):
+                date_score += 4
+        if re.search(rf"TO_(?:DATE|CHAR)\s*\(\s*(?:\w+\.)?{col_quoted}\b", upper, flags=re.IGNORECASE):
+            date_score += 3
+        if any(token in col for token in ("DATE", "TIME", "MONTH", "YEAR")):
+            date_score += 2
+        if ref.operator in {"GTE", "LTE", "GT", "LT", "BETWEEN"}:
+            date_score += 1
+        return (-date_score, refs.index(ref))
+
+    return sorted(refs, key=score)
 
 
 def build_where_sample_probe_sql(
@@ -245,24 +454,60 @@ def build_where_sample_probe_sql(
     return apply_dialect_row_limit(inner, dialect=dialect, limit=safe_limit, max_limit=MAX_WHERE_PROBE_SAMPLES)
 
 
+def build_where_sample_probe_fallback_sql(
+    *,
+    table: str,
+    column: str,
+    dialect: str = "oracle",
+    limit: int = MAX_WHERE_PROBE_SAMPLES,
+) -> str:
+    """单列探查：批量 OR 探查无样例时，逐列再试。"""
+    table_name = _quote_identifier(table, dialect=dialect)
+    col_name = _quote_identifier(column, dialect=dialect)
+    safe_limit = max(1, min(int(limit), MAX_WHERE_PROBE_SAMPLES))
+    inner = f"SELECT {col_name} AS {col_name} FROM {table_name} WHERE {col_name} IS NOT NULL"
+    return apply_dialect_row_limit(inner, dialect=dialect, limit=safe_limit, max_limit=MAX_WHERE_PROBE_SAMPLES)
+
+
 def build_where_sample_probe_plans(
     failed_sql: str,
     *,
     dialect: str = "oracle",
+    schema_table_columns: dict[str, list[str]] | None = None,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None = None,
+    error_message: str = "",
 ) -> list[tuple[str, list[str], str]]:
     """按表分组生成探查计划：(table, columns, probe_sql)。"""
-    predicates = extract_where_predicate_columns_from_sql(failed_sql, dialect=dialect)
+    predicates = extract_where_predicate_columns_from_sql(
+        failed_sql,
+        dialect=dialect,
+        schema_table_columns=schema_table_columns,
+        schema_column_hints=schema_column_hints,
+        error_message=error_message,
+    )
     if not predicates:
         main_table = _resolve_main_table_name(failed_sql, dialect=dialect)
         if not main_table:
             return []
-        probe_sql = build_where_sample_probe_sql(table=main_table, columns=[], dialect=dialect)
-        return [(main_table, [], probe_sql)]
+        schema_cols = infer_probe_columns_from_schema(
+            main_table,
+            failed_sql,
+            error_message=error_message,
+            schema_table_columns=schema_table_columns,
+            schema_column_hints=schema_column_hints,
+        )
+        probe_sql = build_where_sample_probe_sql(
+            table=main_table,
+            columns=schema_cols,
+            dialect=dialect,
+        )
+        return [(main_table, schema_cols, probe_sql)]
 
     grouped: dict[str, list[str]] = {}
     order: list[str] = []
     for item in predicates:
         table_key = item.table or _resolve_main_table_name(failed_sql, dialect=dialect)
+        table_key = _resolve_physical_table_name(failed_sql, table_key, dialect=dialect)
         if not table_key:
             continue
         if table_key not in grouped:
@@ -284,6 +529,9 @@ def build_where_condition_probe_repair_hint(
     *,
     dialect: str = "oracle",
     diagnostics: list[WhereSampleDiagnosticResult] | None = None,
+    schema_table_columns: dict[str, list[str]] | None = None,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None = None,
+    error_message: str = "",
 ) -> str:
     """生成 WHERE 样例探查 repair 提示；若已有诊断结果则直接引用样例值。"""
     if diagnostics:
@@ -299,7 +547,13 @@ def build_where_condition_probe_repair_hint(
             "再按样例格式重写 WHERE，禁止继续猜测 DATE/TO_DATE/字符串写法。"
         )
 
-    plans = build_where_sample_probe_plans(failed_sql, dialect=dialect)
+    plans = build_where_sample_probe_plans(
+        failed_sql,
+        dialect=dialect,
+        schema_table_columns=schema_table_columns,
+        schema_column_hints=schema_column_hints,
+        error_message=error_message,
+    )
     if not plans:
         limit_hint = dialect_limit_hint(dialect)
         return (
@@ -309,7 +563,8 @@ def build_where_condition_probe_repair_hint(
 
     lines = [
         "【WHERE 条件探查 — 必须先看清真实样例再改 SQL】",
-        "Schema 中 columns.type/examples 可能与库内实际存储不一致（如 Date 标注但存 VARCHAR）。",
+        "探查列来自失败 SQL 的 WHERE 解析 + 当前 Schema 列定义（type/examples 仅用于选列，不代替库内样例）。",
+        "样例值必须来自下面诊断 SQL 的查询结果；Schema type/examples 可能与库内实际存储不一致。",
         "禁止继续猜测 DATE/TO_DATE/字符串区间写法；请先执行下面诊断 SQL（计入 repair 轮次，不算最终答案）：",
     ]
     for _table, cols, probe_sql in plans:
@@ -317,8 +572,8 @@ def build_where_condition_probe_repair_hint(
         lines.append(f"- 探查列 {col_hint}：\n```sql\n{probe_sql}\n```")
     lines.append(
         "根据 sample 行中各列的真实字符串/日期格式，重写 WHERE 比较方式："
-        "字符串列用同格式字面量区间；DATE 列用 DATE 'YYYY-MM-DD'；"
-        "禁止对 VARCHAR 列套 TO_DATE/TO_CHAR。"
+        "字符串列用同格式字面量区间；确为 DATE 类型列才用 DATE 'YYYY-MM-DD'；"
+        "禁止对 VARCHAR 列套 TO_DATE/TO_CHAR；禁止对标志位列用 `= 0` 应改为 `= '0'`。"
     )
     return "\n\n" + "\n".join(lines)
 
@@ -335,7 +590,11 @@ def format_where_condition_repair_block(diagnostics: list[WhereSampleDiagnosticR
             lines.append(f"- 表 `{item.table}` 列 {cols} 探查失败：{item.error}")
             continue
         if not item.sample_rows:
-            lines.append(f"- 表 `{item.table}` 列 {cols} 未查到非空样例。")
+            lines.append(
+                f"- 表 `{item.table}` 列 {cols} 未查到非空样例。"
+                "若错误为 ORA-01861，可尝试去掉 DATE 关键字改用字符串字面量；"
+                "若错误为 ORA-01722，检查标志列是否应写 `= '0'` 而非 `= 0`，并去掉 TO_CHAR/TO_DATE。"
+            )
             continue
         preview_parts: list[str] = []
         for row in item.sample_rows[:3]:
@@ -377,6 +636,8 @@ async def run_where_condition_diagnostics(
     is_admin: bool,
     execute_sql,
     error_message: str = "",
+    schema_table_columns: dict[str, list[str]] | None = None,
+    schema_column_hints: dict[str, list[SchemaColumnHint]] | None = None,
 ) -> list[WhereSampleDiagnosticResult]:
     """SQL 因 WHERE 类型/格式错误失败后，自动探查源表样例行。"""
     from app.services.sql_query_execution_service import dialect_from_data_source
@@ -385,7 +646,13 @@ async def run_where_condition_diagnostics(
         return []
 
     dialect = dialect_from_data_source(data_source)
-    plans = build_where_sample_probe_plans(sql, dialect=dialect)
+    plans = build_where_sample_probe_plans(
+        sql,
+        dialect=dialect,
+        schema_table_columns=schema_table_columns,
+        schema_column_hints=schema_column_hints,
+        error_message=error_message,
+    )
     if not plans:
         return []
 
@@ -417,8 +684,60 @@ async def run_where_condition_diagnostics(
 
         parsed = _try_parse_json(raw)
         result.sample_rows = parse_sample_rows(parsed, columns=columns or [])
+        if not result.sample_rows and columns:
+            result.sample_rows = await _probe_columns_individually(
+                table=table,
+                columns=columns,
+                dialect=dialect,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id,
+                is_admin=is_admin,
+                execute_sql=execute_sql,
+            )
         results.append(result)
     return results
+
+
+async def _probe_columns_individually(
+    *,
+    table: str,
+    columns: list[str],
+    dialect: str,
+    data_source: str,
+    dataset_name: str,
+    user_id: Optional[int],
+    is_admin: bool,
+    execute_sql,
+) -> list[dict[str, str]]:
+    """批量 OR 探查无样例时，逐列再试；合并为单行样例字典。"""
+    merged: dict[str, str] = {}
+    for column in columns[:MAX_WHERE_PROBE_COLUMNS]:
+        probe_sql = build_where_sample_probe_fallback_sql(
+            table=table,
+            column=column,
+            dialect=dialect,
+        )
+        try:
+            raw = await execute_sql(
+                sql=probe_sql,
+                data_source=data_source,
+                dataset_name=dataset_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        except Exception:
+            continue
+        if _looks_like_sql_error(raw):
+            continue
+        parsed = _try_parse_json(raw)
+        rows = parse_sample_rows(parsed, columns=[column])
+        for row in rows:
+            value = str(row.get(column) or row.get(column.upper()) or row.get(column.lower()) or "").strip()
+            if value:
+                merged[column] = value
+                break
+    return [merged] if merged else []
 
 
 def _sample_values_for_columns(diagnostics: list[WhereSampleDiagnosticResult]) -> dict[str, list[str]]:
@@ -507,6 +826,50 @@ def rewrite_where_date_literals_as_strings(
     return rewritten
 
 
+def rewrite_where_numeric_literals_as_strings(sql: str) -> str | None:
+    """ORA-01722 常见原因：VARCHAR 标志列与数字 0/1 比较。"""
+    rewritten = str(sql or "")
+    changed = False
+    pattern = re.compile(
+        r"(\(?\s*(?:\w+\.)?(\w+)\s*=\s*)(0|1)(\s+OR\s+\2\s+IS\s+NULL\s*\)?)",
+        flags=re.IGNORECASE,
+    )
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal changed
+        prefix = match.group(1)
+        literal = match.group(3)
+        suffix = match.group(4)
+        changed = True
+        return f"{prefix}'{literal}'{suffix}"
+
+    rewritten = pattern.sub(_replace, rewritten)
+    if not changed or rewritten.strip() == str(sql).strip():
+        return None
+    return rewritten
+
+
+def rewrite_where_date_literals_blind(sql: str) -> str | None:
+    """样例为空且 ORA-01861 时：去掉 DATE 关键字，改为字符串字面量（保守兜底）。"""
+    rewritten = str(sql or "")
+    changed = False
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal changed
+        changed = True
+        return f"{match.group(1)}'{match.group(2)}'"
+
+    rewritten = re.subn(
+        r"((?:\w+\.)?\w+\s*(?:>=|<=|>|<|=)\s*)DATE\s*'([^']+)'",
+        _replace,
+        rewritten,
+        flags=re.IGNORECASE,
+    )[0]
+    if not changed or rewritten.strip() == str(sql).strip():
+        return None
+    return rewritten
+
+
 def build_where_format_corrected_sql(
     sql: str,
     diagnostics: list[WhereSampleDiagnosticResult],
@@ -516,22 +879,25 @@ def build_where_format_corrected_sql(
     if not diagnostics:
         return None
     sample_values = _sample_values_for_columns(diagnostics)
-    if not sample_values:
-        return None
-
     columns: list[str] = []
     for item in diagnostics:
         for col in item.columns:
-            if col.lower() in sample_values and col not in columns:
+            if col not in columns:
                 columns.append(col)
 
-    corrected = rewrite_where_date_literals_as_strings(
-        sql,
-        columns=columns,
-        sample_values=sample_values,
-    )
-    if corrected:
-        return corrected
+    if sample_values:
+        corrected = rewrite_where_date_literals_as_strings(
+            sql,
+            columns=[col for col in columns if col.lower() in sample_values],
+            sample_values=sample_values,
+        )
+        if corrected:
+            return corrected
+
+    if is_date_format_sql_error(error_message):
+        corrected = rewrite_where_date_literals_blind(sql)
+        if corrected:
+            return corrected
 
     if is_invalid_number_sql_error(error_message):
         rewritten = str(sql)
@@ -554,8 +920,12 @@ def build_where_format_corrected_sql(
             )
             if count:
                 changed = True
+        numeric_fix = rewrite_where_numeric_literals_as_strings(rewritten)
+        if numeric_fix:
+            return numeric_fix
         if changed and rewritten.strip() != str(sql).strip():
             return rewritten
+        return rewrite_where_numeric_literals_as_strings(sql)
     return None
 
 
@@ -631,6 +1001,34 @@ async def run_automatic_where_format_retry(
         probe_summary=probe_summary,
         summary=summary,
     )
+
+
+def _resolve_physical_table_name(sql: str, table_ref: str, *, dialect: str) -> str:
+    """将 SQL 中的表别名解析为物理表名（探查 SQL 不能用别名）。"""
+    ref = str(table_ref or "").strip()
+    if not ref:
+        return ""
+    try:
+        expression = sqlglot.parse_one(str(sql or ""), read=dialect)
+    except (ParseError, ValueError, TypeError):
+        return ref
+    alias_map: dict[str, str] = {}
+    for table in expression.find_all(exp.Table):
+        physical = _table_physical_name_from_node(table)
+        if not physical:
+            continue
+        alias = str(getattr(table, "alias", "") or "").strip()
+        alias_map[physical.lower()] = physical
+        if alias:
+            alias_map[alias.lower()] = physical
+    return alias_map.get(ref.lower(), ref)
+
+
+def _table_physical_name_from_node(table: exp.Table) -> str:
+    parts = [str(part).strip() for part in table.parts if str(part).strip()]
+    if parts:
+        return parts[-1]
+    return str(getattr(table, "name", "") or "").strip()
 
 
 def _collect_predicate_columns(predicate: exp.Expression, add_fn) -> None:

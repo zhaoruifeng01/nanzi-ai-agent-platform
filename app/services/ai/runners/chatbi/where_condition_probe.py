@@ -12,9 +12,18 @@ from app.services.ai.where_condition_sample_diagnostic import (
     is_where_condition_sql_error,
     run_automatic_where_format_retry,
     run_where_condition_diagnostics,
+    schema_column_hints_from_bindings,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _where_probe_schema_context(state: DataRunState, *, error_message: str) -> dict[str, Any]:
+    return {
+        "schema_table_columns": state.schema_table_columns or None,
+        "schema_column_hints": schema_column_hints_from_bindings(state.table_bindings) or None,
+        "error_message": error_message,
+    }
 
 
 async def maybe_run_where_condition_diagnostics(
@@ -53,6 +62,8 @@ async def maybe_run_where_condition_diagnostics(
         async with AsyncSessionLocal() as session:
             return await execute_sql_query_core(session, dry_run=False, **kwargs)
 
+    schema_context = _where_probe_schema_context(state, error_message=error_message)
+
     try:
         diagnostics = await run_where_condition_diagnostics(
             sql=sql_text,
@@ -61,7 +72,7 @@ async def maybe_run_where_condition_diagnostics(
             user_id=runner._current_user_id(),
             is_admin=runner._current_user_is_admin(),
             execute_sql=_execute_sql,
-            error_message=error_message,
+            **schema_context,
         )
     except Exception as exc:
         logger.warning("[DataAgentRunner] WHERE condition diagnostics skipped: %s", exc)

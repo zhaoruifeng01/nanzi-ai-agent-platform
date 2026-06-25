@@ -16,7 +16,9 @@ from app.services.ai.runners.chatbi.schema_fatal import is_schema_fatal
 from app.services.ai.runners.chatbi.sql_gates import is_schema_reference_sql_error
 from app.services.ai.where_condition_sample_diagnostic import (
     build_where_condition_probe_repair_hint,
+    is_invalid_number_sql_error,
     is_where_condition_sql_error,
+    schema_column_hints_from_bindings,
 )
 from app.services.ai.runners.chatbi.sql_repair_hints import (
     cross_dataset_scope_repair_hint,
@@ -95,6 +97,15 @@ def record_repair_attempt(state: DataRunState) -> None:
     if not kind:
         return
     state.repair_attempts[kind] = state.repair_attempts.get(kind, 0) + 1
+
+
+def _where_probe_repair_hint(state: DataRunState, *, error_text: str) -> str:
+    return build_where_condition_probe_repair_hint(
+        state.last_failed_sql_text,
+        schema_table_columns=state.schema_table_columns or None,
+        schema_column_hints=schema_column_hints_from_bindings(state.table_bindings) or None,
+        error_message=error_text,
+    )
 
 
 def build_repair_message(
@@ -199,9 +210,9 @@ def build_repair_message(
             if state.where_condition_diagnostic_summary:
                 repair += f"\n\n{state.where_condition_diagnostic_summary}"
             else:
-                repair += build_where_condition_probe_repair_hint(
-                    state.last_failed_sql_text,
-                )
+                repair += _where_probe_repair_hint(state, error_text=error_text)
+            if is_invalid_number_sql_error(error_text):
+                repair += f"\n\n{DataQueryPrompts.INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE}"
         repair += cross_dataset_scope_repair_hint(error_text)
         return repair
     if state.sql_error:
@@ -229,9 +240,9 @@ def build_repair_message(
             if state.where_condition_diagnostic_summary:
                 repair += f"\n\n{state.where_condition_diagnostic_summary}"
             else:
-                repair += build_where_condition_probe_repair_hint(
-                    state.last_failed_sql_text,
-                )
+                repair += _where_probe_repair_hint(state, error_text=error_text)
+            if is_invalid_number_sql_error(error_text):
+                repair += f"\n\n{DataQueryPrompts.INVALID_NUMBER_SQL_ERROR_REPAIR_GUIDE}"
         if "invalid expression" in err_lower or "unexpected token" in err_lower:
             repair += f"\n\n{DataQueryPrompts.SQL_PAGINATION_SYNTAX_GUIDE}"
         return repair
