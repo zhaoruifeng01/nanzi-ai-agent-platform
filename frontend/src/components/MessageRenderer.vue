@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { normalizeGeneratedFileHref } from '@/utils/generatedFileUrl';
 import { renderMarkdown } from '@/utils/markdown';
 import { parseQuickButtons, postProcessQuickButtonHtml } from '@/utils/quickButtons';
 import { mergeChartDefaults, parseChartOptions } from '@/utils/chartRenderer';
@@ -132,6 +133,10 @@ interface ContentSegment {
 
     // 智能将服务器物理绝对路径重映射为可加载的网络相对路径（uploads 转静态托管，其他绝对路径转 fs 预览 API）
     res = res.replace(/(src|href)=["']([^"']*)["']/gi, (match, attr, val) => {
+      const normalizedGeneratedFileHref = normalizeGeneratedFileHref(val);
+      if (normalizedGeneratedFileHref !== val) {
+        return `${attr}="${normalizedGeneratedFileHref}"`;
+      }
       if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) {
         return match;
       }

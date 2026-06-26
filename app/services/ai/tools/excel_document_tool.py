@@ -109,7 +109,10 @@ async def excel_document_write(
     cells: list[dict[str, Any]] | None = None,
     rows: list[list[Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create or modify an Excel workbook copy and return a download link."""
+    """Create or modify an Excel workbook copy and return a download link.
+
+    Copy artifact.download_url verbatim in the final response; never add a protocol or host.
+    """
     if action not in {"create", "write_cells", "append_rows", "create_sheet"}:
         raise DocumentPathError("excel_document_write 不支持该操作")
     if action == "create":
