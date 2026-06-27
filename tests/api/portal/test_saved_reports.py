@@ -1,6 +1,7 @@
 import json
-from datetime import date
-from unittest.mock import AsyncMock
+from datetime import date, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -8,6 +9,36 @@ from fastapi import HTTPException
 from app.api.portal.endpoints import saved_reports
 
 pytestmark = pytest.mark.no_infrastructure
+
+
+def _report_row(**overrides):
+    data = {
+        "id": "rpt_5",
+        "title": "动态月报",
+        "description": "订单动态报表",
+        "sql_content": "SELECT * FROM orders",
+        "sql_template": "SELECT * FROM orders WHERE created_at >= {{start_date}} AND created_at < {{end_date}}",
+        "mode": "param_sql",
+        "params_schema": [{"name": "date_range", "type": "date_range", "label": "日期范围"}],
+        "default_params": {"date_range": "month_start_to_today"},
+        "data_source": "mysql_test",
+        "dataset_id": None,
+        "original_query": "本月订单",
+        "created_at": datetime(2026, 6, 27, 0, 0, 0),
+        "updated_at": datetime(2026, 6, 27, 0, 0, 0),
+        "analysis_mode": "auto",
+        "tags": ["订单", "月报"],
+        "owner_user_id": 7,
+        "owner_name": "alice",
+        "visibility": "private",
+        "status": "active",
+        "last_run_at": None,
+        "last_success_at": None,
+        "last_error": None,
+        "shares": [],
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 def test_saved_report_static_sql_stays_compatible():
@@ -39,6 +70,7 @@ def test_saved_report_detects_two_date_literals_as_default_date_range_template()
     report = saved_reports._build_saved_report_item(
         report_id="rpt_2",
         title="订单月报",
+        description="本月订单",
         sql_clean="SELECT * FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01'",
         dataset_id=3,
         data_source="mysql_test",
@@ -58,6 +90,76 @@ def test_saved_report_detects_two_date_literals_as_default_date_range_template()
     assert report.sql_template == "SELECT * FROM orders WHERE created_at >= {{start_date}} AND created_at < {{end_date}}"
     assert report.default_params["date_range"] == "month_start_to_today"
     assert report.analysis_mode == "auto"
+    assert report.description == "本月订单"
+
+
+def test_saved_report_detects_datetime_literals_and_preserves_time_suffixes():
+    report = saved_reports._build_saved_report_item(
+        report_id="rpt_datetime",
+        title="用户半年趋势",
+        description="用户半年趋势",
+        sql_clean=(
+            "SELECT DATE(created_at) AS stat_date FROM ai_agent_users "
+            "WHERE created_at >= '2025-12-27 00:00:00' AND created_at <= '2026-06-27 23:59:59'"
+        ),
+        dataset_id=None,
+        data_source="mysql_test",
+        original_query="查询最近6个月用户数趋势",
+        created_at="2026-06-27T00:00:00+00:00",
+        body=saved_reports.SaveReportRequest.model_validate(
+            {
+                "title": "用户半年趋势",
+                "sql_content": (
+                    "SELECT DATE(created_at) AS stat_date FROM ai_agent_users "
+                    "WHERE created_at >= '2025-12-27 00:00:00' AND created_at <= '2026-06-27 23:59:59'"
+                ),
+                "data_source": "mysql_test",
+            }
+        ),
+    )
+
+    assert report.mode == "param_sql"
+    assert "{{start_datetime}}" in (report.sql_template or "")
+    assert "{{end_datetime}}" in (report.sql_template or "")
+
+    sql, params = saved_reports._resolve_report_sql(
+        report,
+        body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+        today=date(2026, 6, 27),
+    )
+
+    assert "created_at >= '2026-06-27 00:00:00'" in sql
+    assert "created_at <= '2026-06-27 23:59:59'" in sql
+    assert params["start_datetime"] == "2026-06-27 00:00:00"
+    assert params["end_datetime"] == "2026-06-27 23:59:59"
+
+
+def test_saved_report_datetime_template_renders_custom_range_end_of_day():
+    report = saved_reports.SavedReportItem.model_validate(
+        {
+            "id": "rpt_datetime_custom",
+            "title": "自定义时间报表",
+            "sql_content": "SELECT * FROM ai_agent_users",
+            "sql_template": "SELECT * FROM ai_agent_users WHERE created_at >= {{start_datetime}} AND created_at <= {{end_datetime}}",
+            "mode": "param_sql",
+            "params_schema": [{"name": "date_range", "type": "date_range", "label": "日期范围"}],
+            "default_params": {"date_range": "custom_range", "start_date": "2026-06-01", "end_date": "2026-06-10"},
+            "data_source": "mysql_test",
+            "dataset_id": None,
+            "original_query": "自定义范围用户",
+            "created_at": "2026-06-27T00:00:00+00:00",
+        }
+    )
+
+    sql, params = saved_reports._resolve_report_sql(
+        report,
+        body=saved_reports.ExecuteReportRequest.model_validate({}),
+        today=date(2026, 6, 27),
+    )
+
+    assert "created_at >= '2026-06-01 00:00:00'" in sql
+    assert "created_at <= '2026-06-10 23:59:59'" in sql
+    assert params["end_datetime"] == "2026-06-10 23:59:59"
 
 
 def test_saved_report_param_sql_renders_builtin_last_7_days():
@@ -117,32 +219,17 @@ def test_saved_report_param_sql_rejects_unknown_placeholder():
 
 @pytest.mark.asyncio
 async def test_execute_saved_report_uses_rendered_sql_and_enables_table_auth(monkeypatch):
-    redis = AsyncMock()
-    redis.hget = AsyncMock(
-        return_value=json.dumps(
-            {
-                "id": "rpt_5",
-                "title": "动态月报",
-                "sql_content": "SELECT * FROM orders",
-                "sql_template": "SELECT * FROM orders WHERE created_at >= {{start_date}} AND created_at < {{end_date}}",
-                "mode": "param_sql",
-                "params_schema": [{"name": "date_range", "type": "date_range", "label": "日期范围"}],
-                "default_params": {"date_range": "month_start_to_today"},
-                "data_source": "mysql_test",
-                "dataset_id": None,
-                "original_query": "本月订单",
-                "created_at": "2026-06-27T00:00:00+00:00",
-                "analysis_mode": "auto",
-            }
-        )
-    )
     captured = {}
+    report_row = _report_row()
+    db = AsyncMock()
+    db.flush = AsyncMock()
 
     async def fake_execute_sql_query_core(*args, **kwargs):
         captured.update(kwargs)
         return json.dumps({"items": [{"orders": 3}]})
 
-    monkeypatch.setattr(saved_reports, "get_redis", AsyncMock(return_value=redis))
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
     monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
 
     response = await saved_reports.execute_saved_report(
@@ -150,29 +237,63 @@ async def test_execute_saved_report_uses_rendered_sql_and_enables_table_auth(mon
         body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
         conversation_id=None,
         user_info={"user_id": "7", "role": "user", "user_name": "alice"},
-        db=AsyncMock(),
+        db=db,
     )
 
     assert response.data == {"items": [{"orders": 3}]}
     assert captured["sql"] == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
     assert captured["bypass_table_auth"] is False
+    assert report_row.last_success_at is not None
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_saved_report_reinfers_placeholder_data_source(monkeypatch):
+    captured = {}
+    report_row = _report_row(data_source="default_clickhouse", dataset_id=None)
+    db = AsyncMock()
+    db.flush = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        captured.update(kwargs)
+        return json.dumps({"items": [{"users": 3}]})
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "_infer_dataset_and_data_source", AsyncMock(return_value=(42, "mysql_agent")))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    response = await saved_reports.execute_saved_report(
+        "rpt_5",
+        body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+        conversation_id=None,
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    assert response.data == {"items": [{"users": 3}]}
+    assert captured["data_source"] == "mysql_agent"
+    assert report_row.dataset_id == 42
+    assert report_row.data_source == "mysql_agent"
 
 
 @pytest.mark.asyncio
 async def test_update_saved_report_rebuilds_parameter_template(monkeypatch):
-    original = {
-        "id": "rpt_edit",
-        "title": "旧标题",
-        "sql_content": "SELECT * FROM orders WHERE created_at >= '2026-05-01'",
-        "data_source": "mysql_test",
-        "dataset_id": None,
-        "original_query": "订单",
-        "created_at": "2026-06-27T00:00:00+00:00",
-    }
-    redis = AsyncMock()
-    redis.hget = AsyncMock(return_value=json.dumps(original))
-    redis.hset = AsyncMock()
-    monkeypatch.setattr(saved_reports, "get_redis", AsyncMock(return_value=redis))
+    original = _report_row(
+        id="rpt_edit",
+        title="旧标题",
+        description=None,
+        sql_content="SELECT * FROM orders WHERE created_at >= '2026-05-01'",
+        sql_template=None,
+        mode="static_sql",
+        params_schema=[],
+        default_params={},
+        original_query="订单",
+        tags=[],
+    )
+    db = AsyncMock()
+    db.flush = AsyncMock()
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=original))
 
     async def fake_execute_sql_query_core(*args, **kwargs):
         assert kwargs["auth_check_only"] is True
@@ -186,40 +307,36 @@ async def test_update_saved_report_rebuilds_parameter_template(monkeypatch):
         body=saved_reports.UpdateReportRequest.model_validate(
             {
                 "title": "本月订单",
+                "description": "订单本月标准报表",
                 "sql_content": "SELECT * FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01'",
                 "data_source": "mysql_test",
                 "analysis_mode": "auto",
+                "tags": ["订单", "月报", "订单"],
             }
         ),
         user_info={"user_id": "7", "role": "user"},
-        db=AsyncMock(),
+        db=db,
     )
 
     updated = response.data
     assert updated.id == "rpt_edit"
     assert updated.title == "本月订单"
-    assert updated.created_at == original["created_at"]
+    assert updated.description == "订单本月标准报表"
+    assert updated.created_at == original.created_at.isoformat()
     assert updated.mode == "param_sql"
     assert updated.sql_template == "SELECT * FROM orders WHERE created_at >= {{start_date}} AND created_at < {{end_date}}"
     assert updated.analysis_mode == "auto"
-    redis.hset.assert_awaited_once()
+    assert updated.tags == ["订单", "月报"]
+    assert original.sql_template == updated.sql_template
+    db.flush.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_update_saved_report_rejects_unauthorized_table_before_saving(monkeypatch):
-    original = {
-        "id": "rpt_edit",
-        "title": "旧标题",
-        "sql_content": "SELECT * FROM orders",
-        "data_source": "mysql_test",
-        "dataset_id": None,
-        "original_query": "订单",
-        "created_at": "2026-06-27T00:00:00+00:00",
-    }
-    redis = AsyncMock()
-    redis.hget = AsyncMock(return_value=json.dumps(original))
-    redis.hset = AsyncMock()
-    monkeypatch.setattr(saved_reports, "get_redis", AsyncMock(return_value=redis))
+    original = _report_row(id="rpt_edit", title="旧标题", sql_content="SELECT * FROM orders")
+    db = AsyncMock()
+    db.flush = AsyncMock()
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=original))
 
     async def fake_execute_sql_query_core(*args, **kwargs):
         assert kwargs["sql"] == "SELECT * FROM secret_orders"
@@ -241,9 +358,143 @@ async def test_update_saved_report_rejects_unauthorized_table_before_saving(monk
                 }
             ),
             user_info={"user_id": "7", "role": "user", "user_name": "alice"},
-            db=AsyncMock(),
+            db=db,
         )
 
     assert exc_info.value.status_code == 400
     assert "无权访问表" in exc_info.value.detail
-    redis.hset.assert_not_awaited()
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_save_report_persists_db_report_with_tags(monkeypatch):
+    db = AsyncMock()
+    db.add = Mock()
+    db.flush = AsyncMock()
+    captured = {}
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        return json.dumps({"allowed": True})
+
+    def fake_add(row):
+        captured["row"] = row
+
+    db.add.side_effect = fake_add
+    monkeypatch.setattr(saved_reports, "_infer_dataset_and_data_source", AsyncMock(return_value=(None, "mysql_test")))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    response = await saved_reports.save_report(
+        body=saved_reports.SaveReportRequest.model_validate(
+            {
+                "title": "订单报表",
+                "description": "订单月度复盘",
+                "sql_content": "SELECT * FROM orders",
+                "data_source": "mysql_test",
+                "tags": ["订单", "月报", "订单"],
+            }
+        ),
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    assert response.data.tags == ["订单", "月报"]
+    assert captured["row"].owner_user_id == 7
+    assert captured["row"].tags == ["订单", "月报"]
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_infer_dataset_and_data_source_treats_default_clickhouse_as_placeholder():
+    class Result:
+        def first(self):
+            return (42, "mysql_agent")
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=Result())
+
+    dataset_id, data_source = await saved_reports._infer_dataset_and_data_source(
+        db,
+        sql_content="SELECT COUNT(*) FROM ai_agent_users",
+        dataset_id=None,
+        data_source="default_clickhouse",
+    )
+
+    assert dataset_id == 42
+    assert data_source == "mysql_agent"
+    db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_saved_report_shares_replaces_user_and_role_targets(monkeypatch):
+    report = _report_row(id="rpt_share", visibility="private", shares=[])
+    added = []
+    db = AsyncMock()
+    db.execute = AsyncMock()
+    db.flush = AsyncMock()
+    db.refresh = AsyncMock()
+    db.add = Mock()
+    db.add.side_effect = lambda row: added.append(row)
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report))
+    monkeypatch.setattr(saved_reports, "_validate_share_targets", AsyncMock())
+
+    response = await saved_reports.update_saved_report_shares(
+        "rpt_share",
+        body=saved_reports.UpdateReportSharesRequest.model_validate(
+            {
+                "targets": [
+                    {"target_type": "user", "target_id": 9},
+                    {"target_type": "role", "target_id": 3},
+                    {"target_type": "role", "target_id": 3},
+                ]
+            }
+        ),
+        user_info={"user_id": "7", "role": "user"},
+        db=db,
+    )
+
+    assert report.visibility == "shared"
+    assert [(row.target_type, row.target_id, row.permission) for row in added] == [
+        ("user", 9, "run"),
+        ("role", 3, "run"),
+    ]
+    assert response.data.visibility == "shared"
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_saved_report_shares_rejects_missing_targets(monkeypatch):
+    report = _report_row(id="rpt_share", visibility="private", shares=[])
+    db = AsyncMock()
+    db.flush = AsyncMock()
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report))
+
+    async def fake_execute(*args, **kwargs):
+        class Result:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return [9]
+
+        return Result()
+
+    db.execute.side_effect = fake_execute
+
+    with pytest.raises(HTTPException) as exc_info:
+        await saved_reports.update_saved_report_shares(
+            "rpt_share",
+            body=saved_reports.UpdateReportSharesRequest.model_validate(
+                {
+                    "targets": [
+                        {"target_type": "user", "target_id": 9},
+                        {"target_type": "user", "target_id": 10},
+                    ]
+                }
+            ),
+            user_info={"user_id": "7", "role": "user"},
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "共享用户不存在或已禁用: 10" in exc_info.value.detail
+    db.flush.assert_not_awaited()

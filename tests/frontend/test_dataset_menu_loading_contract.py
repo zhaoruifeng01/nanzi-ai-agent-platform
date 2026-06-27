@@ -84,6 +84,21 @@ def test_dataset_capability_menu_component_contract():
     assert "params_schema" in source
     assert "default_params" in source
     assert "analysis_mode" in source
+    assert "savedReportScope" in source
+    assert "selectedSavedReportTag" in source
+    assert "openShareReportModal" in source
+    assert "/shares" in source
+    assert "/copy" in source
+    assert "filteredSavedReports" in source
+    assert "fetchShareCandidates" in source
+    assert "/api/portal/management/users" in source
+    assert "/api/portal/roles" in source
+    assert "toggleShareUser" in source
+    assert "toggleShareRole" in source
+    assert "selectedShareUserIds" in source
+    assert "selectedShareRoleIds" in source
+    assert "shareUserSearch" in source
+    assert "shareRoleSearch" in source
 
 
 def test_saved_report_parameterized_execution_contract():
@@ -96,6 +111,37 @@ def test_saved_report_parameterized_execution_contract():
     assert "handleQuickQuestion(\"请基于刚才黄金报表结果做业务解读，指出关键结论、异常点和后续建议。\")" in source
     assert "mode: saveReportForm.value.mode" in source
     assert "sql_template: saveReportForm.value.sql_template" in source
+    assert "tags: parseSavedReportTags(saveReportForm.value.tags_input)" in source
+    assert "description: saveReportForm.value.description" in source
+    assert "\\d{2}:\\d{2}:\\d{2}" in source
+    assert "start_datetime" in source
+    assert "end_datetime" in source
+
+
+def test_saved_report_tags_are_not_raw_question_prefixes():
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    for source in (embed_source, debug_source):
+        assert "deriveSavedReportTagsInput" in source
+        assert "tags_input: deriveSavedReportTagsInput(originalQuery)" in source
+        assert "originalQuery.slice(0, 12)" not in source
+
+
+def test_saved_report_modal_avoids_pinned_dataset_portal_drawer():
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    for source in (embed_source, debug_source):
+        assert "saveReportModalOverlayClass" in source
+        assert "showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'" in source
+        assert ":class=\"saveReportModalOverlayClass\"" in source
+
+    run_modal_start = embed_source.index("<!-- Modal: Run Saved Report -->")
+    run_modal_end = embed_source.index("<!-- Modal: Help Guide -->")
+    run_modal_source = embed_source[run_modal_start:run_modal_end]
+    assert "inset-y-0 left-0" in run_modal_source
+    assert ":class=\"saveReportModalOverlayClass\"" in run_modal_source
 
 
 def test_saved_report_edit_contract():

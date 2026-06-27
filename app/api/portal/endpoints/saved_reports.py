@@ -5,13 +5,18 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import delete, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import require_api_key
 from app.core.orm import get_db_session
-from app.core.redis import get_redis
+from app.models.metadata import MetaDataset, MetaTable
+from app.models.permission import Role, UserRoleRelation
+from app.models.saved_report import PortalSavedReport, PortalSavedReportShare
+from app.models.user import User
 from app.schemas.response import StandardResponse
 from app.services.sql_query_execution_service import execute_sql_query_core
 
@@ -21,6 +26,7 @@ router = APIRouter()
 
 class SaveReportRequest(BaseModel):
     title: str = Field(..., description="报表自定义标题")
+    description: Optional[str] = Field(None, description="报表描述")
     sql_content: str = Field(..., description="只读 SELECT 语句")
     dataset_id: Optional[int] = Field(None, description="数据集 ID")
     data_source: str = Field(..., description="数据源标识，如 default_clickhouse、mysql_oa")
@@ -30,6 +36,7 @@ class SaveReportRequest(BaseModel):
     params_schema: List[Dict[str, Any]] = Field(default_factory=list, description="运行参数定义")
     default_params: Dict[str, Any] = Field(default_factory=dict, description="默认运行参数")
     analysis_mode: str = Field("manual", description="执行后分析模式：manual 或 auto")
+    tags: List[str] = Field(default_factory=list, description="报表标签")
 
 
 class ExecuteReportRequest(BaseModel):
@@ -39,6 +46,7 @@ class ExecuteReportRequest(BaseModel):
 
 class UpdateReportRequest(BaseModel):
     title: Optional[str] = Field(None, description="报表自定义标题")
+    description: Optional[str] = Field(None, description="报表描述")
     sql_content: Optional[str] = Field(None, description="只读 SELECT 语句")
     dataset_id: Optional[int] = Field(None, description="数据集 ID")
     data_source: Optional[str] = Field(None, description="数据源标识，如 default_clickhouse、mysql_oa")
@@ -48,21 +56,44 @@ class UpdateReportRequest(BaseModel):
     params_schema: Optional[List[Dict[str, Any]]] = Field(None, description="运行参数定义")
     default_params: Optional[Dict[str, Any]] = Field(None, description="默认运行参数")
     analysis_mode: Optional[str] = Field(None, description="执行后分析模式：manual 或 auto")
+    tags: Optional[List[str]] = Field(None, description="报表标签")
+
+
+class ShareTarget(BaseModel):
+    target_type: str = Field(..., description="共享目标类型：user 或 role")
+    target_id: int = Field(..., description="共享目标 ID")
+    permission: str = Field("run", description="共享权限，当前仅支持 run")
+
+
+class UpdateReportSharesRequest(BaseModel):
+    targets: List[ShareTarget] = Field(default_factory=list, description="共享目标列表")
 
 
 class SavedReportItem(BaseModel):
     id: str
     title: str
+    description: Optional[str] = None
     sql_content: str
     dataset_id: Optional[int]
     data_source: str
     original_query: Optional[str]
     created_at: str
+    updated_at: Optional[str] = None
     mode: str = "static_sql"
     sql_template: Optional[str] = None
     params_schema: List[Dict[str, Any]] = Field(default_factory=list)
     default_params: Dict[str, Any] = Field(default_factory=dict)
     analysis_mode: str = "manual"
+    tags: List[str] = Field(default_factory=list)
+    owner_user_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    visibility: str = "private"
+    status: str = "active"
+    last_run_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+    is_owner: bool = False
+    share_targets: List[ShareTarget] = Field(default_factory=list)
 
 
 class ReportParameterError(ValueError):
@@ -70,10 +101,26 @@ class ReportParameterError(ValueError):
 
 
 _SQL_GATE_ERROR_PREFIXES = ("[Validation Failed]", "[Permission Denied]", "[Security Error]")
+_DATE_LITERAL_PATTERN = r"'(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2})?'"
 
 
-def _redis_key(user_id: int) -> str:
-    return f"agent:saved_reports:{user_id}"
+def _clean_tags(tags: Optional[List[str]]) -> List[str]:
+    cleaned: List[str] = []
+    seen = set()
+    for raw in tags or []:
+        tag = str(raw or "").strip()
+        if not tag or tag in seen:
+            continue
+        cleaned.append(tag[:32])
+        seen.add(tag)
+        if len(cleaned) >= 12:
+            break
+    return cleaned
+
+
+def _dt_to_iso(value: Any) -> Optional[str]:
+    return value.isoformat() if value else None
+
 
 def _chatbi_user_dimensions(user_info: Dict[str, Any], user_id: int) -> Dict[str, Any]:
     return {
@@ -88,12 +135,16 @@ def _chatbi_user_dimensions(user_info: Dict[str, Any], user_id: int) -> Dict[str
 
 
 def _detect_default_date_range_template(sql: str) -> Tuple[Optional[str], List[Dict[str, Any]], Dict[str, Any]]:
-    matches = list(re.finditer(r"'(\d{4}-\d{2}-\d{2})'", sql))
+    matches = list(re.finditer(_DATE_LITERAL_PATTERN, sql))
     if len(matches) < 2:
         return None, [], {}
 
     first, second = matches[0], matches[1]
-    template = f"{sql[:first.start()]}{{{{start_date}}}}{sql[first.end():second.start()]}{{{{end_date}}}}{sql[second.end():]}"
+    first_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", first.group(0)))
+    second_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", second.group(0)))
+    start_param = "start_datetime" if first_has_time else "start_date"
+    end_param = "end_datetime" if second_has_time else "end_date"
+    template = f"{sql[:first.start()]}{{{{{start_param}}}}}{sql[first.end():second.start()]}{{{{{end_param}}}}}{sql[second.end():]}"
     params_schema = [
         {
             "name": "date_range",
@@ -110,11 +161,23 @@ def _build_saved_report_item(
     *,
     report_id: str,
     title: str,
+    description: Optional[str],
     sql_clean: str,
     dataset_id: Optional[int],
     data_source: str,
     original_query: Optional[str],
     created_at: str,
+    updated_at: Optional[str] = None,
+    owner_user_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+    visibility: str = "private",
+    status_value: str = "active",
+    tags: Optional[List[str]] = None,
+    last_run_at: Optional[str] = None,
+    last_success_at: Optional[str] = None,
+    last_error: Optional[str] = None,
+    is_owner: bool = False,
+    share_targets: Optional[List[ShareTarget]] = None,
     body: SaveReportRequest,
 ) -> SavedReportItem:
     mode = body.mode if body.mode in {"static_sql", "param_sql"} else "static_sql"
@@ -138,22 +201,87 @@ def _build_saved_report_item(
     return SavedReportItem(
         id=report_id,
         title=title,
+        description=description,
         sql_content=sql_clean,
         dataset_id=dataset_id,
         data_source=data_source,
         original_query=original_query,
         created_at=created_at,
+        updated_at=updated_at,
         mode=mode,
         sql_template=sql_template,
         params_schema=params_schema,
         default_params=default_params,
         analysis_mode=analysis_mode,
+        tags=_clean_tags(tags if tags is not None else body.tags),
+        owner_user_id=owner_user_id,
+        owner_name=owner_name,
+        visibility=visibility,
+        status=status_value,
+        last_run_at=last_run_at,
+        last_success_at=last_success_at,
+        last_error=last_error,
+        is_owner=is_owner,
+        share_targets=share_targets or [],
     )
 
 
-def _decode_saved_report(raw_val: Any) -> SavedReportItem:
-    decoded = raw_val.decode("utf-8") if isinstance(raw_val, bytes) else str(raw_val)
-    return SavedReportItem.model_validate(json.loads(decoded))
+def _normalize_json_list(value: Any) -> List[Dict[str, Any]]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    return list(value) if isinstance(value, list) else []
+
+
+def _normalize_json_dict(value: Any) -> Dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _share_targets_from_report(report: PortalSavedReport) -> List[ShareTarget]:
+    return [
+        ShareTarget(target_type=share.target_type, target_id=int(share.target_id), permission=share.permission or "run")
+        for share in (report.shares or [])
+    ]
+
+
+def _report_row_to_item(report: PortalSavedReport, *, current_user_id: int) -> SavedReportItem:
+    return SavedReportItem(
+        id=report.id,
+        title=report.title,
+        description=report.description,
+        sql_content=report.sql_content,
+        dataset_id=report.dataset_id,
+        data_source=report.data_source,
+        original_query=report.original_query,
+        created_at=_dt_to_iso(report.created_at) or "",
+        updated_at=_dt_to_iso(report.updated_at),
+        mode=report.mode or "static_sql",
+        sql_template=report.sql_template,
+        params_schema=_normalize_json_list(report.params_schema),
+        default_params=_normalize_json_dict(report.default_params),
+        analysis_mode=report.analysis_mode or "manual",
+        tags=_clean_tags(report.tags if isinstance(report.tags, list) else []),
+        owner_user_id=int(report.owner_user_id) if report.owner_user_id is not None else None,
+        owner_name=report.owner_name,
+        visibility=report.visibility or "private",
+        status=report.status or "active",
+        last_run_at=_dt_to_iso(report.last_run_at),
+        last_success_at=_dt_to_iso(report.last_success_at),
+        last_error=report.last_error,
+        is_owner=int(report.owner_user_id) == int(current_user_id),
+        share_targets=_share_targets_from_report(report),
+    )
 
 
 def _parse_iso_date_param(value: Any, name: str) -> date:
@@ -170,20 +298,25 @@ def _resolve_builtin_date_range(params: Dict[str, Any], today: date) -> Dict[str
     if date_range == "today":
         start = today
         end = today + timedelta(days=1)
+        end_inclusive = today
     elif date_range == "yesterday":
         start = today - timedelta(days=1)
         end = today
+        end_inclusive = start
     elif date_range == "last_7_days":
         start = today - timedelta(days=6)
         end = today + timedelta(days=1)
+        end_inclusive = today
     elif date_range == "month_start_to_today":
         start = today.replace(day=1)
         end = today + timedelta(days=1)
+        end_inclusive = today
     elif date_range == "custom_range":
         start = _parse_iso_date_param(params.get("start_date"), "start_date")
         end = _parse_iso_date_param(params.get("end_date"), "end_date")
         if end <= start:
             raise ReportParameterError("结束日期必须晚于开始日期")
+        end_inclusive = end
     else:
         raise ReportParameterError("不支持的日期范围")
 
@@ -191,6 +324,8 @@ def _resolve_builtin_date_range(params: Dict[str, Any], today: date) -> Dict[str
         "date_range": date_range,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
+        "start_datetime": f"{start.isoformat()} 00:00:00",
+        "end_datetime": f"{end_inclusive.isoformat()} 23:59:59",
     }
 
 
@@ -202,7 +337,7 @@ def _allowed_template_params(report: SavedReportItem) -> set[str]:
         if name:
             allowed.add(name)
         if param_type == "date_range" or name == "date_range":
-            allowed.update({"date_range", "start_date", "end_date"})
+            allowed.update({"date_range", "start_date", "end_date", "start_datetime", "end_datetime"})
     return allowed
 
 
@@ -226,7 +361,8 @@ def _resolve_report_sql(
     merged_params.update(body.params or {})
 
     resolved_params: Dict[str, Any] = {}
-    if {"start_date", "end_date"} & placeholders or merged_params.get("date_range"):
+    date_placeholder_names = {"start_date", "end_date", "start_datetime", "end_datetime"}
+    if {"start_date", "end_date", "start_datetime", "end_datetime"} & placeholders or merged_params.get("date_range"):
         resolved_params.update(_resolve_builtin_date_range(merged_params, today or date.today()))
     for key, value in merged_params.items():
         if key not in resolved_params:
@@ -234,11 +370,22 @@ def _resolve_report_sql(
 
     def replace_placeholder(match: re.Match[str]) -> str:
         name = match.group(1).strip()
-        if name in {"start_date", "end_date"}:
+        if name in {"start_date", "end_date", "start_datetime", "end_datetime"}:
             return f"'{resolved_params[name]}'"
         raise ReportParameterError(f"参数 {name} 暂不支持直接写入 SQL 模板")
 
-    return re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", replace_placeholder, template), resolved_params
+    rendered_sql = re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", replace_placeholder, template)
+    used_date_placeholders = placeholders & date_placeholder_names
+    returned_params: Dict[str, Any] = {}
+    if "date_range" in resolved_params and (used_date_placeholders or merged_params.get("date_range")):
+        returned_params["date_range"] = resolved_params["date_range"]
+    for name in sorted(used_date_placeholders):
+        returned_params[name] = resolved_params[name]
+    for key, value in merged_params.items():
+        if key not in returned_params and key not in date_placeholder_names:
+            returned_params[key] = value
+
+    return rendered_sql, returned_params
 
 
 async def _precheck_saved_report_sql_permissions(
@@ -293,6 +440,126 @@ async def _precheck_saved_report_sql_permissions(
     if isinstance(parsed, dict) and parsed.get("allowed") is False:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=parsed)
 
+
+async def _get_user_role_ids(db: AsyncSession, user_id: int) -> List[int]:
+    result = await db.execute(select(UserRoleRelation.role_id).where(UserRoleRelation.user_id == user_id))
+    return [int(role_id) for role_id in result.scalars().all()]
+
+
+async def _get_report_for_user(
+    db: AsyncSession,
+    *,
+    report_id: str,
+    user_id: int,
+    role_ids: Optional[List[int]] = None,
+    require_owner: bool = False,
+) -> PortalSavedReport:
+    stmt = (
+        select(PortalSavedReport)
+        .options(selectinload(PortalSavedReport.shares))
+        .where(PortalSavedReport.id == report_id)
+    )
+    result = await db.execute(stmt)
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="报表不存在或无权访问")
+
+    if int(report.owner_user_id) == int(user_id):
+        return report
+    if require_owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有报表所有人可以执行该操作")
+
+    role_id_set = set(role_ids if role_ids is not None else await _get_user_role_ids(db, user_id))
+    for share in report.shares or []:
+        if share.target_type == "user" and int(share.target_id) == int(user_id):
+            return report
+        if share.target_type == "role" and int(share.target_id) in role_id_set:
+            return report
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="报表不存在或无权访问")
+
+
+async def _validate_share_targets(db: AsyncSession, targets: List[ShareTarget]) -> None:
+    user_ids = sorted({int(target.target_id) for target in targets if target.target_type == "user"})
+    role_ids = sorted({int(target.target_id) for target in targets if target.target_type == "role"})
+
+    if user_ids:
+        result = await db.execute(select(User.id).where(User.id.in_(user_ids)).where(User.status == 1))
+        found_user_ids = {int(user_id) for user_id in result.scalars().all()}
+        missing = [str(user_id) for user_id in user_ids if user_id not in found_user_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"共享用户不存在或已禁用: {', '.join(missing)}",
+            )
+
+    if role_ids:
+        result = await db.execute(select(Role.id).where(Role.id.in_(role_ids)))
+        found_role_ids = {int(role_id) for role_id in result.scalars().all()}
+        missing = [str(role_id) for role_id in role_ids if role_id not in found_role_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"共享角色不存在: {', '.join(missing)}",
+            )
+
+
+async def _infer_dataset_and_data_source(
+    db: AsyncSession,
+    *,
+    sql_content: str,
+    dataset_id: Optional[int],
+    data_source: Optional[str],
+) -> Tuple[Optional[int], str]:
+    normalized_data_source = str(data_source or "").strip()
+    is_placeholder_source = not normalized_data_source or normalized_data_source == "default_clickhouse"
+    if dataset_id and is_placeholder_source:
+        try:
+            res = await db.execute(select(MetaDataset.data_source).where(MetaDataset.id == dataset_id))
+            inferred_source = res.scalar_one_or_none()
+            if inferred_source:
+                return dataset_id, str(inferred_source)
+        except Exception as ex:
+            logger.warning("Failed to auto-detect dataset source for saved report: %s", ex)
+    if dataset_id or not is_placeholder_source:
+        return dataset_id, normalized_data_source or "default_clickhouse"
+
+    words = set(re.findall(r"\b[a-zA-Z0-9_]+\b", sql_content.lower()))
+    if words:
+        try:
+            stmt = (
+                select(MetaTable.dataset_id, MetaDataset.data_source)
+                .join(MetaDataset, MetaTable.dataset_id == MetaDataset.id)
+                .where(MetaTable.physical_name.in_(words))
+                .where(MetaTable.status == 1)
+                .limit(1)
+            )
+            res = await db.execute(stmt)
+            row = res.first()
+            if row:
+                return row[0], row[1] or "default_clickhouse"
+        except Exception as ex:
+            logger.warning("Failed to auto-detect dataset for saved report: %s", ex)
+
+    return dataset_id, normalized_data_source or "default_clickhouse"
+
+
+def _apply_report_item_to_row(report: PortalSavedReport, item: SavedReportItem) -> None:
+    report.title = item.title
+    report.description = item.description
+    report.sql_content = item.sql_content
+    report.dataset_id = item.dataset_id
+    report.data_source = item.data_source
+    report.original_query = item.original_query
+    report.mode = item.mode
+    report.sql_template = item.sql_template
+    report.params_schema = item.params_schema
+    report.default_params = item.default_params
+    report.analysis_mode = item.analysis_mode
+    report.tags = item.tags
+    report.visibility = item.visibility
+    report.status = item.status
+
 @router.post(
     "",
     response_model=StandardResponse[SavedReportItem],
@@ -303,40 +570,13 @@ async def save_report(
     user_info: Dict[str, Any] = Depends(require_api_key),
     db: AsyncSession = Depends(get_db_session),
 ):
-    redis = await get_redis()
-    if not redis:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis 服务不可用",
-        )
-
     user_id = int(user_info["user_id"])
-
-    # 自动推导并补全 dataset_id 和 data_source
-    if not body.dataset_id:
-        words = set(re.findall(r"\b[a-zA-Z0-9_]+\b", body.sql_content.lower()))
-        if words:
-            from sqlalchemy import select
-            from app.models.metadata import MetaTable, MetaDataset
-            try:
-                stmt = (
-                    select(MetaTable.dataset_id, MetaDataset.data_source)
-                    .join(MetaDataset, MetaTable.dataset_id == MetaDataset.id)
-                    .where(MetaTable.physical_name.in_(words))
-                    .where(MetaTable.status == 1)
-                    .limit(1)
-                )
-                res = await db.execute(stmt)
-                row = res.first()
-                if row:
-                    body.dataset_id = row[0]
-                    body.data_source = row[1]
-            except Exception as ex:
-                logger.warning("Failed to auto-detect dataset for saved report: %s", ex)
-
-    if not body.data_source:
-        body.data_source = "default_clickhouse"
-
+    dataset_id, data_source = await _infer_dataset_and_data_source(
+        db,
+        sql_content=body.sql_content,
+        dataset_id=body.dataset_id,
+        data_source=body.data_source,
+    )
     report_id = f"rpt_{uuid.uuid4().hex[:12]}"
     now_str = datetime.now(timezone.utc).isoformat()
 
@@ -347,23 +587,29 @@ async def save_report(
     report_item = _build_saved_report_item(
         report_id=report_id,
         title=body.title.strip(),
+        description=(body.description or "").strip() or None,
         sql_clean=sql_clean,
-        dataset_id=body.dataset_id,
-        data_source=body.data_source,
+        dataset_id=dataset_id,
+        data_source=data_source,
         original_query=body.original_query,
         created_at=now_str,
+        owner_user_id=user_id,
+        owner_name=user_info.get("real_name") or user_info.get("user_name"),
+        tags=body.tags,
+        is_owner=True,
         body=body,
     )
 
-    key = _redis_key(user_id)
-    try:
-        await redis.hset(key, report_id, report_item.model_dump_json())
-    except Exception as e:
-        logger.error("Failed to save report to Redis: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="保存报表失败",
-        )
+    await _precheck_saved_report_sql_permissions(db, report=report_item, user_info=user_info, user_id=user_id)
+
+    report_row = PortalSavedReport(
+        id=report_item.id,
+        owner_user_id=user_id,
+        owner_name=report_item.owner_name,
+    )
+    _apply_report_item_to_row(report_row, report_item)
+    db.add(report_row)
+    await db.flush()
 
     return StandardResponse(data=report_item)
 
@@ -373,33 +619,54 @@ async def save_report(
     summary="获取当前用户的黄金 SQL 报表暂存列表",
 )
 async def get_saved_reports(
+    scope: str = Query("all", pattern="^(all|my|shared)$"),
+    tag: Optional[str] = None,
     user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    redis = await get_redis()
-    if not redis:
-        return StandardResponse(data=[])
-
     user_id = int(user_info["user_id"])
-    key = _redis_key(user_id)
-    try:
-        raw_reports = await redis.hgetall(key)
-    except Exception as e:
-        logger.error("Failed to get reports from Redis: %s", e)
-        return StandardResponse(data=[])
+    role_ids = await _get_user_role_ids(db, user_id)
+    visible_conditions = [PortalSavedReport.owner_user_id == user_id]
+    if role_ids:
+        visible_conditions.append(
+            PortalSavedReport.shares.any(
+                (PortalSavedReportShare.target_type == "role")
+                & (PortalSavedReportShare.target_id.in_(role_ids))
+            )
+        )
+    visible_conditions.append(
+        PortalSavedReport.shares.any(
+            (PortalSavedReportShare.target_type == "user")
+            & (PortalSavedReportShare.target_id == user_id)
+        )
+    )
 
-    reports = []
-    if isinstance(raw_reports, dict):
-        for val in raw_reports.values():
-            try:
-                decoded = val.decode("utf-8") if isinstance(val, bytes) else str(val)
-                parsed = json.loads(decoded)
-                reports.append(SavedReportItem.model_validate(parsed))
-            except Exception as e:
-                logger.warning("Failed to parse saved report item JSON: %s", e)
-                continue
+    stmt = select(PortalSavedReport).options(selectinload(PortalSavedReport.shares))
+    if scope == "my":
+        stmt = stmt.where(PortalSavedReport.owner_user_id == user_id)
+    elif scope == "shared":
+        shared_conditions = [
+            PortalSavedReport.shares.any(
+                (PortalSavedReportShare.target_type == "user")
+                & (PortalSavedReportShare.target_id == user_id)
+            )
+        ]
+        if role_ids:
+            shared_conditions.append(
+                PortalSavedReport.shares.any(
+                    (PortalSavedReportShare.target_type == "role")
+                    & (PortalSavedReportShare.target_id.in_(role_ids))
+                )
+            )
+        stmt = stmt.where(PortalSavedReport.owner_user_id != user_id).where(or_(*shared_conditions))
+    else:
+        stmt = stmt.where(or_(*visible_conditions))
 
-    # 按照创建时间降序排序 (最新暂存的在最上面)
-    reports.sort(key=lambda x: x.created_at, reverse=True)
+    stmt = stmt.order_by(desc(PortalSavedReport.updated_at), desc(PortalSavedReport.created_at))
+    result = await db.execute(stmt)
+    reports = [_report_row_to_item(row, current_user_id=user_id) for row in result.scalars().unique().all()]
+    if tag:
+        reports = [report for report in reports if tag in report.tags]
     return StandardResponse(data=reports)
 
 @router.delete(
@@ -410,31 +677,12 @@ async def get_saved_reports(
 async def delete_saved_report(
     report_id: str,
     user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    redis = await get_redis()
-    if not redis:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis 服务不可用",
-        )
-
     user_id = int(user_info["user_id"])
-    key = _redis_key(user_id)
-    try:
-        deleted_count = await redis.hdel(key, report_id)
-    except Exception as e:
-        logger.error("Failed to delete report from Redis: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="删除报表失败",
-        )
-
-    if not deleted_count:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="报表不存在或已被删除",
-        )
-
+    report = await _get_report_for_user(db, report_id=report_id, user_id=user_id, require_owner=True)
+    await db.delete(report)
+    await db.flush()
     return StandardResponse(data={"deleted": True})
 
 
@@ -449,38 +697,9 @@ async def update_saved_report(
     user_info: Dict[str, Any] = Depends(require_api_key),
     db: AsyncSession = Depends(get_db_session),
 ):
-    redis = await get_redis()
-    if not redis:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis 服务不可用",
-        )
-
     user_id = int(user_info["user_id"])
-    key = _redis_key(user_id)
-    try:
-        raw_val = await redis.hget(key, report_id)
-    except Exception as e:
-        logger.error("Failed to get report detail before update: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取报表详情失败",
-        )
-
-    if not raw_val:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="报表不存在或无权访问",
-        )
-
-    try:
-        existing = _decode_saved_report(raw_val)
-    except Exception as e:
-        logger.error("Failed to parse report model before update: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="报表数据解析失败",
-        )
+    report_row = await _get_report_for_user(db, report_id=report_id, user_id=user_id, require_owner=True)
+    existing = _report_row_to_item(report_row, current_user_id=user_id)
 
     fields_set = body.model_fields_set
     sql_clean = (body.sql_content if "sql_content" in fields_set and body.sql_content is not None else existing.sql_content).strip()
@@ -488,9 +707,21 @@ async def update_saved_report(
         sql_clean = sql_clean[len("[Executed SQL]:"):].strip()
 
     title = (body.title if "title" in fields_set and body.title is not None else existing.title).strip()
+    description = (body.description if "description" in fields_set else existing.description)
+    if description is not None:
+        description = description.strip() or None
     data_source = body.data_source if "data_source" in fields_set and body.data_source is not None else existing.data_source
     dataset_id = body.dataset_id if "dataset_id" in fields_set else existing.dataset_id
     original_query = body.original_query if "original_query" in fields_set else existing.original_query
+    tags = body.tags if "tags" in fields_set and body.tags is not None else existing.tags
+
+    if data_source == "default_clickhouse":
+        dataset_id, data_source = await _infer_dataset_and_data_source(
+            db,
+            sql_content=sql_clean,
+            dataset_id=dataset_id,
+            data_source=data_source,
+        )
 
     mode = body.mode if "mode" in fields_set and body.mode is not None else existing.mode
     sql_template = body.sql_template if "sql_template" in fields_set else existing.sql_template
@@ -513,6 +744,7 @@ async def update_saved_report(
 
     update_body = SaveReportRequest(
         title=title,
+        description=description,
         sql_content=sql_clean,
         dataset_id=dataset_id,
         data_source=data_source or "default_clickhouse",
@@ -522,15 +754,28 @@ async def update_saved_report(
         params_schema=params_schema or [],
         default_params=default_params or {},
         analysis_mode=analysis_mode or "manual",
+        tags=tags or [],
     )
     report_item = _build_saved_report_item(
         report_id=existing.id,
         title=title,
+        description=description,
         sql_clean=sql_clean,
         dataset_id=dataset_id,
         data_source=data_source or "default_clickhouse",
         original_query=original_query,
         created_at=existing.created_at,
+        updated_at=existing.updated_at,
+        owner_user_id=existing.owner_user_id,
+        owner_name=existing.owner_name,
+        visibility=existing.visibility,
+        status_value=existing.status,
+        tags=tags,
+        last_run_at=existing.last_run_at,
+        last_success_at=existing.last_success_at,
+        last_error=existing.last_error,
+        is_owner=True,
+        share_targets=existing.share_targets,
         body=update_body,
     )
 
@@ -541,16 +786,124 @@ async def update_saved_report(
         user_id=user_id,
     )
 
-    try:
-        await redis.hset(key, report_id, report_item.model_dump_json())
-    except Exception as e:
-        logger.error("Failed to update report in Redis: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="更新报表失败",
-        )
-
+    _apply_report_item_to_row(report_row, report_item)
+    report_row.updated_at = datetime.now()
+    await db.flush()
     return StandardResponse(data=report_item)
+
+
+@router.put(
+    "/{report_id}/shares",
+    response_model=StandardResponse[SavedReportItem],
+    summary="更新黄金 SQL 报表共享范围",
+)
+async def update_saved_report_shares(
+    report_id: str,
+    body: UpdateReportSharesRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_id = int(user_info["user_id"])
+    report = await _get_report_for_user(db, report_id=report_id, user_id=user_id, require_owner=True)
+
+    normalized: List[ShareTarget] = []
+    seen = set()
+    for target in body.targets:
+        target_type = str(target.target_type or "").strip().lower()
+        if target_type not in {"user", "role"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="共享目标类型仅支持 user 或 role")
+        if int(target.target_id) <= 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="共享目标 ID 必须大于 0")
+        permission = str(target.permission or "run").strip().lower()
+        if permission != "run":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前仅支持 run 共享权限")
+        key = (target_type, int(target.target_id))
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(ShareTarget(target_type=target_type, target_id=int(target.target_id), permission="run"))
+
+    await _validate_share_targets(db, normalized)
+    await db.execute(delete(PortalSavedReportShare).where(PortalSavedReportShare.report_id == report.id))
+    for target in normalized:
+        db.add(
+            PortalSavedReportShare(
+                report_id=report.id,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                permission=target.permission,
+                created_by=user_id,
+            )
+        )
+    report.visibility = "shared" if normalized else "private"
+    report.updated_at = datetime.now()
+    await db.flush()
+
+    item = _report_row_to_item(report, current_user_id=user_id)
+    item.share_targets = normalized
+    item.visibility = report.visibility
+    return StandardResponse(data=item)
+
+
+@router.post(
+    "/{report_id}/copy",
+    response_model=StandardResponse[SavedReportItem],
+    summary="复制共享黄金 SQL 报表为我的报表",
+)
+async def copy_saved_report(
+    report_id: str,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    user_id = int(user_info["user_id"])
+    role_ids = await _get_user_role_ids(db, user_id)
+    source = await _get_report_for_user(db, report_id=report_id, user_id=user_id, role_ids=role_ids)
+    source_item = _report_row_to_item(source, current_user_id=user_id)
+
+    new_id = f"rpt_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    copy_body = SaveReportRequest(
+        title=f"{source_item.title} 副本",
+        description=source_item.description,
+        sql_content=source_item.sql_content,
+        dataset_id=source_item.dataset_id,
+        data_source=source_item.data_source,
+        original_query=source_item.original_query,
+        mode=source_item.mode,
+        sql_template=source_item.sql_template,
+        params_schema=source_item.params_schema,
+        default_params=source_item.default_params,
+        analysis_mode=source_item.analysis_mode,
+        tags=source_item.tags,
+    )
+    copied_item = _build_saved_report_item(
+        report_id=new_id,
+        title=copy_body.title,
+        description=copy_body.description,
+        sql_clean=source_item.sql_content,
+        dataset_id=source_item.dataset_id,
+        data_source=source_item.data_source,
+        original_query=source_item.original_query,
+        created_at=now,
+        updated_at=now,
+        owner_user_id=user_id,
+        owner_name=user_info.get("real_name") or user_info.get("user_name"),
+        visibility="private",
+        tags=source_item.tags,
+        is_owner=True,
+        body=copy_body,
+    )
+    await _precheck_saved_report_sql_permissions(db, report=copied_item, user_info=user_info, user_id=user_id)
+
+    copied_row = PortalSavedReport(
+        id=copied_item.id,
+        owner_user_id=user_id,
+        owner_name=copied_item.owner_name,
+    )
+    _apply_report_item_to_row(copied_row, copied_item)
+    db.add(copied_row)
+    await db.flush()
+    return StandardResponse(data=copied_item)
 
 @router.post(
     "/{report_id}/execute",
@@ -564,38 +917,23 @@ async def execute_saved_report(
     user_info: Dict[str, Any] = Depends(require_api_key),
     db: AsyncSession = Depends(get_db_session),
 ):
-    redis = await get_redis()
-    if not redis:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis 服务不可用",
-        )
-
     user_id = int(user_info["user_id"])
-    key = _redis_key(user_id)
-    try:
-        raw_val = await redis.hget(key, report_id)
-    except Exception as e:
-        logger.error("Failed to get report detail from Redis: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取报表详情失败",
-        )
+    role_ids = await _get_user_role_ids(db, user_id)
+    report_row = await _get_report_for_user(db, report_id=report_id, user_id=user_id, role_ids=role_ids)
+    report = _report_row_to_item(report_row, current_user_id=user_id)
 
-    if not raw_val:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="报表不存在或无权访问",
+    if report.data_source == "default_clickhouse":
+        inferred_dataset_id, inferred_data_source = await _infer_dataset_and_data_source(
+            db,
+            sql_content=report.sql_content,
+            dataset_id=report.dataset_id,
+            data_source=report.data_source,
         )
-
-    try:
-        report = _decode_saved_report(raw_val)
-    except Exception as e:
-        logger.error("Failed to parse report model: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="报表数据解析失败",
-        )
+        if inferred_data_source and inferred_data_source != report.data_source:
+            report.dataset_id = inferred_dataset_id
+            report.data_source = inferred_data_source
+            report_row.dataset_id = inferred_dataset_id
+            report_row.data_source = inferred_data_source
 
     user_dimensions = _chatbi_user_dimensions(user_info, user_id)
     is_admin = user_info.get("role") == "admin"
@@ -627,6 +965,9 @@ async def execute_saved_report(
         )
     except Exception as e:
         logger.error("Failed to execute SQL from saved report: %s", e)
+        report_row.last_run_at = datetime.now()
+        report_row.last_error = str(e)
+        report_row.status = "error"
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"SQL 执行失败: {e}",
@@ -638,6 +979,9 @@ async def execute_saved_report(
     try:
         parsed = json.loads(raw_res)
         if isinstance(parsed, dict) and ("[Validation Failed]" in raw_res or "[Permission Denied]" in raw_res or "[Security Error]" in raw_res):
+            report_row.last_run_at = datetime.now()
+            report_row.last_error = raw_res
+            report_row.status = "error"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=parsed)
             
         # 若传入了会话ID，写入缓存供大模型下一轮做可视化复用
@@ -659,12 +1003,28 @@ async def execute_saved_report(
             except Exception as cache_err:
                 logger.warning("Failed to save report data to memory_service cache: %s", cache_err)
 
+        now = datetime.now()
+        report_row.last_run_at = now
+        report_row.last_success_at = now
+        report_row.last_error = None
+        report_row.status = "active"
+        await db.flush()
         return StandardResponse(data=parsed)
     except json.JSONDecodeError:
         pass
 
     # 如果是文本类输出（非标准 JSON 格式，如报错信息）
     if raw_res.startswith("[Validation Failed]") or raw_res.startswith("[Permission Denied]") or raw_res.startswith("[Security Error]"):
+        report_row.last_run_at = datetime.now()
+        report_row.last_error = raw_res
+        report_row.status = "error"
+        await db.flush()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=raw_res)
         
+    now = datetime.now()
+    report_row.last_run_at = now
+    report_row.last_success_at = now
+    report_row.last_error = None
+    report_row.status = "active"
+    await db.flush()
     return StandardResponse(data={"rows": raw_res})

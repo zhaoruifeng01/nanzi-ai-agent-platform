@@ -570,6 +570,7 @@ const isEditingReport = ref(false);
 const editingReportId = ref<string | null>(null);
 const saveReportForm = ref({
   title: '',
+  description: '',
   sql_content: '',
   dataset_id: null as number | null,
   data_source: 'default_clickhouse',
@@ -579,17 +580,20 @@ const saveReportForm = ref({
   params_schema: [] as any[],
   default_params: {} as Record<string, any>,
   analysis_mode: 'manual',
+  tags_input: '',
 });
 
 const detectSavedReportDateTemplate = (sql: string) => {
-  const matches = [...String(sql || '').matchAll(/'(\d{4}-\d{2}-\d{2})'/g)];
+  const matches = [...String(sql || '').matchAll(/'(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2})?'/g)];
   if (matches.length < 2) return null;
   const first = matches[0];
   const second = matches[1];
   if (!first || !second || first.index === undefined || second.index === undefined) return null;
   const firstRaw = first[0];
   const secondRaw = second[0];
-  const template = `${sql.slice(0, first.index)}{{start_date}}${sql.slice(first.index + firstRaw.length, second.index)}{{end_date}}${sql.slice(second.index + secondRaw.length)}`;
+  const startParam = /\d{2}:\d{2}:\d{2}/.test(firstRaw) ? 'start_datetime' : 'start_date';
+  const endParam = /\d{2}:\d{2}:\d{2}/.test(secondRaw) ? 'end_datetime' : 'end_date';
+  const template = `${sql.slice(0, first.index)}{{${startParam}}}${sql.slice(first.index + firstRaw.length, second.index)}{{${endParam}}}${sql.slice(second.index + secondRaw.length)}`;
   return {
     sql_template: template,
     params_schema: [
@@ -603,6 +607,53 @@ const detectSavedReportDateTemplate = (sql: string) => {
     ],
     default_params: { date_range: 'month_start_to_today' },
   };
+};
+
+const parseSavedReportTags = (input: string) => {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const raw of String(input || '').split(/[,\s，]+/)) {
+    const tag = raw.trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag.slice(0, 32));
+    if (tags.length >= 12) break;
+  }
+  return tags;
+};
+
+const deriveSavedReportTagsInput = (query: string) => {
+  let text = String(query || '').trim();
+  if (!text) return '';
+  text = text
+    .replace(/[?？!！。；;：:“”"'「」『』【】()[\]{}]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  text = text
+    .replace(/^(帮我|请|麻烦|能否|可以)?\s*(查询|统计|查看|分析|获取|看一下|看看|展示|列出|生成)\s*/, '')
+    .replace(/最近\s*\d+\s*个?\s*(月|天|日|周|年|季度)/g, ' ')
+    .replace(/近\s*\d+\s*(月|天|日|周|年|季度)/g, ' ')
+    .replace(/(本|上|近)(月|周|年|季度)|今日|今天|昨日|昨天|当日/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const stopwords = new Set(['查询', '统计', '查看', '分析', '获取', '数据', '报表', '情况', '明细', '列表']);
+  const tags: string[] = [];
+  const addTag = (value: string) => {
+    const tag = value
+      .replace(/^(查询|统计|查看|分析|获取)/, '')
+      .replace(/(数据查询|报表|数据|情况|明细|列表)$/, '')
+      .trim();
+    if (tag.length < 2 || tag.length > 12 || stopwords.has(tag) || tags.includes(tag)) return;
+    tags.push(tag);
+  };
+
+  for (const part of text.split(/[，,、\s]+|的|和|及|与|按|在|从|对|为/)) {
+    addTag(part);
+    if (tags.length >= 3) break;
+  }
+  if (text.includes('用户数') && text.includes('趋势')) addTag('用户数趋势');
+  return tags.slice(0, 3).join(', ');
 };
 
 const openSaveReportModal = (sql: string, agentMessage: any) => {
@@ -644,6 +695,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
 
   saveReportForm.value = {
     title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
+    description: originalQuery ? `基于「${originalQuery.slice(0, 40)}」沉淀的黄金报表` : '',
     sql_content: cleanSql,
     dataset_id: null,
     data_source: 'default_clickhouse',
@@ -653,6 +705,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     params_schema: detectedTemplate?.params_schema || [],
     default_params: detectedTemplate?.default_params || {},
     analysis_mode: detectedTemplate ? 'auto' : 'manual',
+    tags_input: deriveSavedReportTagsInput(originalQuery),
   };
   showSaveReportModal.value = true;
 };
@@ -662,6 +715,7 @@ const openEditReportModal = (report: any) => {
   editingReportId.value = report.id;
   saveReportForm.value = {
     title: report.title || '',
+    description: report.description || '',
     sql_content: report.sql_content || '',
     dataset_id: report.dataset_id ?? null,
     data_source: report.data_source || 'default_clickhouse',
@@ -671,6 +725,7 @@ const openEditReportModal = (report: any) => {
     params_schema: report.params_schema || [],
     default_params: report.default_params || {},
     analysis_mode: report.analysis_mode || 'manual',
+    tags_input: Array.isArray(report.tags) ? report.tags.join(', ') : '',
   };
   showSaveReportModal.value = true;
 };
@@ -684,6 +739,7 @@ const submitSaveReport = async () => {
   try {
     const payload = {
       title: saveReportForm.value.title.trim(),
+      description: saveReportForm.value.description?.trim() || undefined,
       sql_content: saveReportForm.value.sql_content,
       dataset_id: saveReportForm.value.dataset_id,
       data_source: saveReportForm.value.data_source,
@@ -693,6 +749,7 @@ const submitSaveReport = async () => {
       params_schema: saveReportForm.value.params_schema,
       default_params: saveReportForm.value.default_params,
       analysis_mode: saveReportForm.value.analysis_mode,
+      tags: parseSavedReportTags(saveReportForm.value.tags_input),
     };
     if (isEditingReport.value && editingReportId.value) {
       await axios.put(`/api/portal/saved-reports/${editingReportId.value}`, payload);
@@ -1972,6 +2029,10 @@ const {
   keepOpenStorageKey: "debug_portal_keep_open",
   pinStorageKey: "debug_portal_pinned",
 });
+
+const saveReportModalOverlayClass = computed(() =>
+  showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'
+);
 
 const INLINE_DATASET_MENU_EMPTY =
   "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
@@ -5280,7 +5341,8 @@ onUnmounted(() => {
   <!-- Modal: Save Report -->
   <div
     v-if="showSaveReportModal"
-    class="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+    class="fixed inset-y-0 left-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 transition-[right] duration-200"
+    :class="saveReportModalOverlayClass"
     @click.self="showSaveReportModal = false"
   >
     <div
@@ -5309,6 +5371,24 @@ onUnmounted(() => {
             v-model="saveReportForm.title"
             type="text"
             placeholder="请输入自定义报表名称"
+            class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-800 dark:text-gray-200"
+          />
+        </div>
+        <div>
+          <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">报表描述</label>
+          <textarea
+            v-model="saveReportForm.description"
+            rows="2"
+            placeholder="说明这个报表适合回答什么业务问题"
+            class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-800 dark:text-gray-200 resize-none"
+          />
+        </div>
+        <div>
+          <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">标签</label>
+          <input
+            v-model="saveReportForm.tags_input"
+            type="text"
+            placeholder="例如：经营分析, 订单, 月报"
             class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-800 dark:text-gray-200"
           />
         </div>

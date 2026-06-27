@@ -185,6 +185,38 @@
         v-if="!showSavedReportsCollapse"
         class="space-y-2"
       >
+        <div class="flex flex-wrap items-center gap-1.5">
+          <button
+            v-for="scope in savedReportScopes"
+            :key="scope.value"
+            type="button"
+            class="px-2 py-1 rounded-md text-[10px] font-bold border transition-colors"
+            :class="savedReportScope === scope.value ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-800 hover:border-blue-300'"
+            @click.stop="setSavedReportScope(scope.value)"
+          >
+            {{ scope.label }}
+          </button>
+        </div>
+        <div v-if="allSavedReportTags.length > 0" class="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            class="px-1.5 py-0.5 rounded text-[10px] border transition-colors"
+            :class="selectedSavedReportTag === '' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white dark:bg-gray-900 text-gray-500 border-gray-200 dark:border-gray-800 hover:border-gray-300'"
+            @click.stop="selectedSavedReportTag = ''"
+          >
+            全部标签
+          </button>
+          <button
+            v-for="tag in allSavedReportTags"
+            :key="tag"
+            type="button"
+            class="px-1.5 py-0.5 rounded text-[10px] border transition-colors"
+            :class="selectedSavedReportTag === tag ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-900/50 hover:border-blue-300'"
+            @click.stop="selectedSavedReportTag = tag"
+          >
+            {{ tag }}
+          </button>
+        </div>
         <div v-if="loadingReports" class="flex items-center justify-center py-4 text-xs text-gray-400 select-none">
           <svg class="w-4 h-4 animate-spin text-blue-500 mr-2" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -192,12 +224,12 @@
           </svg>
           正在加载暂存报表...
         </div>
-        <div v-else-if="savedReports.length === 0" class="text-center py-6 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl text-gray-400 dark:text-gray-500 text-[11px] select-none">
+        <div v-else-if="filteredSavedReports.length === 0" class="text-center py-6 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl text-gray-400 dark:text-gray-500 text-[11px] select-none">
           暂无已存报表。您可以在 ChatBI 结果中点击 SQL 上方的“暂存”按钮进行快捷收藏。
         </div>
         <div v-else class="grid gap-2 max-h-60 overflow-y-auto pr-0.5 custom-scrollbar">
           <div
-            v-for="report in savedReports"
+            v-for="report in filteredSavedReports"
             :key="report.id"
             class="group/item flex items-stretch rounded-lg border border-blue-100/60 dark:border-blue-900/30 bg-white dark:bg-gray-900/40 hover:border-blue-300 dark:hover:border-blue-700/60 overflow-hidden shadow-xs"
           >
@@ -209,14 +241,29 @@
               <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate w-full" :title="report.title">
                 {{ report.title }}
               </span>
+              <span class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full">
+                {{ report.is_owner ? '我的报表' : `来自 ${report.owner_name || '共享用户'}` }}
+                <span v-if="report.status === 'error'" class="text-red-500"> · 最近运行失败</span>
+                <span v-else-if="report.last_success_at" class="text-emerald-500"> · 已运行</span>
+              </span>
               <span v-if="report.original_query" class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full" :title="report.original_query">
                 问: {{ report.original_query }}
+              </span>
+              <span v-if="report.tags?.length" class="flex flex-wrap gap-1 mt-1">
+                <span
+                  v-for="tag in report.tags.slice(0, 3)"
+                  :key="tag"
+                  class="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-[9px] text-blue-600 dark:text-blue-300"
+                >
+                  {{ tag }}
+                </span>
               </span>
               <span class="text-[9px] text-gray-400 dark:text-gray-550 mt-1 select-none font-mono">
                 {{ formatDate(report.created_at) }}
               </span>
             </button>
             <button
+              v-if="report.is_owner"
               type="button"
               class="flex items-center justify-center w-8 text-gray-400 hover:text-blue-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
               title="编辑暂存"
@@ -227,6 +274,29 @@
               </svg>
             </button>
             <button
+              v-if="report.is_owner"
+              type="button"
+              class="flex items-center justify-center w-8 text-gray-400 hover:text-emerald-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer"
+              title="共享报表"
+              @click.stop="openShareReportModal(report)"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 8a3 3 0 10-2.83-4H12a3 3 0 003 4zm0 8a3 3 0 10-2.83 4H12a3 3 0 003-4zM6 13a3 3 0 100-6 3 3 0 000 6zm2.59-2.51l4.82 2.02M13.41 5.49L8.59 7.51" />
+              </svg>
+            </button>
+            <button
+              v-else
+              type="button"
+              class="flex items-center justify-center w-8 text-gray-400 hover:text-emerald-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer"
+              title="复制为我的报表"
+              @click.stop="handleCopyReport(report)"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 8h10a2 2 0 012 2v8a2 2 0 01-2 2H8a2 2 0 01-2-2V10a2 2 0 012-2zm-2 8H5a2 2 0 01-2-2V5a2 2 0 012-2h9a2 2 0 012 2v1" />
+              </svg>
+            </button>
+            <button
+              v-if="report.is_owner"
               type="button"
               class="flex items-center justify-center w-8 text-gray-400 hover:text-red-500 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
               title="删除暂存"
@@ -237,6 +307,119 @@
               </svg>
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="showShareReportModal && sharingReport"
+      class="fixed inset-0 z-[220] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      @click.self="closeShareReportModal"
+    >
+      <div class="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 shadow-2xl overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-black text-gray-800 dark:text-gray-100">共享黄金报表</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate max-w-[18rem]">{{ sharingReport.title }}</p>
+          </div>
+          <button type="button" class="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" @click="closeShareReportModal">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 space-y-4">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">共享给用户</label>
+              <span class="text-[10px] text-gray-400">已选 {{ selectedShareUserIds.length }} 人</span>
+            </div>
+            <input
+              v-model="shareUserSearch"
+              type="text"
+              placeholder="搜索用户名或姓名..."
+              class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-950/40 divide-y divide-gray-50 dark:divide-gray-800 custom-scrollbar">
+              <div v-if="loadingShareUsers" class="px-3 py-4 text-center text-xs text-gray-400">正在加载用户...</div>
+              <button
+                v-else-if="shareUserCandidates.length"
+                v-for="user in shareUserCandidates"
+                :key="user.id"
+                type="button"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-blue-50/60 dark:hover:bg-blue-950/30 transition-colors"
+                @click="toggleShareUser(user.id)"
+              >
+                <span
+                  class="w-4 h-4 rounded border flex items-center justify-center text-[10px] font-black"
+                  :class="isShareUserSelected(user.id) ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 text-transparent'"
+                >✓</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-xs font-bold text-gray-800 dark:text-gray-100 truncate">{{ user.real_name || user.user_name }}</span>
+                  <span class="block text-[10px] text-gray-400 truncate">{{ user.user_name }} · ID {{ user.id }}</span>
+                </span>
+              </button>
+              <div v-else class="px-3 py-4 text-center text-xs text-gray-400">未找到可共享用户</div>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">共享给角色</label>
+              <span class="text-[10px] text-gray-400">已选 {{ selectedShareRoleIds.length }} 个</span>
+            </div>
+            <input
+              v-model="shareRoleSearch"
+              type="text"
+              placeholder="搜索角色名称或代码..."
+              class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-950/40 divide-y divide-gray-50 dark:divide-gray-800 custom-scrollbar">
+              <div v-if="loadingShareRoles" class="px-3 py-4 text-center text-xs text-gray-400">正在加载角色...</div>
+              <button
+                v-else-if="shareRoleCandidates.length"
+                v-for="role in shareRoleCandidates"
+                :key="role.id"
+                type="button"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-emerald-50/60 dark:hover:bg-emerald-950/30 transition-colors"
+                @click="toggleShareRole(role.id)"
+              >
+                <span
+                  class="w-4 h-4 rounded border flex items-center justify-center text-[10px] font-black"
+                  :class="isShareRoleSelected(role.id) ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-gray-300 text-transparent'"
+                >✓</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-xs font-bold text-gray-800 dark:text-gray-100 truncate">{{ role.name }}</span>
+                  <span class="block text-[10px] text-gray-400 truncate">{{ role.code }} · ID {{ role.id }}</span>
+                </span>
+              </button>
+              <div v-else class="px-3 py-4 text-center text-xs text-gray-400">未找到可共享角色</div>
+            </div>
+          </div>
+          <div v-if="selectedShareLabels.length" class="flex flex-wrap gap-1">
+            <span
+              v-for="label in selectedShareLabels"
+              :key="label"
+              class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-800 text-[10px] font-semibold text-gray-600 dark:text-gray-300"
+            >
+              {{ label }}
+            </span>
+          </div>
+          <p class="text-[11px] text-gray-400 leading-relaxed">
+            共享只开放报表定义，运行时仍按当前用户自己的物理表权限校验。
+          </p>
+        </div>
+        <div class="px-5 py-4 bg-gray-50 dark:bg-gray-900/80 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">
+          <button type="button" class="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700" @click="closeShareReportModal">
+            取消
+          </button>
+          <button
+            type="button"
+            class="px-4 py-2 text-xs font-bold rounded-xl bg-primary text-white hover:bg-primary-hover disabled:opacity-50"
+            :disabled="isSavingShare"
+            @click="submitShareReport"
+          >
+            {{ isSavingShare ? '保存中...' : '保存共享' }}
+          </button>
         </div>
       </div>
     </div>
@@ -965,6 +1148,19 @@ interface DatasetNavigationPayload {
   llm_error_message?: string | null;
 }
 
+interface ShareUserCandidate {
+  id: number;
+  user_name: string;
+  real_name?: string | null;
+  status?: number;
+}
+
+interface ShareRoleCandidate {
+  id: number;
+  code: string;
+  name: string;
+}
+
 const props = withDefaults(defineProps<{
   payload: DatasetNavigationPayload;
   initialLoading?: boolean;
@@ -1003,6 +1199,9 @@ const emit = defineEmits<{
     params_schema?: any[];
     default_params?: Record<string, any>;
     analysis_mode?: string;
+    tags?: string[];
+    owner_name?: string;
+    is_owner?: boolean;
   }): void;
   (event: "edit-saved-report", payload: any): void;
 }>();
@@ -1254,11 +1453,113 @@ const savedReports = ref<any[]>([]);
 const loadingReports = ref(false);
 const showSavedReportsCollapse = ref(true); // 默认收起
 const showFrequentCollapse = ref(false); // 我常问默认展开
+const savedReportScope = ref<"all" | "my" | "shared">("all");
+const selectedSavedReportTag = ref("");
+const showShareReportModal = ref(false);
+const sharingReport = ref<any | null>(null);
+const shareUserSearch = ref("");
+const shareRoleSearch = ref("");
+const shareUserCandidates = ref<ShareUserCandidate[]>([]);
+const shareRoleCandidates = ref<ShareRoleCandidate[]>([]);
+const selectedShareUserIds = ref<number[]>([]);
+const selectedShareRoleIds = ref<number[]>([]);
+const loadingShareUsers = ref(false);
+const loadingShareRoles = ref(false);
+const isSavingShare = ref(false);
+let shareUserSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let shareRoleSearchTimer: ReturnType<typeof setTimeout> | null = null;
+const savedReportScopes = [
+  { value: "all" as const, label: "全部" },
+  { value: "my" as const, label: "我的" },
+  { value: "shared" as const, label: "共享给我" },
+];
+
+const allSavedReportTags = computed(() => {
+  const tags = new Set<string>();
+  for (const report of savedReports.value) {
+    for (const tag of report.tags || []) {
+      const cleaned = String(tag || "").trim();
+      if (cleaned) tags.add(cleaned);
+    }
+  }
+  return Array.from(tags);
+});
+
+const filteredSavedReports = computed(() => {
+  if (!selectedSavedReportTag.value) return savedReports.value;
+  return savedReports.value.filter((report) => (report.tags || []).includes(selectedSavedReportTag.value));
+});
+
+const selectedShareLabels = computed(() => {
+  const labels: string[] = [];
+  for (const id of selectedShareUserIds.value) {
+    const user = shareUserCandidates.value.find((item) => Number(item.id) === Number(id));
+    labels.push(`用户：${user?.real_name || user?.user_name || `ID ${id}`}`);
+  }
+  for (const id of selectedShareRoleIds.value) {
+    const role = shareRoleCandidates.value.find((item) => Number(item.id) === Number(id));
+    labels.push(`角色：${role?.name || `ID ${id}`}`);
+  }
+  return labels;
+});
+
+const normalizeShareIds = (ids: number[]) => Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
+
+const isShareUserSelected = (id: number) => selectedShareUserIds.value.includes(Number(id));
+const isShareRoleSelected = (id: number) => selectedShareRoleIds.value.includes(Number(id));
+
+const toggleShareUser = (id: number) => {
+  const normalized = Number(id);
+  selectedShareUserIds.value = isShareUserSelected(normalized)
+    ? selectedShareUserIds.value.filter((item) => item !== normalized)
+    : normalizeShareIds([...selectedShareUserIds.value, normalized]);
+};
+
+const toggleShareRole = (id: number) => {
+  const normalized = Number(id);
+  selectedShareRoleIds.value = isShareRoleSelected(normalized)
+    ? selectedShareRoleIds.value.filter((item) => item !== normalized)
+    : normalizeShareIds([...selectedShareRoleIds.value, normalized]);
+};
+
+const fetchShareCandidates = async (type: "user" | "role") => {
+  if (!showShareReportModal.value) return;
+  if (type === "user") {
+    loadingShareUsers.value = true;
+    try {
+      const res = await axios.get("/api/portal/management/users", {
+        params: { page: 1, size: 100, status: 1, search: shareUserSearch.value.trim() || undefined },
+      });
+      shareUserCandidates.value = Array.isArray(res.data?.items) ? res.data.items : [];
+    } catch (error) {
+      console.error("Failed to fetch share users:", error);
+      showToast("加载用户列表失败", "error");
+    } finally {
+      loadingShareUsers.value = false;
+    }
+    return;
+  }
+
+  loadingShareRoles.value = true;
+  try {
+    const res = await axios.get("/api/portal/roles", {
+      params: { page: 1, size: 100, search: shareRoleSearch.value.trim() || undefined },
+    });
+    shareRoleCandidates.value = Array.isArray(res.data?.items) ? res.data.items : [];
+  } catch (error) {
+    console.error("Failed to fetch share roles:", error);
+    showToast("加载角色列表失败", "error");
+  } finally {
+    loadingShareRoles.value = false;
+  }
+};
 
 const fetchSavedReports = async () => {
   loadingReports.value = true;
   try {
-    const res = await axios.get("/api/portal/saved-reports");
+    const res = await axios.get("/api/portal/saved-reports", {
+      params: { scope: savedReportScope.value },
+    });
     if (res.data && res.data.data) {
       savedReports.value = res.data.data;
     }
@@ -1267,6 +1568,12 @@ const fetchSavedReports = async () => {
   } finally {
     loadingReports.value = false;
   }
+};
+
+const setSavedReportScope = async (scope: "all" | "my" | "shared") => {
+  savedReportScope.value = scope;
+  selectedSavedReportTag.value = "";
+  await fetchSavedReports();
 };
 
 const handleDeleteReport = async (report: any) => {
@@ -1281,9 +1588,88 @@ const handleDeleteReport = async (report: any) => {
   }
 };
 
+const openShareReportModal = async (report: any) => {
+  sharingReport.value = report;
+  const shares = Array.isArray(report.share_targets) ? report.share_targets : [];
+  selectedShareUserIds.value = normalizeShareIds(shares
+    .filter((item: any) => item.target_type === "user")
+    .map((item: any) => Number(item.target_id)));
+  selectedShareRoleIds.value = normalizeShareIds(shares
+    .filter((item: any) => item.target_type === "role")
+    .map((item: any) => Number(item.target_id)));
+  shareUserSearch.value = "";
+  shareRoleSearch.value = "";
+  showShareReportModal.value = true;
+  await Promise.all([fetchShareCandidates("user"), fetchShareCandidates("role")]);
+};
+
+const closeShareReportModal = () => {
+  showShareReportModal.value = false;
+  sharingReport.value = null;
+  if (shareUserSearchTimer) {
+    clearTimeout(shareUserSearchTimer);
+    shareUserSearchTimer = null;
+  }
+  if (shareRoleSearchTimer) {
+    clearTimeout(shareRoleSearchTimer);
+    shareRoleSearchTimer = null;
+  }
+  shareUserSearch.value = "";
+  shareRoleSearch.value = "";
+  shareUserCandidates.value = [];
+  shareRoleCandidates.value = [];
+  selectedShareUserIds.value = [];
+  selectedShareRoleIds.value = [];
+};
+
+const submitShareReport = async () => {
+  if (!sharingReport.value) return;
+  isSavingShare.value = true;
+  try {
+    const targets = [
+      ...selectedShareUserIds.value.map((id) => ({ target_type: "user", target_id: id, permission: "run" })),
+      ...selectedShareRoleIds.value.map((id) => ({ target_type: "role", target_id: id, permission: "run" })),
+    ];
+    await axios.put(`/api/portal/saved-reports/${sharingReport.value.id}/shares`, { targets });
+    showToast(targets.length > 0 ? "报表共享已更新" : "已取消共享", "success");
+    closeShareReportModal();
+    await fetchSavedReports();
+  } catch (error: any) {
+    console.error("Failed to share saved report:", error);
+    const detail = error.response?.data?.detail || "共享失败";
+    showToast(typeof detail === "object" ? JSON.stringify(detail) : detail, "error");
+  } finally {
+    isSavingShare.value = false;
+  }
+};
+
+const handleCopyReport = async (report: any) => {
+  try {
+    await axios.post(`/api/portal/saved-reports/${report.id}/copy`);
+    showToast("已复制为我的报表", "success");
+    await fetchSavedReports();
+  } catch (error: any) {
+    console.error("Failed to copy saved report:", error);
+    const detail = error.response?.data?.detail || "复制失败";
+    showToast(typeof detail === "object" ? JSON.stringify(detail) : detail, "error");
+  }
+};
+
 const handleEditReport = (report: any) => {
   emit("edit-saved-report", report);
 };
+
+watch(shareUserSearch, () => {
+  if (!showShareReportModal.value) return;
+  if (shareUserSearchTimer) clearTimeout(shareUserSearchTimer);
+  shareUserSearchTimer = setTimeout(() => fetchShareCandidates("user"), 300);
+});
+
+watch(shareRoleSearch, () => {
+  if (!showShareReportModal.value) return;
+  if (shareRoleSearchTimer) clearTimeout(shareRoleSearchTimer);
+  shareRoleSearchTimer = setTimeout(() => fetchShareCandidates("role"), 300);
+});
 
 const handleExecuteSavedReportClick = (report: any) => {
   emit("execute-saved-report", {
@@ -1295,6 +1681,9 @@ const handleExecuteSavedReportClick = (report: any) => {
     params_schema: report.params_schema,
     default_params: report.default_params,
     analysis_mode: report.analysis_mode,
+    tags: report.tags,
+    owner_name: report.owner_name,
+    is_owner: report.is_owner,
   });
 };
 
@@ -1320,6 +1709,14 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleGlobalClick);
+  if (shareUserSearchTimer) {
+    clearTimeout(shareUserSearchTimer);
+    shareUserSearchTimer = null;
+  }
+  if (shareRoleSearchTimer) {
+    clearTimeout(shareRoleSearchTimer);
+    shareRoleSearchTimer = null;
+  }
   if (upgradedBannerTimer) {
     clearTimeout(upgradedBannerTimer);
     upgradedBannerTimer = null;

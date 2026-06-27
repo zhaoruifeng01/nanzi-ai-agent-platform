@@ -4,6 +4,11 @@ export type ChartParseResult =
   | { ok: true; option: Record<string, any> }
   | { ok: false; error: Error };
 
+export interface ChartTableData {
+  columns: string[];
+  rows: Array<Array<string | number | null>>;
+}
+
 const colors = [
   "#6366f1",
   "#10b981",
@@ -188,6 +193,52 @@ export function mergeChartDefaults(options: Record<string, any>): Record<string,
   return merged;
 }
 
+export function buildChartTableRows(options: Record<string, any>): ChartTableData {
+  const series = Array.isArray(options?.series) ? options.series : [];
+  if (series.length === 0) return { columns: [], rows: [] };
+
+  const pieSeries = series.filter((item: any) => item?.type === "pie");
+  if (pieSeries.length === series.length) {
+    if (pieSeries.length === 1) {
+      return {
+        columns: ["名称", "数值"],
+        rows: normalizeSeriesData(pieSeries[0]).map((item: any, index: number) => [
+          datumName(item, index),
+          datumValue(item),
+        ]),
+      };
+    }
+    const names = new Set<string>();
+    pieSeries.forEach((item: any) => {
+      normalizeSeriesData(item).forEach((datum: any, index: number) => names.add(String(datumName(datum, index))));
+    });
+    const rows = Array.from(names).map((name) => [
+      name,
+      ...pieSeries.map((item: any) => {
+        const match = normalizeSeriesData(item).find((datum: any, index: number) => String(datumName(datum, index)) === name);
+        return match ? datumValue(match) : null;
+      }),
+    ]);
+    return { columns: ["名称", ...pieSeries.map((item: any, index: number) => seriesName(item, index))], rows };
+  }
+
+  const xAxis = Array.isArray(options?.xAxis) ? options.xAxis[0] : options?.xAxis;
+  const xAxisData = Array.isArray(xAxis?.data) ? xAxis.data : [];
+  const rowCount = Math.max(
+    xAxisData.length,
+    ...series.map((item: any) => normalizeSeriesData(item).length),
+  );
+  const rows = Array.from({ length: rowCount }, (_, rowIndex) => [
+    String(xAxisData[rowIndex] ?? inferDimensionValue(series, rowIndex)),
+    ...series.map((item: any) => datumValue(normalizeSeriesData(item)[rowIndex])),
+  ]);
+
+  return {
+    columns: ["维度", ...series.map((item: any, index: number) => seriesName(item, index))],
+    rows,
+  };
+}
+
 export function createSseLineParser() {
   let buffer = "";
 
@@ -207,6 +258,53 @@ export function createSseLineParser() {
       return line.startsWith("data: ") ? [line.slice(6).trim()] : [];
     },
   };
+}
+
+function normalizeSeriesData(series: any): any[] {
+  return Array.isArray(series?.data) ? series.data : [];
+}
+
+function seriesName(series: any, index: number): string {
+  return String(series?.name || `系列 ${index + 1}`);
+}
+
+function datumName(datum: any, index: number): string {
+  if (datum && typeof datum === "object" && !Array.isArray(datum) && datum.name != null) {
+    return String(datum.name);
+  }
+  if (Array.isArray(datum) && datum.length > 1) {
+    return String(datum[0]);
+  }
+  return String(index + 1);
+}
+
+function datumValue(datum: any): string | number | null {
+  if (datum == null) return null;
+  if (typeof datum === "number" || typeof datum === "string") return datum;
+  if (Array.isArray(datum)) {
+    const value = datum.length > 1 ? datum[datum.length - 1] : datum[0];
+    return typeof value === "number" || typeof value === "string" ? value : null;
+  }
+  if (typeof datum === "object") {
+    const value = datum.value;
+    if (Array.isArray(value)) {
+      const nestedValue = value.length > 1 ? value[value.length - 1] : value[0];
+      return typeof nestedValue === "number" || typeof nestedValue === "string" ? nestedValue : null;
+    }
+    return typeof value === "number" || typeof value === "string" ? value : null;
+  }
+  return null;
+}
+
+function inferDimensionValue(series: any[], rowIndex: number): string {
+  for (const item of series) {
+    const datum = normalizeSeriesData(item)[rowIndex];
+    if (datum && typeof datum === "object") {
+      if (!Array.isArray(datum) && datum.name != null) return String(datum.name);
+      if (Array.isArray(datum) && datum.length > 1) return String(datum[0]);
+    }
+  }
+  return String(rowIndex + 1);
 }
 
 function isChartOption(value: any): value is Record<string, any> {

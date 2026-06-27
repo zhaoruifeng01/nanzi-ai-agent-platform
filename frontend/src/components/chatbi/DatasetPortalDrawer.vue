@@ -194,6 +194,9 @@ const emit = defineEmits<{
     params_schema?: any[];
     default_params?: Record<string, any>;
     analysis_mode?: string;
+    tags?: string[];
+    owner_name?: string;
+    is_owner?: boolean;
   }): void;
   (event: "edit-saved-report", payload: any): void;
 }>();
