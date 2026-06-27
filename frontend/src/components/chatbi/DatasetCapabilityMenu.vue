@@ -235,7 +235,10 @@
           >
             <button
               type="button"
-              class="flex-1 flex flex-col p-2.5 text-left transition-all active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20 min-w-0"
+              class="flex-1 flex flex-col p-2.5 text-left transition-all min-w-0"
+              :class="isSavedReportActionDisabled(report) ? 'cursor-not-allowed opacity-75 bg-gray-50/60 dark:bg-gray-900/60' : 'active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20'"
+              :disabled="isSavedReportActionDisabled(report)"
+              :title="getSavedReportButtonTitle(report)"
               @click="handleExecuteSavedReportClick(report)"
             >
               <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate w-full" :title="report.title">
@@ -245,6 +248,23 @@
                 {{ report.is_owner ? '我的报表' : `来自 ${report.owner_name || '共享用户'}` }}
                 <span v-if="report.status === 'error'" class="text-red-500"> · 最近运行失败</span>
                 <span v-else-if="report.last_success_at" class="text-emerald-500"> · 已运行</span>
+              </span>
+              <span class="flex items-center gap-1 mt-1">
+                <span
+                  v-if="!report.is_owner || report.run_permission_status === 'denied'"
+                  class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold"
+                  :class="getSavedReportRunPermissionClass(report)"
+                  :title="report.run_permission_message || getSavedReportRunPermissionLabel(report)"
+                >
+                  {{ getSavedReportRunPermissionLabel(report) }}
+                </span>
+                <span
+                  v-if="report.is_owner && report.share_summary"
+                  class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300"
+                  :title="getShareTargetLabel(report)"
+                >
+                  {{ report.share_summary }}
+                </span>
               </span>
               <span v-if="report.original_query" class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full" :title="report.original_query">
                 问: {{ report.original_query }}
@@ -287,8 +307,10 @@
             <button
               v-else
               type="button"
-              class="flex items-center justify-center w-8 text-gray-400 hover:text-emerald-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors cursor-pointer"
-              title="复制为我的报表"
+              class="flex items-center justify-center w-8 border-l border-blue-50/60 dark:border-blue-900/20 transition-colors"
+              :class="isSavedReportActionDisabled(report) ? 'text-gray-300 dark:text-gray-600 bg-gray-50/70 dark:bg-gray-900/60 cursor-not-allowed' : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer'"
+              :disabled="isSavedReportActionDisabled(report)"
+              :title="getSavedReportCopyTitle(report)"
               @click.stop="handleCopyReport(report)"
             >
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1490,6 +1512,51 @@ const filteredSavedReports = computed(() => {
   return savedReports.value.filter((report) => (report.tags || []).includes(selectedSavedReportTag.value));
 });
 
+const getSavedReportRunPermissionLabel = (report: any) => {
+  if (report.run_permission_status === "denied") return "无数据权限";
+  if (report.run_permission_status === "allowed") return "可运行";
+  return "待确认";
+};
+
+const getSavedReportRunPermissionClass = (report: any) => {
+  if (report.run_permission_status === "denied") {
+    return "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-300";
+  }
+  if (report.run_permission_status === "allowed") {
+    return "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300";
+  }
+  return "bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-300";
+};
+
+const getShareTargetLabel = (report: any) => {
+  const targets = Array.isArray(report.share_targets) ? report.share_targets : [];
+  if (!targets.length) return "未共享";
+  const labels = targets.map((target: any) => {
+    const prefix = target.target_type === "role" ? "角色" : "用户";
+    return `${prefix}：${target.target_name || `ID ${target.target_id}`}`;
+  });
+  return `已共享给 ${labels.join("、")}`;
+};
+
+const getSavedReportButtonTitle = (report: any) => {
+  if (report.run_permission_status === "denied") {
+    return report.run_permission_message || "暂无该报表所需数据权限，无法运行。";
+  }
+  if (report.is_owner && report.share_summary) {
+    return getShareTargetLabel(report);
+  }
+  return report.title || "运行黄金报表";
+};
+
+const isSavedReportActionDisabled = (report: any) => report.run_permission_status === "denied";
+
+const getSavedReportCopyTitle = (report: any) => {
+  if (isSavedReportActionDisabled(report)) {
+    return report.run_permission_message || "暂无该报表所需数据权限，无法复制。";
+  }
+  return "复制为我的报表";
+};
+
 const selectedShareLabels = computed(() => {
   const labels: string[] = [];
   for (const id of selectedShareUserIds.value) {
@@ -1643,6 +1710,28 @@ const submitShareReport = async () => {
   }
 };
 
+const extractSavedReportActionErrorMessage = (error: any, fallback: string) => {
+  const statusCode = error?.response?.status;
+  const responseData = error?.response?.data || {};
+  const rawDetail = responseData?.detail ?? responseData?.message ?? responseData?.error;
+  const rawMessage = typeof rawDetail === "object" ? JSON.stringify(rawDetail) : String(rawDetail || "");
+  const combined = `${rawMessage} ${error?.message || ""}`;
+  const lower = combined.toLowerCase();
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    lower.includes("permission denied") ||
+    lower.includes("access denied") ||
+    lower.includes("forbidden") ||
+    combined.includes("无权访问") ||
+    combined.includes("权限")
+  ) {
+    return "暂无该报表所需数据权限，无法复制。请联系报表创建人或管理员为你开通相关数据表权限后重试。";
+  }
+  const cleaned = rawMessage.replace(/Request failed with status code\s+\d+/i, "").trim();
+  return cleaned || fallback;
+};
+
 const handleCopyReport = async (report: any) => {
   try {
     await axios.post(`/api/portal/saved-reports/${report.id}/copy`);
@@ -1650,8 +1739,7 @@ const handleCopyReport = async (report: any) => {
     await fetchSavedReports();
   } catch (error: any) {
     console.error("Failed to copy saved report:", error);
-    const detail = error.response?.data?.detail || "复制失败";
-    showToast(typeof detail === "object" ? JSON.stringify(detail) : detail, "error");
+    showToast(extractSavedReportActionErrorMessage(error, "复制失败"), "error");
   }
 };
 

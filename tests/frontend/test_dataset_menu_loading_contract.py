@@ -99,6 +99,23 @@ def test_dataset_capability_menu_component_contract():
     assert "selectedShareRoleIds" in source
     assert "shareUserSearch" in source
     assert "shareRoleSearch" in source
+    assert "extractSavedReportActionErrorMessage" in source
+    assert "responseData?.message" in source
+    assert "暂无该报表所需数据权限，无法复制" in source
+    assert "Request failed with status code" in source
+    assert "showToast(extractSavedReportActionErrorMessage(error, \"复制失败\"), \"error\")" in source
+    assert "run_permission_status" in source
+    assert "getSavedReportRunPermissionLabel" in source
+    assert "getSavedReportRunPermissionClass" in source
+    assert "report.run_permission_status === \"denied\"" in source
+    assert ":disabled=\"isSavedReportActionDisabled(report)\"" in source
+    assert "isSavedReportActionDisabled" in source
+    assert "getSavedReportCopyTitle" in source
+    assert "暂无该报表所需数据权限，无法复制。" in source
+    assert "无数据权限" in source
+    assert "share_summary" in source
+    assert "getShareTargetLabel" in source
+    assert "已共享给" in source
 
 
 def test_saved_report_parameterized_execution_contract():
@@ -106,7 +123,8 @@ def test_saved_report_parameterized_execution_contract():
     assert "showReportRunModal" in source
     assert "reportRunForm" in source
     assert "executeSavedReportWithOptions" in source
-    assert "analysis_mode: reportRunForm.value.autoAnalyze ? 'auto' : 'manual'" in source
+    assert "analysis_mode: 'auto'" in source
+    assert "const shouldAutoAnalyze = true" in source
     assert "params: buildSavedReportRunParams()" in source
     assert "handleQuickQuestion(\"请基于刚才黄金报表结果做业务解读，指出关键结论、异常点和后续建议。\")" in source
     assert "mode: saveReportForm.value.mode" in source
@@ -116,6 +134,15 @@ def test_saved_report_parameterized_execution_contract():
     assert "\\d{2}:\\d{2}:\\d{2}" in source
     assert "start_datetime" in source
     assert "end_datetime" in source
+    assert "month_range" in source
+    assert "start_month" in source
+    assert "end_month" in source
+    assert "last_6_completed_months" in source
+    assert "type=\"month\"" in source
+    assert "extractSavedReportExecuteErrorMessage" in source
+    assert "error.response?.data?.message" in source
+    assert "暂无该报表所需数据权限" in source
+    assert "Request failed with status code" in source
 
 
 def test_saved_report_tags_are_not_raw_question_prefixes():

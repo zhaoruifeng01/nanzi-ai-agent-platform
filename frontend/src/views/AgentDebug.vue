@@ -579,33 +579,55 @@ const saveReportForm = ref({
   sql_template: '',
   params_schema: [] as any[],
   default_params: {} as Record<string, any>,
-  analysis_mode: 'manual',
+  analysis_mode: 'auto',
   tags_input: '',
 });
 
 const detectSavedReportDateTemplate = (sql: string) => {
   const matches = [...String(sql || '').matchAll(/'(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2})?'/g)];
-  if (matches.length < 2) return null;
-  const first = matches[0];
-  const second = matches[1];
+  if (matches.length >= 2) {
+    const first = matches[0];
+    const second = matches[1];
+    if (!first || !second || first.index === undefined || second.index === undefined) return null;
+    const firstRaw = first[0];
+    const secondRaw = second[0];
+    const startParam = /\d{2}:\d{2}:\d{2}/.test(firstRaw) ? 'start_datetime' : 'start_date';
+    const endParam = /\d{2}:\d{2}:\d{2}/.test(secondRaw) ? 'end_datetime' : 'end_date';
+    const template = `${sql.slice(0, first.index)}{{${startParam}}}${sql.slice(first.index + firstRaw.length, second.index)}{{${endParam}}}${sql.slice(second.index + secondRaw.length)}`;
+    return {
+      sql_template: template,
+      params_schema: [
+        {
+          name: 'date_range',
+          type: 'date_range',
+          label: '日期范围',
+          default: 'month_start_to_today',
+          options: ['today', 'yesterday', 'last_7_days', 'month_start_to_today', 'custom_range'],
+        },
+      ],
+      default_params: { date_range: 'month_start_to_today' },
+    };
+  }
+  const monthMatches = [...String(sql || '').matchAll(/'(\d{4}-\d{2})'/g)];
+  if (monthMatches.length < 2) return null;
+  const first = monthMatches[0];
+  const second = monthMatches[1];
   if (!first || !second || first.index === undefined || second.index === undefined) return null;
   const firstRaw = first[0];
   const secondRaw = second[0];
-  const startParam = /\d{2}:\d{2}:\d{2}/.test(firstRaw) ? 'start_datetime' : 'start_date';
-  const endParam = /\d{2}:\d{2}:\d{2}/.test(secondRaw) ? 'end_datetime' : 'end_date';
-  const template = `${sql.slice(0, first.index)}{{${startParam}}}${sql.slice(first.index + firstRaw.length, second.index)}{{${endParam}}}${sql.slice(second.index + secondRaw.length)}`;
+  const template = `${sql.slice(0, first.index)}{{start_month}}${sql.slice(first.index + firstRaw.length, second.index)}{{end_month}}${sql.slice(second.index + secondRaw.length)}`;
   return {
     sql_template: template,
     params_schema: [
       {
-        name: 'date_range',
-        type: 'date_range',
-        label: '日期范围',
-        default: 'month_start_to_today',
-        options: ['today', 'yesterday', 'last_7_days', 'month_start_to_today', 'custom_range'],
+        name: 'month_range',
+        type: 'month_range',
+        label: '月份范围',
+        default: 'last_6_completed_months',
+        options: ['last_6_completed_months', 'year_start_to_current_month', 'custom_month_range'],
       },
     ],
-    default_params: { date_range: 'month_start_to_today' },
+    default_params: { month_range: 'last_6_completed_months' },
   };
 };
 
@@ -704,7 +726,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     sql_template: detectedTemplate?.sql_template || '',
     params_schema: detectedTemplate?.params_schema || [],
     default_params: detectedTemplate?.default_params || {},
-    analysis_mode: detectedTemplate ? 'auto' : 'manual',
+    analysis_mode: 'auto',
     tags_input: deriveSavedReportTagsInput(originalQuery),
   };
   showSaveReportModal.value = true;
@@ -724,7 +746,7 @@ const openEditReportModal = (report: any) => {
     sql_template: report.sql_template || '',
     params_schema: report.params_schema || [],
     default_params: report.default_params || {},
-    analysis_mode: report.analysis_mode || 'manual',
+    analysis_mode: 'auto',
     tags_input: Array.isArray(report.tags) ? report.tags.join(', ') : '',
   };
   showSaveReportModal.value = true;
@@ -844,6 +866,28 @@ const renderSavedReportDataToMarkdown = (data: any): string => {
   return md;
 };
 
+const extractSavedReportExecuteErrorMessage = (error: any) => {
+  const statusCode = error?.response?.status;
+  const responseData = error?.response?.data || {};
+  const rawDetail = responseData?.detail ?? error.response?.data?.message ?? responseData?.error;
+  const rawMessage = typeof rawDetail === 'object' ? JSON.stringify(rawDetail) : String(rawDetail || '');
+  const combined = `${rawMessage} ${error?.message || ''}`;
+  const lower = combined.toLowerCase();
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    lower.includes('permission denied') ||
+    lower.includes('access denied') ||
+    lower.includes('forbidden') ||
+    combined.includes('无权访问') ||
+    combined.includes('权限')
+  ) {
+    return '暂无该报表所需数据权限，无法执行本次查询。请联系报表创建人或管理员为你开通相关数据表权限后重试。';
+  }
+  const cleaned = rawMessage.replace(/Request failed with status code\s+\d+/i, '').trim();
+  return cleaned || '报表执行失败，暂时无法获取结果。请稍后重试，或联系管理员检查报表配置与数据权限。';
+};
+
 const handleExecuteSavedReport = async (report: {
   id: string;
   title: string;
@@ -889,10 +933,10 @@ const handleExecuteSavedReport = async (report: {
   let resultMarkdown = "";
 
   try {
-    const shouldAutoAnalyze = report.analysis_mode === 'auto';
+    const shouldAutoAnalyze = true;
     const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, {
       params: report.default_params || {},
-      analysis_mode: shouldAutoAnalyze ? 'auto' : 'manual',
+      analysis_mode: 'auto',
     }, {
       params: { conversation_id: conversationId.value }
     });
@@ -934,13 +978,7 @@ const handleExecuteSavedReport = async (report: {
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
 
-    const detail = error.response?.data?.detail;
-    let errorMsg = "";
-    if (detail) {
-      errorMsg = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : String(detail);
-    } else {
-      errorMsg = error.message || "执行失败，请检查网络或配置";
-    }
+    const errorMsg = extractSavedReportExecuteErrorMessage(error);
 
     agentMsg.value.content = `### ❌ 报表执行失败\n\n在直连执行 SQL 报表时遇到错误：\n\n\`\`\`\n${errorMsg}\n\`\`\``;
     agentMsg.value.logs = [

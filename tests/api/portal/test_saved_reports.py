@@ -41,6 +41,25 @@ def _report_row(**overrides):
     return SimpleNamespace(**data)
 
 
+class _ScalarResult:
+    def __init__(self, values):
+        self._values = values
+
+    def all(self):
+        return self._values
+
+    def unique(self):
+        return self
+
+
+class _ExecuteResult:
+    def __init__(self, values):
+        self._values = values
+
+    def scalars(self):
+        return _ScalarResult(self._values)
+
+
 def test_saved_report_static_sql_stays_compatible():
     report = saved_reports.SavedReportItem.model_validate(
         {
@@ -64,6 +83,67 @@ def test_saved_report_static_sql_stays_compatible():
     assert params == {}
     assert report.mode == "static_sql"
     assert report.analysis_mode == "manual"
+
+
+@pytest.mark.asyncio
+async def test_get_saved_reports_enriches_owner_share_summary(monkeypatch):
+    owner_report = _report_row(
+        owner_user_id=7,
+        owner_name="alice",
+        visibility="shared",
+        shares=[
+            SimpleNamespace(target_type="user", target_id=9, permission="run"),
+            SimpleNamespace(target_type="role", target_id=2, permission="run"),
+        ],
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _ExecuteResult([2]),
+            _ExecuteResult([owner_report]),
+            _ExecuteResult([SimpleNamespace(id=9, user_name="bob", real_name="Bob")]),
+            _ExecuteResult([SimpleNamespace(id=2, code="ops", name="运维角色")]),
+        ]
+    )
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", AsyncMock())
+
+    response = await saved_reports.get_saved_reports(
+        scope="my",
+        tag=None,
+        user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+        db=db,
+    )
+
+    item = response.data[0]
+    assert item.run_permission_status == "allowed"
+    assert item.share_summary == "已共享给 1 人 / 1 个角色"
+    assert item.share_targets[0].target_name == "Bob"
+    assert item.share_targets[1].target_name == "运维角色"
+
+
+@pytest.mark.asyncio
+async def test_get_saved_reports_marks_shared_report_denied_when_table_permission_fails(monkeypatch):
+    shared_report = _report_row(owner_user_id=1, owner_name="admin", visibility="shared")
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[_ExecuteResult([2]), _ExecuteResult([shared_report])])
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        assert kwargs["auth_check_only"] is True
+        return "[Permission Denied] 用户 bob 无权访问表 'secret_orders'"
+
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    response = await saved_reports.get_saved_reports(
+        scope="shared",
+        tag=None,
+        user_info={"user_id": "7", "role": "user", "user_name": "bob"},
+        db=db,
+    )
+
+    item = response.data[0]
+    assert item.run_permission_status == "denied"
+    assert item.can_run is False
+    assert "没有访问数据表" in item.run_permission_message
 
 
 def test_saved_report_detects_two_date_literals_as_default_date_range_template():
@@ -132,6 +212,85 @@ def test_saved_report_detects_datetime_literals_and_preserves_time_suffixes():
     assert "created_at <= '2026-06-27 23:59:59'" in sql
     assert params["start_datetime"] == "2026-06-27 00:00:00"
     assert params["end_datetime"] == "2026-06-27 23:59:59"
+
+
+def test_saved_report_detects_two_month_literals_as_month_range_template():
+    report = saved_reports._build_saved_report_item(
+        report_id="rpt_month",
+        title="应收月份报表",
+        description="应收月份报表",
+        sql_clean=(
+            "SELECT receivable_year_month, SUM(receivable_amount) FROM VIEW_AI_SERVICE_MZKXQ_SU "
+            "WHERE receivable_year_month >= '2025-12' AND receivable_year_month <= '2026-05' "
+            "GROUP BY receivable_year_month"
+        ),
+        dataset_id=None,
+        data_source="clickhouse_test",
+        original_query="查询最近6个月应收",
+        created_at="2026-06-27T00:00:00+00:00",
+        body=saved_reports.SaveReportRequest.model_validate(
+            {
+                "title": "应收月份报表",
+                "sql_content": (
+                    "SELECT receivable_year_month, SUM(receivable_amount) FROM VIEW_AI_SERVICE_MZKXQ_SU "
+                    "WHERE receivable_year_month >= '2025-12' AND receivable_year_month <= '2026-05' "
+                    "GROUP BY receivable_year_month"
+                ),
+                "data_source": "clickhouse_test",
+            }
+        ),
+    )
+
+    assert report.mode == "param_sql"
+    assert report.sql_template == (
+        "SELECT receivable_year_month, SUM(receivable_amount) FROM VIEW_AI_SERVICE_MZKXQ_SU "
+        "WHERE receivable_year_month >= {{start_month}} AND receivable_year_month <= {{end_month}} "
+        "GROUP BY receivable_year_month"
+    )
+    assert report.default_params == {"month_range": "last_6_completed_months"}
+
+    sql, params = saved_reports._resolve_report_sql(
+        report,
+        body=saved_reports.ExecuteReportRequest.model_validate({}),
+        today=date(2026, 6, 27),
+    )
+
+    assert "receivable_year_month >= '2025-12'" in sql
+    assert "receivable_year_month <= '2026-05'" in sql
+    assert params == {
+        "month_range": "last_6_completed_months",
+        "start_month": "2025-12",
+        "end_month": "2026-05",
+    }
+
+
+def test_saved_report_month_template_renders_custom_month_range():
+    report = saved_reports.SavedReportItem.model_validate(
+        {
+            "id": "rpt_month_custom",
+            "title": "自定义月份报表",
+            "sql_content": "SELECT * FROM receivables",
+            "sql_template": "SELECT * FROM receivables WHERE month >= {{start_month}} AND month <= {{end_month}}",
+            "mode": "param_sql",
+            "params_schema": [{"name": "month_range", "type": "month_range", "label": "月份范围"}],
+            "default_params": {"month_range": "custom_month_range", "start_month": "2026-01", "end_month": "2026-03"},
+            "data_source": "mysql_test",
+            "dataset_id": None,
+            "original_query": "自定义月份",
+            "created_at": "2026-06-27T00:00:00+00:00",
+        }
+    )
+
+    sql, params = saved_reports._resolve_report_sql(
+        report,
+        body=saved_reports.ExecuteReportRequest.model_validate({}),
+        today=date(2026, 6, 27),
+    )
+
+    assert "month >= '2026-01'" in sql
+    assert "month <= '2026-03'" in sql
+    assert params["start_month"] == "2026-01"
+    assert params["end_month"] == "2026-03"
 
 
 def test_saved_report_datetime_template_renders_custom_range_end_of_day():
@@ -278,6 +437,61 @@ async def test_execute_saved_report_reinfers_placeholder_data_source(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_execute_shared_saved_report_permission_denied_uses_friendly_message(monkeypatch):
+    report_row = _report_row(owner_user_id=1, owner_name="admin")
+    db = AsyncMock()
+    db.flush = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        return "[Permission Denied] 用户 alice 无权访问表 'ai_agent_users'"
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=report_row))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await saved_reports.execute_saved_report(
+            "rpt_5",
+            body=saved_reports.ExecuteReportRequest.model_validate({"params": {"date_range": "today"}}),
+            conversation_id=None,
+            user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "没有访问数据表" in str(exc_info.value.detail)
+    assert "Request failed" not in str(exc_info.value.detail)
+    assert "[Permission Denied]" not in str(exc_info.value.detail)
+    assert report_row.status == "error"
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_copy_shared_saved_report_permission_denied_uses_friendly_message(monkeypatch):
+    source = _report_row(owner_user_id=1, owner_name="admin")
+    db = AsyncMock()
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        assert kwargs["auth_check_only"] is True
+        return "[Permission Denied] 用户 alice 无权访问表 'ai_agent_users'"
+
+    monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr(saved_reports, "_get_report_for_user", AsyncMock(return_value=source))
+    monkeypatch.setattr(saved_reports, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await saved_reports.copy_saved_report(
+            "rpt_5",
+            user_info={"user_id": "7", "role": "user", "user_name": "alice"},
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "没有访问数据表" in str(exc_info.value.detail)
+    assert "[Permission Denied]" not in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_update_saved_report_rebuilds_parameter_template(monkeypatch):
     original = _report_row(
         id="rpt_edit",
@@ -361,8 +575,9 @@ async def test_update_saved_report_rejects_unauthorized_table_before_saving(monk
             db=db,
         )
 
-    assert exc_info.value.status_code == 400
-    assert "无权访问表" in exc_info.value.detail
+    assert exc_info.value.status_code == 403
+    assert "没有访问数据表" in exc_info.value.detail
+    assert "[Permission Denied]" not in exc_info.value.detail
     db.flush.assert_not_awaited()
 
 

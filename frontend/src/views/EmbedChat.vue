@@ -1872,7 +1872,7 @@
           </button>
         </div>
         <div class="p-6 space-y-4">
-          <div>
+          <div v-if="!savedReportUsesMonthRange(pendingSavedReport)">
             <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">日期范围</label>
             <select
               v-model="reportRunForm.dateRange"
@@ -1895,13 +1895,33 @@
               <input v-model="reportRunForm.endDate" type="date" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
             </div>
           </div>
-          <label class="flex items-center justify-between gap-3 p-3 rounded-xl border border-blue-100 dark:border-blue-900/40 bg-blue-50/40 dark:bg-blue-950/20 cursor-pointer">
+          <div v-if="savedReportUsesMonthRange(pendingSavedReport)">
+            <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">月份范围</label>
+            <select
+              v-model="reportRunForm.monthRange"
+              class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-gray-800 dark:text-gray-200"
+            >
+              <option value="last_6_completed_months">最近 6 个完整月</option>
+              <option value="year_start_to_current_month">本年截至本月</option>
+              <option value="custom_month_range">自定义月份</option>
+            </select>
+          </div>
+          <div v-if="savedReportUsesMonthRange(pendingSavedReport) && reportRunForm.monthRange === 'custom_month_range'" class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">开始月份</label>
+              <input v-model="reportRunForm.startMonth" type="month" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+            </div>
+            <div>
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">结束月份</label>
+              <input v-model="reportRunForm.endMonth" type="month" class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200" />
+            </div>
+          </div>
+          <div class="flex items-center justify-between gap-3 p-3 rounded-xl border border-blue-100 dark:border-blue-900/40 bg-blue-50/40 dark:bg-blue-950/20">
             <span>
               <span class="block text-sm font-bold text-gray-800 dark:text-gray-100">执行并分析</span>
-              <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">执行完成后自动让 ChatBI 解读结果</span>
+              <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">执行完成后将自动让 ChatBI 解读结果</span>
             </span>
-            <input v-model="reportRunForm.autoAnalyze" type="checkbox" class="w-4 h-4 accent-primary" />
-          </label>
+          </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end space-x-3 bg-gray-50/50 dark:bg-gray-800/50">
           <button @click="showReportRunModal = false" class="px-4 py-2 text-xs font-bold text-gray-500 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
@@ -3972,7 +3992,7 @@ const saveReportForm = ref({
   sql_template: '',
   params_schema: [] as any[],
   default_params: {} as Record<string, any>,
-  analysis_mode: 'manual',
+  analysis_mode: 'auto',
   tags_input: '',
 });
 
@@ -3982,38 +4002,68 @@ const reportRunForm = ref({
   dateRange: 'month_start_to_today',
   startDate: '',
   endDate: '',
+  monthRange: 'last_6_completed_months',
+  startMonth: '',
+  endMonth: '',
   autoAnalyze: true,
 });
 
 const detectSavedReportDateTemplate = (sql: string) => {
   const matches = [...String(sql || '').matchAll(/'(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2})?'/g)];
-  if (matches.length < 2) return null;
-  const first = matches[0];
-  const second = matches[1];
+  if (matches.length >= 2) {
+    const first = matches[0];
+    const second = matches[1];
+    if (!first || !second || first.index === undefined || second.index === undefined) return null;
+    const firstRaw = first[0];
+    const secondRaw = second[0];
+    const startParam = /\d{2}:\d{2}:\d{2}/.test(firstRaw) ? 'start_datetime' : 'start_date';
+    const endParam = /\d{2}:\d{2}:\d{2}/.test(secondRaw) ? 'end_datetime' : 'end_date';
+    const template = `${sql.slice(0, first.index)}{{${startParam}}}${sql.slice(first.index + firstRaw.length, second.index)}{{${endParam}}}${sql.slice(second.index + secondRaw.length)}`;
+    return {
+      sql_template: template,
+      params_schema: [
+        {
+          name: 'date_range',
+          type: 'date_range',
+          label: '日期范围',
+          default: 'month_start_to_today',
+          options: ['today', 'yesterday', 'last_7_days', 'month_start_to_today', 'custom_range'],
+        },
+      ],
+      default_params: { date_range: 'month_start_to_today' },
+    };
+  }
+  const monthMatches = [...String(sql || '').matchAll(/'(\d{4}-\d{2})'/g)];
+  if (monthMatches.length < 2) return null;
+  const first = monthMatches[0];
+  const second = monthMatches[1];
   if (!first || !second || first.index === undefined || second.index === undefined) return null;
   const firstRaw = first[0];
   const secondRaw = second[0];
-  const startParam = /\d{2}:\d{2}:\d{2}/.test(firstRaw) ? 'start_datetime' : 'start_date';
-  const endParam = /\d{2}:\d{2}:\d{2}/.test(secondRaw) ? 'end_datetime' : 'end_date';
-  const template = `${sql.slice(0, first.index)}{{${startParam}}}${sql.slice(first.index + firstRaw.length, second.index)}{{${endParam}}}${sql.slice(second.index + secondRaw.length)}`;
+  const template = `${sql.slice(0, first.index)}{{start_month}}${sql.slice(first.index + firstRaw.length, second.index)}{{end_month}}${sql.slice(second.index + secondRaw.length)}`;
   return {
     sql_template: template,
     params_schema: [
       {
-        name: 'date_range',
-        type: 'date_range',
-        label: '日期范围',
-        default: 'month_start_to_today',
-        options: ['today', 'yesterday', 'last_7_days', 'month_start_to_today', 'custom_range'],
+        name: 'month_range',
+        type: 'month_range',
+        label: '月份范围',
+        default: 'last_6_completed_months',
+        options: ['last_6_completed_months', 'year_start_to_current_month', 'custom_month_range'],
       },
     ],
-    default_params: { date_range: 'month_start_to_today' },
+    default_params: { month_range: 'last_6_completed_months' },
   };
 };
 
 const todayDateString = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const todayMonthString = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
 const parseSavedReportTags = (input: string) => {
@@ -4110,7 +4160,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     sql_template: detectedTemplate?.sql_template || '',
     params_schema: detectedTemplate?.params_schema || [],
     default_params: detectedTemplate?.default_params || {},
-    analysis_mode: detectedTemplate ? 'auto' : 'manual',
+    analysis_mode: 'auto',
     tags_input: deriveSavedReportTagsInput(originalQuery),
   };
   showSaveReportModal.value = true;
@@ -4130,7 +4180,7 @@ const openEditReportModal = (report: any) => {
     sql_template: report.sql_template || '',
     params_schema: report.params_schema || [],
     default_params: report.default_params || {},
-    analysis_mode: report.analysis_mode || 'manual',
+    analysis_mode: 'auto',
     tags_input: Array.isArray(report.tags) ? report.tags.join(', ') : '',
   };
   showSaveReportModal.value = true;
@@ -4254,17 +4304,34 @@ const savedReportNeedsRunOptions = (report: SavedReportPayload) => {
   return report.mode === 'param_sql' && Array.isArray(report.params_schema) && report.params_schema.length > 0;
 };
 
+const savedReportUsesMonthRange = (report?: SavedReportPayload | null) => {
+  return Boolean(report?.params_schema?.some((item: any) => item?.type === 'month_range' || item?.name === 'month_range'));
+};
+
 const prepareSavedReportRunForm = (report: SavedReportPayload) => {
   const defaults = report.default_params || {};
   reportRunForm.value = {
     dateRange: String(defaults.date_range || 'month_start_to_today'),
     startDate: String(defaults.start_date || todayDateString()),
     endDate: String(defaults.end_date || todayDateString()),
-    autoAnalyze: report.analysis_mode === 'auto',
+    monthRange: String(defaults.month_range || 'last_6_completed_months'),
+    startMonth: String(defaults.start_month || todayMonthString()),
+    endMonth: String(defaults.end_month || todayMonthString()),
+    autoAnalyze: true,
   };
 };
 
 const buildSavedReportRunParams = () => {
+  if (savedReportUsesMonthRange(pendingSavedReport.value)) {
+    const params: Record<string, any> = {
+      month_range: reportRunForm.value.monthRange,
+    };
+    if (reportRunForm.value.monthRange === 'custom_month_range') {
+      params.start_month = reportRunForm.value.startMonth;
+      params.end_month = reportRunForm.value.endMonth;
+    }
+    return params;
+  }
   const params: Record<string, any> = {
     date_range: reportRunForm.value.dateRange,
   };
@@ -4273,6 +4340,28 @@ const buildSavedReportRunParams = () => {
     params.end_date = reportRunForm.value.endDate;
   }
   return params;
+};
+
+const extractSavedReportExecuteErrorMessage = (error: any) => {
+  const statusCode = error?.response?.status;
+  const responseData = error?.response?.data || {};
+  const rawDetail = responseData?.detail ?? error.response?.data?.message ?? responseData?.error;
+  const rawMessage = typeof rawDetail === 'object' ? JSON.stringify(rawDetail) : String(rawDetail || '');
+  const combined = `${rawMessage} ${error?.message || ''}`;
+  const lower = combined.toLowerCase();
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    lower.includes('permission denied') ||
+    lower.includes('access denied') ||
+    lower.includes('forbidden') ||
+    combined.includes('无权访问') ||
+    combined.includes('权限')
+  ) {
+    return '暂无该报表所需数据权限，无法执行本次查询。请联系报表创建人或管理员为你开通相关数据表权限后重试。';
+  }
+  const cleaned = rawMessage.replace(/Request failed with status code\s+\d+/i, '').trim();
+  return cleaned || '报表执行失败，暂时无法获取结果。请稍后重试，或联系管理员检查报表配置与数据权限。';
 };
 
 const handleExecuteSavedReport = async (report: SavedReportPayload) => {
@@ -4328,10 +4417,10 @@ const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | nu
   scrollToBottom(true);
 
   try {
-    const shouldAutoAnalyze = reportRunForm.value.autoAnalyze;
+    const shouldAutoAnalyze = true;
     const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, {
       params: buildSavedReportRunParams(),
-      analysis_mode: reportRunForm.value.autoAnalyze ? 'auto' : 'manual',
+      analysis_mode: 'auto',
     }, {
       params: { conversation_id: conversationId.value }
     });
@@ -4376,13 +4465,7 @@ const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | nu
     agentMsg.value.isThinking = false;
     agentMsg.value.thinkingText = "";
 
-    const detail = error.response?.data?.detail;
-    let errorMsg = "";
-    if (detail) {
-      errorMsg = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : String(detail);
-    } else {
-      errorMsg = error.message || "执行失败，请检查网络或配置";
-    }
+    const errorMsg = extractSavedReportExecuteErrorMessage(error);
 
     agentMsg.value.content = `### ❌ 报表执行失败\n\n在直连执行 SQL 报表时遇到错误：\n\n\`\`\`\n${errorMsg}\n\`\`\``;
     agentMsg.value.logs = [

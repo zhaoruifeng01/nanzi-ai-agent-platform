@@ -18,6 +18,7 @@ from app.models.permission import Role, UserRoleRelation
 from app.models.saved_report import PortalSavedReport, PortalSavedReportShare
 from app.models.user import User
 from app.schemas.response import StandardResponse
+from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
 from app.services.sql_query_execution_service import execute_sql_query_core
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class ShareTarget(BaseModel):
     target_type: str = Field(..., description="共享目标类型：user 或 role")
     target_id: int = Field(..., description="共享目标 ID")
     permission: str = Field("run", description="共享权限，当前仅支持 run")
+    target_name: Optional[str] = Field(None, description="共享目标展示名称")
 
 
 class UpdateReportSharesRequest(BaseModel):
@@ -94,6 +96,10 @@ class SavedReportItem(BaseModel):
     last_error: Optional[str] = None
     is_owner: bool = False
     share_targets: List[ShareTarget] = Field(default_factory=list)
+    share_summary: Optional[str] = None
+    run_permission_status: str = "unknown"
+    run_permission_message: Optional[str] = None
+    can_run: bool = True
 
 
 class ReportParameterError(ValueError):
@@ -102,6 +108,19 @@ class ReportParameterError(ValueError):
 
 _SQL_GATE_ERROR_PREFIXES = ("[Validation Failed]", "[Permission Denied]", "[Security Error]")
 _DATE_LITERAL_PATTERN = r"'(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2})?'"
+_MONTH_LITERAL_PATTERN = r"'(\d{4}-\d{2})'"
+
+
+def _saved_report_sql_error_detail(raw_error: Any) -> str:
+    raw_text = raw_error if isinstance(raw_error, str) else json.dumps(raw_error, ensure_ascii=False)
+    return map_sql_tool_error_for_user(raw_text).content
+
+
+def _saved_report_sql_error_status(raw_error: Any) -> int:
+    raw_text = raw_error if isinstance(raw_error, str) else json.dumps(raw_error, ensure_ascii=False)
+    if "[Permission Denied]" in raw_text or "[Security Error]" in raw_text:
+        return status.HTTP_403_FORBIDDEN
+    return status.HTTP_400_BAD_REQUEST
 
 
 def _clean_tags(tags: Optional[List[str]]) -> List[str]:
@@ -136,25 +155,40 @@ def _chatbi_user_dimensions(user_info: Dict[str, Any], user_id: int) -> Dict[str
 
 def _detect_default_date_range_template(sql: str) -> Tuple[Optional[str], List[Dict[str, Any]], Dict[str, Any]]:
     matches = list(re.finditer(_DATE_LITERAL_PATTERN, sql))
-    if len(matches) < 2:
+    if len(matches) >= 2:
+        first, second = matches[0], matches[1]
+        first_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", first.group(0)))
+        second_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", second.group(0)))
+        start_param = "start_datetime" if first_has_time else "start_date"
+        end_param = "end_datetime" if second_has_time else "end_date"
+        template = f"{sql[:first.start()]}{{{{{start_param}}}}}{sql[first.end():second.start()]}{{{{{end_param}}}}}{sql[second.end():]}"
+        params_schema = [
+            {
+                "name": "date_range",
+                "type": "date_range",
+                "label": "日期范围",
+                "default": "month_start_to_today",
+                "options": ["today", "yesterday", "last_7_days", "month_start_to_today", "custom_range"],
+            }
+        ]
+        return template, params_schema, {"date_range": "month_start_to_today"}
+
+    month_matches = list(re.finditer(_MONTH_LITERAL_PATTERN, sql))
+    if len(month_matches) < 2:
         return None, [], {}
 
-    first, second = matches[0], matches[1]
-    first_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", first.group(0)))
-    second_has_time = bool(re.search(r"\d{2}:\d{2}:\d{2}", second.group(0)))
-    start_param = "start_datetime" if first_has_time else "start_date"
-    end_param = "end_datetime" if second_has_time else "end_date"
-    template = f"{sql[:first.start()]}{{{{{start_param}}}}}{sql[first.end():second.start()]}{{{{{end_param}}}}}{sql[second.end():]}"
+    first, second = month_matches[0], month_matches[1]
+    template = f"{sql[:first.start()]}{{{{start_month}}}}{sql[first.end():second.start()]}{{{{end_month}}}}{sql[second.end():]}"
     params_schema = [
         {
-            "name": "date_range",
-            "type": "date_range",
-            "label": "日期范围",
-            "default": "month_start_to_today",
-            "options": ["today", "yesterday", "last_7_days", "month_start_to_today", "custom_range"],
+            "name": "month_range",
+            "type": "month_range",
+            "label": "月份范围",
+            "default": "last_6_completed_months",
+            "options": ["last_6_completed_months", "year_start_to_current_month", "custom_month_range"],
         }
     ]
-    return template, params_schema, {"date_range": "month_start_to_today"}
+    return template, params_schema, {"month_range": "last_6_completed_months"}
 
 
 def _build_saved_report_item(
@@ -250,12 +284,29 @@ def _normalize_json_dict(value: Any) -> Dict[str, Any]:
 
 def _share_targets_from_report(report: PortalSavedReport) -> List[ShareTarget]:
     return [
-        ShareTarget(target_type=share.target_type, target_id=int(share.target_id), permission=share.permission or "run")
+        ShareTarget(
+            target_type=share.target_type,
+            target_id=int(share.target_id),
+            permission=share.permission or "run",
+        )
         for share in (report.shares or [])
     ]
 
 
+def _format_share_summary(share_targets: List[ShareTarget]) -> Optional[str]:
+    user_count = sum(1 for target in share_targets if target.target_type == "user")
+    role_count = sum(1 for target in share_targets if target.target_type == "role")
+    parts: List[str] = []
+    if user_count:
+        parts.append(f"{user_count} 人")
+    if role_count:
+        parts.append(f"{role_count} 个角色")
+    return f"已共享给 {' / '.join(parts)}" if parts else None
+
+
 def _report_row_to_item(report: PortalSavedReport, *, current_user_id: int) -> SavedReportItem:
+    share_targets = _share_targets_from_report(report)
+    is_owner = int(report.owner_user_id) == int(current_user_id)
     return SavedReportItem(
         id=report.id,
         title=report.title,
@@ -279,8 +330,12 @@ def _report_row_to_item(report: PortalSavedReport, *, current_user_id: int) -> S
         last_run_at=_dt_to_iso(report.last_run_at),
         last_success_at=_dt_to_iso(report.last_success_at),
         last_error=report.last_error,
-        is_owner=int(report.owner_user_id) == int(current_user_id),
-        share_targets=_share_targets_from_report(report),
+        is_owner=is_owner,
+        share_targets=share_targets,
+        share_summary=_format_share_summary(share_targets),
+        run_permission_status="allowed" if is_owner else "unknown",
+        run_permission_message=None,
+        can_run=True,
     )
 
 
@@ -291,6 +346,24 @@ def _parse_iso_date_param(value: Any, name: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise ReportParameterError(f"参数 {name} 必须是 YYYY-MM-DD 日期") from exc
+
+
+def _parse_iso_month_param(value: Any, name: str) -> date:
+    if not isinstance(value, str):
+        raise ReportParameterError(f"参数 {name} 必须是 YYYY-MM 月份")
+    try:
+        return date.fromisoformat(f"{value}-01")
+    except ValueError as exc:
+        raise ReportParameterError(f"参数 {name} 必须是 YYYY-MM 月份") from exc
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 + months
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _format_month(value: date) -> str:
+    return value.strftime("%Y-%m")
 
 
 def _resolve_builtin_date_range(params: Dict[str, Any], today: date) -> Dict[str, str]:
@@ -329,6 +402,30 @@ def _resolve_builtin_date_range(params: Dict[str, Any], today: date) -> Dict[str
     }
 
 
+def _resolve_builtin_month_range(params: Dict[str, Any], today: date) -> Dict[str, str]:
+    month_range = str(params.get("month_range") or "last_6_completed_months")
+    current_month = today.replace(day=1)
+    if month_range == "last_6_completed_months":
+        end = _add_months(current_month, -1)
+        start = _add_months(end, -5)
+    elif month_range == "year_start_to_current_month":
+        start = date(today.year, 1, 1)
+        end = current_month
+    elif month_range == "custom_month_range":
+        start = _parse_iso_month_param(params.get("start_month"), "start_month")
+        end = _parse_iso_month_param(params.get("end_month"), "end_month")
+        if end < start:
+            raise ReportParameterError("结束月份不能早于开始月份")
+    else:
+        raise ReportParameterError("不支持的月份范围")
+
+    return {
+        "month_range": month_range,
+        "start_month": _format_month(start),
+        "end_month": _format_month(end),
+    }
+
+
 def _allowed_template_params(report: SavedReportItem) -> set[str]:
     allowed = set()
     for item in report.params_schema:
@@ -338,6 +435,8 @@ def _allowed_template_params(report: SavedReportItem) -> set[str]:
             allowed.add(name)
         if param_type == "date_range" or name == "date_range":
             allowed.update({"date_range", "start_date", "end_date", "start_datetime", "end_datetime"})
+        if param_type == "month_range" or name == "month_range":
+            allowed.update({"month_range", "start_month", "end_month"})
     return allowed
 
 
@@ -362,8 +461,11 @@ def _resolve_report_sql(
 
     resolved_params: Dict[str, Any] = {}
     date_placeholder_names = {"start_date", "end_date", "start_datetime", "end_datetime"}
+    month_placeholder_names = {"start_month", "end_month"}
     if {"start_date", "end_date", "start_datetime", "end_datetime"} & placeholders or merged_params.get("date_range"):
         resolved_params.update(_resolve_builtin_date_range(merged_params, today or date.today()))
+    if month_placeholder_names & placeholders or merged_params.get("month_range"):
+        resolved_params.update(_resolve_builtin_month_range(merged_params, today or date.today()))
     for key, value in merged_params.items():
         if key not in resolved_params:
             resolved_params[key] = value
@@ -372,17 +474,24 @@ def _resolve_report_sql(
         name = match.group(1).strip()
         if name in {"start_date", "end_date", "start_datetime", "end_datetime"}:
             return f"'{resolved_params[name]}'"
+        if name in {"start_month", "end_month"}:
+            return f"'{resolved_params[name]}'"
         raise ReportParameterError(f"参数 {name} 暂不支持直接写入 SQL 模板")
 
     rendered_sql = re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", replace_placeholder, template)
     used_date_placeholders = placeholders & date_placeholder_names
+    used_month_placeholders = placeholders & month_placeholder_names
     returned_params: Dict[str, Any] = {}
     if "date_range" in resolved_params and (used_date_placeholders or merged_params.get("date_range")):
         returned_params["date_range"] = resolved_params["date_range"]
+    if "month_range" in resolved_params and (used_month_placeholders or merged_params.get("month_range")):
+        returned_params["month_range"] = resolved_params["month_range"]
     for name in sorted(used_date_placeholders):
         returned_params[name] = resolved_params[name]
+    for name in sorted(used_month_placeholders):
+        returned_params[name] = resolved_params[name]
     for key, value in merged_params.items():
-        if key not in returned_params and key not in date_placeholder_names:
+        if key not in returned_params and key not in date_placeholder_names and key not in month_placeholder_names:
             returned_params[key] = value
 
     return rendered_sql, returned_params
@@ -430,7 +539,10 @@ async def _precheck_saved_report_sql_permissions(
 
     raw_res = str(result_str or "").strip()
     if raw_res.startswith(_SQL_GATE_ERROR_PREFIXES):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=raw_res)
+        raise HTTPException(
+            status_code=_saved_report_sql_error_status(raw_res),
+            detail=_saved_report_sql_error_detail(raw_res),
+        )
 
     try:
         parsed = json.loads(raw_res)
@@ -438,7 +550,80 @@ async def _precheck_saved_report_sql_permissions(
         return
 
     if isinstance(parsed, dict) and parsed.get("allowed") is False:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=parsed)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_saved_report_sql_error_detail(parsed),
+        )
+
+
+async def _enrich_saved_report_share_targets(db: AsyncSession, reports: List[SavedReportItem]) -> None:
+    user_ids = sorted({
+        int(target.target_id)
+        for report in reports
+        for target in report.share_targets
+        if target.target_type == "user"
+    })
+    role_ids = sorted({
+        int(target.target_id)
+        for report in reports
+        for target in report.share_targets
+        if target.target_type == "role"
+    })
+
+    user_names: Dict[int, str] = {}
+    role_names: Dict[int, str] = {}
+    if user_ids:
+        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        for user in result.scalars().all():
+            user_names[int(user.id)] = user.real_name or user.user_name or f"用户 {user.id}"
+    if role_ids:
+        result = await db.execute(select(Role).where(Role.id.in_(role_ids)))
+        for role in result.scalars().all():
+            role_names[int(role.id)] = role.name or role.code or f"角色 {role.id}"
+
+    for report in reports:
+        for target in report.share_targets:
+            if target.target_type == "user":
+                target.target_name = user_names.get(int(target.target_id)) or f"用户 {target.target_id}"
+            elif target.target_type == "role":
+                target.target_name = role_names.get(int(target.target_id)) or f"角色 {target.target_id}"
+        report.share_summary = _format_share_summary(report.share_targets)
+
+
+async def _annotate_saved_report_run_permissions(
+    db: AsyncSession,
+    reports: List[SavedReportItem],
+    *,
+    user_info: Dict[str, Any],
+    user_id: int,
+) -> None:
+    for report in reports:
+        if report.is_owner:
+            report.run_permission_status = "allowed"
+            report.run_permission_message = None
+            report.can_run = True
+            continue
+
+        try:
+            await _precheck_saved_report_sql_permissions(db, report=report, user_info=user_info, user_id=user_id)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_403_FORBIDDEN:
+                report.run_permission_status = "denied"
+                report.run_permission_message = str(exc.detail or "暂无该报表所需数据权限，无法运行。")
+                report.can_run = False
+            else:
+                report.run_permission_status = "unknown"
+                report.run_permission_message = str(exc.detail or "运行权限暂未确认。")
+                report.can_run = True
+        except Exception as exc:
+            logger.warning("Failed to precheck saved report run permission for %s: %s", report.id, exc)
+            report.run_permission_status = "unknown"
+            report.run_permission_message = "运行权限暂未确认，点击执行时会再次校验。"
+            report.can_run = True
+        else:
+            report.run_permission_status = "allowed"
+            report.run_permission_message = None
+            report.can_run = True
 
 
 async def _get_user_role_ids(db: AsyncSession, user_id: int) -> List[int]:
@@ -560,6 +745,18 @@ def _apply_report_item_to_row(report: PortalSavedReport, item: SavedReportItem) 
     report.visibility = item.visibility
     report.status = item.status
 
+
+async def _raise_saved_report_sql_error(db: AsyncSession, report_row: PortalSavedReport, raw_error: Any) -> None:
+    raw_text = raw_error if isinstance(raw_error, str) else json.dumps(raw_error, ensure_ascii=False)
+    report_row.last_run_at = datetime.now()
+    report_row.last_error = raw_text
+    report_row.status = "error"
+    await db.flush()
+    raise HTTPException(
+        status_code=_saved_report_sql_error_status(raw_text),
+        detail=_saved_report_sql_error_detail(raw_text),
+    )
+
 @router.post(
     "",
     response_model=StandardResponse[SavedReportItem],
@@ -667,6 +864,8 @@ async def get_saved_reports(
     reports = [_report_row_to_item(row, current_user_id=user_id) for row in result.scalars().unique().all()]
     if tag:
         reports = [report for report in reports if tag in report.tags]
+    await _enrich_saved_report_share_targets(db, reports)
+    await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
     return StandardResponse(data=reports)
 
 @router.delete(
@@ -968,6 +1167,8 @@ async def execute_saved_report(
         report_row.last_run_at = datetime.now()
         report_row.last_error = str(e)
         report_row.status = "error"
+        if "[Permission Denied]" in str(e) or "[Security Error]" in str(e):
+            await _raise_saved_report_sql_error(db, report_row, str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"SQL 执行失败: {e}",
@@ -979,10 +1180,7 @@ async def execute_saved_report(
     try:
         parsed = json.loads(raw_res)
         if isinstance(parsed, dict) and ("[Validation Failed]" in raw_res or "[Permission Denied]" in raw_res or "[Security Error]" in raw_res):
-            report_row.last_run_at = datetime.now()
-            report_row.last_error = raw_res
-            report_row.status = "error"
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=parsed)
+            await _raise_saved_report_sql_error(db, report_row, raw_res)
             
         # 若传入了会话ID，写入缓存供大模型下一轮做可视化复用
         if conversation_id:
@@ -1015,11 +1213,7 @@ async def execute_saved_report(
 
     # 如果是文本类输出（非标准 JSON 格式，如报错信息）
     if raw_res.startswith("[Validation Failed]") or raw_res.startswith("[Permission Denied]") or raw_res.startswith("[Security Error]"):
-        report_row.last_run_at = datetime.now()
-        report_row.last_error = raw_res
-        report_row.status = "error"
-        await db.flush()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=raw_res)
+        await _raise_saved_report_sql_error(db, report_row, raw_res)
         
     now = datetime.now()
     report_row.last_run_at = now
