@@ -57,7 +57,7 @@
         <!-- 刷新按钮 -->
         <button
           type="button"
-          class="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent bg-gray-100 text-gray-550 dark:bg-gray-800 dark:text-gray-400 transition-all"
+          class="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 transition-all"
           :class="refreshDisabled
             ? 'opacity-50 cursor-not-allowed'
             : 'hover:bg-gray-200/70 dark:hover:bg-gray-750 hover:text-gray-700 dark:hover:text-gray-200 active:scale-90 cursor-pointer'"
@@ -160,6 +160,16 @@
           <button
             type="button"
             class="p-1 rounded hover:bg-blue-100/80 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400 transition-colors cursor-pointer flex items-center justify-center"
+            title="放大浏览"
+            @click.stop="openSavedReportBrowser"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="p-1 rounded hover:bg-blue-100/80 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-400 transition-colors cursor-pointer flex items-center justify-center"
             title="刷新黄金报表"
             @click.stop="fetchSavedReports"
           >
@@ -183,8 +193,72 @@
 
       <div 
         v-if="!showSavedReportsCollapse"
-        class="space-y-2"
+        class="space-y-2 select-none"
       >
+        <!-- 范围选择：高值 Segmented Control 胶囊滑动控制器 -->
+        <div class="grid grid-cols-3 p-0.5 rounded-lg bg-gray-100/80 dark:bg-gray-800/40 text-gray-500 dark:text-gray-400 text-[10px] font-bold border border-gray-200/30 dark:border-gray-800/30">
+          <button
+            v-for="scope in savedReportScopes"
+            :key="scope.value"
+            type="button"
+            class="py-1 rounded-md transition-all text-center"
+            :class="savedReportScope === scope.value ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-white shadow-xs font-black' : 'hover:text-gray-800 dark:hover:text-gray-200'"
+            @click.stop="setSavedReportScope(scope.value)"
+          >
+            {{ scope.label }}
+          </button>
+        </div>
+
+        <!-- 细分分类 + 标签：合并为一行自适应横向滚动条 -->
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 -mx-0.5 px-0.5 scroll-smooth">
+          <!-- 智能分类过滤器 -->
+          <button
+            v-for="filter in savedReportSmartFilters"
+            :key="filter.value"
+            type="button"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="savedReportSmartFilter === filter.value 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
+            @click.stop="savedReportSmartFilter = filter.value"
+          >
+            <span class="flex items-center gap-1">
+              <span v-if="filter.value === 'pinned'">📌</span>
+              <span v-else-if="filter.value === 'favorite'">⭐️</span>
+              <span v-else-if="filter.value === 'recent'">🕒</span>
+              <span v-else-if="filter.value === 'frequent'">🔥</span>
+              <span>{{ filter.label }}</span>
+            </span>
+          </button>
+
+          <!-- 分割垂直线 -->
+          <span v-if="allSavedReportTags.length > 0" class="flex-shrink-0 w-px h-3.5 bg-gray-200 dark:bg-gray-800 mx-0.5"></span>
+
+          <!-- 标签分类 -->
+          <button
+            v-if="allSavedReportTags.length > 0"
+            type="button"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="selectedSavedReportTag === '' 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
+            @click.stop="selectedSavedReportTag = ''"
+          >
+            🏷️ 全部标签
+          </button>
+          <button
+            v-for="tag in allSavedReportTags"
+            :key="tag"
+            type="button"
+            class="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] transition-all border font-bold"
+            :class="selectedSavedReportTag === tag 
+              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border-blue-200 dark:border-blue-900/40' 
+              : 'bg-gray-50 dark:bg-gray-900 text-gray-500 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800'"
+            @click.stop="selectedSavedReportTag = tag"
+          >
+            # {{ tag }}
+          </button>
+        </div>
         <div v-if="loadingReports" class="flex items-center justify-center py-4 text-xs text-gray-400 select-none">
           <svg class="w-4 h-4 animate-spin text-blue-500 mr-2" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -192,44 +266,211 @@
           </svg>
           正在加载暂存报表...
         </div>
-        <div v-else-if="savedReports.length === 0" class="text-center py-6 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl text-gray-400 dark:text-gray-500 text-[11px] select-none">
-          暂无已存报表。您可以在 ChatBI 结果中点击 SQL 上方的“暂存”按钮进行快捷收藏。
+        <div v-else-if="filteredSavedReports.length === 0" class="text-center py-6 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl text-gray-400 dark:text-gray-500 text-[11px] select-none">
+          暂无已存报表。您可以在 ChatBI 结果中点击 SQL 上方的「添加黄金报表」按钮进行快捷收藏。
         </div>
-        <div v-else class="grid gap-2 max-h-60 overflow-y-auto pr-0.5 custom-scrollbar">
-          <div
-            v-for="report in savedReports"
+        <div v-else class="grid gap-2 max-h-80 overflow-y-auto pr-0.5 custom-scrollbar">
+          <SavedReportItemCard
+            v-for="report in filteredSavedReports"
             :key="report.id"
-            class="group/item flex items-stretch rounded-lg border border-blue-100/60 dark:border-blue-900/30 bg-white dark:bg-gray-900/40 hover:border-blue-300 dark:hover:border-blue-700/60 overflow-hidden shadow-xs"
-          >
-            <button
-              type="button"
-              class="flex-1 flex flex-col p-2.5 text-left transition-all active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20 min-w-0"
-              @click="handleExecuteSavedReportClick(report)"
-            >
-              <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate w-full" :title="report.title">
-                {{ report.title }}
-              </span>
-              <span v-if="report.original_query" class="text-[10px] text-gray-400 dark:text-gray-500 truncate mt-1 w-full" :title="report.original_query">
-                问: {{ report.original_query }}
-              </span>
-              <span class="text-[9px] text-gray-400 dark:text-gray-550 mt-1 select-none font-mono">
-                {{ formatDate(report.created_at) }}
-              </span>
-            </button>
-            <button
-              type="button"
-              class="flex items-center justify-center w-8 text-gray-400 hover:text-red-500 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-              title="删除暂存"
-              @click.stop="handleDeleteReport(report)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
+            :report="report"
+            :format-date="formatDate"
+            @execute="handleExecuteSavedReportClick"
+            @edit="handleEditReport"
+            @detail="openSavedReportDetail"
+            @favorite="toggleSavedReportFavorite"
+            @pin="toggleSavedReportPinned"
+            @share="openShareReportModal"
+            @copy="handleCopyReport"
+            @delete="handleDeleteReport"
+          />
         </div>
       </div>
     </div>
+
+    <SavedReportBrowseModal
+      ref="savedReportBrowseModalRef"
+      v-model="showSavedReportBrowser"
+      :format-date="formatDate"
+      @execute="handleExecuteSavedReportClick"
+      @edit="handleEditReport"
+      @detail="openSavedReportDetail"
+      @favorite="handleBrowserFavorite"
+      @pin="handleBrowserPin"
+      @share="openShareReportModal"
+      @copy="handleBrowserCopy"
+      @delete="handleBrowserDelete"
+    />
+
+    <teleport to="body">
+    <div
+      v-if="showSavedReportDetailDrawer && selectedSavedReportDetail"
+      class="fixed inset-0 z-[230]"
+    >
+      <div
+        class="absolute inset-0 bg-black/35 backdrop-blur-[1px]"
+        @click="closeSavedReportDetail"
+      />
+      <aside class="absolute inset-y-0 right-0 w-full max-w-xl bg-white dark:bg-gray-950 border-l border-gray-100 dark:border-gray-800 shadow-2xl overflow-y-auto custom-scrollbar">
+        <div class="sticky top-0 z-10 bg-white/95 dark:bg-gray-950/95 border-b border-gray-100 dark:border-gray-800 px-5 py-4 flex items-center justify-between">
+          <div class="min-w-0">
+            <h3 class="text-sm font-black text-gray-800 dark:text-gray-100 truncate w-full">报表详情</h3>
+            <p class="text-xs text-gray-400 truncate mt-1">{{ selectedSavedReportDetail.title }}</p>
+          </div>
+          <button type="button" class="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" @click="closeSavedReportDetail">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 space-y-4">
+          <section class="space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-1 rounded-lg text-[10px] font-bold" :class="getSavedReportRunPermissionClass(selectedSavedReportDetail)">
+                {{ getSavedReportRunPermissionLabel(selectedSavedReportDetail) }}
+              </span>
+              <span v-if="selectedSavedReportDetail.is_favorite" class="px-2 py-1 rounded-lg bg-amber-50 text-amber-600 text-[10px] font-bold">收藏</span>
+              <span v-if="selectedSavedReportDetail.pinned_at" class="px-2 py-1 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold">置顶</span>
+            </div>
+            <p class="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">{{ selectedSavedReportDetail.description || '暂无描述' }}</p>
+            <p class="text-[11px] text-gray-400">创建人：{{ selectedSavedReportDetail.owner_name || '未知' }} · 数据源：{{ selectedSavedReportDetail.data_source }}</p>
+            <p class="text-[11px] text-gray-400">最近运行：{{ formatDate(selectedSavedReportDetail.last_success_at || selectedSavedReportDetail.user_last_run_at) || '暂无' }} · 常用次数：{{ selectedSavedReportDetail.user_run_count || 0 }}</p>
+          </section>
+          <section v-if="selectedSavedReportDetail.share_summary" class="space-y-1">
+            <h4 class="text-xs font-black text-gray-600 dark:text-gray-300">共享范围</h4>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400">{{ getShareTargetLabel(selectedSavedReportDetail) }}</p>
+          </section>
+          <section class="space-y-2">
+            <h4 class="text-xs font-black text-gray-600 dark:text-gray-300">参数与 SQL</h4>
+            <div v-if="selectedSavedReportDetail.tags?.length" class="flex flex-wrap gap-1">
+              <span v-for="tag in selectedSavedReportDetail.tags" :key="tag" class="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-[10px] text-blue-600 dark:text-blue-300">{{ tag }}</span>
+            </div>
+            <pre class="max-h-72 overflow-auto rounded-lg bg-gray-950 text-green-100 p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{{ selectedSavedReportDetail.sql_template || selectedSavedReportDetail.sql_content }}</pre>
+          </section>
+          <div class="flex flex-wrap gap-2 pt-2">
+            <button type="button" class="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white disabled:opacity-50" :disabled="isSavedReportActionDisabled(selectedSavedReportDetail)" @click="handleExecuteSavedReportClick(selectedSavedReportDetail)">运行</button>
+            <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="handleEditReport(selectedSavedReportDetail)">编辑</button>
+            <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="openShareReportModal(selectedSavedReportDetail)">共享</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    </teleport>
+
+    <teleport to="body">
+    <div
+      v-if="showShareReportModal && sharingReport"
+      class="fixed inset-0 z-[240] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      @click.self="closeShareReportModal"
+    >
+      <div class="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 shadow-2xl overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-black text-gray-800 dark:text-gray-100">共享黄金报表</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate max-w-[18rem]">{{ sharingReport.title }}</p>
+          </div>
+          <button type="button" class="p-2 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" @click="closeShareReportModal">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-5 space-y-4">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">共享给用户</label>
+              <span class="text-[10px] text-gray-400">已选 {{ selectedShareUserIds.length }} 人</span>
+            </div>
+            <input
+              v-model="shareUserSearch"
+              type="text"
+              placeholder="搜索用户名或姓名..."
+              class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-950/40 divide-y divide-gray-50 dark:divide-gray-800 custom-scrollbar">
+              <div v-if="loadingShareUsers" class="px-3 py-4 text-center text-xs text-gray-400">正在加载用户...</div>
+              <button
+                v-else-if="shareUserCandidates.length"
+                v-for="user in shareUserCandidates"
+                :key="user.id"
+                type="button"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-blue-50/60 dark:hover:bg-blue-950/30 transition-colors"
+                @click="toggleShareUser(user.id)"
+              >
+                <span
+                  class="w-4 h-4 rounded border flex items-center justify-center text-[10px] font-black"
+                  :class="isShareUserSelected(user.id) ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 text-transparent'"
+                >✓</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-xs font-bold text-gray-800 dark:text-gray-100 truncate">{{ user.real_name || user.user_name }}</span>
+                  <span class="block text-[10px] text-gray-400 truncate">{{ user.user_name }} · ID {{ user.id }}</span>
+                </span>
+              </button>
+              <div v-else class="px-3 py-4 text-center text-xs text-gray-400">未找到可共享用户</div>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="block text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">共享给角色</label>
+              <span class="text-[10px] text-gray-400">已选 {{ selectedShareRoleIds.length }} 个</span>
+            </div>
+            <input
+              v-model="shareRoleSearch"
+              type="text"
+              placeholder="搜索角色名称或代码..."
+              class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+            <div class="mt-2 max-h-36 overflow-y-auto rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-950/40 divide-y divide-gray-50 dark:divide-gray-800 custom-scrollbar">
+              <div v-if="loadingShareRoles" class="px-3 py-4 text-center text-xs text-gray-400">正在加载角色...</div>
+              <button
+                v-else-if="shareRoleCandidates.length"
+                v-for="role in shareRoleCandidates"
+                :key="role.id"
+                type="button"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-emerald-50/60 dark:hover:bg-emerald-950/30 transition-colors"
+                @click="toggleShareRole(role.id)"
+              >
+                <span
+                  class="w-4 h-4 rounded border flex items-center justify-center text-[10px] font-black"
+                  :class="isShareRoleSelected(role.id) ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-gray-300 text-transparent'"
+                >✓</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-xs font-bold text-gray-800 dark:text-gray-100 truncate">{{ role.name }}</span>
+                  <span class="block text-[10px] text-gray-400 truncate">{{ role.code }} · ID {{ role.id }}</span>
+                </span>
+              </button>
+              <div v-else class="px-3 py-4 text-center text-xs text-gray-400">未找到可共享角色</div>
+            </div>
+          </div>
+          <div v-if="selectedShareLabels.length" class="flex flex-wrap gap-1">
+            <span
+              v-for="label in selectedShareLabels"
+              :key="label"
+              class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-800 text-[10px] font-semibold text-gray-600 dark:text-gray-300"
+            >
+              {{ label }}
+            </span>
+          </div>
+          <p class="text-[11px] text-gray-400 leading-relaxed">
+            共享只开放报表定义，运行时仍按当前用户自己的物理表权限校验。
+          </p>
+        </div>
+        <div class="px-5 py-4 bg-gray-50 dark:bg-gray-900/80 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">
+          <button type="button" class="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700" @click="closeShareReportModal">
+            取消
+          </button>
+          <button
+            type="button"
+            class="px-4 py-2 text-xs font-bold rounded-xl bg-primary text-white hover:bg-primary-hover disabled:opacity-50"
+            :disabled="isSavingShare"
+            @click="submitShareReport"
+          >
+            {{ isSavingShare ? '保存中...' : '保存共享' }}
+          </button>
+        </div>
+      </div>
+    </div>
+    </teleport>
 
     <!-- 我常问 -->
     <div
@@ -898,6 +1139,8 @@
 import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import axios from "@/utils/axios";
 import { useToast } from "@/composables/useToast";
+import SavedReportItemCard from "@/components/chatbi/SavedReportItemCard.vue";
+import SavedReportBrowseModal from "@/components/chatbi/SavedReportBrowseModal.vue";
 
 const { showToast } = useToast();
 
@@ -955,6 +1198,19 @@ interface DatasetNavigationPayload {
   llm_error_message?: string | null;
 }
 
+interface ShareUserCandidate {
+  id: number;
+  user_name: string;
+  real_name?: string | null;
+  status?: number;
+}
+
+interface ShareRoleCandidate {
+  id: number;
+  code: string;
+  name: string;
+}
+
 const props = withDefaults(defineProps<{
   payload: DatasetNavigationPayload;
   initialLoading?: boolean;
@@ -984,7 +1240,20 @@ const emit = defineEmits<{
   (event: "record-question-click", payload: { query: string; label?: string; group_id?: string }): void;
   (event: "clear-question-click", payload: { query: string }): void;
   (event: "refresh"): void;
-  (event: "execute-saved-report", payload: { id: string; title: string; sql_content: string }): void;
+  (event: "execute-saved-report", payload: {
+    id: string;
+    title: string;
+    sql_content: string;
+    mode?: string;
+    sql_template?: string;
+    params_schema?: any[];
+    default_params?: Record<string, any>;
+    analysis_mode?: string;
+    tags?: string[];
+    owner_name?: string;
+    is_owner?: boolean;
+  }): void;
+  (event: "edit-saved-report", payload: any): void;
 }>();
 
 const menuContainer = ref<HTMLElement | null>(null);
@@ -1232,13 +1501,263 @@ const handleTableDictionaryClick = (
 // 黄金报表业务逻辑
 const savedReports = ref<any[]>([]);
 const loadingReports = ref(false);
+const refreshingReports = ref(false);
 const showSavedReportsCollapse = ref(true); // 默认收起
 const showFrequentCollapse = ref(false); // 我常问默认展开
+const savedReportScope = ref<"all" | "my" | "shared">("all");
+const selectedSavedReportTag = ref("");
+const savedReportSmartFilter = ref<"all" | "pinned" | "favorite" | "recent" | "frequent">("all");
+const showSavedReportDetailDrawer = ref(false);
+const showSavedReportBrowser = ref(false);
+const savedReportBrowseModalRef = ref<{ refresh: () => Promise<void> } | null>(null);
+const selectedSavedReportDetail = ref<any | null>(null);
+const showShareReportModal = ref(false);
+const sharingReport = ref<any | null>(null);
+const shareUserSearch = ref("");
+const shareRoleSearch = ref("");
+const shareUserCandidates = ref<ShareUserCandidate[]>([]);
+const shareRoleCandidates = ref<ShareRoleCandidate[]>([]);
+const selectedShareUserIds = ref<number[]>([]);
+const selectedShareRoleIds = ref<number[]>([]);
+const loadingShareUsers = ref(false);
+const loadingShareRoles = ref(false);
+const isSavingShare = ref(false);
+let shareUserSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let shareRoleSearchTimer: ReturnType<typeof setTimeout> | null = null;
+const savedReportScopes = [
+  { value: "all" as const, label: "全部" },
+  { value: "my" as const, label: "我的" },
+  { value: "shared" as const, label: "共享给我" },
+];
+const savedReportSmartFilters = [
+  { value: "all" as const, label: "全部报表" },
+  { value: "pinned" as const, label: "置顶" },
+  { value: "favorite" as const, label: "收藏" },
+  { value: "recent" as const, label: "最近运行" },
+  { value: "frequent" as const, label: "常用" },
+];
+
+const allSavedReportTags = computed(() => {
+  const tags = new Set<string>();
+  for (const report of savedReports.value) {
+    for (const tag of report.tags || []) {
+      const cleaned = String(tag || "").trim();
+      if (cleaned) tags.add(cleaned);
+    }
+  }
+  return Array.from(tags);
+});
+
+const filteredSavedReports = computed(() => {
+  let reports = savedReports.value;
+  if (selectedSavedReportTag.value) {
+    reports = reports.filter((report) => (report.tags || []).includes(selectedSavedReportTag.value));
+  }
+  if (savedReportSmartFilter.value === "pinned") {
+    reports = reports.filter((report) => !!report.pinned_at);
+  } else if (savedReportSmartFilter.value === "favorite") {
+    reports = reports.filter((report) => !!report.is_favorite);
+  } else if (savedReportSmartFilter.value === "recent") {
+    reports = reports
+      .filter((report) => !!(report.user_last_run_at || report.last_success_at))
+      .slice()
+      .sort((a, b) => String(b.user_last_run_at || b.last_success_at).localeCompare(String(a.user_last_run_at || a.last_success_at)));
+  } else if (savedReportSmartFilter.value === "frequent") {
+    reports = reports
+      .filter((report) => Number(report.user_run_count || 0) > 0)
+      .slice()
+      .sort((a, b) => Number(b.user_run_count || 0) - Number(a.user_run_count || 0));
+  }
+  return reports;
+});
+
+const getSavedReportRunPermissionLabel = (report: any) => {
+  if (report.run_permission_status === "denied") return "无数据权限";
+  if (report.run_permission_status === "allowed") return "可运行";
+  return "待确认";
+};
+
+const getSavedReportRunPermissionClass = (report: any) => {
+  if (report.run_permission_status === "denied") {
+    return "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-300";
+  }
+  if (report.run_permission_status === "allowed") {
+    return "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300";
+  }
+  return "bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-300";
+};
+
+const getShareTargetLabel = (report: any) => {
+  const targets = Array.isArray(report.share_targets) ? report.share_targets : [];
+  if (!targets.length) return "未共享";
+  const labels = targets.map((target: any) => {
+    const prefix = target.target_type === "role" ? "角色" : "用户";
+    return `${prefix}：${target.target_name || `ID ${target.target_id}`}`;
+  });
+  return `已共享给 ${labels.join("、")}`;
+};
+
+const getSavedReportButtonTitle = (report: any) => {
+  if (report.run_permission_status === "denied") {
+    return report.run_permission_message || "暂无该报表所需数据权限，无法运行。";
+  }
+  if (report.is_owner && report.share_summary) {
+    return getShareTargetLabel(report);
+  }
+  return report.title || "运行黄金报表";
+};
+
+const isSavedReportActionDisabled = (report: any) => report.run_permission_status === "denied";
+
+const getSavedReportCopyTitle = (report: any) => {
+  if (isSavedReportActionDisabled(report)) {
+    return report.run_permission_message || "暂无该报表所需数据权限，无法复制。";
+  }
+  return "复制为我的报表";
+};
+
+const selectedShareLabels = computed(() => {
+  const labels: string[] = [];
+  for (const id of selectedShareUserIds.value) {
+    const user = shareUserCandidates.value.find((item) => Number(item.id) === Number(id));
+    labels.push(`用户：${user?.real_name || user?.user_name || `ID ${id}`}`);
+  }
+  for (const id of selectedShareRoleIds.value) {
+    const role = shareRoleCandidates.value.find((item) => Number(item.id) === Number(id));
+    labels.push(`角色：${role?.name || `ID ${id}`}`);
+  }
+  return labels;
+});
+
+const normalizeShareIds = (ids: number[]) => Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
+
+const isShareUserSelected = (id: number) => selectedShareUserIds.value.includes(Number(id));
+const isShareRoleSelected = (id: number) => selectedShareRoleIds.value.includes(Number(id));
+
+const toggleShareUser = (id: number) => {
+  const normalized = Number(id);
+  selectedShareUserIds.value = isShareUserSelected(normalized)
+    ? selectedShareUserIds.value.filter((item) => item !== normalized)
+    : normalizeShareIds([...selectedShareUserIds.value, normalized]);
+};
+
+const toggleShareRole = (id: number) => {
+  const normalized = Number(id);
+  selectedShareRoleIds.value = isShareRoleSelected(normalized)
+    ? selectedShareRoleIds.value.filter((item) => item !== normalized)
+    : normalizeShareIds([...selectedShareRoleIds.value, normalized]);
+};
+
+const fetchShareCandidates = async (type: "user" | "role") => {
+  if (!showShareReportModal.value) return;
+  if (type === "user") {
+    loadingShareUsers.value = true;
+    try {
+      const res = await axios.get("/api/portal/management/users", {
+        params: { page: 1, size: 100, status: 1, search: shareUserSearch.value.trim() || undefined },
+      });
+      shareUserCandidates.value = Array.isArray(res.data?.items) ? res.data.items : [];
+    } catch (error) {
+      console.error("Failed to fetch share users:", error);
+      showToast("加载用户列表失败", "error");
+    } finally {
+      loadingShareUsers.value = false;
+    }
+    return;
+  }
+
+  loadingShareRoles.value = true;
+  try {
+    const res = await axios.get("/api/portal/roles", {
+      params: { page: 1, size: 100, search: shareRoleSearch.value.trim() || undefined },
+    });
+    shareRoleCandidates.value = Array.isArray(res.data?.items) ? res.data.items : [];
+  } catch (error) {
+    console.error("Failed to fetch share roles:", error);
+    showToast("加载角色列表失败", "error");
+  } finally {
+    loadingShareRoles.value = false;
+  }
+};
+
+const updateSavedReportInList = (updated: any, resort = false) => {
+  savedReports.value = savedReports.value.map((item) => item.id === updated.id ? { ...item, ...updated } : item);
+  if (resort) {
+    savedReports.value = sortSavedReportsForUser(savedReports.value);
+  }
+  if (selectedSavedReportDetail.value?.id === updated.id) {
+    selectedSavedReportDetail.value = { ...selectedSavedReportDetail.value, ...updated };
+  }
+};
+
+const sortSavedReportsForUser = (reports: any[]) => {
+  return [...reports].sort((a, b) => {
+    const pinA = a.pinned_at ? 1 : 0;
+    const pinB = b.pinned_at ? 1 : 0;
+    if (pinA !== pinB) return pinB - pinA;
+    const keyA = a.pinned_at || a.updated_at || a.created_at || '';
+    const keyB = b.pinned_at || b.updated_at || b.created_at || '';
+    if (keyA !== keyB) return String(keyB).localeCompare(String(keyA));
+    const runA = a.user_last_run_at || a.updated_at || a.created_at || '';
+    const runB = b.user_last_run_at || b.updated_at || b.created_at || '';
+    return String(runB).localeCompare(String(runA));
+  });
+};
+
+const openSavedReportDetail = async (report: any) => {
+  selectedSavedReportDetail.value = report;
+  showSavedReportDetailDrawer.value = true;
+  try {
+    const res = await axios.get(`/api/portal/saved-reports/${report.id}`);
+    if (res.data?.data) {
+      selectedSavedReportDetail.value = res.data.data;
+      updateSavedReportInList(res.data.data);
+    }
+  } catch (error) {
+    console.error("Failed to fetch saved report detail:", error);
+    showToast("加载报表详情失败", "error");
+  }
+};
+
+const closeSavedReportDetail = () => {
+  showSavedReportDetailDrawer.value = false;
+  selectedSavedReportDetail.value = null;
+};
+
+const updateSavedReportPreference = async (report: any, payload: Record<string, any>, resort = false) => {
+  const res = await axios.put(`/api/portal/saved-reports/${report.id}/prefs`, payload);
+  if (res.data?.data) updateSavedReportInList(res.data.data, resort);
+};
+
+const toggleSavedReportFavorite = async (report: any) => {
+  try {
+    await updateSavedReportPreference(report, { is_favorite: !report.is_favorite });
+  } catch (error) {
+    console.error("Failed to toggle saved report favorite:", error);
+    showToast("收藏状态更新失败", "error");
+  }
+};
+
+const toggleSavedReportPinned = async (report: any) => {
+  try {
+    await updateSavedReportPreference(report, { pinned: !report.pinned_at }, true);
+  } catch (error) {
+    console.error("Failed to toggle saved report pin:", error);
+    showToast("置顶状态更新失败", "error");
+  }
+};
 
 const fetchSavedReports = async () => {
-  loadingReports.value = true;
+  const hasExisting = savedReports.value.length > 0;
+  if (hasExisting) {
+    refreshingReports.value = true;
+  } else {
+    loadingReports.value = true;
+  }
   try {
-    const res = await axios.get("/api/portal/saved-reports");
+    const res = await axios.get("/api/portal/saved-reports", {
+      params: { scope: savedReportScope.value },
+    });
     if (res.data && res.data.data) {
       savedReports.value = res.data.data;
     }
@@ -1246,7 +1765,44 @@ const fetchSavedReports = async () => {
     console.error("Failed to fetch saved reports:", error);
   } finally {
     loadingReports.value = false;
+    refreshingReports.value = false;
   }
+};
+
+const setSavedReportScope = async (scope: "all" | "my" | "shared") => {
+  if (savedReportScope.value === scope) return;
+  savedReportScope.value = scope;
+  selectedSavedReportTag.value = "";
+  await fetchSavedReports();
+};
+
+const refreshSavedReportBrowser = async () => {
+  await savedReportBrowseModalRef.value?.refresh();
+};
+
+const handleBrowserFavorite = async (report: any) => {
+  await toggleSavedReportFavorite(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserPin = async (report: any) => {
+  await toggleSavedReportPinned(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserCopy = async (report: any) => {
+  await handleCopyReport(report);
+  await refreshSavedReportBrowser();
+};
+
+const handleBrowserDelete = async (report: any) => {
+  await handleDeleteReport(report);
+  await refreshSavedReportBrowser();
+};
+
+const openSavedReportBrowser = async () => {
+  showSavedReportsCollapse.value = false;
+  showSavedReportBrowser.value = true;
 };
 
 const handleDeleteReport = async (report: any) => {
@@ -1261,15 +1817,132 @@ const handleDeleteReport = async (report: any) => {
   }
 };
 
+const openShareReportModal = async (report: any) => {
+  sharingReport.value = report;
+  const shares = Array.isArray(report.share_targets) ? report.share_targets : [];
+  selectedShareUserIds.value = normalizeShareIds(shares
+    .filter((item: any) => item.target_type === "user")
+    .map((item: any) => Number(item.target_id)));
+  selectedShareRoleIds.value = normalizeShareIds(shares
+    .filter((item: any) => item.target_type === "role")
+    .map((item: any) => Number(item.target_id)));
+  shareUserSearch.value = "";
+  shareRoleSearch.value = "";
+  showShareReportModal.value = true;
+  await Promise.all([fetchShareCandidates("user"), fetchShareCandidates("role")]);
+};
+
+const closeShareReportModal = () => {
+  showShareReportModal.value = false;
+  sharingReport.value = null;
+  if (shareUserSearchTimer) {
+    clearTimeout(shareUserSearchTimer);
+    shareUserSearchTimer = null;
+  }
+  if (shareRoleSearchTimer) {
+    clearTimeout(shareRoleSearchTimer);
+    shareRoleSearchTimer = null;
+  }
+  shareUserSearch.value = "";
+  shareRoleSearch.value = "";
+  shareUserCandidates.value = [];
+  shareRoleCandidates.value = [];
+  selectedShareUserIds.value = [];
+  selectedShareRoleIds.value = [];
+};
+
+const submitShareReport = async () => {
+  if (!sharingReport.value) return;
+  isSavingShare.value = true;
+  try {
+    const targets = [
+      ...selectedShareUserIds.value.map((id) => ({ target_type: "user", target_id: id, permission: "run" })),
+      ...selectedShareRoleIds.value.map((id) => ({ target_type: "role", target_id: id, permission: "run" })),
+    ];
+    await axios.put(`/api/portal/saved-reports/${sharingReport.value.id}/shares`, { targets });
+    showToast(targets.length > 0 ? "报表共享已更新" : "已取消共享", "success");
+    closeShareReportModal();
+    await fetchSavedReports();
+    await refreshSavedReportBrowser();
+  } catch (error: any) {
+    console.error("Failed to share saved report:", error);
+    const detail = error.response?.data?.detail || "共享失败";
+    showToast(typeof detail === "object" ? JSON.stringify(detail) : detail, "error");
+  } finally {
+    isSavingShare.value = false;
+  }
+};
+
+const extractSavedReportActionErrorMessage = (error: any, fallback: string) => {
+  const statusCode = error?.response?.status;
+  const responseData = error?.response?.data || {};
+  const rawDetail = responseData?.detail ?? responseData?.message ?? responseData?.error;
+  const rawMessage = typeof rawDetail === "object" ? JSON.stringify(rawDetail) : String(rawDetail || "");
+  const combined = `${rawMessage} ${error?.message || ""}`;
+  const lower = combined.toLowerCase();
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    lower.includes("permission denied") ||
+    lower.includes("access denied") ||
+    lower.includes("forbidden") ||
+    combined.includes("无权访问") ||
+    combined.includes("权限")
+  ) {
+    return "暂无该报表所需数据权限，无法复制。请联系报表创建人或管理员为你开通相关数据表权限后重试。";
+  }
+  const cleaned = rawMessage.replace(/Request failed with status code\s+\d+/i, "").trim();
+  return cleaned || fallback;
+};
+
+const handleCopyReport = async (report: any) => {
+  try {
+    await axios.post(`/api/portal/saved-reports/${report.id}/copy`);
+    showToast("已复制为我的报表", "success");
+    await fetchSavedReports();
+  } catch (error: any) {
+    console.error("Failed to copy saved report:", error);
+    showToast(extractSavedReportActionErrorMessage(error, "复制失败"), "error");
+  }
+};
+
+const handleEditReport = (report: any) => {
+  closeSavedReportDetail();
+  showSavedReportBrowser.value = false;
+  emit("edit-saved-report", report);
+};
+
+watch(shareUserSearch, () => {
+  if (!showShareReportModal.value) return;
+  if (shareUserSearchTimer) clearTimeout(shareUserSearchTimer);
+  shareUserSearchTimer = setTimeout(() => fetchShareCandidates("user"), 300);
+});
+
+watch(shareRoleSearch, () => {
+  if (!showShareReportModal.value) return;
+  if (shareRoleSearchTimer) clearTimeout(shareRoleSearchTimer);
+  shareRoleSearchTimer = setTimeout(() => fetchShareCandidates("role"), 300);
+});
+
 const handleExecuteSavedReportClick = (report: any) => {
+  closeSavedReportDetail();
+  showSavedReportBrowser.value = false;
   emit("execute-saved-report", {
     id: report.id,
     title: report.title,
     sql_content: report.sql_content,
+    mode: report.mode,
+    sql_template: report.sql_template,
+    params_schema: report.params_schema,
+    default_params: report.default_params,
+    analysis_mode: report.analysis_mode,
+    tags: report.tags,
+    owner_name: report.owner_name,
+    is_owner: report.is_owner,
   });
 };
 
-const formatDate = (isoString: string) => {
+const formatDate = (isoString?: string | null) => {
   if (!isoString) return "";
   try {
     const date = new Date(isoString);
@@ -1291,6 +1964,14 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleGlobalClick);
+  if (shareUserSearchTimer) {
+    clearTimeout(shareUserSearchTimer);
+    shareUserSearchTimer = null;
+  }
+  if (shareRoleSearchTimer) {
+    clearTimeout(shareRoleSearchTimer);
+    shareRoleSearchTimer = null;
+  }
   if (upgradedBannerTimer) {
     clearTimeout(upgradedBannerTimer);
     upgradedBannerTimer = null;

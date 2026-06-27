@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { normalizeGeneratedFileHref } from '@/utils/generatedFileUrl';
 import { renderMarkdown } from '@/utils/markdown';
 import { parseQuickButtons, postProcessQuickButtonHtml } from '@/utils/quickButtons';
-import { mergeChartDefaults, parseChartOptions } from '@/utils/chartRenderer';
+import { buildChartTableRows, mergeChartDefaults, parseChartOptions } from '@/utils/chartRenderer';
 import { dedupeSqlPlanPayload, parseSqlPlan, type SqlPlanData } from '@/utils/sqlPlan';
 import MermaidRenderer from './MermaidRenderer.vue';
 import SqlPlanCard from './SqlPlanCard.vue';
@@ -80,6 +81,8 @@ const getChartOption = (segment: ContentSegment, idx: number) => {
   return option;
 };
 
+const getChartTable = (segment: ContentSegment) => buildChartTableRows(segment.chartData || {});
+
 interface ContentSegment {
   type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'sql_plan' | 'canvas_html' | 'canvas_code';
   content: string;
@@ -132,6 +135,10 @@ interface ContentSegment {
 
     // 智能将服务器物理绝对路径重映射为可加载的网络相对路径（uploads 转静态托管，其他绝对路径转 fs 预览 API）
     res = res.replace(/(src|href)=["']([^"']*)["']/gi, (match, attr, val) => {
+      const normalizedGeneratedFileHref = normalizeGeneratedFileHref(val);
+      if (normalizedGeneratedFileHref !== val) {
+        return `${attr}="${normalizedGeneratedFileHref}"`;
+      }
       if (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('data:')) {
         return match;
       }
@@ -428,8 +435,52 @@ const segments = computed<ContentSegment[]>(() => {
           >
             饼图
           </button>
+          <button
+            @click="localChartTypes[idx] = 'table'"
+            class="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-[10px] font-bold transition-colors"
+            :class="localChartTypes[idx] === 'table' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-400'"
+            title="切换为表格视图"
+          >
+            表格
+          </button>
         </div>
-        <v-chart class="chart" :option="getChartOption(segment, idx)" autoresize />
+        <div v-if="localChartTypes[idx] === 'table'" class="h-full overflow-auto pt-10 px-1 pb-1 custom-scrollbar">
+          <table
+            v-if="getChartTable(segment).columns.length"
+            class="min-w-full border-separate border-spacing-0 text-xs text-gray-700 dark:text-gray-200"
+          >
+            <thead>
+              <tr>
+                <th
+                  v-for="(column, columnIndex) in getChartTable(segment).columns"
+                  :key="`${column}-${columnIndex}`"
+                  class="sticky top-0 bg-gray-50 dark:bg-gray-800 px-3 py-2 text-left font-black text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700 whitespace-nowrap"
+                >
+                  {{ column }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(row, rowIndex) in getChartTable(segment).rows"
+                :key="rowIndex"
+                class="odd:bg-white even:bg-gray-50/70 dark:odd:bg-gray-900 dark:even:bg-gray-800/60"
+              >
+                <td
+                  v-for="(cell, cellIndex) in row"
+                  :key="`${rowIndex}-${cellIndex}`"
+                  class="px-3 py-2 border-b border-gray-100 dark:border-gray-800 whitespace-nowrap"
+                >
+                  {{ cell ?? '-' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="h-full flex items-center justify-center text-xs font-bold text-gray-400">
+            暂无可展示的表格数据
+          </div>
+        </div>
+        <v-chart v-else class="chart" :option="getChartOption(segment, idx)" autoresize />
       </div>
 
       <!-- Canvas HTML 激活卡片 -->

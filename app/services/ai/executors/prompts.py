@@ -31,9 +31,16 @@ class SharedPrompts:
         "若数据行较多或移动端阅读不友好，请优先使用分组列表/要点列表，只展示关键字段与摘要。"
     )
 
+    PRE_QUERY_SUMMARY_REQUIREMENT = (
+        "1. **查数前置说明 (MUST)**：在正文最开始（任何具体分析、表格或图表之前），"
+        "必须用一个结构化的列表或引用块（`>`），清晰、直观地列出本次 **业务目标**、"
+        "查询**条件**（如筛选字段与值）、**时间范围**（如无显式时间限制说明为不限）"
+        "以及**分析/统计维度**，方便用户快速核对。"
+    )
+
     DATA_QUERY_MARKDOWN_OUTPUT_FORMAT = (
         "【Markdown 输出规范】\n"
-        "1. **查数前置说明 (MUST)**：在正文最开始（任何具体分析、表格或图表之前），必须用一个结构化的列表或引用块（`>`），清晰、直观地说明本次查询的**条件**（如筛选字段与值）、**时间范围**（如无显式时间限制说明为不限）以及**分析/统计维度**，方便用户快速核对。\n"
+        f"{PRE_QUERY_SUMMARY_REQUIREMENT}\n"
         "2. 如需输出表格，必须使用标准 Markdown 表格：表头、分隔行、每一条数据行必须各占独立一行；"
         "分隔行每列至少使用三个连字符（例如 `| ID | 名称 |\\n| --- | --- |`）。"
         "禁止把整张表压成一行，禁止使用 `||` 连接单元格。"
@@ -270,7 +277,7 @@ XML 示例：
 {caveat_block}{dataset_block}{column_label_block}
 请结合该结果，直接针对用户的问题进行专业的总结和解读。
 【输出规范】
-1. **查数前置说明 (MUST)**：在正文最开始（任何具体分析、表格或图表之前），必须用一个结构化的列表或引用块（`>`），清晰、直观地说明本次查询的**条件**（如筛选字段与值）、**时间范围**（如无显式时间限制说明为不限）以及**分析/统计维度**，方便用户快速核对。
+{SharedPrompts.PRE_QUERY_SUMMARY_REQUIREMENT}
 2. 必须使用标准 Markdown 格式进行总结，文字要专业简练。
 3. 输出中的所有 Markdown 表格表头 MUST 使用中文业务术语，禁止保留 visit_id、FOLLOW_UP_DATE 等英文/拼音物理列名。
 4. 如果合适，请附带生成符合 ECharts 格式的 ```chart 块进行可视化展示。
@@ -1833,16 +1840,38 @@ class AssistantPrompts:
         labels = route_hints.get("turn_labels") or []
         relation = route_hints.get("relation_to_previous") or "unknown"
         action_type = route_hints.get("user_action_type") or "unknown"
-        if not labels and relation == "unknown" and action_type == "unknown":
+        semantic_intent = route_hints.get("semantic_intent")
+        semantic_intent_value = getattr(semantic_intent, "value", semantic_intent)
+        semantic_confidence = route_hints.get("semantic_confidence")
+        semantic_reasoning = route_hints.get("semantic_reasoning")
+        if (
+            not labels
+            and relation == "unknown"
+            and action_type == "unknown"
+            and not semantic_intent_value
+        ):
             return ""
         labels_text = ", ".join(str(label) for label in labels) if labels else "无"
-        return (
+        hint = (
             "【路由层通用理解（仅供参考）】\n"
             f"- turn_labels: {labels_text}\n"
             f"- relation_to_previous: {relation}\n"
             f"- user_action_type: {action_type}\n"
             "以上只是路由层基于上下文得到的 hint。请结合完整对话自行判断，"
             "不要机械服从；若 hint 与用户当前问题冲突，以用户问题和对话上下文为准。"
+        )
+        if str(semantic_intent_value or "").upper() != "DATA_QUERY":
+            return hint
+        confidence_text = "未知" if semantic_confidence is None else str(semantic_confidence)
+        reasoning_text = str(semantic_reasoning or "未提供")
+        return (
+            f"【请求语义证据】\n"
+            f"- semantic_intent: {semantic_intent_value}\n"
+            f"- semantic_confidence: {confidence_text}\n"
+            f"- semantic_reasoning: {reasoning_text}\n"
+            "该请求可能需要真实结构化数据。若当前智能体不具备 data_query 能力，"
+            "应优先通过已绑定的 sub_agent_call 或其他可用数据工具获取结果，禁止编造数据。\n\n"
+            f"{hint}"
         )
 
     @staticmethod

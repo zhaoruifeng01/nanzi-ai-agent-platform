@@ -81,6 +81,147 @@ def test_dataset_capability_menu_component_contract():
     assert "FOLLOWUPS_SECTION_TIP" in source
     assert "该场景的入门示例问题" in source
     assert "延伸探索型追问" in source
+    assert "params_schema" in source
+    assert "default_params" in source
+    assert "analysis_mode" in source
+    assert "savedReportScope" in source
+    assert "selectedSavedReportTag" in source
+    assert "openShareReportModal" in source
+    assert "/shares" in source
+    assert "/copy" in source
+    assert "filteredSavedReports" in source
+    assert "fetchShareCandidates" in source
+    assert "/api/portal/management/users" in source
+    assert "/api/portal/roles" in source
+    assert "toggleShareUser" in source
+    assert "toggleShareRole" in source
+    assert "selectedShareUserIds" in source
+    assert "selectedShareRoleIds" in source
+    assert "shareUserSearch" in source
+    assert "shareRoleSearch" in source
+    assert "extractSavedReportActionErrorMessage" in source
+    assert "responseData?.message" in source
+    assert "暂无该报表所需数据权限，无法复制" in source
+    assert "Request failed with status code" in source
+    assert "showToast(extractSavedReportActionErrorMessage(error, \"复制失败\"), \"error\")" in source
+    assert "run_permission_status" in source
+    assert "getSavedReportRunPermissionLabel" in source
+    assert "getSavedReportRunPermissionClass" in source
+    assert "report.run_permission_status === \"denied\"" in source
+    assert "SavedReportItemCard" in source
+    assert "isSavedReportActionDisabled" in source
+    assert "isSavedReportActionDisabled" in source
+    assert "getSavedReportCopyTitle" in source
+    assert "暂无该报表所需数据权限，无法复制。" in source
+    assert "无数据权限" in source
+    assert "share_summary" in source
+    assert "getShareTargetLabel" in source
+    assert "已共享给" in source
+    assert "showSavedReportDetailDrawer" in source
+    assert "openSavedReportDetail" in source
+    assert "toggleSavedReportFavorite" in source
+    assert "toggleSavedReportPinned" in source
+    assert "savedReportSmartFilter" in source
+    assert "置顶" in source
+    assert "收藏" in source
+    assert "常用" in source
+    assert "/prefs" in source
+    assert "报表详情" in source
+    assert "sortSavedReportsForUser" in source
+    assert "openSavedReportBrowser" in source
+    assert "SavedReportBrowseModal" in source
+    assert "放大浏览" in source
+    assert "searchQuery" in _source("frontend/src/components/chatbi/SavedReportBrowseModal.vue")
+    assert "browserScope" in _source("frontend/src/components/chatbi/SavedReportBrowseModal.vue")
+    assert "savedReportBrowseModalRef" in source
+
+
+def test_saved_report_parameterized_execution_contract():
+    source = _source("frontend/src/views/EmbedChat.vue")
+    assert "showReportRunModal" in source
+    assert "reportRunForm" in source
+    assert "executeSavedReportWithOptions" in source
+    assert "analysis_mode: 'auto'" in source
+    assert "const shouldAutoAnalyze = true" in source
+    assert "params: buildSavedReportRunParams()" in source
+    assert "handleQuickQuestion(\"请基于刚才黄金报表结果做业务解读，指出关键结论、异常点和后续建议。\")" in source
+    assert "mode: saveReportForm.value.mode" in source
+    assert "sql_template: saveReportForm.value.sql_template" in source
+    assert "tags: parseSavedReportTags(saveReportForm.value.tags_input)" in source
+    assert "description: saveReportForm.value.description" in source
+    assert "\\d{2}:\\d{2}:\\d{2}" in source
+    assert "start_datetime" in source
+    assert "end_datetime" in source
+    assert "month_range" in source
+    assert "start_month" in source
+    assert "end_month" in source
+    assert "last_6_completed_months" in source
+    assert "type=\"month\"" in source
+    assert "extractSavedReportExecuteErrorMessage" in source
+    assert "responseData?.message" in source
+    assert "暂无该报表所需数据权限" in source
+    assert "Request failed with status code" in source
+    assert "previewSavedReportRun" in source
+    assert "/preview" in source
+    assert "reportRunPreview" in source
+    assert "实际执行 SQL" in source
+    assert "沉淀为黄金报表" in source
+    assert "savedReportNeedsRunOptions" in source
+    assert "scheduleSavedReportPreview" in source
+    assert "请等待运行预览完成后再执行" in source
+    assert "!reportRunPreview" in source
+
+
+def test_saved_report_tags_are_not_raw_question_prefixes():
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    for source in (embed_source, debug_source):
+        assert "deriveSavedReportTagsInput" in source
+        assert "tags_input: deriveSavedReportTagsInput(originalQuery)" in source
+        assert "originalQuery.slice(0, 12)" not in source
+
+
+def test_saved_report_modal_avoids_pinned_dataset_portal_drawer():
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    for source in (embed_source, debug_source):
+        assert "saveReportModalOverlayClass" in source
+        assert "showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'" in source
+        assert ":class=\"saveReportModalOverlayClass\"" in source
+
+    run_modal_start = embed_source.index("<!-- Modal: Run Saved Report -->")
+    run_modal_end = embed_source.index("<!-- Modal: Help Guide -->")
+    run_modal_source = embed_source[run_modal_start:run_modal_end]
+    assert "inset-y-0 left-0" in run_modal_source
+    assert ":class=\"saveReportModalOverlayClass\"" in run_modal_source
+
+
+def test_saved_report_edit_contract():
+    menu_source = _source("frontend/src/components/chatbi/DatasetCapabilityMenu.vue")
+    drawer_source = _source("frontend/src/components/chatbi/DatasetPortalDrawer.vue")
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    assert "edit-saved-report" in menu_source
+    assert "handleEditReport" in menu_source
+    assert "emit(\"edit-saved-report\", report)" in menu_source
+    assert "@edit-saved-report=\"(p) => emit('edit-saved-report', p)\"" in drawer_source
+    assert "const openEditReportModal = (report: any)" in embed_source
+    assert "axios.put(`/api/portal/saved-reports/${editingReportId.value}`, payload)" in embed_source
+    assert "const openEditReportModal = (report: any)" in debug_source
+    assert "axios.put(`/api/portal/saved-reports/${editingReportId.value}`, payload)" in debug_source
+
+
+def test_model_registry_uses_custom_delete_confirm_modal():
+    source = _source("frontend/src/components/system/ModelRegistry.vue")
+    assert "import ConfirmModal" in source
+    assert "showDeleteConfirm" in source
+    assert "pendingDeleteModel" in source
+    assert "<ConfirmModal" in source
+    assert "confirmDeleteModel" in source
+    assert "confirm(" not in source
 
 
 def test_dataset_portal_composable_contract():

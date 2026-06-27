@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  buildChartTableRows,
   createSseLineParser,
   mergeChartDefaults,
   parseChartOptions,
@@ -67,6 +68,36 @@ const nestedTextStyle = mergeChartDefaults({
   series: [{ type: "line", data: [1] }],
 });
 assert.equal(nestedTextStyle.xAxis.axisLabel.textStyle.color, "#6b7280");
+
+const cartesianTable = buildChartTableRows({
+  xAxis: { data: ["06-01", "06-02"] },
+  series: [
+    { name: "新增用户", type: "line", data: [3, 5] },
+    { name: "活跃用户", type: "bar", data: [{ value: 7 }, 9] },
+  ],
+});
+assert.deepEqual(cartesianTable.columns, ["维度", "新增用户", "活跃用户"]);
+assert.deepEqual(cartesianTable.rows, [
+  ["06-01", 3, 7],
+  ["06-02", 5, 9],
+]);
+
+const pieTable = buildChartTableRows({
+  series: [
+    {
+      type: "pie",
+      data: [
+        { name: "华东", value: 12 },
+        { name: "华南", value: 8 },
+      ],
+    },
+  ],
+});
+assert.deepEqual(pieTable.columns, ["名称", "数值"]);
+assert.deepEqual(pieTable.rows, [
+  ["华东", 12],
+  ["华南", 8],
+]);
 
 const parseSse = createSseLineParser();
 assert.deepEqual(parseSse.feed("data: {\"content\":\"hel"), []);
