@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { modelApi, type AIModel, type AIModelCreate } from '../../api/model'
 import { useToast } from '../../composables/useToast'
 import { useUser } from '../../composables/useUser'
+import ConfirmModal from '../ConfirmModal.vue'
 import { 
   PlayIcon,
   PencilSquareIcon,
@@ -19,6 +20,8 @@ const loadingModels = ref(false)
 const testingModelId = ref<string | null>(null)
 const showModelModal = ref(false)
 const isEditingModel = ref(false)
+const showDeleteConfirm = ref(false)
+const pendingDeleteModel = ref<AIModel | null>(null)
 const modelForm = ref<Partial<AIModelCreate> & { id?: string }>({
   name: '',
   model_id: '',
@@ -117,11 +120,23 @@ const saveModel = async () => {
     }
 }
 
-const deleteModel = async (model: AIModel) => {
-    if (!confirm(`确定要删除模型 "${model.name}" 吗?`)) return
+const deleteModel = (model: AIModel) => {
+    pendingDeleteModel.value = model
+    showDeleteConfirm.value = true
+}
+
+const closeDeleteConfirm = () => {
+    showDeleteConfirm.value = false
+    pendingDeleteModel.value = null
+}
+
+const confirmDeleteModel = async () => {
+    const model = pendingDeleteModel.value
+    if (!model) return
     try {
         await modelApi.delete(model.id)
         showToast('已删除', 'success')
+        closeDeleteConfirm()
         fetchModels()
     } catch(e: any) {
         showToast('删除失败', 'error')
@@ -281,6 +296,17 @@ onMounted(() => {
               </div>
           </div>
       </div>
+
+      <ConfirmModal
+        v-if="showDeleteConfirm && pendingDeleteModel"
+        title="删除模型"
+        :message="`确定要删除模型「${pendingDeleteModel.name}」吗？删除后将无法恢复。`"
+        confirm-text="删除"
+        cancel-text="取消"
+        type="danger"
+        @confirm="confirmDeleteModel"
+        @cancel="closeDeleteConfirm"
+      />
   </div>
 </template>
 

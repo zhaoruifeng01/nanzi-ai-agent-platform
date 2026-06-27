@@ -218,6 +218,16 @@
             </button>
             <button
               type="button"
+              class="flex items-center justify-center w-8 text-gray-400 hover:text-blue-600 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
+              title="编辑暂存"
+              @click.stop="handleEditReport(report)"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </button>
+            <button
+              type="button"
               class="flex items-center justify-center w-8 text-gray-400 hover:text-red-500 border-l border-blue-50/60 dark:border-blue-900/20 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
               title="删除暂存"
               @click.stop="handleDeleteReport(report)"
@@ -984,7 +994,17 @@ const emit = defineEmits<{
   (event: "record-question-click", payload: { query: string; label?: string; group_id?: string }): void;
   (event: "clear-question-click", payload: { query: string }): void;
   (event: "refresh"): void;
-  (event: "execute-saved-report", payload: { id: string; title: string; sql_content: string }): void;
+  (event: "execute-saved-report", payload: {
+    id: string;
+    title: string;
+    sql_content: string;
+    mode?: string;
+    sql_template?: string;
+    params_schema?: any[];
+    default_params?: Record<string, any>;
+    analysis_mode?: string;
+  }): void;
+  (event: "edit-saved-report", payload: any): void;
 }>();
 
 const menuContainer = ref<HTMLElement | null>(null);
@@ -1261,11 +1281,20 @@ const handleDeleteReport = async (report: any) => {
   }
 };
 
+const handleEditReport = (report: any) => {
+  emit("edit-saved-report", report);
+};
+
 const handleExecuteSavedReportClick = (report: any) => {
   emit("execute-saved-report", {
     id: report.id,
     title: report.title,
     sql_content: report.sql_content,
+    mode: report.mode,
+    sql_template: report.sql_template,
+    params_schema: report.params_schema,
+    default_params: report.default_params,
+    analysis_mode: report.analysis_mode,
   });
 };
 

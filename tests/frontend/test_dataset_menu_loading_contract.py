@@ -81,6 +81,47 @@ def test_dataset_capability_menu_component_contract():
     assert "FOLLOWUPS_SECTION_TIP" in source
     assert "该场景的入门示例问题" in source
     assert "延伸探索型追问" in source
+    assert "params_schema" in source
+    assert "default_params" in source
+    assert "analysis_mode" in source
+
+
+def test_saved_report_parameterized_execution_contract():
+    source = _source("frontend/src/views/EmbedChat.vue")
+    assert "showReportRunModal" in source
+    assert "reportRunForm" in source
+    assert "executeSavedReportWithOptions" in source
+    assert "analysis_mode: reportRunForm.value.autoAnalyze ? 'auto' : 'manual'" in source
+    assert "params: buildSavedReportRunParams()" in source
+    assert "handleQuickQuestion(\"请基于刚才黄金报表结果做业务解读，指出关键结论、异常点和后续建议。\")" in source
+    assert "mode: saveReportForm.value.mode" in source
+    assert "sql_template: saveReportForm.value.sql_template" in source
+
+
+def test_saved_report_edit_contract():
+    menu_source = _source("frontend/src/components/chatbi/DatasetCapabilityMenu.vue")
+    drawer_source = _source("frontend/src/components/chatbi/DatasetPortalDrawer.vue")
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+
+    assert "edit-saved-report" in menu_source
+    assert "handleEditReport(report)" in menu_source
+    assert "emit(\"edit-saved-report\", report)" in menu_source
+    assert "@edit-saved-report=\"(p) => emit('edit-saved-report', p)\"" in drawer_source
+    assert "const openEditReportModal = (report: any)" in embed_source
+    assert "axios.put(`/api/portal/saved-reports/${editingReportId.value}`, payload)" in embed_source
+    assert "const openEditReportModal = (report: any)" in debug_source
+    assert "axios.put(`/api/portal/saved-reports/${editingReportId.value}`, payload)" in debug_source
+
+
+def test_model_registry_uses_custom_delete_confirm_modal():
+    source = _source("frontend/src/components/system/ModelRegistry.vue")
+    assert "import ConfirmModal" in source
+    assert "showDeleteConfirm" in source
+    assert "pendingDeleteModel" in source
+    assert "<ConfirmModal" in source
+    assert "confirmDeleteModel" in source
+    assert "confirm(" not in source
 
 
 def test_dataset_portal_composable_contract():

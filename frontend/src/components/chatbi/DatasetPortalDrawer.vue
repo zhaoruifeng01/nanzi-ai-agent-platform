@@ -156,6 +156,7 @@
                 @clear-question-click="(p) => emit('clear-question-click', p)"
                 @refresh="emit('refresh')"
                 @execute-saved-report="(p) => emit('execute-saved-report', p)"
+                @edit-saved-report="(p) => emit('edit-saved-report', p)"
               />
             </div>
           </div>
@@ -184,7 +185,17 @@ const emit = defineEmits<{
   (event: "record-question-click", payload: { query: string; label?: string; group_id?: string }): void;
   (event: "clear-question-click", payload: { query: string }): void;
   (event: "refresh"): void;
-  (event: "execute-saved-report", payload: { id: string; title: string; sql_content: string }): void;
+  (event: "execute-saved-report", payload: {
+    id: string;
+    title: string;
+    sql_content: string;
+    mode?: string;
+    sql_template?: string;
+    params_schema?: any[];
+    default_params?: Record<string, any>;
+    analysis_mode?: string;
+  }): void;
+  (event: "edit-saved-report", payload: any): void;
 }>();
 
 const isMobile = ref(
