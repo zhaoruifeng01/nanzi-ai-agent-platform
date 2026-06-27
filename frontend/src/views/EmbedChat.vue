@@ -744,9 +744,9 @@
                                     <span>SQL Query</span>
                                     <div class="flex items-center gap-1">
                                       <button @click.stop="copyMessage(splitSqlToolLogDetails(log.details)!.sqlPart)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
-                                      <template v-if="splitSqlToolLogDetails(log.details)!.bodyKind === 'result' && log.status === 'success'">
+                                      <template v-if="resolveSavableSqlFromLog(log)">
                                         <span class="text-gray-700">|</span>
-                                        <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, msg)" class="text-gray-600 hover:text-primary transition-colors" title="添加为黄金报表">添加黄金报表</button>
+                                        <button @click.stop="openSaveReportModal(resolveSavableSqlFromLog(log)!, msg)" class="text-gray-600 hover:text-primary transition-colors" title="添加为黄金报表">添加黄金报表</button>
                                       </template>
                                     </div>
                                   </div>
@@ -1063,6 +1063,20 @@
                 </svg>
                 <span class="hidden sm:inline">可视化分析</span>
               </button>
+              <!-- 添加黄金报表 -->
+              <button
+                v-if="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
+                type="button"
+                @click="handleSaveReportFromMessage(msg)"
+                class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/35 transition-colors rounded"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="将本轮成功查数的 SQL 沉淀为黄金报表"
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                </svg>
+                <span class="hidden sm:inline">添加黄金报表</span>
+              </button>
               <!-- Time -->
               <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none mr-1">{{ formatBubbleTime(msg.timestamp) }}</span>
               <button
@@ -1092,18 +1106,18 @@
                 @click="openEmbedTrace(msg.trace_id)"
                 class="hidden md:flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
                 :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
-                title="链路追踪"
+                title="链路"
               >
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
-                <span>链路追踪</span>
+                <span>链路</span>
               </button>
-              <!-- Token 消耗显示 -->
+              <!-- Token 消耗显示（移动端隐藏以节省空间） -->
               <button
                 v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
                 @click="openModelCallStats(msg)"
-                class="flex shrink-0 items-center space-x-1.5 text-[10px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/40 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-primary dark:hover:text-primary-active border border-gray-100/50 dark:border-gray-800/20 rounded px-1.5 py-0.5 select-none font-mono transition-all duration-200 cursor-pointer active:scale-95 ml-1"
+                class="hidden sm:flex shrink-0 items-center space-x-1.5 text-[10px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/40 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-primary dark:hover:text-primary-active border border-gray-100/50 dark:border-gray-800/20 rounded px-1.5 py-0.5 select-none font-mono transition-all duration-200 cursor-pointer active:scale-95 ml-1"
                 title="点击查看详细的大模型调用统计指标（如单步耗时、工具调用明细、Token消耗详情等）"
               >
                 <span class="flex items-center space-x-0.5">
@@ -2558,7 +2572,20 @@ import {
   isDimmedThoughtStep,
   type TurnType,
 } from "@/utils/turnLogDisplay";
-import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
+import {
+  splitSqlToolLogDetails,
+  isSqlLikeToolLogDetails,
+  sqlToolLogBodyLabel,
+  resolveSavableSqlFromLog,
+  canSaveGoldenReportFromMessage,
+  resolveSavableSqlFromMessage,
+} from "@/utils/toolLogDisplay";
+import {
+  deriveSavedReportDescription,
+  deriveSavedReportTagsInput,
+  deriveSavedReportTitle,
+  parseRequirementAnalysisFromMessage,
+} from "@/utils/savedReportDefaults";
 import KnowledgeToolLogDetails from "@/components/KnowledgeToolLogDetails.vue";
 import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 import {
@@ -4103,40 +4130,6 @@ const parseSavedReportTags = (input: string) => {
   return tags;
 };
 
-const deriveSavedReportTagsInput = (query: string) => {
-  let text = String(query || '').trim();
-  if (!text) return '';
-  text = text
-    .replace(/[?？!！。；;：:“”"'「」『』【】()[\]{}]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  text = text
-    .replace(/^(帮我|请|麻烦|能否|可以)?\s*(查询|统计|查看|分析|获取|看一下|看看|展示|列出|生成)\s*/, '')
-    .replace(/最近\s*\d+\s*个?\s*(月|天|日|周|年|季度)/g, ' ')
-    .replace(/近\s*\d+\s*(月|天|日|周|年|季度)/g, ' ')
-    .replace(/(本|上|近)(月|周|年|季度)|今日|今天|昨日|昨天|当日/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const stopwords = new Set(['查询', '统计', '查看', '分析', '获取', '数据', '报表', '情况', '明细', '列表']);
-  const tags: string[] = [];
-  const addTag = (value: string) => {
-    const tag = value
-      .replace(/^(查询|统计|查看|分析|获取)/, '')
-      .replace(/(数据查询|报表|数据|情况|明细|列表)$/, '')
-      .trim();
-    if (tag.length < 2 || tag.length > 12 || stopwords.has(tag) || tags.includes(tag)) return;
-    tags.push(tag);
-  };
-
-  for (const part of text.split(/[，,、\s]+|的|和|及|与|按|在|从|对|为/)) {
-    addTag(part);
-    if (tags.length >= 3) break;
-  }
-  if (text.includes('用户数') && text.includes('趋势')) addTag('用户数趋势');
-  return tags.slice(0, 3).join(', ');
-};
-
 const openSaveReportModal = (sql: string, agentMessage: any) => {
   isEditingReport.value = false;
   editingReportId.value = null;
@@ -4172,10 +4165,11 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
   }
 
   const detectedTemplate = detectSavedReportDateTemplate(cleanSql);
+  const requirementIntent = parseRequirementAnalysisFromMessage(agentMessage);
 
   saveReportForm.value = {
-    title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
-    description: originalQuery ? `基于「${originalQuery.slice(0, 40)}」沉淀的黄金报表` : '',
+    title: deriveSavedReportTitle(requirementIntent, originalQuery),
+    description: deriveSavedReportDescription(requirementIntent, originalQuery),
     sql_content: cleanSql,
     dataset_id: null,
     data_source: 'default_clickhouse',
@@ -4185,7 +4179,7 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     params_schema: detectedTemplate?.params_schema || [],
     default_params: detectedTemplate?.default_params || {},
     analysis_mode: 'auto',
-    tags_input: deriveSavedReportTagsInput(originalQuery),
+    tags_input: deriveSavedReportTagsInput(requirementIntent, originalQuery),
   };
   showSaveReportModal.value = true;
 };
@@ -5636,6 +5630,11 @@ const refreshDatasetMenuNavigation = async (msg: Message) => {
 
 const handleVisualAnalysis = async () => {
   await handleQuickQuestion("可视化分析一下");
+};
+
+const handleSaveReportFromMessage = (msg: Message) => {
+  const sql = resolveSavableSqlFromMessage(msg);
+  if (sql) openSaveReportModal(sql, msg);
 };
 
 const addEmbedLogFromStream = (msg: Message, data: any) => {

@@ -38,7 +38,20 @@ import FileBrowserModal from "@/components/embed/FileBrowserModal.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
-import { splitSqlToolLogDetails, isSqlLikeToolLogDetails, sqlToolLogBodyLabel } from "@/utils/toolLogDisplay";
+import {
+  splitSqlToolLogDetails,
+  isSqlLikeToolLogDetails,
+  sqlToolLogBodyLabel,
+  resolveSavableSqlFromLog,
+  canSaveGoldenReportFromMessage,
+  resolveSavableSqlFromMessage,
+} from "@/utils/toolLogDisplay";
+import {
+  deriveSavedReportDescription,
+  deriveSavedReportTagsInput,
+  deriveSavedReportTitle,
+  parseRequirementAnalysisFromMessage,
+} from "@/utils/savedReportDefaults";
 import KnowledgeToolLogDetails from "@/components/KnowledgeToolLogDetails.vue";
 import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 
@@ -666,40 +679,6 @@ const parseSavedReportTags = (input: string) => {
   return tags;
 };
 
-const deriveSavedReportTagsInput = (query: string) => {
-  let text = String(query || '').trim();
-  if (!text) return '';
-  text = text
-    .replace(/[?？!！。；;：:“”"'「」『』【】()[\]{}]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  text = text
-    .replace(/^(帮我|请|麻烦|能否|可以)?\s*(查询|统计|查看|分析|获取|看一下|看看|展示|列出|生成)\s*/, '')
-    .replace(/最近\s*\d+\s*个?\s*(月|天|日|周|年|季度)/g, ' ')
-    .replace(/近\s*\d+\s*(月|天|日|周|年|季度)/g, ' ')
-    .replace(/(本|上|近)(月|周|年|季度)|今日|今天|昨日|昨天|当日/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const stopwords = new Set(['查询', '统计', '查看', '分析', '获取', '数据', '报表', '情况', '明细', '列表']);
-  const tags: string[] = [];
-  const addTag = (value: string) => {
-    const tag = value
-      .replace(/^(查询|统计|查看|分析|获取)/, '')
-      .replace(/(数据查询|报表|数据|情况|明细|列表)$/, '')
-      .trim();
-    if (tag.length < 2 || tag.length > 12 || stopwords.has(tag) || tags.includes(tag)) return;
-    tags.push(tag);
-  };
-
-  for (const part of text.split(/[，,、\s]+|的|和|及|与|按|在|从|对|为/)) {
-    addTag(part);
-    if (tags.length >= 3) break;
-  }
-  if (text.includes('用户数') && text.includes('趋势')) addTag('用户数趋势');
-  return tags.slice(0, 3).join(', ');
-};
-
 const openSaveReportModal = (sql: string, agentMessage: any) => {
   isEditingReport.value = false;
   editingReportId.value = null;
@@ -736,10 +715,11 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
   }
 
   const detectedTemplate = detectSavedReportDateTemplate(cleanSql);
+  const requirementIntent = parseRequirementAnalysisFromMessage(agentMessage);
 
   saveReportForm.value = {
-    title: originalQuery ? `${originalQuery.slice(0, 15)}报表` : '暂存报表',
-    description: originalQuery ? `基于「${originalQuery.slice(0, 40)}」沉淀的黄金报表` : '',
+    title: deriveSavedReportTitle(requirementIntent, originalQuery),
+    description: deriveSavedReportDescription(requirementIntent, originalQuery),
     sql_content: cleanSql,
     dataset_id: null,
     data_source: 'default_clickhouse',
@@ -749,9 +729,14 @@ const openSaveReportModal = (sql: string, agentMessage: any) => {
     params_schema: detectedTemplate?.params_schema || [],
     default_params: detectedTemplate?.default_params || {},
     analysis_mode: 'auto',
-    tags_input: deriveSavedReportTagsInput(originalQuery),
+    tags_input: deriveSavedReportTagsInput(requirementIntent, originalQuery),
   };
   showSaveReportModal.value = true;
+};
+
+const handleSaveReportFromMessage = (msg: any) => {
+  const sql = resolveSavableSqlFromMessage(msg);
+  if (sql) openSaveReportModal(sql, msg);
 };
 
 const openEditReportModal = (report: any) => {
@@ -4043,8 +4028,8 @@ onUnmounted(() => {
                                         <div class="flex justify-between items-center mb-1 text-[9px] text-gray-500 font-sans uppercase tracking-tight">
                                           <span>SQL Query</span>
                                           <div class="flex items-center space-x-2">
-                                            <template v-if="splitSqlToolLogDetails(log.details)!.bodyKind === 'result' && log.status === 'success'">
-                                              <button @click.stop="openSaveReportModal(splitSqlToolLogDetails(log.details)!.sqlPart, msg)" class="text-gray-600 hover:text-primary transition-colors" title="添加为黄金报表">添加黄金报表</button>
+                                            <template v-if="resolveSavableSqlFromLog(log)">
+                                              <button @click.stop="openSaveReportModal(resolveSavableSqlFromLog(log)!, msg)" class="text-gray-600 hover:text-primary transition-colors" title="添加为黄金报表">添加黄金报表</button>
                                               <span class="text-gray-700">|</span>
                                             </template>
                                             <button @click.stop="copyContent(splitSqlToolLogDetails(log.details)!.sqlPart, $event)" class="text-gray-600 hover:text-emerald-400 transition-colors uppercase">Copy</button>
@@ -4262,10 +4247,24 @@ onUnmounted(() => {
 	                />
                 <!-- 导出 / 点赞踩（托管 RAGFlow、OpenClaw 不展示点赞踩） -->
                 <div
-                  v-if="msg.role === 'agent' && !msg.isThinking && (msg.trace_id || !hideDebugLikeDislikeForHostedAgent)"
+                  v-if="msg.role === 'agent' && !msg.isThinking && (msg.trace_id || canSaveGoldenReportFromMessage(msg) || !hideDebugLikeDislikeForHostedAgent)"
                   class="flex items-center space-x-2 mt-2 pt-2 border-t border-gray-50 opacity-20 hover:opacity-100 group-hover/content:opacity-100 transition-opacity"
                   :class="{'!opacity-100': msg.feedback && !hideDebugLikeDislikeForHostedAgent}"
                 >
+                  <!-- Save Golden Report -->
+                  <button
+                    v-if="canSaveGoldenReportFromMessage(msg)"
+                    type="button"
+                    @click="handleSaveReportFromMessage(msg)"
+                    class="flex items-center space-x-1 p-1 rounded hover:bg-amber-50 text-amber-700 hover:text-amber-800 transition-colors"
+                    title="将本轮成功查数的 SQL 沉淀为黄金报表"
+                  >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                    </svg>
+                    <span class="text-[10px] font-bold">添加黄金报表</span>
+                  </button>
+                  <div v-if="canSaveGoldenReportFromMessage(msg) && msg.trace_id" class="w-px h-3 bg-gray-200 mx-1"></div>
                   <!-- Export Data Button -->
                   <button
                     v-if="msg.trace_id"
