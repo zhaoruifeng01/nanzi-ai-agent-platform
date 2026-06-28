@@ -9,6 +9,7 @@ import ToolRegistry from '../components/system/ToolRegistry.vue'
 import McpServerRegistry from '../components/system/McpServerRegistry.vue'
 import RagFlowResourceSelector from '../components/RagFlowResourceSelector.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import RedisKeyCleanupModal from '../components/system/RedisKeyCleanupModal.vue'
 import {
   CircleStackIcon,
   CheckCircleIcon,
@@ -39,7 +40,6 @@ const logs = ref<string[]>([])
 const loading = ref<{ [key: string]: boolean }> ({
   redis: false,
   redis_scan: false,
-  redis_flush: false,
   redis_vector: false,
   rebuild_vector: false
 })
@@ -67,7 +67,7 @@ type VectorHealth = {
 const redisVectorHealth = ref<VectorHealth | null>(null)
 
 const { showToast } = useToast()
-const showClearConfirm = ref(false)
+const showRedisCleanupModal = ref(false)
 const showRebuildConfirm = ref(false)
 
 const appendLog = (msg: string) => {
@@ -187,28 +187,14 @@ const testRedisVectorSearch = async (force = true) => {
 }
 
 const openClearConfirm = () => {
-  showClearConfirm.value = true
+  showRedisCleanupModal.value = true
 }
 
-const executeClearKeys = async () => {
-  loading.value['redis_flush'] = true
-  showClearConfirm.value = false
-  appendLog('>>> 正在清空 Redis Keys...')
-
-  try {
-     const response = await axios.post('/api/portal/system/redis/flush')
-     const { message } = response.data
-     appendLog(`>>> ✅ ${message}`)
-     showToast('Redis 已清空', 'success')
-
-     // 自动重新扫描
-     scanRedisKeys()
-  } catch (e: any) {
-    const msg = e.response?.data?.detail || e.message
-    appendLog(`>>> ❌ 清空失败: ${msg}`)
-    showToast('清空失败', 'error')
-  } finally {
-    loading.value['redis_flush'] = false
+const handleRedisKeysDeleted = async (payload: { deletedCount: number; message: string }) => {
+  appendLog(`>>> ✅ ${payload.message}`)
+  showToast(`已删除 ${payload.deletedCount} 个 Key`, 'success')
+  if (diagSubTab.value === 'redis') {
+    await fetchRedisKeys()
   }
 }
 
@@ -1031,9 +1017,9 @@ onMounted(() => {
        </div>
 
        <!-- DIAGNOSTICS TAB -->
-       <div v-else-if="activeTab === 'diagnostics'" class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full overflow-y-auto pb-6">
+       <div v-else-if="activeTab === 'diagnostics'" class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full overflow-y-auto pb-6">
         <!-- Left Column: Connection Checks -->
-        <div class="space-y-6">
+        <div class="space-y-6 lg:col-span-1">
           <div class="bg-white shadow rounded-lg p-6">
             <div class="flex items-center justify-between mb-4">
               <div class="flex items-center space-x-3">
@@ -1061,10 +1047,9 @@ onMounted(() => {
                 <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-gray-400 border-t-transparent rounded-full"></span>
                 {{ loading.redis_scan ? '扫描中...' : '扫描 Keys' }}
               </button>
-              <button @click="openClearConfirm" :disabled="loading.redis_flush || !canSave" class="flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50">
-                <TrashIcon v-if="!loading.redis_flush" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-red-400 border-t-transparent rounded-full"></span>
-                {{ loading.redis_flush ? '清空中...' : '清空 Keys' }}
+              <button @click="openClearConfirm" :disabled="!canSave" class="flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50">
+                <TrashIcon class="h-4 w-4 mr-2" />
+                清理 Keys
               </button>
             </div>
           </div>
@@ -1140,7 +1125,7 @@ onMounted(() => {
           </div>
         </div>
         <!-- Right Column: Console Output / Redis Browser -->
-        <div class="bg-white rounded-lg shadow flex flex-col h-[600px] border border-gray-100 overflow-hidden">
+        <div class="lg:col-span-2 bg-white rounded-lg shadow flex flex-col h-[600px] border border-gray-100 overflow-hidden">
           <div class="bg-gray-50 px-4 py-2.5 flex justify-between items-center border-b border-gray-200 flex-shrink-0">
             <div class="flex space-x-2">
               <button 
@@ -1505,15 +1490,10 @@ onMounted(() => {
         @select="handleDatasetSelect"
     />
 
-    <ConfirmModal
-      v-if="showClearConfirm"
-      title="清理系统缓存？"
-      message="此操作将清理系统缓存（如权限、临时数据），但会**保留**所有用户的对话历史。确定执行吗？"
-      confirm-text="确认清理"
-      cancel-text="取消"
-      type="warning"
-      @confirm="executeClearKeys"
-      @cancel="showClearConfirm = false"
+    <RedisKeyCleanupModal
+      :show="showRedisCleanupModal"
+      @close="showRedisCleanupModal = false"
+      @deleted="handleRedisKeysDeleted"
     />
 
     <ConfirmModal

@@ -278,6 +278,62 @@ async def flush_redis_keys(
         logging.error(f"Failed to flush redis keys: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class RedisDeleteKeysRequest(BaseModel):
+    keys: List[str]
+
+class RedisDeleteKeysResponse(BaseModel):
+    status: str
+    deleted_count: int
+    message: str
+
+@router.post("/redis/delete-keys", response_model=RedisDeleteKeysResponse)
+async def delete_redis_keys_batch(
+    data: RedisDeleteKeysRequest,
+    user: Dict = Depends(require_permission("element", "element:system:config_save")),
+):
+    """Batch delete selected Redis keys."""
+    try:
+        if not settings.REDIS_ENABLE:
+            raise HTTPException(status_code=400, detail="Redis is disabled")
+
+        if not data.keys:
+            raise HTTPException(status_code=400, detail="No keys specified")
+
+        if len(data.keys) > 5000:
+            raise HTTPException(status_code=400, detail="Too many keys (max 5000)")
+
+        r = await redis.get_redis()
+        if not r:
+            await redis.init_redis()
+            r = await redis.get_redis()
+
+        if not r:
+            raise HTTPException(status_code=500, detail="Redis client not available")
+
+        deleted_count = 0
+        chunk_size = 500
+        for i in range(0, len(data.keys), chunk_size):
+            chunk = data.keys[i : i + chunk_size]
+            if chunk:
+                deleted_count += await r.delete(*chunk)
+
+        logging.info(
+            "Redis selective cleanup by %s: deleted %s keys",
+            user.get("user_name"),
+            deleted_count,
+        )
+        return RedisDeleteKeysResponse(
+            status="success",
+            deleted_count=deleted_count,
+            message=f"Deleted {deleted_count} key(s).",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Failed to batch delete redis keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/redis/rebuild-vectors")
 async def rebuild_vector_indexes(
     user: Dict = Depends(require_permission("element", "element:system:config_save"))
