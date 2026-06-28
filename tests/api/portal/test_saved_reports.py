@@ -41,6 +41,12 @@ def _report_row(**overrides):
     return SimpleNamespace(**data)
 
 
+def _today_range_sql() -> str:
+    start = date.today()
+    end = date.fromordinal(start.toordinal() + 1)
+    return f"SELECT * FROM orders WHERE created_at >= '{start.isoformat()}' AND created_at < '{end.isoformat()}'"
+
+
 class _ScalarResult:
     def __init__(self, values):
         self._values = values
@@ -160,7 +166,7 @@ async def test_preview_saved_report_returns_rendered_sql_and_permission_status(m
 
     async def fake_execute_sql_query_core(*args, **kwargs):
         assert kwargs["auth_check_only"] is True
-        assert kwargs["sql"] == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
+        assert kwargs["sql"] == _today_range_sql()
         return json.dumps({"allowed": True})
 
     monkeypatch.setattr(saved_reports, "_get_user_role_ids", AsyncMock(return_value=[]))
@@ -175,7 +181,7 @@ async def test_preview_saved_report_returns_rendered_sql_and_permission_status(m
     )
 
     assert response.data.report_id == "rpt_5"
-    assert response.data.rendered_sql == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
+    assert response.data.rendered_sql == _today_range_sql()
     assert response.data.permission_status == "allowed"
     assert response.data.can_run is True
     assert response.data.data_source == "mysql_test"
@@ -589,7 +595,7 @@ async def test_execute_saved_report_uses_rendered_sql_and_enables_table_auth(mon
     )
 
     assert response.data == {"items": [{"orders": 3}]}
-    assert captured["sql"] == "SELECT * FROM orders WHERE created_at >= '2026-06-27' AND created_at < '2026-06-28'"
+    assert captured["sql"] == _today_range_sql()
     assert captured["bypass_table_auth"] is False
     assert report_row.last_success_at is not None
     db.flush.assert_awaited_once()

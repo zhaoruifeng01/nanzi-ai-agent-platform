@@ -699,6 +699,11 @@
                                <!-- Main Text -->
                                <span class="truncate">{{ log.title }}</span>
                                <span
+                                 v-if="logHasRowFilterApplied(log)"
+                                 class="flex-shrink-0 text-[12px]"
+                                 title="已按行级数据权限改写 SQL"
+                               >🔒</span>
+                               <span
                                  v-if="isActiveThoughtStep(log, msg.isThinking)"
                                  class="inline-flex items-center px-1 sm:px-1.5 py-px sm:py-0.5 rounded text-[8px] sm:text-[9px] font-bold uppercase tracking-wide text-primary bg-primary/10 border border-primary/20 scale-90 sm:scale-100 origin-center"
                                >
@@ -907,6 +912,15 @@
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                 </button>
+                                                                <div
+                                                                  v-if="msg.permissionNotice?.row_filter_applied"
+                                                                  class="mb-2 inline-flex max-w-full items-start gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
+                                                                >
+                                                                  <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                                                  </svg>
+                                                                  <span>{{ msg.permissionNotice.message || '已按你的数据权限自动过滤结果' }}</span>
+                                                                </div>
                                                                 <MessageRenderer
                                                                   v-if="!msg.datasetNavigation?.groups?.length"
                                                                   :content="msg.content"
@@ -1049,34 +1063,6 @@
                 </svg>
                 <span>导出</span>
               </button>
-              <!-- ChatBI 可视化分析 -->
-              <button
-                v-if="msg.hasDataOutput && checkRole(msg, 'agent') && !msg.isThinking"
-                type="button"
-                @click="handleVisualAnalysis()"
-                class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-primary border border-primary/25 bg-primary/5 hover:bg-primary/10 transition-colors rounded"
-                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
-                title="基于本轮查询结果进行可视化深度分析"
-              >
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-                <span class="hidden sm:inline">可视化分析</span>
-              </button>
-              <!-- 添加黄金报表 -->
-              <button
-                v-if="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
-                type="button"
-                @click="handleSaveReportFromMessage(msg)"
-                class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/35 transition-colors rounded"
-                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
-                title="将本轮成功查数的 SQL 沉淀为黄金报表"
-              >
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                </svg>
-                <span class="hidden sm:inline">添加黄金报表</span>
-              </button>
               <!-- Time -->
               <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none mr-1">{{ formatBubbleTime(msg.timestamp) }}</span>
               <button
@@ -1113,7 +1099,17 @@
                 </svg>
                 <span>链路</span>
               </button>
-              <!-- Token 消耗显示（移动端隐藏以节省空间） -->
+              <!-- Token 消耗：移动端仅 icon，桌面端展示 in/out 明细 -->
+              <button
+                v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
+                @click="openModelCallStats(msg)"
+                class="flex sm:hidden shrink-0 items-center justify-center text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800 p-2.5"
+                title="查看 Token 消耗详情"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h10M7 16h6M5 6a2 2 0 012-2h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6z" />
+                </svg>
+              </button>
               <button
                 v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
                 @click="openModelCallStats(msg)"
@@ -1130,8 +1126,9 @@
                   <span class="font-medium text-gray-500 dark:text-gray-400">{{ msg.completion_tokens || 0 }}</span>
                 </span>
               </button>
-              <!-- Feedback Buttons（托管引擎不展示点赞踩） -->
-              <div v-if="!hideEmbedLikeDislike" class="flex items-center space-x-1 ml-auto">
+              <!-- 反馈与 ChatBI 扩展操作（靠右对齐） -->
+              <div class="flex items-center space-x-1 ml-auto">
+                <template v-if="!hideEmbedLikeDislike">
                 <button
                   @click="handleFeedback(msg, 'up')"
                   class="rounded transition-colors hover:bg-green-50 dark:hover:bg-green-900/20 text-gray-400 hover:text-green-500"
@@ -1176,9 +1173,36 @@
                       stroke-width="2"
                       d="M10 14H5.292C4.288 14 3.5 13.257 3.5 12.342c0-.354.05-.7.145-1.03l1.921-6.641C5.768 3.859 6.486 3 7.5 3h8c1.105 0 2 .895 2 2v8c0 .55-.224 1.05-.586 1.414l-5 5c-.381.381-1 .381-1.381 0L10 19v-5z"
                     />
-                                    </svg>
-                                  </button>
-                                </div>
+                  </svg>
+                </button>
+                </template>
+                <button
+                  v-if="msg.hasDataOutput && checkRole(msg, 'agent') && !msg.isThinking"
+                  type="button"
+                  @click="handleVisualAnalysis()"
+                  class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-primary border border-primary/25 bg-primary/5 hover:bg-primary/10 transition-colors rounded"
+                  :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                  title="基于本轮查询结果进行可视化深度分析"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  <span class="hidden sm:inline">可视化分析</span>
+                </button>
+                <button
+                  v-if="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
+                  type="button"
+                  @click="handleSaveReportFromMessage(msg)"
+                  class="flex shrink-0 items-center space-x-1 text-[10px] font-medium text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/35 transition-colors rounded"
+                  :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                  title="将本轮成功查数的 SQL 沉淀为黄金报表"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                  </svg>
+                  <span class="hidden sm:inline">添加黄金报表</span>
+                </button>
+              </div>
                               </div>
                             </div>
                           </div>
@@ -2579,6 +2603,7 @@ import {
   resolveSavableSqlFromLog,
   canSaveGoldenReportFromMessage,
   resolveSavableSqlFromMessage,
+  logHasRowFilterApplied,
 } from "@/utils/toolLogDisplay";
 import {
   deriveSavedReportDescription,
@@ -2613,6 +2638,7 @@ interface LogEntry {
   execution_time_ms?: number | null;
   elapsed_time_ms?: number | null;
   started_at?: number | null;
+  rowFilterApplied?: boolean;
 }
 
 interface SavedReportPayload {
@@ -2626,6 +2652,13 @@ interface SavedReportPayload {
   analysis_mode?: string;
   description?: string;
   tags?: string[];
+}
+
+interface PermissionNotice {
+  row_filter_applied?: boolean;
+  dataset_name?: string;
+  rule_count?: number;
+  message?: string;
 }
 
 interface SkillMeta {
@@ -2705,6 +2738,7 @@ interface Message {
   pendingExternalExecution?: PendingExternalExecution;
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
+  permissionNotice?: PermissionNotice;
   _hasSilentlyRefreshed?: boolean;
 }
 // Helper: Check Role
@@ -4535,6 +4569,7 @@ const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | nu
       const execResult = res.data.data;
       resultMarkdown = renderSavedReportDataToMarkdown(execResult);
       detailsText = `${report.sql_content}\n--- 结果 ---\n${typeof execResult === 'object' ? JSON.stringify(execResult, null, 2) : String(execResult)}`;
+      agentMsg.value.permissionNotice = execResult?.permission_notice;
     } else {
       resultMarkdown = "执行结果为空。";
       detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
@@ -5675,6 +5710,7 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
       execution_time_ms: execution_time_ms ?? currentLog.execution_time_ms,
       elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
       started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
+      rowFilterApplied: data.row_filter_applied === true || currentLog.rowFilterApplied,
     };
     return;
   }
@@ -5688,6 +5724,7 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
     execution_time_ms: data.execution_time_ms ?? null,
     elapsed_time_ms: data.elapsed_time_ms ?? null,
     started_at: data.status === "pending" ? Date.now() : (data.started_at ?? null),
+    rowFilterApplied: data.row_filter_applied === true,
   });
 };
 
@@ -5742,6 +5779,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
     if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
     if (data.has_data_output) msg.hasDataOutput = true;
+    if (data.permission_notice) msg.permissionNotice = data.permission_notice;
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -6151,6 +6189,9 @@ const sendMessage = async () => {
             }
             if (data.has_data_output) {
               agentMsg.value.hasDataOutput = true;
+            }
+            if (data.permission_notice) {
+              agentMsg.value.permissionNotice = data.permission_notice;
             }
             if (data.ltm_applied && data.ltm_data) {
               if (!ltmAlertedInSession.value) {

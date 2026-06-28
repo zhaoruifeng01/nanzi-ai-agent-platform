@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -196,3 +197,75 @@ async def test_dataset_table_consistency_validation_failed(monkeypatch):
     assert "[DRY_RUN]" in result_dual
     assert "不属于当前指定的数据集" not in result_dual
     assert "表 'dual'" not in result_dual
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_execute_sql_query_core_marks_permission_notice_when_row_filter_rewrites(monkeypatch):
+    fake_ds = SimpleNamespace(
+        id=1,
+        name="sales_dataset",
+        enable_data_perm=True,
+        row_filter_config={
+            "default_policy": [
+                {"target_table": "orders", "condition": "orders.dept_code = {user.dept_code}"}
+            ]
+        },
+    )
+
+    async def fake_get_dataset_by_name(_session, name):
+        return fake_ds if name == "sales_dataset" else None
+
+    async def fake_enforce(*args, **kwargs):
+        return None
+
+    class FakePermissionService:
+        def __init__(self, _session):
+            pass
+
+        async def get_user_permissions(self, _user_id):
+            return SimpleNamespace(roles=[])
+
+    async def fake_sandbox_verify(_session, *, sql, data_source, dialect):
+        return SimpleNamespace(allowed=True, optimized_sql=sql, message="")
+
+    monkeypatch.setattr(sql_service.MetadataService, "get_dataset_by_name", fake_get_dataset_by_name)
+    monkeypatch.setattr(sql_service, "PermissionService", FakePermissionService)
+    monkeypatch.setattr(
+        "app.services.ai.chatbi_sql_query_binding.enforce_physical_table_permissions",
+        fake_enforce,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.chatbi_sql_query_binding.enforce_dataset_table_scope",
+        fake_enforce,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.chatbi_sql_query_binding.build_data_perm_table_metadata",
+        lambda _binding, _dataset_name: {"orders": {"dept_code"}},
+    )
+    monkeypatch.setattr(
+        "app.services.ai.sql_sandbox_gate.SQLSandboxGate.verify_and_optimize",
+        fake_sandbox_verify,
+    )
+
+    permission_notice = {}
+    result = await sql_service.execute_sql_query_core(
+        AsyncMock(),
+        sql="SELECT * FROM orders o",
+        data_source="clickhouse_datasource",
+        dataset_name="sales_dataset",
+        user_id=4,
+        user_dimensions={"dept_code": "D001"},
+        dry_run=True,
+        is_admin=False,
+        bypass_table_auth=False,
+        permission_notice=permission_notice,
+    )
+
+    assert "[DRY_RUN]" in result
+    assert permission_notice["row_filter_applied"] is True
+    assert permission_notice["dataset_name"] == "sales_dataset"
+    assert permission_notice["rule_count"] == 1
+    assert permission_notice["message"] == "已按你的数据权限自动过滤结果"
+    assert "dept_code" in str(permission_notice.get("executed_sql") or "")
+    assert "D001" in str(permission_notice.get("executed_sql") or "")

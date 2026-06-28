@@ -20,6 +20,13 @@ def format_sql_result_for_display(runner: Any, output: Any, *, max_rows: int = _
     parsed = runner._try_parse_json_output(output)
     if isinstance(parsed, dict) and runner._is_structured_sql_result(parsed):
         display: dict[str, Any] = dict(parsed)
+        notice = display.get("permission_notice")
+        if isinstance(notice, dict) and "executed_sql" in notice:
+            display["permission_notice"] = {
+                key: value for key, value in notice.items() if key != "executed_sql"
+            }
+            if not display["permission_notice"]:
+                display.pop("permission_notice", None)
         for key in _SQL_RESULT_ROW_KEYS:
             rows = display.get(key)
             if isinstance(rows, list) and len(rows) > max_rows:
@@ -43,6 +50,25 @@ def format_sql_result_for_display(runner: Any, output: Any, *, max_rows: int = _
         except Exception:
             return str(output or "")
     return str(output or "")
+
+
+def resolve_executed_sql_for_tool_log(
+    parsed: Any,
+    tool_args: dict[str, Any] | None,
+) -> str | None:
+    if isinstance(parsed, dict):
+        notice = parsed.get("permission_notice")
+        if isinstance(notice, dict):
+            executed_sql = notice.get("executed_sql")
+            if isinstance(executed_sql, str) and executed_sql.strip():
+                return executed_sql.strip()
+    if not tool_args:
+        return None
+    raw_sql = tool_args.get("sql") or tool_args.get("query")
+    if isinstance(raw_sql, str) and raw_sql.strip():
+        return raw_sql.strip()
+    return None
+
 
 def build_sql_error_tool_details(runner: Any, output: Any, tool_args: dict[str, Any] | None) -> str:
     text = str(output or "")
@@ -78,10 +104,10 @@ def format_tool_details(
             details = result_details
             output_text = str(output or "")
             if "[Executed SQL]:" not in output_text and tool_args:
-                raw_sql = tool_args.get("sql") or tool_args.get("query")
-                if isinstance(raw_sql, str) and raw_sql.strip():
+                executed_sql = resolve_executed_sql_for_tool_log(parsed, tool_args)
+                if executed_sql:
                     details = (
-                        f"[Executed SQL]:\n{raw_sql.strip()}\n\n"
+                        f"[Executed SQL]:\n{executed_sql}\n\n"
                         f"{_SQL_TOOL_RESULT_DELIMITER}\n{result_details}"
                     )
         elif runner._is_failed_sql_repeat_gate_block(output):
@@ -95,10 +121,10 @@ def format_tool_details(
             details = truncate_for_context(result_text, max_len=1000)
             output_text = str(output or "")
             if "[Executed SQL]:" not in output_text and tool_args:
-                raw_sql = tool_args.get("sql") or tool_args.get("query")
-                if isinstance(raw_sql, str) and raw_sql.strip():
+                executed_sql = resolve_executed_sql_for_tool_log(parsed, tool_args)
+                if executed_sql:
                     details = (
-                        f"[Executed SQL]:\n{raw_sql.strip()}\n\n"
+                        f"[Executed SQL]:\n{executed_sql}\n\n"
                         f"{_SQL_TOOL_RESULT_DELIMITER}\n{details}"
                     )
     else:

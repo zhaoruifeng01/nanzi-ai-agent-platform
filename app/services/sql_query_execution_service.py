@@ -59,6 +59,60 @@ def _append_trace(agent_context: Optional[AgentContext], trace_logs: Optional[Li
         trace_logs.append(message)
 
 
+def _mark_row_filter_notice(
+    permission_notice: Optional[Dict[str, Any]],
+    *,
+    dataset_name: Optional[str],
+    rule_count: int,
+    executed_sql: Optional[str] = None,
+) -> None:
+    if permission_notice is None:
+        return
+    payload: Dict[str, Any] = {
+        "row_filter_applied": True,
+        "dataset_name": dataset_name,
+        "rule_count": rule_count,
+        "message": "已按你的数据权限自动过滤结果",
+    }
+    rewritten_sql = str(executed_sql or "").strip()
+    if rewritten_sql:
+        payload["executed_sql"] = rewritten_sql
+    permission_notice.update(payload)
+
+
+def attach_permission_notice_to_payload(
+    payload: Dict[str, Any],
+    permission_notice: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if permission_notice and permission_notice.get("row_filter_applied") is True:
+        payload["permission_notice"] = dict(permission_notice)
+    return payload
+
+
+def attach_permission_notice_to_json_result(
+    result_str: str,
+    permission_notice: Optional[Dict[str, Any]],
+) -> str:
+    if not permission_notice or permission_notice.get("row_filter_applied") is not True:
+        return result_str
+    raw = result_str.strip()
+    if not raw or raw.startswith("["):
+        return result_str
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return result_str
+    if isinstance(parsed, dict):
+        return json.dumps(
+            attach_permission_notice_to_payload(parsed, permission_notice),
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        attach_permission_notice_to_payload({"rows": parsed}, permission_notice),
+        ensure_ascii=False,
+    )
+
+
 def _user_dims_for_rewrite(agent_context: Optional[AgentContext], user_dimensions: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if agent_context is not None and agent_context.user_dimensions:
         return dict(agent_context.user_dimensions)
@@ -289,6 +343,7 @@ async def execute_sql_query_core(
     auth_check_only: bool = False,
     bypass_table_auth: bool = False,
     sql_query_binding: Any | None = None,
+    permission_notice: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     在给定 DB 会话下完成权限重写与执行；调用方负责会话生命周期。
@@ -302,6 +357,9 @@ async def execute_sql_query_core(
                  `auth_check_only=True` 且 `dry_run=False`）。
         sql_query_binding: 可选的 ChatBI 表/数据集/字段绑定；未传时尝试读取 ContextVar，
                  Agent 路径在 execute 前由 tool gate 注入。
+        permission_notice: 可选可变字典；当行级权限 SQL 重写实际生效时写入给 HTTP/前端使用的
+                 非敏感提示元信息；可含 `executed_sql` 供工具日志展示实际执行的 SQL，
+                 不包含具体过滤条件表达式。
     """
     from app.services.ai.chatbi_sql_query_binding import (
         build_data_perm_table_metadata,
@@ -451,8 +509,24 @@ async def execute_sql_query_core(
 
             if filters:
                 user_dims = _user_dims_for_rewrite(agent_context, user_dimensions)
-                sql = rewriter.rewrite(sql, filters, user_dims)
-                logger.info("[DataPerm] SQL Rewritten for user %s. Applied %s filters.", user_id_eff, len(filters))
+                original_sql = sql
+                rewrite_stats: Dict[str, int] = {}
+                sql = rewriter.rewrite(sql, filters, user_dims, rewrite_stats=rewrite_stats)
+                rewrite_applied = sql != original_sql
+                applied_rule_count = int(rewrite_stats.get("applied_rule_count") or 0)
+                logger.info(
+                    "[DataPerm] SQL Rewritten for user %s. Applied %s/%s filter conditions.",
+                    user_id_eff,
+                    applied_rule_count,
+                    len(filters),
+                )
+                if rewrite_applied:
+                    _mark_row_filter_notice(
+                        permission_notice,
+                        dataset_name=dataset_name,
+                        rule_count=applied_rule_count,
+                        executed_sql=sql,
+                    )
                 _append_trace(
                     agent_context,
                     trace_logs,
