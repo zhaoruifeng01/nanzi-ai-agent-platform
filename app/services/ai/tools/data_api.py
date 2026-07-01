@@ -1,7 +1,7 @@
 import logging
 import httpx
 import json
-from typing import Optional
+from typing import Any, Optional
 from app.services.ai.tools.tool_compat import tool
 from app.core.config import settings
 import re
@@ -381,11 +381,32 @@ async def execute_sql_query(sql: str, data_source: str, dataset_name: str) -> st
     """
     from app.core.context import get_current_agent_context
     from app.core.orm import AsyncSessionLocal
-    from app.services.sql_query_execution_service import execute_sql_query_core
+    from app.services.sql_query_execution_service import (
+        attach_permission_notice_to_json_result,
+        execute_sql_query_core,
+    )
 
     ctx = get_current_agent_context()
     user_id = ctx.user_id if ctx else None
     is_admin = bool(ctx and getattr(ctx, "is_admin", False))
+    permission_notice: dict[str, Any] = {}
+
+    async def _run_query(session):
+        res = await execute_sql_query_core(
+            session,
+            sql=sql,
+            data_source=data_source,
+            dataset_name=dataset_name,
+            user_id=user_id,
+            user_dimensions=(ctx.user_dimensions if ctx else None) or None,
+            trace_logs=None,
+            api_key=ctx.api_key if ctx else None,
+            agent_context=ctx,
+            dry_run=None,
+            is_admin=is_admin,
+            permission_notice=permission_notice,
+        )
+        return attach_permission_notice_to_json_result(res, permission_notice)
 
     trace_buffer = ctx.trace_buffer if ctx else None
     if trace_buffer is not None:
@@ -398,33 +419,9 @@ async def execute_sql_query(sql: str, data_source: str, dataset_name: str) -> st
             tool_input={"sql": sql, "data_source": data_source, "dataset_name": dataset_name}
         ) as span:
             async with AsyncSessionLocal() as session:
-                res = await execute_sql_query_core(
-                    session,
-                    sql=sql,
-                    data_source=data_source,
-                    dataset_name=dataset_name,
-                    user_id=user_id,
-                    user_dimensions=(ctx.user_dimensions if ctx else None) or None,
-                    trace_logs=None,
-                    api_key=ctx.api_key if ctx else None,
-                    agent_context=ctx,
-                    dry_run=None,
-                    is_admin=is_admin,
-                )
+                res = await _run_query(session)
                 span.set_output(res)
                 return res
     else:
         async with AsyncSessionLocal() as session:
-            return await execute_sql_query_core(
-                session,
-                sql=sql,
-                data_source=data_source,
-                dataset_name=dataset_name,
-                user_id=user_id,
-                user_dimensions=(ctx.user_dimensions if ctx else None) or None,
-                trace_logs=None,
-                api_key=ctx.api_key if ctx else None,
-                agent_context=ctx,
-                dry_run=None,
-                is_admin=is_admin,
-            )
+            return await _run_query(session)

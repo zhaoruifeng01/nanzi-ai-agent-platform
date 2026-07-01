@@ -9,6 +9,8 @@ import ToolRegistry from '../components/system/ToolRegistry.vue'
 import McpServerRegistry from '../components/system/McpServerRegistry.vue'
 import RagFlowResourceSelector from '../components/RagFlowResourceSelector.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import RedisKeyCleanupModal from '../components/system/RedisKeyCleanupModal.vue'
+import Switch from '../components/Switch.vue'
 import {
   CircleStackIcon,
   CheckCircleIcon,
@@ -25,13 +27,14 @@ import {
   TrashIcon,
   ServerStackIcon,
   PlayIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  PaintBrushIcon
 } from '@heroicons/vue/24/outline'
 
 const { hasPermission, userInfo } = useUser()
 const canSave = hasPermission('element:system:config_save')
 
-const activeTab = ref<'diagnostics' | 'configs' | 'models' | 'tools' | 'mcp' | 'logs'>('configs')
+const activeTab = ref<'diagnostics' | 'configs' | 'models' | 'tools' | 'mcp' | 'logs' | 'branding'>('configs')
 const diagSubTab = ref<'console' | 'redis'>('console')
 
 // --- Diagnostics Logic ---
@@ -39,7 +42,6 @@ const logs = ref<string[]>([])
 const loading = ref<{ [key: string]: boolean }> ({
   redis: false,
   redis_scan: false,
-  redis_flush: false,
   redis_vector: false,
   rebuild_vector: false
 })
@@ -67,7 +69,7 @@ type VectorHealth = {
 const redisVectorHealth = ref<VectorHealth | null>(null)
 
 const { showToast } = useToast()
-const showClearConfirm = ref(false)
+const showRedisCleanupModal = ref(false)
 const showRebuildConfirm = ref(false)
 
 const appendLog = (msg: string) => {
@@ -187,28 +189,14 @@ const testRedisVectorSearch = async (force = true) => {
 }
 
 const openClearConfirm = () => {
-  showClearConfirm.value = true
+  showRedisCleanupModal.value = true
 }
 
-const executeClearKeys = async () => {
-  loading.value['redis_flush'] = true
-  showClearConfirm.value = false
-  appendLog('>>> 正在清空 Redis Keys...')
-
-  try {
-     const response = await axios.post('/api/portal/system/redis/flush')
-     const { message } = response.data
-     appendLog(`>>> ✅ ${message}`)
-     showToast('Redis 已清空', 'success')
-
-     // 自动重新扫描
-     scanRedisKeys()
-  } catch (e: any) {
-    const msg = e.response?.data?.detail || e.message
-    appendLog(`>>> ❌ 清空失败: ${msg}`)
-    showToast('清空失败', 'error')
-  } finally {
-    loading.value['redis_flush'] = false
+const handleRedisKeysDeleted = async (payload: { deletedCount: number; message: string }) => {
+  appendLog(`>>> ✅ ${payload.message}`)
+  showToast(`已删除 ${payload.deletedCount} 个 Key`, 'success')
+  if (diagSubTab.value === 'redis') {
+    await fetchRedisKeys()
   }
 }
 
@@ -292,7 +280,79 @@ const metadataProvider = computed(() => {
 const originalConfigs = ref<{ [key: string]: string }>({})
 const configLoading = ref(false)
 const saving = ref(false)
+const brandingSaving = ref(false)
+const brandingIconUploading = ref(false)
 const showSecrets = ref<{ [key: string]: boolean }>({})
+
+const brandingConfig = ref({
+  enabled: false,
+  product_name: '云枢 · 智能体平台',
+  login_subtitle: 'Yunshu Intelligent Agent Platform',
+  icon_url: '/favicon.png',
+  hide_login_sso: false,
+  hide_version_link: false,
+  contact_markdown: '',
+  copyright_text: '',
+})
+const brandingIconInput = ref<HTMLInputElement | null>(null)
+
+const fetchBrandingConfig = async () => {
+  try {
+    const res = await axios.get('/api/portal/system/branding')
+    const data = res.data || {}
+    brandingConfig.value = {
+      enabled: !!data.enabled,
+      product_name: data.product_name || '云枢 · 智能体平台',
+      login_subtitle: data.login_subtitle || 'Yunshu Intelligent Agent Platform',
+      icon_url: data.icon_url || '/favicon.png',
+      hide_login_sso: !!data.hide_login_sso,
+      hide_version_link: !!data.hide_version_link,
+      contact_markdown: data.contact_markdown || '',
+      copyright_text: data.copyright_text || '',
+    }
+  } catch {
+    showToast('品牌配置加载失败', 'error')
+  }
+}
+
+const saveBrandingConfig = async () => {
+  brandingSaving.value = true
+  try {
+    await axios.put('/api/portal/system/branding', { ...brandingConfig.value })
+    const { loadBranding } = await import('../composables/useBranding')
+    await loadBranding(true)
+    showToast('品牌配置已保存', 'success')
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '保存失败', 'error')
+  } finally {
+    brandingSaving.value = false
+  }
+}
+
+const triggerBrandingIconUpload = () => {
+  brandingIconInput.value?.click()
+}
+
+const onBrandingIconSelected = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  brandingIconUploading.value = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await axios.post('/api/portal/system/branding/icon', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    brandingConfig.value.icon_url = res.data.icon_url
+    showToast('图标上传成功', 'success')
+  } catch (err: any) {
+    showToast(err.response?.data?.detail || '上传失败', 'error')
+  } finally {
+    brandingIconUploading.value = false
+  }
+}
 
 const fetchConfigs = async () => {
   configLoading.value = true
@@ -839,6 +899,7 @@ const executeDeleteKey = async () => {
 
 onMounted(() => {
   fetchConfigs()
+  fetchBrandingConfig()
   fetchModelsForConfigs()
   if (userInfo.value?.role === 'admin') {
     fetchLogConfig()
@@ -876,6 +937,14 @@ onMounted(() => {
          >
            <Cog6ToothIcon class="w-4 h-4 mr-2" />
            参数配置
+         </button>
+         <button
+           @click="activeTab = 'branding'"
+           class="px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 flex items-center"
+           :class="activeTab === 'branding' ? 'bg-white shadow text-primary' : 'text-gray-500 hover:text-gray-700'"
+         >
+           <PaintBrushIcon class="w-4 h-4 mr-2" />
+           品牌个性化
          </button>
          <button
            @click="activeTab = 'mcp'"
@@ -1031,9 +1100,9 @@ onMounted(() => {
        </div>
 
        <!-- DIAGNOSTICS TAB -->
-       <div v-else-if="activeTab === 'diagnostics'" class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full overflow-y-auto pb-6">
+       <div v-else-if="activeTab === 'diagnostics'" class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full overflow-y-auto pb-6">
         <!-- Left Column: Connection Checks -->
-        <div class="space-y-6">
+        <div class="space-y-6 lg:col-span-1">
           <div class="bg-white shadow rounded-lg p-6">
             <div class="flex items-center justify-between mb-4">
               <div class="flex items-center space-x-3">
@@ -1050,21 +1119,20 @@ onMounted(() => {
                 <XCircleIcon v-else class="h-6 w-6 text-red-500" />
               </div>
             </div>
-            <div class="border-t border-gray-100 pt-4 mt-2 grid grid-cols-3 gap-3">
-              <button @click="testConnection('redis')" :disabled="loading.redis || !canSave" class="flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none disabled:opacity-50">
-                <PlayIcon v-if="!loading.redis" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full"></span>
+            <div class="border-t border-gray-100 pt-4 mt-2 flex flex-col gap-2">
+              <button @click="testConnection('redis')" :disabled="loading.redis || !canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none disabled:opacity-50 whitespace-nowrap">
+                <PlayIcon v-if="!loading.redis" class="h-4 w-4 mr-2 shrink-0" />
+                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full shrink-0"></span>
                 {{ loading.redis ? '测试中...' : '测试连接' }}
               </button>
-               <button @click="scanRedisKeys" :disabled="loading.redis_scan || !canSave" class="flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50">
-                <MagnifyingGlassIcon v-if="!loading.redis_scan" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-gray-400 border-t-transparent rounded-full"></span>
+               <button @click="scanRedisKeys" :disabled="loading.redis_scan || !canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 whitespace-nowrap">
+                <MagnifyingGlassIcon v-if="!loading.redis_scan" class="h-4 w-4 mr-2 shrink-0" />
+                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-gray-400 border-t-transparent rounded-full shrink-0"></span>
                 {{ loading.redis_scan ? '扫描中...' : '扫描 Keys' }}
               </button>
-              <button @click="openClearConfirm" :disabled="loading.redis_flush || !canSave" class="flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50">
-                <TrashIcon v-if="!loading.redis_flush" class="h-4 w-4 mr-2" />
-                <span v-else class="animate-spin h-4 w-4 mr-2 border-2 border-red-400 border-t-transparent rounded-full"></span>
-                {{ loading.redis_flush ? '清空中...' : '清空 Keys' }}
+              <button @click="openClearConfirm" :disabled="!canSave" class="w-full inline-flex justify-center items-center py-2 px-4 border border-red-300 rounded-md shadow-sm text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50 whitespace-nowrap">
+                <TrashIcon class="h-4 w-4 mr-2 shrink-0" />
+                清理 Keys
               </button>
             </div>
           </div>
@@ -1140,7 +1208,7 @@ onMounted(() => {
           </div>
         </div>
         <!-- Right Column: Console Output / Redis Browser -->
-        <div class="bg-white rounded-lg shadow flex flex-col h-[600px] border border-gray-100 overflow-hidden">
+        <div class="lg:col-span-2 bg-white rounded-lg shadow flex flex-col h-[600px] border border-gray-100 overflow-hidden">
           <div class="bg-gray-50 px-4 py-2.5 flex justify-between items-center border-b border-gray-200 flex-shrink-0">
             <div class="flex space-x-2">
               <button 
@@ -1276,8 +1344,127 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- BRANDING TAB -->
+      <div v-else-if="activeTab === 'branding'" class="h-full overflow-y-auto pb-6 custom-scrollbar">
+        <div class="max-w-3xl space-y-6">
+          <div class="flex items-center justify-between bg-white shadow rounded-lg p-6">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900">品牌个性化</h3>
+              <p class="text-sm text-gray-500 mt-1">开启后可自定义产品名称、登录页、图标与联系信息</p>
+            </div>
+            <Switch v-model="brandingConfig.enabled" :disabled="!canSave" />
+          </div>
+
+          <fieldset :disabled="!brandingConfig.enabled || !canSave" class="bg-white shadow rounded-lg p-6 space-y-5 disabled:opacity-60">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">产品名称</label>
+              <input
+                v-model="brandingConfig.product_name"
+                type="text"
+                class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                placeholder="云枢 · 智能体平台"
+              />
+              <p class="text-xs text-gray-400 mt-1">影响浏览器标题、左侧菜单栏名称、登录页</p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">登录页副标题</label>
+              <input
+                v-model="brandingConfig.login_subtitle"
+                type="text"
+                class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                placeholder="Yunshu Intelligent Agent Platform"
+              />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Logo / Favicon</label>
+              <div class="flex items-center gap-4">
+                <img
+                  :src="brandingConfig.icon_url || '/favicon.png'"
+                  alt="Logo 预览"
+                  class="w-12 h-12 rounded-lg border border-gray-200 object-cover bg-white"
+                />
+                <div class="flex-1 space-y-2">
+                  <input
+                    v-model="brandingConfig.icon_url"
+                    type="text"
+                    class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm font-mono"
+                    placeholder="/favicon.png 或 /branding/icon.png"
+                  />
+                  <button
+                    type="button"
+                    class="text-sm text-primary hover:text-primary/80 disabled:opacity-50"
+                    :disabled="brandingIconUploading || !brandingConfig.enabled"
+                    @click="triggerBrandingIconUpload"
+                  >
+                    {{ brandingIconUploading ? '上传中...' : '上传图片' }}
+                  </button>
+                  <input
+                    ref="brandingIconInput"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    class="hidden"
+                    @change="onBrandingIconSelected"
+                  />
+                </div>
+              </div>
+              <p class="text-xs text-gray-400 mt-1">用于登录页、侧栏左上角与浏览器标签图标（PNG/JPEG/WebP/SVG，最大 512KB）</p>
+            </div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 py-2 border-t border-gray-100">
+              <div>
+                <p class="text-sm font-medium text-gray-700">隐藏登录页 SSO</p>
+                <p class="text-xs text-gray-400">开启后登录页不再显示 SSO 登录 Tab</p>
+              </div>
+              <Switch v-model="brandingConfig.hide_login_sso" />
+            </div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 py-2 border-t border-gray-100">
+              <div>
+                <p class="text-sm font-medium text-gray-700">隐藏版本号外链</p>
+                <p class="text-xs text-gray-400">开启后侧栏版本号不再链接到 GitHub，并隐藏 GitHub 图标</p>
+              </div>
+              <Switch v-model="brandingConfig.hide_version_link" />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">联系信息（Markdown）</label>
+              <textarea
+                v-model="brandingConfig.contact_markdown"
+                rows="8"
+                class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm font-mono"
+                placeholder="支持 Markdown，将在「个人中心 → 我的权限 → 关于」中展示"
+              />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">版权信息</label>
+              <input
+                v-model="brandingConfig.copyright_text"
+                type="text"
+                class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                placeholder="© 2026 公司名称 · All Rights Reserved"
+              />
+              <p class="text-xs text-gray-400 mt-1">启用品牌个性化后，显示在登录页底部（小字展示，支持换行）</p>
+            </div>
+          </fieldset>
+
+          <div class="flex justify-end">
+            <button
+              type="button"
+              :disabled="brandingSaving || !canSave"
+              class="inline-flex items-center px-6 py-2 text-sm font-medium rounded-md text-white bg-primary hover:bg-primary/90 disabled:opacity-50"
+              @click="saveBrandingConfig"
+            >
+              {{ brandingSaving ? '保存中...' : '保存品牌配置' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- CONFIGS TAB -->
-      <div v-else class="h-full overflow-y-auto pb-6 custom-scrollbar">
+      <div v-else-if="activeTab === 'configs'" class="h-full overflow-y-auto pb-6 custom-scrollbar">
          <div v-if="configLoading" class="flex justify-center py-20">
              <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
          </div>
@@ -1505,15 +1692,10 @@ onMounted(() => {
         @select="handleDatasetSelect"
     />
 
-    <ConfirmModal
-      v-if="showClearConfirm"
-      title="清理系统缓存？"
-      message="此操作将清理系统缓存（如权限、临时数据），但会**保留**所有用户的对话历史。确定执行吗？"
-      confirm-text="确认清理"
-      cancel-text="取消"
-      type="warning"
-      @confirm="executeClearKeys"
-      @cancel="showClearConfirm = false"
+    <RedisKeyCleanupModal
+      :show="showRedisCleanupModal"
+      @close="showRedisCleanupModal = false"
+      @deleted="handleRedisKeysDeleted"
     />
 
     <ConfirmModal

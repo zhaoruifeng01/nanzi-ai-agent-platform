@@ -2,12 +2,14 @@ import pytest
 import json
 import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
+from fastapi import HTTPException
 from httpx import AsyncClient
 from pydantic import ValidationError
 from types import SimpleNamespace
 
 from app.api.v1.endpoints import chatbi
 from app.api.v1.endpoints.chatbi import ChatBiSqlExecuteRequest
+from app.services.ai.chatbi_sql_query_binding import TableBinding
 
 # 构造 Mock Dataset
 mock_dataset = SimpleNamespace(
@@ -38,6 +40,18 @@ async def test_chatbi_execute_request_requires_sessionid():
 
 
 @pytest.mark.no_infrastructure
+def test_chatbi_execute_request_accepts_optional_dataset_name():
+    body = ChatBiSqlExecuteRequest.model_validate({
+        "sql": "SELECT 1",
+        "data_source": "default_clickhouse",
+        "dataset_name": "sales_dataset",
+        "sessionid": "openclaw-session-1",
+    })
+
+    assert body.dataset_name == "sales_dataset"
+
+
+@pytest.mark.no_infrastructure
 def test_openclaw_openai_sessionid_extracts_username():
     username = chatbi._openclaw_openai_username_from_sessionid(
         "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2"
@@ -60,6 +74,7 @@ async def test_openclaw_session_auth_uses_session_username(monkeypatch):
     body = ChatBiSqlExecuteRequest.model_validate({
         "sql": "SELECT 1",
         "data_source": "default_clickhouse",
+        "dataset_name": "sales_dataset",
         "sessionid": "agent:chatbi_bot:openai-user:chenxiaolong-6c03b966-9d89-413d-8138-01aa395e6ea2",
     })
     captured = {}
@@ -87,8 +102,203 @@ async def test_openclaw_session_auth_uses_session_username(monkeypatch):
 
     assert captured["username"] == "chenxiaolong"
     assert captured["auth_kwargs"]["user_id"] == 42
+    assert captured["auth_kwargs"]["dataset_name"] == "sales_dataset"
     assert captured["auth_kwargs"]["auth_check_only"] is True
     assert captured["auth_kwargs"]["dry_run"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_direct_sql_dataset_name_infers_unique_dataset(monkeypatch):
+    async def fake_resolve_table_bindings_from_db(db, physical_names):
+        assert physical_names == ["orders", "customers"]
+        return {
+            "orders": TableBinding(physical_name="orders", dataset_name="sales_dataset"),
+            "customers": TableBinding(physical_name="customers", dataset_name="sales_dataset"),
+        }
+
+    monkeypatch.setattr(
+        chatbi,
+        "extract_physical_table_refs_from_select_sql",
+        lambda sql, dialect: (None, {"orders": "orders", "customers": "customers"}),
+    )
+    monkeypatch.setattr(chatbi, "resolve_table_bindings_from_db", fake_resolve_table_bindings_from_db)
+
+    dataset_name = await chatbi._resolve_direct_sql_dataset_name(
+        AsyncMock(),
+        sql="SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id",
+        data_source="mysql_test",
+        explicit_dataset_name=None,
+    )
+
+    assert dataset_name == "sales_dataset"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_direct_sql_dataset_name_rejects_cross_dataset(monkeypatch):
+    async def fake_resolve_table_bindings_from_db(db, physical_names):
+        return {
+            "orders": TableBinding(physical_name="orders", dataset_name="sales_dataset"),
+            "tickets": TableBinding(physical_name="tickets", dataset_name="support_dataset"),
+        }
+
+    monkeypatch.setattr(
+        chatbi,
+        "extract_physical_table_refs_from_select_sql",
+        lambda sql, dialect: (None, {"orders": "orders", "tickets": "tickets"}),
+    )
+    monkeypatch.setattr(chatbi, "resolve_table_bindings_from_db", fake_resolve_table_bindings_from_db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chatbi._resolve_direct_sql_dataset_name(
+            AsyncMock(),
+            sql="SELECT * FROM orders JOIN tickets ON orders.id = tickets.order_id",
+            data_source="mysql_test",
+            explicit_dataset_name=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "跨数据集" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_direct_sql_dataset_inference_rejects_when_row_filter_required(monkeypatch):
+    async def fake_resolve_table_bindings_from_db(db, physical_names):
+        return {
+            "orders": TableBinding(physical_name="orders", dataset_name="sales_dataset"),
+        }
+
+    async def fake_get_dataset_by_name(_db, name):
+        return SimpleNamespace(enable_data_perm=True) if name == "sales_dataset" else None
+
+    monkeypatch.setattr(
+        chatbi,
+        "extract_physical_table_refs_from_select_sql",
+        lambda sql, dialect: (None, {"orders": "orders", "customers": "customers"}),
+    )
+    monkeypatch.setattr(chatbi, "resolve_table_bindings_from_db", fake_resolve_table_bindings_from_db)
+    monkeypatch.setattr(chatbi.MetadataService, "get_dataset_by_name", fake_get_dataset_by_name)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chatbi._resolve_direct_sql_dataset_name(
+            AsyncMock(),
+            sql="SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id",
+            data_source="mysql_test",
+            explicit_dataset_name=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "行级数据权限" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chatbi_execute_passes_explicit_dataset_name(monkeypatch):
+    body = ChatBiSqlExecuteRequest.model_validate({
+        "sql": "SELECT COUNT(*) FROM orders",
+        "data_source": "mysql_test",
+        "dataset_name": "sales_dataset",
+        "sessionid": "openclaw-session-1",
+    })
+    user_info = {
+        "user_id": "7",
+        "user_name": "alice",
+        "real_name": "Alice",
+        "role": "user",
+        "dept_code": "D001",
+        "org_path": "/D001",
+        "extra_data": "",
+    }
+    captured = {}
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        captured.update(kwargs)
+        return json.dumps({"columns": [], "items": []})
+
+    monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}):
+        await chatbi.chatbi_sql_execute(body, user_info=user_info, db=AsyncMock())
+
+    assert captured["dataset_name"] == "sales_dataset"
+    assert captured["user_dimensions"]["dept_code"] == "D001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chatbi_execute_returns_permission_notice_when_row_filter_applied(monkeypatch):
+    body = ChatBiSqlExecuteRequest.model_validate({
+        "sql": "SELECT COUNT(*) FROM orders",
+        "data_source": "mysql_test",
+        "dataset_name": "sales_dataset",
+        "sessionid": "openclaw-session-1",
+    })
+    user_info = {
+        "user_id": "7",
+        "user_name": "alice",
+        "real_name": "Alice",
+        "role": "user",
+        "dept_code": "D001",
+        "org_path": "/D001",
+        "extra_data": "",
+    }
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        kwargs["permission_notice"]["row_filter_applied"] = True
+        kwargs["permission_notice"]["dataset_name"] = "sales_dataset"
+        kwargs["permission_notice"]["rule_count"] = 2
+        kwargs["permission_notice"]["message"] = "已按你的数据权限自动过滤结果"
+        return json.dumps({"columns": [], "items": []})
+
+    monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}):
+        response = await chatbi.chatbi_sql_execute(body, user_info=user_info, db=AsyncMock())
+
+    assert response.data.permission_notice == {
+        "row_filter_applied": True,
+        "dataset_name": "sales_dataset",
+        "rule_count": 2,
+        "message": "已按你的数据权限自动过滤结果",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chatbi_checkauth_passes_explicit_dataset_name(monkeypatch):
+    body = chatbi.ChatBiSqlCheckAuthRequest.model_validate({
+        "username": "alice",
+        "sql": "SELECT COUNT(*) FROM orders",
+        "data_source": "mysql_test",
+        "dataset_name": "sales_dataset",
+    })
+    captured = {}
+
+    async def fake_resolve_user_by_username(username, db):
+        return {
+            "user_id": "7",
+            "user_name": username,
+            "real_name": "Alice",
+            "role": "user",
+            "dept_code": "D001",
+            "org_path": "/D001",
+            "extra_data": "",
+        }
+
+    async def fake_execute_sql_query_core(*args, **kwargs):
+        captured.update(kwargs)
+        return json.dumps({"allowed": True})
+
+    monkeypatch.setattr(chatbi.AuthService, "resolve_user_by_username", fake_resolve_user_by_username)
+    monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+
+    with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}):
+        await chatbi.chatbi_sql_checkauth(body, db=AsyncMock())
+
+    assert captured["dataset_name"] == "sales_dataset"
+    assert captured["auth_check_only"] is True
 
 
 @pytest.mark.asyncio
@@ -130,6 +340,7 @@ async def test_chatbi_execute_uses_session_user_for_openclaw_sql_execution(monke
 
     monkeypatch.setattr(chatbi.AuthService, "resolve_user_by_username", fake_resolve_user_by_username)
     monkeypatch.setattr(chatbi, "execute_sql_query_core", fake_execute_sql_query_core)
+    monkeypatch.setattr(chatbi, "resolve_table_bindings_from_db", AsyncMock(return_value={}))
 
     with patch.dict("os.environ", {"SQL_EXECUTION_MODE": "local"}):
         await chatbi.chatbi_sql_execute(body, user_info=api_key_user, db=AsyncMock())

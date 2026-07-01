@@ -62,6 +62,7 @@ export type ToolLogLike = {
   title?: string;
   details?: string;
   status?: string;
+  rowFilterApplied?: boolean;
 };
 
 export type MessageWithToolLogs = {
@@ -103,6 +104,19 @@ export function sqlToolLogResultHasDataRows(bodyPart: string): boolean {
 export function isExecuteSqlQueryLog(log: ToolLogLike): boolean {
   const label = `${log.name || ""} ${log.title || ""}`;
   return /execute_sql_query/i.test(label);
+}
+
+export function logHasRowFilterApplied(log: ToolLogLike): boolean {
+  if (log.rowFilterApplied) return true;
+  if (!isExecuteSqlQueryLog(log) || !log.details) return false;
+  const sections = splitSqlToolLogDetails(log.details);
+  if (!sections || sections.bodyKind !== "result") return false;
+  try {
+    const parsed = JSON.parse(sections.bodyPart) as { permission_notice?: { row_filter_applied?: boolean } };
+    return parsed.permission_notice?.row_filter_applied === true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeSavableSql(sqlPart: string): string {

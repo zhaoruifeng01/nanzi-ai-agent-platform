@@ -286,7 +286,13 @@ async def stream_agentscope_events(
                 timestamp=datetime.fromtimestamp(state.tool_started_at.get(tool_id, time.time())),
             )
         )
-        yield {
+        notice = None
+        if tool_name == "execute_sql_query" and not state.sql_error:
+            final_parsed = runner._try_parse_json_output(output)
+            notice = final_parsed.get("permission_notice") if isinstance(final_parsed, dict) else None
+            if isinstance(notice, dict) and notice.get("row_filter_applied") is True:
+                yield {"type": "meta", "permission_notice": notice}
+        log_payload: Dict[str, Any] = {
             "type": "log",
             "id": tool_id,
             "title": f"工具完成: {tool_name}",
@@ -294,6 +300,13 @@ async def stream_agentscope_events(
             "status": "success",
             "execution_time_ms": duration_ms,
         }
+        if (
+            tool_name == "execute_sql_query"
+            and isinstance(notice, dict)
+            and notice.get("row_filter_applied") is True
+        ):
+            log_payload["row_filter_applied"] = True
+        yield log_payload
 
     def track_sql_plan_delta(delta: str) -> None:
         state.text_window = (state.text_window + delta)[-4000:]

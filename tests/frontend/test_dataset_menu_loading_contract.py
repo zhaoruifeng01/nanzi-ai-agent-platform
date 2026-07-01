@@ -172,13 +172,36 @@ def test_saved_report_parameterized_execution_contract():
     assert "!reportRunPreview" in source
 
 
+def test_row_permission_notice_renders_above_chatbi_results():
+    embed_source = _source("frontend/src/views/EmbedChat.vue")
+    debug_source = _source("frontend/src/views/AgentDebug.vue")
+    react_stream_source = _source("app/services/ai/runners/chatbi/react_stream.py")
+    data_api_source = _source("app/services/ai/tools/data_api.py")
+
+    for source in (embed_source, debug_source):
+        assert "interface PermissionNotice" in source
+        assert "permissionNotice?: PermissionNotice;" in source
+        assert "msg.permissionNotice?.row_filter_applied" in source
+        assert "已按你的数据权限自动过滤结果" in source
+        assert "agentMsg.value.permissionNotice = execResult?.permission_notice" in source
+        assert "data.permission_notice" in source
+
+    assert '"type": "meta", "permission_notice": notice' in react_stream_source
+    assert '"row_filter_applied": True' in react_stream_source or 'log_payload["row_filter_applied"] = True' in react_stream_source
+    assert "logHasRowFilterApplied" in embed_source
+    assert "logHasRowFilterApplied" in debug_source
+    assert "resolve_executed_sql_for_tool_log" in _source("app/services/ai/runners/chatbi/tool_result_handlers.py")
+    assert "attach_permission_notice_to_json_result" in data_api_source
+    assert "permission_notice=permission_notice" in data_api_source
+
+
 def test_saved_report_tags_are_not_raw_question_prefixes():
     embed_source = _source("frontend/src/views/EmbedChat.vue")
     debug_source = _source("frontend/src/views/AgentDebug.vue")
 
     for source in (embed_source, debug_source):
         assert "deriveSavedReportTagsInput" in source
-        assert "tags_input: deriveSavedReportTagsInput(originalQuery)" in source
+        assert "tags_input: deriveSavedReportTagsInput(requirementIntent, originalQuery)" in source
         assert "originalQuery.slice(0, 12)" not in source
 
 

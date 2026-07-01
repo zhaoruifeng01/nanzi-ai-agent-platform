@@ -1,5 +1,6 @@
 import json
 import logging
+import inspect
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -20,7 +21,10 @@ from app.models.saved_report import PortalSavedReport, PortalSavedReportShare, P
 from app.models.user import User
 from app.schemas.response import StandardResponse
 from app.services.ai.chatbi_sql_user_messages import map_sql_tool_error_for_user
-from app.services.sql_query_execution_service import execute_sql_query_core
+from app.services.sql_query_execution_service import (
+    attach_permission_notice_to_payload,
+    execute_sql_query_core,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +177,22 @@ def _chatbi_user_dimensions(user_info: Dict[str, Any], user_id: int) -> Dict[str
         "org_path": user_info.get("org_path"),
         "extra_data": user_info.get("extra_data"),
     }
+
+
+async def _dataset_name_from_id(db: AsyncSession, dataset_id: Optional[int]) -> Optional[str]:
+    if not dataset_id:
+        return None
+    result = await db.execute(select(MetaDataset.name).where(MetaDataset.id == dataset_id))
+    dataset_name = result.scalar_one_or_none()
+    if inspect.isawaitable(dataset_name):
+        dataset_name = await dataset_name
+    if not isinstance(dataset_name, str):
+        return None
+    return str(dataset_name).strip() if dataset_name else None
+
+
+def _attach_permission_notice(payload: Dict[str, Any], permission_notice: Dict[str, Any]) -> Dict[str, Any]:
+    return attach_permission_notice_to_payload(payload, permission_notice)
 
 
 def _detect_default_date_range_template(sql: str) -> Tuple[Optional[str], List[Dict[str, Any]], Dict[str, Any]]:
@@ -535,11 +555,12 @@ async def _precheck_saved_report_sql_permissions(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     try:
+        dataset_name = await _dataset_name_from_id(db, report.dataset_id)
         result_str = await execute_sql_query_core(
             db,
             sql=sql_to_check,
             data_source=report.data_source,
-            dataset_name=None,
+            dataset_name=dataset_name,
             user_id=user_id,
             user_dimensions=_chatbi_user_dimensions(user_info, user_id),
             trace_logs=None,
@@ -1374,11 +1395,13 @@ async def execute_saved_report(
 
     try:
         # 参数化报表会在执行前重新经过底层 SQL 校验、沙箱与表权限校验。
+        dataset_name = await _dataset_name_from_id(db, report.dataset_id)
+        permission_notice: Dict[str, Any] = {}
         result_str = await execute_sql_query_core(
             db,
             sql=sql_to_execute,
             data_source=report.data_source,
-            dataset_name=None,
+            dataset_name=dataset_name,
             user_id=user_id,
             user_dimensions=user_dimensions,
             trace_logs=None,
@@ -1387,6 +1410,7 @@ async def execute_saved_report(
             dry_run=False,
             is_admin=is_admin,
             bypass_table_auth=False,
+            permission_notice=permission_notice,
         )
     except Exception as e:
         logger.error("Failed to execute SQL from saved report: %s", e)
@@ -1415,8 +1439,9 @@ async def execute_saved_report(
                 cache_payload = {
                     "sql": sql_to_execute,
                     "data_source": report.data_source,
-                    "dataset_name": None,
+                    "dataset_name": dataset_name,
                     "rows": parsed,
+                    "permission_notice": permission_notice if permission_notice.get("row_filter_applied") is True else None,
                     "params": resolved_params,
                     "report_id": report.id,
                     "report_title": report.title,
@@ -1437,7 +1462,7 @@ async def execute_saved_report(
         except Exception as pref_err:
             logger.warning("Failed to record saved report run preference for %s: %s", report.id, pref_err)
         await db.flush()
-        return StandardResponse(data=parsed)
+        return StandardResponse(data=_attach_permission_notice(parsed, permission_notice))
     except json.JSONDecodeError:
         pass
 
@@ -1455,4 +1480,4 @@ async def execute_saved_report(
     except Exception as pref_err:
         logger.warning("Failed to record saved report run preference for %s: %s", report.id, pref_err)
     await db.flush()
-    return StandardResponse(data={"rows": raw_res})
+    return StandardResponse(data=_attach_permission_notice({"rows": raw_res}, permission_notice))

@@ -45,6 +45,7 @@ import {
   resolveSavableSqlFromLog,
   canSaveGoldenReportFromMessage,
   resolveSavableSqlFromMessage,
+  logHasRowFilterApplied,
 } from "@/utils/toolLogDisplay";
 import {
   deriveSavedReportDescription,
@@ -1090,6 +1091,7 @@ const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | nu
       execResult = res.data.data;
       resultMarkdown = renderSavedReportDataToMarkdown(execResult);
       detailsText = `${report.sql_content}\n--- 结果 ---\n${typeof execResult === 'object' ? JSON.stringify(execResult, null, 2) : String(execResult)}`;
+      agentMsg.value.permissionNotice = execResult?.permission_notice;
     } else {
       resultMarkdown = "执行结果为空。";
       detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
@@ -1202,6 +1204,7 @@ interface LogEntry {
   category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'intent' | 'permission' | 'external' | 'model' | 'agent' | 'context' | 'default';
   model?: string;
   temperature?: number;
+  rowFilterApplied?: boolean;
 }
 
 interface SavedReportPayload {
@@ -1215,6 +1218,13 @@ interface SavedReportPayload {
   analysis_mode?: string;
   description?: string;
   tags?: string[];
+}
+
+interface PermissionNotice {
+  row_filter_applied?: boolean;
+  dataset_name?: string;
+  rule_count?: number;
+  message?: string;
 }
 
 // ... inside script ...
@@ -1298,6 +1308,7 @@ interface Message {
   pendingExternalExecution?: PendingExternalExecution;
   toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
   datasetNavigation?: DatasetNavigationPayload;
+  permissionNotice?: PermissionNotice;
   prompt_tokens?: number;
   completion_tokens?: number;
 }
@@ -2808,6 +2819,9 @@ const sendMessage = async () => {
               if (data.rag_retrieval) {
                 ragRetrievalMeta.value = data.rag_retrieval;
               }
+              if (data.permission_notice) {
+                agentMsg.value.permissionNotice = data.permission_notice;
+              }
             }
 
             // Handle Status
@@ -2895,6 +2909,7 @@ const addRealLog = (msg: Message, data: any) => {
     if (data.isDebug !== undefined) existingLog.isDebug = data.isDebug;
     if (data.isRouter !== undefined) existingLog.isRouter = data.isRouter;
     if (data.category !== undefined) existingLog.category = data.category as any;
+    if (data.row_filter_applied === true) existingLog.rowFilterApplied = true;
   } else {
     // Categorization Logic for new logs
     let inferredCategory = (data.category as any) || 'default';
@@ -2918,7 +2933,8 @@ const addRealLog = (msg: Message, data: any) => {
       isRouter: data.isRouter,
       category: inferredCategory,
       model: data.model,
-      temperature: data.temperature
+      temperature: data.temperature,
+      rowFilterApplied: data.row_filter_applied === true,
     };
     msg.logs.push(log);
   }
@@ -3042,6 +3058,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     if (data.agent_name) msg.agentName = data.agent_name;
     if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
     if (data.rag_retrieval) ragRetrievalMeta.value = data.rag_retrieval;
+    if (data.permission_notice) msg.permissionNotice = data.permission_notice;
   } else if (data.type === "error") {
     if (msg.pendingPermission) msg.pendingPermission.status = "error";
     msg.isThinking = false;
@@ -3940,6 +3957,11 @@ onUnmounted(() => {
                                         }">
                                             <span>{{ log.title }}</span>
                                             <span
+                                              v-if="logHasRowFilterApplied(log)"
+                                              class="flex-shrink-0 text-[12px]"
+                                              title="已按行级数据权限改写 SQL"
+                                            >🔒</span>
+                                            <span
                                               v-if="log.status === 'success' && (log.category === 'sql' || (log.title && log.title.toLowerCase().includes('sql')))"
                                               class="text-emerald-500 font-bold ml-1 flex-shrink-0 select-none"
                                             >
@@ -4229,6 +4251,15 @@ onUnmounted(() => {
                     />
                   </svg>
                 </button>
+                <div
+                  v-if="msg.permissionNotice?.row_filter_applied"
+                  class="mb-2 inline-flex max-w-full items-start gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
+                >
+                  <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  <span>{{ msg.permissionNotice.message || '已按你的数据权限自动过滤结果' }}</span>
+                </div>
                 <MessageRenderer
                   v-if="!msg.datasetNavigation?.groups?.length"
                   :content="msg.content"

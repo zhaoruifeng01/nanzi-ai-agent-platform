@@ -4346,6 +4346,36 @@ def test_format_tool_details_includes_sql_on_success(data_config):
     assert '\n  "items"' in details or '\n  "columns"' in details
 
 
+def test_format_tool_details_uses_executed_sql_when_row_filter_applied(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-executed-sql", trace_buffer=[])
+    payload = json.dumps(
+        {
+            "columns": [],
+            "items": [["a"]],
+            "permission_notice": {
+                "row_filter_applied": True,
+                "dataset_name": "demo",
+                "rule_count": 1,
+                "message": "已按你的数据权限自动过滤结果",
+                "executed_sql": "SELECT metric FROM demo WHERE dept_code = 'D001' LIMIT 10",
+            },
+        },
+        ensure_ascii=False,
+    )
+    tool_args = {
+        "sql": "SELECT metric FROM demo LIMIT 10",
+        "data_source": "clickhouse_ops",
+        "dataset_name": "demo",
+    }
+    details = runner._format_tool_details("execute_sql_query", payload, _DataRunState(), tool_args)
+    assert details.startswith(
+        "[Executed SQL]:\nSELECT metric FROM demo WHERE dept_code = 'D001' LIMIT 10\n\n--- 结果 ---\n"
+    )
+    assert '"executed_sql"' not in details
+
+
 def test_format_sql_result_pretty_print_with_row_cap(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
 

@@ -348,7 +348,7 @@
             <pre class="max-h-72 overflow-auto rounded-lg bg-gray-950 text-green-100 p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{{ selectedSavedReportDetail.sql_template || selectedSavedReportDetail.sql_content }}</pre>
           </section>
           <div class="flex flex-wrap gap-2 pt-2">
-            <button type="button" class="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white disabled:opacity-50" :disabled="isSavedReportActionDisabled(selectedSavedReportDetail)" @click="handleExecuteSavedReportClick(selectedSavedReportDetail)">运行</button>
+            <button type="button" class="px-3 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white disabled:opacity-50" :title="getSavedReportButtonTitle(selectedSavedReportDetail)" :disabled="isSavedReportActionDisabled(selectedSavedReportDetail)" @click="handleExecuteSavedReportClick(selectedSavedReportDetail)">运行</button>
             <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="handleEditReport(selectedSavedReportDetail)">编辑</button>
             <button v-if="selectedSavedReportDetail.is_owner" type="button" class="px-3 py-2 rounded-lg text-xs font-bold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300" @click="openShareReportModal(selectedSavedReportDetail)">共享</button>
           </div>
@@ -1896,6 +1896,10 @@ const extractSavedReportActionErrorMessage = (error: any, fallback: string) => {
 };
 
 const handleCopyReport = async (report: any) => {
+  if (isSavedReportActionDisabled(report)) {
+    showToast(getSavedReportCopyTitle(report), "error");
+    return;
+  }
   try {
     await axios.post(`/api/portal/saved-reports/${report.id}/copy`);
     showToast("已复制为我的报表", "success");
