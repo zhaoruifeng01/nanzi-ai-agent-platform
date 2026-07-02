@@ -519,7 +519,7 @@ const filteredDatasets = computed(() => {
 const testQuery = ref('')
 const testLoading = ref(false)
 const testResult = ref<any>(null)
-const showAdvancedSettings = ref(false)
+const showAdvancedSettings = ref(true)
 const tempProvider = ref<'default' | 'local' | 'ragflow'>('default')
 const tempTopK = ref(5)
 const tempThreshold = ref(0.2)

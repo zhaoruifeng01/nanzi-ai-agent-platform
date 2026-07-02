@@ -68,6 +68,34 @@ def _align_embedding(vec: List[float], expected_dim: int) -> List[float]:
     return vec + [0.0] * (expected_dim - len(vec))
 
 
+def _dict_get(mapping: Any, *keys: str) -> Any:
+    """Read dict field whether keys are str or bytes (binary Redis client)."""
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+        bkey = key.encode("utf-8")
+        if bkey in mapping:
+            return mapping[bkey]
+    return None
+
+
+def _row_from_ft_entry(entry: Any) -> Dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    attrs = _dict_get(entry, "extra_attributes", "attributes")
+    source = attrs if isinstance(attrs, dict) else entry
+    row: Dict[str, Any] = {}
+    for key, value in source.items():
+        name = _decode_key(key)
+        if isinstance(value, bytes):
+            row[name] = value.decode("utf-8", errors="replace")
+        else:
+            row[name] = value
+    return row
+
+
 def _tag_escape(value: str) -> str:
     return (
         value.replace("\\", "\\\\")
@@ -134,10 +162,10 @@ class MetadataIndexService:
             return 0
         if isinstance(raw, dict):
             for key in ("total_results", "total", "count"):
-                val = _coerce_int(raw.get(key))
+                val = _coerce_int(_dict_get(raw, key))
                 if val is not None:
                     return val
-            results = raw.get("results")
+            results = _dict_get(raw, "results", "documents")
             if isinstance(results, list):
                 return len(results)
             return 0
@@ -685,15 +713,16 @@ class MetadataIndexService:
     @staticmethod
     def _parse_knn_response(raw: Any) -> List[Dict[str, Any]]:
         if isinstance(raw, dict):
-            results = raw.get("results") or raw.get("documents") or []
+            results = _dict_get(raw, "results", "documents") or []
             items: List[Dict[str, Any]] = []
             for entry in results:
-                if not isinstance(entry, dict):
+                row = _row_from_ft_entry(entry)
+                if not row:
                     continue
-                row = dict(entry.get("extra_attributes") or entry.get("attributes") or entry)
-                if "score" in row:
+                score = row.get("score")
+                if score is not None:
                     try:
-                        row["similarity"] = max(0.0, 1.0 - float(row["score"]))
+                        row["similarity"] = max(0.0, 1.0 - float(score))
                     except (TypeError, ValueError):
                         row["similarity"] = 0.0
                 else:

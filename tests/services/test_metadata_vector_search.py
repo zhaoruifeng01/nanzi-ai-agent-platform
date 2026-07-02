@@ -153,6 +153,28 @@ def test_ft_search_total_handles_zero_and_dict():
     assert MetadataIndexService._ft_search_total([0]) == 0
     assert MetadataIndexService._ft_search_total([2, "k1", [], "k2", []]) == 2
     assert MetadataIndexService._ft_search_total({"total_results": 3, "results": [{}, {}]}) == 3
+    assert MetadataIndexService._ft_search_total({b"total_results": 2, b"results": [{}]}) == 2
+
+
+def test_parse_knn_response_handles_binary_client_dict():
+    raw = {
+        b"total_results": 1,
+        b"results": [
+            {
+                b"id": b"metadata:dataset:1:table:t_user",
+                b"extra_attributes": {
+                    b"dataset_id": b"1",
+                    b"doc_name": b"t_user.txt",
+                    b"score": b"0.15",
+                },
+            }
+        ],
+    }
+    items = MetadataIndexService._parse_knn_response(raw)
+    assert len(items) == 1
+    assert items[0]["doc_name"] == "t_user.txt"
+    assert items[0]["dataset_id"] == "1"
+    assert items[0]["similarity"] == pytest.approx(0.85)
 
 @pytest.mark.asyncio
 async def test_schema_endpoint_local_vector_search():
