@@ -35,8 +35,10 @@ def validate_sql(sql: str, dialect: str = "clickhouse") -> Optional[str]:
         return "Only read-only queries (SELECT, EXPLAIN, SHOW, DESCRIBE) are allowed."
 
     try:
+        from app.services.sql_query_execution_service import to_sqlglot_dialect
+
         # Syntax & Structure Validation via SQLGlot
-        parsed = sqlglot.parse(sql_clean, read=dialect)
+        parsed = sqlglot.parse(sql_clean, read=to_sqlglot_dialect(dialect))
 
         # Ensure it's not multiple statements
         if len(parsed) > 1:

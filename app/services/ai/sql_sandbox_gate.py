@@ -47,7 +47,9 @@ class SQLSandboxGate:
         # （validate_sql 同样基于 sqlglot 解析，无法解析的 SQL 会被判为语法错误而拒绝），
         # 因此本网关只承担「性能/笛卡尔积」职责，不重复做语法/只读校验。
         try:
-            parsed = sqlglot.parse(sql_clean, read=dialect)
+            from app.services.sql_query_execution_service import to_sqlglot_dialect
+
+            parsed = sqlglot.parse(sql_clean, read=to_sqlglot_dialect(dialect))
         except ParseError as e:
             logger.warning(f"[SQL Sandbox] Failed to parse SQL AST, defer to validate_sql: {e}")
             return SQLSandboxResult(allowed=True, optimized_sql=sql)

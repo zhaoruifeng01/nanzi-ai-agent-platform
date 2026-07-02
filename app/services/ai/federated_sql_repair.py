@@ -11,6 +11,7 @@ import re
 from typing import Any, Tuple
 
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.sql_query_execution_service import to_sqlglot_dialect
 from app.services.ai.time_anchor import TIME_RANGE_GATE_PREFIX, build_data_query_time_anchor_block
 
 SCHEMA_GATE_PREFIX = "[SCHEMA_GATE]"
@@ -476,7 +477,7 @@ def try_deterministic_invalid_identifier_repair(
         return None
 
     try:
-        parsed = sqlglot.parse(sql, read=sql_dialect)
+        parsed = sqlglot.parse(sql, read=to_sqlglot_dialect(sql_dialect))
         if not parsed:
             return None
         root = parsed[0]

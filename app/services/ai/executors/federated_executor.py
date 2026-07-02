@@ -47,7 +47,7 @@ from app.services.ai.where_condition_sample_diagnostic import (
     is_where_condition_sql_error,
     try_automatic_where_condition_repair,
 )
-from app.services.sql_query_execution_service import dialect_from_data_source
+from app.services.sql_query_execution_service import dialect_from_data_source, to_sqlglot_dialect
 from app.services.ai.time_anchor import (
     build_time_range_gate_message,
     detect_time_range_mismatch,
@@ -1824,7 +1824,10 @@ class FederatedQueryExecutor:
             import sqlglot
             from sqlglot import exp
 
-            dialect = dataset_dialect_map.get(dataset_name) if dataset_dialect_map else None
+            raw_dialect = dataset_dialect_map.get(dataset_name) if dataset_dialect_map else None
+            dialect = to_sqlglot_dialect(
+                dialect_from_data_source(raw_dialect) if raw_dialect else "clickhouse"
+            )
             parsed = sqlglot.parse(sub_sql, read=dialect)
             if parsed:
                 expression = parsed[0]

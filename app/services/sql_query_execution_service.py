@@ -119,6 +119,14 @@ def _user_dims_for_rewrite(agent_context: Optional[AgentContext], user_dimension
     return dict(user_dimensions or {})
 
 
+def to_sqlglot_dialect(dialect: str) -> str:
+    """将平台/数据源方言名映射为 sqlglot 可识别的 read 方言。"""
+    dialect_lower = str(dialect or "clickhouse").strip().lower()
+    if dialect_lower in ("sqlserver", "mssql"):
+        return "tsql"
+    return dialect_lower or "clickhouse"
+
+
 def dialect_from_data_source(data_source: Optional[str]) -> str:
     dialect = "clickhouse"
     ds_lower = data_source.lower() if data_source else ""
@@ -127,7 +135,7 @@ def dialect_from_data_source(data_source: Optional[str]) -> str:
     elif "oracle" in ds_lower:
         dialect = "oracle"
     elif any(token in ds_lower for token in ("sqlserver", "mssql", "tsql")):
-        dialect = "sqlserver"
+        dialect = "tsql"
     return dialect
 
 
@@ -185,7 +193,7 @@ def extract_physical_table_refs_from_select_sql(sql: str, dialect: str) -> Tuple
         return "Empty SQL query.", {}
 
     try:
-        parsed = sqlglot.parse(sql_clean, read=dialect)
+        parsed = sqlglot.parse(sql_clean, read=to_sqlglot_dialect(dialect))
     except ParseError as e:
         msg = str(e)
         if e.errors:

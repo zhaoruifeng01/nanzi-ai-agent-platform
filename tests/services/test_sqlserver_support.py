@@ -6,7 +6,11 @@ from app.services.data_adapter.factory import get_adapter
 from app.services.data_adapter.sqlserver import build_sqlserver_odbc_dsn, normalize_sqlserver_type
 from app.services.db_import_service import DBImportService
 from app.services.pool_manager import DataSourcePoolManager
-from app.services.sql_query_execution_service import dialect_from_data_source
+from app.services.sql_query_execution_service import (
+    dialect_from_data_source,
+    extract_physical_table_refs_from_select_sql,
+    to_sqlglot_dialect,
+)
 
 
 def test_normalize_sqlserver_type_aliases():
@@ -35,9 +39,23 @@ def test_build_sqlserver_odbc_dsn():
 
 
 def test_dialect_from_data_source_sqlserver():
-    assert dialect_from_data_source("sqlserver_erp") == "sqlserver"
-    assert dialect_from_data_source("mssql_prod") == "sqlserver"
+    assert dialect_from_data_source("sqlserver_erp") == "tsql"
+    assert dialect_from_data_source("mssql_prod") == "tsql"
     assert dialect_from_data_source("default_clickhouse") == "clickhouse"
+
+
+def test_to_sqlglot_dialect_maps_sqlserver_aliases():
+    assert to_sqlglot_dialect("sqlserver") == "tsql"
+    assert to_sqlglot_dialect("mssql") == "tsql"
+    assert to_sqlglot_dialect("tsql") == "tsql"
+    assert to_sqlglot_dialect("mysql") == "mysql"
+
+
+def test_extract_physical_table_refs_sqlserver_dialect():
+    sql = "SELECT TOP 10 id, name FROM dbo.users WHERE status = 1"
+    err, refs = extract_physical_table_refs_from_select_sql(sql, "sqlserver")
+    assert err is None
+    assert "users" in refs
 
 
 @pytest.mark.asyncio

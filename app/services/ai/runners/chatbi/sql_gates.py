@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.sql_query_execution_service import to_sqlglot_dialect
 from app.services.ai.runners.chatbi.constants import (
     FAILED_SQL_REPEAT_GATE_PREFIX,
     SCHEMA_GATE_PREFIX,
@@ -675,7 +676,7 @@ def _build_preflight_alias_map(
             import sqlglot
             from sqlglot import exp
 
-            parsed = sqlglot.parse(sql, read=dialect)
+            parsed = sqlglot.parse(sql, read=to_sqlglot_dialect(dialect))
             if parsed and len(parsed) == 1:
                 root = parsed[0]
                 cte_names = _preflight_cte_names_sqlglot(root)
@@ -781,7 +782,7 @@ def _preflight_column_reference_error(
         try:
             import sqlglot
 
-            parsed = sqlglot.parse(sql, read=dialect)
+            parsed = sqlglot.parse(sql, read=to_sqlglot_dialect(dialect))
             if parsed and len(parsed) == 1:
                 select_output_aliases = _extract_select_output_aliases(
                     sql,
@@ -815,7 +816,7 @@ def _preflight_column_reference_error(
             import sqlglot
             from sqlglot import exp
 
-            parsed = sqlglot.parse(sql, read=dialect)
+            parsed = sqlglot.parse(sql, read=to_sqlglot_dialect(dialect))
             if parsed and len(parsed) == 1:
                 root = parsed[0]
                 for column in root.find_all(exp.Column):

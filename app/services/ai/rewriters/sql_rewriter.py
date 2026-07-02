@@ -16,7 +16,9 @@ class SQLRewriter:
     """
 
     def __init__(self, dialect: str = "clickhouse", table_metadata: Optional[Dict[str, Set[str]]] = None):
-        self.dialect = dialect
+        from app.services.sql_query_execution_service import to_sqlglot_dialect
+
+        self.dialect = to_sqlglot_dialect(dialect)
         self.table_metadata = self._normalize_table_metadata(table_metadata or {})  # {table_name: {field1, field2, ...}}
 
     def set_table_metadata(self, table_metadata: Dict[str, Set[str]]):
