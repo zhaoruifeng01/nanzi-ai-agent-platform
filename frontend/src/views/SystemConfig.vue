@@ -286,7 +286,7 @@ const isKnowledgeFeatureEnabled = computed(() => {
 })
 
 const isConfigItemDisabled = (category: string, item: ConfigItem) => {
-  if (!canSave.value) return true
+  if (!canSave) return true
   if (category === 'knowledge' && item.key !== 'knowledge_base_enabled' && !isKnowledgeFeatureEnabled.value) {
     return true
   }
