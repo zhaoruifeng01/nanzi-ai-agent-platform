@@ -20,10 +20,12 @@ from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessag
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
 from app.services.ai.knowledge_utils import (
     NO_KNOWLEDGE_DATASET_MESSAGE,
+    KNOWLEDGE_BASE_DISABLED_USER_MESSAGE,
     collect_citation_ids_from_payload,
     filter_invalid_citation_markers,
     format_dataset_ids_for_tool,
     has_knowledge_citation_markers,
+    is_knowledge_base_enabled,
     knowledge_prefetch_had_citations,
     resolve_knowledge_dataset_ids,
     text_has_valid_citation_markers,
@@ -259,6 +261,14 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             resolve_runtime_model_name,
         )
         from app.services.config_service import ConfigService
+
+        if not await is_knowledge_base_enabled():
+            yield {
+                "type": "error",
+                "status": "error",
+                "content": KNOWLEDGE_BASE_DISABLED_USER_MESSAGE,
+            }
+            return
 
         model_name = resolve_runtime_model_name(self.config, prefer_synthesis=True)
         incompatible_msg = await ensure_multimodal_compatible(history, model_name)

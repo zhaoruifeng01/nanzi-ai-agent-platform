@@ -2558,6 +2558,7 @@ import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { cancelConversationRun } from "@/utils/cancelConversationRun";
+import { createConversationId } from "@/utils/conversationId";
 import { useToast } from "../composables/useToast";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import {
@@ -3281,7 +3282,7 @@ const generateNewConversation = () => {
   if (previousId) {
     finalizeConversationInBackground(previousId);
   }
-  conversationId.value = crypto.randomUUID();
+  conversationId.value = createConversationId();
   localStorage.setItem("yovole_embed_conv_id", conversationId.value);
 };
 // Mention State (Moved to ChatInput)

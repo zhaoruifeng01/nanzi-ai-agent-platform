@@ -31,6 +31,8 @@ export interface RagFlowConfigSummary {
     api_url: string;
     api_key_configured: boolean;
     configured: boolean;
+    metadata_provider?: string;
+    knowledge_base_enabled?: boolean;
 }
 
 export const ragflowApi = {

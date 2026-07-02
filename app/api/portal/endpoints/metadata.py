@@ -28,7 +28,9 @@ async def list_datasets(
     user: dict = Depends(require_permission("menu", "menu:metadata"))
 ):
     """获取所有数据集 (需菜单权限)"""
-    return await MetadataService.get_datasets(conn)
+    datasets = await MetadataService.get_datasets(conn)
+    await MetadataService.repair_stale_local_sync_flags(datasets)
+    return datasets
 
 @router.post("/datasets", response_model=DatasetResponse, dependencies=[Depends(require_permission("element", "element:metadata:edit"))])
 async def create_dataset(
@@ -65,6 +67,7 @@ async def get_dataset(
     )
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
+    await MetadataService.repair_stale_local_sync_flags([ds])
     return ds
 
 @router.put("/datasets/{dataset_id}", response_model=DatasetResponse, dependencies=[Depends(require_permission("element", "element:metadata:edit"))])

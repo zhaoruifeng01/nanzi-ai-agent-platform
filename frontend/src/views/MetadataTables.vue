@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
+import axios from 'axios'
 import { metadataApi } from '../api/metadata'
 import type { Dataset, Table } from '../api/metadata'
+import type { RagFlowConfigSummary } from '../api/ragflow'
 
 import MetricList from '../components/metadata/MetricList.vue'
 import RelationshipList from '../components/metadata/RelationshipList.vue'
@@ -194,6 +196,17 @@ const getDatasetEmoji = (name: string) => {
 }
 
 const syncingId = ref<number | null>(null)
+const ragflowConfig = ref<RagFlowConfigSummary | null>(null)
+const isLocalMode = computed(() => ragflowConfig.value?.metadata_provider === 'local')
+
+const fetchRagFlowConfig = async () => {
+  try {
+    const response = await axios.get('/api/portal/ragflow/config')
+    ragflowConfig.value = response.data?.data || null
+  } catch {
+    ragflowConfig.value = null
+  }
+}
 
 const handleSyncNow = async () => {
   if (!dataset.value || syncingId.value) return
@@ -221,7 +234,10 @@ const handleSyncNow = async () => {
   }
 }
 
-onMounted(fetchDatasetInfo)
+onMounted(async () => {
+  await fetchRagFlowConfig()
+  fetchDatasetInfo()
+})
 
 const metricListRef = ref<any>(null)
 
@@ -254,7 +270,7 @@ defineExpose({ fetchMetrics })
 
     <!-- RAG Pending Warning Banner -->
     <div 
-      v-if="dataset?.rag_sync_status === 3" 
+      v-if="!isLocalMode && dataset?.rag_sync_status === 3" 
       class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between shadow-sm animate-pulse-slow mb-6"
     >
       <div class="flex items-center gap-3">

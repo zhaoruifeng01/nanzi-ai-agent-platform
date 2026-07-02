@@ -37,6 +37,15 @@ class RAGExecutor(BaseExecutor):
         """
         Stream chat completion from RAGFlow.
         """
+        from app.services.ai.knowledge_utils import (
+            is_knowledge_base_enabled,
+            KNOWLEDGE_BASE_DISABLED_USER_MESSAGE,
+        )
+
+        if not await is_knowledge_base_enabled():
+            yield {"content": KNOWLEDGE_BASE_DISABLED_USER_MESSAGE, "status": "error"}
+            return
+
         import time
         full_content = ""
         # Extract query from the last user message in history

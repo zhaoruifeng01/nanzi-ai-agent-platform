@@ -93,7 +93,11 @@ execute_sql_file() {
             fi
         fi
         
-        stmt="$stmt $line"
+        if [ -z "$stmt" ]; then
+            stmt="$line"
+        else
+            stmt="${stmt}"$'\n'"$line"
+        fi
         
         # 统计当前行中未转义单引号的数量，以精确跟踪跨行字符串开启/闭合状态
         # 1. 移除转义的单引号 \' 和双单引号 ''
@@ -118,9 +122,14 @@ execute_sql_file() {
                 continue
             fi
             
-            # 执行单条语句并捕获报错
+            # 去除末尾分号（与 Python 版 apply_sql.py 保持一致）
+            local exec_stmt="$stmt"
+            exec_stmt="${exec_stmt%;}"
+            exec_stmt="${exec_stmt%"${exec_stmt##*[![:space:]]}"}"
+
+            # 执行单条语句并捕获报错（保留换行，避免行内 -- 注释吞掉后续 SQL）
             set +e
-            echo "$stmt" | $MYSQL_CMD 2>"$err_log"
+            printf '%s\n' "$exec_stmt" | $MYSQL_CMD 2>"$err_log"
             status=$?
             set -e
             
@@ -130,7 +139,7 @@ execute_sql_file() {
                 is_ignored=0
                 for code in ${IGNORED_ERRORS//|/ }; do
                     if [[ "$err_msg" =~ "ERROR $code" ]] || [[ "$err_msg" =~ "Error $code" ]]; then
-                        echo "   -> Skipping (already applied): $err_msg" | tr -d '\n' | echo
+                        echo "   -> Skipping (already applied): $(echo "$err_msg" | tr '\n' ' ')"
                         is_ignored=1
                         break
                     fi
@@ -154,8 +163,11 @@ execute_sql_file() {
         clean_stmt=$(echo "$stmt" | sed '/^[[:space:]]*--/d; /^[[:space:]]*#/d; s/^[[:space:]]*//; s/[[:space:]]*$//')
         if [ -n "$clean_stmt" ]; then
             if ! [[ "$clean_stmt" =~ ^[[:space:]]*(CREATE[[:space:]]+DATABASE|USE)[[:space:]] ]]; then
+                local exec_stmt="$clean_stmt"
+                exec_stmt="${exec_stmt%;}"
+                exec_stmt="${exec_stmt%"${exec_stmt##*[![:space:]]}"}"
                 set +e
-                echo "$clean_stmt" | $MYSQL_CMD 2>"$err_log"
+                printf '%s\n' "$exec_stmt" | $MYSQL_CMD 2>"$err_log"
                 status=$?
                 set -e
                 if [ $status -ne 0 ]; then

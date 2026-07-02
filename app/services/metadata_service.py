@@ -197,7 +197,14 @@ class MetadataService:
         """
         标记数据集为“待同步”状态 (3)。
         仅当当前状态不是“同步中” (1) 时才更新。
+        local 模式下由 Redis 向量自动同步，不标记 RAGFlow 待同步。
         """
+        from app.services.config_service import ConfigService
+
+        provider = await ConfigService.get("metadata_provider", default="local")
+        if provider == "local":
+            return
+
         # 查找当前状态
         stmt = select(MetaDataset.rag_sync_status).where(MetaDataset.id == dataset_id)
         current_status = await db.scalar(stmt)
@@ -206,6 +213,21 @@ class MetadataService:
             query = update(MetaDataset).where(MetaDataset.id == dataset_id).values(rag_sync_status=3)
             await db.execute(query)
             # 注意：调用者负责最后的 commit
+
+    @staticmethod
+    async def repair_stale_local_sync_flags(datasets: List[MetaDataset]) -> None:
+        """local 模式下清理历史遗留的 RAGFlow 待同步标记，并触发 Redis 向量重建。"""
+        from app.services.config_service import ConfigService
+
+        provider = await ConfigService.get("metadata_provider", default="local")
+        if provider != "local":
+            return
+
+        from app.services.ai.metadata_index_service import MetadataIndexService
+
+        for ds in datasets:
+            if getattr(ds, "rag_sync_status", 0) == 3:
+                await MetadataIndexService.sync_local_redis_vector(ds.id)
 
     @staticmethod
     async def create_dataset(db: AsyncSession, data: dict, user_id: Optional[int] = None, user_name: Optional[str] = None, reason: Optional[str] = None) -> MetaDataset:

@@ -148,3 +148,17 @@ async def test_search_knowledge_base_reports_service_unavailable_on_502():
     assert "知识库服务不可用" in result
     assert "Failed to search knowledge base" not in result
     assert mock_retrieve.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_knowledge_base_disabled_when_feature_off():
+    with patch("app.services.ai.ragflow_client.RagFlowClient.retrieve", new_callable=AsyncMock) as mock_retrieve, \
+         patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
+        mock_config.side_effect = lambda k, default=None: {
+            "knowledge_base_enabled": "false",
+        }.get(k, default)
+
+        result = await search_knowledge_base.ainvoke({"query": "test", "dataset_ids": "a" * 32})
+
+    assert "知识库功能未开启" in result
+    mock_retrieve.assert_not_called()

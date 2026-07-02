@@ -18,6 +18,7 @@ import CitationPopover from "@/components/CitationPopover.vue";
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { cancelConversationRun } from "@/utils/cancelConversationRun";
+import { createConversationId } from "@/utils/conversationId";
 import { createSseLineParser } from "@/utils/chartRenderer";
 import { normalizeAgentSwitchCommand } from "@/utils/agentSwitchCommands";
 import {
@@ -403,7 +404,7 @@ const generateNewConversation = (isManual = false) => {
   if (previousId) {
     finalizeConversationInBackground(previousId);
   }
-  conversationId.value = crypto.randomUUID();
+  conversationId.value = createConversationId();
   localStorage.setItem("agent_debug_conv_id", conversationId.value);
   if (isManual) {
     messages.value = [];
