@@ -8,7 +8,9 @@ pytestmark = pytest.mark.no_infrastructure
 @pytest.mark.asyncio
 async def test_metadata_index_ensure_index():
     mock_redis = AsyncMock()
-    mock_redis.execute_command = AsyncMock(side_effect=Exception("Index does not exist"))
+    mock_redis.execute_command = AsyncMock(
+        side_effect=[Exception("Index does not exist"), None]
+    )
     
     with patch("app.services.ai.metadata_index_service.get_redis", return_value=mock_redis), \
          patch("app.services.ai.metadata_index_service.EmbeddingClient.get_dimensions", return_value=1536):
@@ -47,7 +49,7 @@ async def test_metadata_index_ensure_index():
 async def test_metadata_index_upsert_vector():
     mock_redis = AsyncMock()
     
-    with patch("app.services.ai.metadata_index_service.get_redis", return_value=mock_redis), \
+    with patch("app.services.ai.metadata_index_service.get_redis_binary", return_value=mock_redis), \
          patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True):
         
         await MetadataIndexService.upsert_vector(
@@ -61,10 +63,10 @@ async def test_metadata_index_upsert_vector():
         call_args = mock_redis.hset.call_args[0]
         assert call_args[0] == "metadata:dataset:42:table:res_user"
         mapping = mock_redis.hset.call_args[1]["mapping"]
-        assert mapping["dataset_id"] == "42"
-        assert mapping["doc_name"] == "res_user.txt"
-        assert mapping["content"] == "columns: []"
-        assert "embedding" in mapping
+        assert mapping[b"dataset_id"] == b"42"
+        assert mapping[b"doc_name"] == b"res_user.txt"
+        assert mapping[b"content"] == b"columns: []"
+        assert b"embedding" in mapping
 
 @pytest.mark.asyncio
 async def test_metadata_index_delete_dataset_vectors():
@@ -89,14 +91,15 @@ async def test_metadata_index_search_knn_admin():
         [
             b"dataset_id", b"42",
             b"doc_name", b"res_user.txt",
-            b"content", b"columns: []",
             b"score", b"0.15"
         ]
     ]
     mock_redis.execute_command = AsyncMock(return_value=raw_response)
+    mock_redis.hget = AsyncMock(return_value=b"columns: []")
     
     with patch("app.services.ai.metadata_index_service.get_redis_binary", return_value=mock_redis), \
-         patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True):
+         patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True), \
+         patch("app.services.ai.metadata_index_service.EmbeddingClient.get_dimensions", return_value=1536):
         
         results = await MetadataIndexService.search_knn(
             query_embedding=[0.1] * 1536,
@@ -107,6 +110,7 @@ async def test_metadata_index_search_knn_admin():
         assert len(results) == 1
         assert results[0]["dataset_id"] == "42"
         assert results[0]["doc_name"] == "res_user.txt"
+        assert results[0]["content"] == "columns: []"
         assert results[0]["similarity"] == pytest.approx(0.85) # 1.0 - 0.15
         
         query_expr = mock_redis.execute_command.call_args[0][2]
@@ -115,10 +119,12 @@ async def test_metadata_index_search_knn_admin():
 @pytest.mark.asyncio
 async def test_metadata_index_search_knn_normal_user():
     mock_redis = AsyncMock()
-    mock_redis.execute_command = AsyncMock(return_value=[])
+    mock_redis.execute_command = AsyncMock(return_value=[0])
+    mock_redis.scan = AsyncMock(return_value=(0, []))
     
     with patch("app.services.ai.metadata_index_service.get_redis_binary", return_value=mock_redis), \
-         patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True):
+         patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True), \
+         patch("app.services.ai.metadata_index_service.EmbeddingClient.get_dimensions", return_value=1536):
         
         await MetadataIndexService.search_knn(
             query_embedding=[0.1] * 1536,
@@ -128,6 +134,25 @@ async def test_metadata_index_search_knn_normal_user():
         
         query_expr = mock_redis.execute_command.call_args[0][2]
         assert query_expr == "(@dataset_id:{1|3})=>[KNN 3 @embedding $vec AS score]"
+
+
+def test_extract_num_docs_from_redis74_flat_info():
+    info = [
+        "index_name",
+        "yunshu:idx:metadata:dataset",
+        "num_docs",
+        6,
+        "attributes",
+        [["identifier", "embedding", "type", "VECTOR", "dim", 1024]],
+    ]
+    assert MetadataIndexService._extract_num_docs(info) == 6
+    assert MetadataIndexService._extract_index_vector_dim(info) == 1024
+
+
+def test_ft_search_total_handles_zero_and_dict():
+    assert MetadataIndexService._ft_search_total([0]) == 0
+    assert MetadataIndexService._ft_search_total([2, "k1", [], "k2", []]) == 2
+    assert MetadataIndexService._ft_search_total({"total_results": 3, "results": [{}, {}]}) == 3
 
 @pytest.mark.asyncio
 async def test_schema_endpoint_local_vector_search():
@@ -152,6 +177,7 @@ async def test_schema_endpoint_local_vector_search():
     
     with patch("app.services.metadata_service.MetadataService.search_datasets", new_callable=AsyncMock, return_value=[dataset]), \
          patch("app.services.ai.embedding_client.EmbeddingClient.embed_text", new_callable=AsyncMock, return_value=[0.1]*1536), \
+         patch("app.services.ai.metadata_index_service.MetadataIndexService.append_index_diagnostics", new_callable=AsyncMock, return_value={}), \
          patch("app.services.ai.metadata_index_service.MetadataIndexService.search_knn", new_callable=AsyncMock, return_value=redis_results):
         
         resp = await get_database_schema(
@@ -161,8 +187,8 @@ async def test_schema_endpoint_local_vector_search():
         )
         
         assert resp.data.provider == "local"
-        assert "test_table.txt" in resp.data.schema_context
-        assert "Sim: 0.85" in resp.data.schema_context
+        assert "table definition here" in resp.data.schema_context
+        assert "score=0.85" in resp.data.schema_context
         assert len(resp.data.hits) == 1
         assert resp.data.hits[0].id == 10
         assert resp.data.hits[0].name == "test_ds"

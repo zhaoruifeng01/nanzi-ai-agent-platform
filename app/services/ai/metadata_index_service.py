@@ -13,6 +13,61 @@ METADATA_KEY_PREFIX = "metadata:dataset:"
 def _vector_to_bytes(vec: List[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
+
+def _decode_key(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _find_in_ft_payload(raw: Any, target_key: str) -> Any:
+    """Recursively locate a field in FT.INFO / nested RediSearch payloads."""
+    if isinstance(raw, dict):
+        for key, val in raw.items():
+            if _decode_key(key) == target_key:
+                return val
+        for val in raw.values():
+            found = _find_in_ft_payload(val, target_key)
+            if found is not None:
+                return found
+        return None
+    if isinstance(raw, (list, tuple)):
+        for idx, item in enumerate(raw):
+            if _decode_key(item) == target_key and idx + 1 < len(raw):
+                return raw[idx + 1]
+        for item in raw:
+            found = _find_in_ft_payload(item, target_key)
+            if found is not None:
+                return found
+    return None
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, bytes):
+        try:
+            return int(value.decode("utf-8", errors="replace"))
+        except ValueError:
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _align_embedding(vec: List[float], expected_dim: int) -> List[float]:
+    if len(vec) == expected_dim:
+        return vec
+    if len(vec) > expected_dim:
+        return vec[:expected_dim]
+    return vec + [0.0] * (expected_dim - len(vec))
+
+
 def _tag_escape(value: str) -> str:
     return (
         value.replace("\\", "\\\\")
@@ -53,41 +108,42 @@ class MetadataIndexService:
 
     @staticmethod
     def _parse_ft_info(info: Any) -> Dict[str, Any]:
+        if isinstance(info, dict):
+            return {_decode_key(k): v for k, v in info.items()}
         if not info or not isinstance(info, (list, tuple)):
             return {}
         parsed: Dict[str, Any] = {}
         i = 0
         while i + 1 < len(info):
-            key = info[i]
-            if isinstance(key, bytes):
-                key = key.decode("utf-8", errors="replace")
-            parsed[str(key)] = info[i + 1]
+            parsed[_decode_key(info[i])] = info[i + 1]
             i += 2
         return parsed
 
     @staticmethod
-    def _extract_index_vector_dim(info: Dict[str, Any]) -> Optional[int]:
-        attrs = info.get("attributes")
-        if not isinstance(attrs, (list, tuple)):
-            return None
-        stack: List[Any] = [attrs]
-        while stack:
-            node = stack.pop()
-            if not isinstance(node, (list, tuple)):
-                continue
-            for idx in range(len(node) - 1):
-                key = node[idx]
-                if isinstance(key, bytes):
-                    key = key.decode("utf-8", errors="replace")
-                if key == "dim":
-                    try:
-                        return int(node[idx + 1])
-                    except (TypeError, ValueError):
-                        return None
-            for item in node:
-                if isinstance(item, (list, tuple)):
-                    stack.append(item)
-        return None
+    def _extract_index_vector_dim(info: Any) -> Optional[int]:
+        dim_val = _find_in_ft_payload(info, "dim")
+        return _coerce_int(dim_val)
+
+    @staticmethod
+    def _extract_num_docs(info: Any) -> Optional[int]:
+        return _coerce_int(_find_in_ft_payload(info, "num_docs"))
+
+    @staticmethod
+    def _ft_search_total(raw: Any) -> int:
+        if raw is None:
+            return 0
+        if isinstance(raw, dict):
+            for key in ("total_results", "total", "count"):
+                val = _coerce_int(raw.get(key))
+                if val is not None:
+                    return val
+            results = raw.get("results")
+            if isinstance(results, list):
+                return len(results)
+            return 0
+        if isinstance(raw, (list, tuple)) and raw:
+            return _coerce_int(raw[0]) or 0
+        return 0
 
     @staticmethod
     def _append_trace(trace: Optional[List[str]], message: str) -> None:
@@ -132,15 +188,16 @@ class MetadataIndexService:
 
         idx = await MetadataIndexService.index_name()
         try:
-            info = MetadataIndexService._parse_ft_info(await redis.execute_command("FT.INFO", idx))
-            num_docs = info.get("num_docs", "?")
-            index_dim = MetadataIndexService._extract_index_vector_dim(info)
+            info_raw = await redis.execute_command("FT.INFO", idx)
+            num_docs = MetadataIndexService._extract_num_docs(info_raw)
+            index_dim = MetadataIndexService._extract_index_vector_dim(info_raw)
             diag["index_exists"] = True
             diag["num_docs"] = num_docs
             diag["index_vector_dim"] = index_dim
             MetadataIndexService._append_trace(
                 trace,
-                f"[RediSearch] Index '{idx}' num_docs={num_docs}, index_vector_dim={index_dim}",
+                f"[RediSearch] Index '{idx}' num_docs={num_docs if num_docs is not None else '?'}, "
+                f"index_vector_dim={index_dim}",
             )
             if index_dim is not None and index_dim != configured_dim:
                 MetadataIndexService._append_trace(
@@ -169,10 +226,7 @@ class MetadataIndexService:
         )
 
         num_docs_val = diag.get("num_docs")
-        try:
-            num_docs_int = int(num_docs_val) if num_docs_val is not None else -1
-        except (TypeError, ValueError):
-            num_docs_int = -1
+        num_docs_int = num_docs_val if isinstance(num_docs_val, int) else -1
         if key_count > 0 and num_docs_int == 0:
             MetadataIndexService._append_trace(
                 trace,
@@ -183,6 +237,52 @@ class MetadataIndexService:
                 trace,
                 "[WARN] Index has documents but no metadata hash keys under prefix",
             )
+
+        if binary and key_count > 0:
+            sample_key = None
+            cursor = 0
+            while sample_key is None:
+                cursor, keys = await redis.scan(cursor, match=f"{METADATA_KEY_PREFIX}*", count=20)
+                if keys:
+                    sample_key = keys[0]
+                if cursor == 0:
+                    break
+            if sample_key:
+                key_str = _decode_key(sample_key)
+                emb_len = await binary.hstrlen(key_str, "embedding")
+                diag["sample_embedding_bytes"] = emb_len
+                expected_bytes = configured_dim * 4
+                MetadataIndexService._append_trace(
+                    trace,
+                    f"[Redis Sample] key={key_str!r} HSTRLEN(embedding)={emb_len} "
+                    f"(expected {expected_bytes})",
+                )
+                if emb_len != expected_bytes:
+                    MetadataIndexService._append_trace(
+                        trace,
+                        "[WARN] Stored embedding byte length mismatch — rebuild vectors after fixing embed_dimensions",
+                    )
+                stored_emb = await binary.hget(key_str, "embedding")
+                if isinstance(stored_emb, bytes) and len(stored_emb) == expected_bytes:
+                    probe_total = MetadataIndexService._ft_search_total(
+                        await MetadataIndexService._execute_ft_search(
+                            binary,
+                            idx,
+                            f"*=>[KNN 1 @embedding $vec AS score]",
+                            stored_emb,
+                            return_content=False,
+                        )
+                    )
+                    diag["self_knn_probe_total"] = probe_total
+                    MetadataIndexService._append_trace(
+                        trace,
+                        f"[KNN Probe] Self-search with stored embedding => raw total={probe_total}",
+                    )
+                    if probe_total == 0 and num_docs_int > 0:
+                        MetadataIndexService._append_trace(
+                            trace,
+                            "[WARN] Index has docs but self-KNN returned 0 — check RediSearch / binary client",
+                        )
 
         return diag
 
@@ -245,7 +345,7 @@ class MetadataIndexService:
           - for table: metadata:dataset:<dataset_id>:table:<table_physical_name>
           - for metrics: metadata:dataset:<dataset_id>:metrics
         """
-        redis = await get_redis()
+        redis = await get_redis_binary()
         if not redis:
             return
         
@@ -258,10 +358,10 @@ class MetadataIndexService:
             key = f"{METADATA_KEY_PREFIX}{dataset_id}:table:{table_name}"
 
         mapping = {
-            "dataset_id": str(dataset_id),
-            "doc_name": doc_name,
-            "content": content,
-            "embedding": _vector_to_bytes(embedding)
+            b"dataset_id": str(dataset_id).encode("utf-8"),
+            b"doc_name": doc_name.encode("utf-8"),
+            b"content": content.encode("utf-8"),
+            b"embedding": _vector_to_bytes(embedding),
         }
         await redis.hset(key, mapping=mapping)
         logger.info("[MetadataIndex] Upserted vector for key %s", key)
@@ -396,6 +496,57 @@ class MetadataIndexService:
             logger.warning(f"[Local Redis Sync] Failed to trigger background sync: {e}")
 
     @staticmethod
+    async def _execute_ft_search(
+        redis: Any,
+        idx: str,
+        query_expr: str,
+        vec_bytes: bytes,
+        *,
+        return_content: bool = True,
+    ) -> Any:
+        return_fields = (
+            ["dataset_id", "doc_name", "content", "score"]
+            if return_content
+            else ["dataset_id", "doc_name", "score"]
+        )
+        return await redis.execute_command(
+            "FT.SEARCH",
+            idx,
+            query_expr,
+            "PARAMS",
+            2,
+            "vec",
+            vec_bytes,
+            "SORTBY",
+            "score",
+            "RETURN",
+            len(return_fields),
+            *return_fields,
+            "DIALECT",
+            2,
+        )
+
+    @staticmethod
+    async def _hydrate_knn_content(redis: Any, items: List[Dict[str, Any]]) -> None:
+        for item in items:
+            if item.get("content"):
+                continue
+            ds_id = item.get("dataset_id")
+            doc_name = item.get("doc_name") or ""
+            if not ds_id or not doc_name:
+                continue
+            if doc_name == "_metrics.txt":
+                key = f"{METADATA_KEY_PREFIX}{ds_id}:metrics"
+            else:
+                table_name = doc_name[:-4] if doc_name.endswith(".txt") else doc_name
+                key = f"{METADATA_KEY_PREFIX}{ds_id}:table:{table_name}"
+            raw_content = await redis.hget(key, "content")
+            if isinstance(raw_content, bytes):
+                item["content"] = raw_content.decode("utf-8", errors="replace")
+            elif raw_content is not None:
+                item["content"] = str(raw_content)
+
+    @staticmethod
     async def search_knn(
         query_embedding: List[float],
         authorized_dataset_ids: Optional[List[int]],
@@ -416,14 +567,23 @@ class MetadataIndexService:
 
         vec_dim = len(query_embedding)
         expected_dim = await EmbeddingClient.get_dimensions(use_global=True)
+        aligned = _align_embedding(query_embedding, expected_dim)
+        vec_bytes = _vector_to_bytes(aligned)
+        expected_bytes = expected_dim * 4
         MetadataIndexService._append_trace(
             trace,
-            f"[KNN] Query vector dim={vec_dim}, configured embed_dimensions={expected_dim}, top_k={top_k}",
+            f"[KNN] Query vector dim={vec_dim}, configured embed_dimensions={expected_dim}, "
+            f"vec_bytes={len(vec_bytes)} (expected {expected_bytes}), top_k={top_k}",
         )
         if vec_dim != expected_dim:
             MetadataIndexService._append_trace(
                 trace,
-                f"[WARN] Query vector dim ({vec_dim}) != embed_dimensions ({expected_dim})",
+                f"[WARN] Query vector dim ({vec_dim}) != embed_dimensions ({expected_dim}) — aligned before search",
+            )
+        if len(vec_bytes) != expected_bytes:
+            MetadataIndexService._append_trace(
+                trace,
+                f"[WARN] Query vector bytes ({len(vec_bytes)}) != expected ({expected_bytes})",
             )
 
         idx = await MetadataIndexService.index_name()
@@ -447,38 +607,23 @@ class MetadataIndexService:
         MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH expr: {query_expr}")
 
         try:
-            raw = await redis.execute_command(
-                "FT.SEARCH",
+            raw = await MetadataIndexService._execute_ft_search(
+                redis,
                 idx,
                 query_expr,
-                "PARAMS",
-                "2",
-                "vec",
-                _vector_to_bytes(query_embedding),
-                "SORTBY",
-                "score",
-                "RETURN",
-                "4",
-                "dataset_id",
-                "doc_name",
-                "content",
-                "score",
-                "DIALECT",
-                "2",
+                vec_bytes,
+                return_content=False,
             )
         except Exception as exc:
             MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH error: {exc}")
             raise
 
-        raw_total = 0
-        if isinstance(raw, (list, tuple)) and raw:
-            try:
-                raw_total = int(raw[0])
-            except (TypeError, ValueError):
-                raw_total = 0
+        raw_total = MetadataIndexService._ft_search_total(raw)
         MetadataIndexService._append_trace(trace, f"[KNN] FT.SEARCH raw total={raw_total}")
 
         items = MetadataIndexService._parse_knn_response(raw)
+        if items:
+            await MetadataIndexService._hydrate_knn_content(redis, items)
         MetadataIndexService._append_trace(trace, f"[KNN] Parsed result count={len(items)}")
         for i, item in enumerate(items):
             sim = item.get("similarity", 0.0)
@@ -489,16 +634,73 @@ class MetadataIndexService:
             )
 
         if raw_total == 0:
-            MetadataIndexService._append_trace(
-                trace,
-                "[HINT] 0 raw KNN hits — check: (1) same Redis as FT.INFO "
-                "(2) embedding dim matches index (3) HSTRLEN embedding = dim*4",
-            )
+            sample_emb = None
+            cursor = 0
+            while sample_emb is None:
+                cursor, keys = await redis.scan(cursor, match=f"{METADATA_KEY_PREFIX}*", count=20)
+                for key in keys or []:
+                    key_str = _decode_key(key)
+                    emb = await redis.hget(key_str, "embedding")
+                    if isinstance(emb, bytes) and len(emb) == expected_bytes:
+                        sample_emb = emb
+                        MetadataIndexService._append_trace(
+                            trace,
+                            f"[KNN Probe] Using stored embedding from {key_str!r} ({len(emb)} bytes)",
+                        )
+                        break
+                if cursor == 0:
+                    break
+            if sample_emb is not None:
+                probe_raw = await MetadataIndexService._execute_ft_search(
+                    redis,
+                    idx,
+                    f"*=>[KNN 1 @embedding $vec AS score]",
+                    sample_emb,
+                    return_content=False,
+                )
+                probe_total = MetadataIndexService._ft_search_total(probe_raw)
+                MetadataIndexService._append_trace(
+                    trace,
+                    f"[KNN Probe] Self-search with stored embedding => raw total={probe_total}",
+                )
+                if probe_total > 0:
+                    MetadataIndexService._append_trace(
+                        trace,
+                        "[HINT] Stored vectors are searchable — query embedding from API may be invalid "
+                        "or incompatible with indexed vectors",
+                    )
+                else:
+                    MetadataIndexService._append_trace(
+                        trace,
+                        "[HINT] Self-KNN also 0 — check RediSearch index / binary Redis client",
+                    )
+            else:
+                MetadataIndexService._append_trace(
+                    trace,
+                    "[HINT] 0 raw KNN hits — no valid stored embedding sample found for probe",
+                )
 
         return items
 
     @staticmethod
     def _parse_knn_response(raw: Any) -> List[Dict[str, Any]]:
+        if isinstance(raw, dict):
+            results = raw.get("results") or raw.get("documents") or []
+            items: List[Dict[str, Any]] = []
+            for entry in results:
+                if not isinstance(entry, dict):
+                    continue
+                row = dict(entry.get("extra_attributes") or entry.get("attributes") or entry)
+                if "score" in row:
+                    try:
+                        row["similarity"] = max(0.0, 1.0 - float(row["score"]))
+                    except (TypeError, ValueError):
+                        row["similarity"] = 0.0
+                else:
+                    row["similarity"] = 0.0
+                items.append(row)
+            return items
+
         if not raw or not isinstance(raw, (list, tuple)) or len(raw) < 2:
             return []
         items: List[Dict[str, Any]] = []
@@ -513,7 +715,7 @@ class MetadataIndexService:
                 name = MetadataIndexService._hash_field_name(fields[i])
                 value = MetadataIndexService._hash_text_value(fields[i + 1])
                 row[name] = value
-            
+
             if "score" in row:
                 try:
                     row["similarity"] = max(0.0, 1.0 - float(row["score"]))
@@ -521,7 +723,7 @@ class MetadataIndexService:
                     row["similarity"] = 0.0
             else:
                 row["similarity"] = 0.0
-            
+
             items.append(row)
             pos += 2
         return items
