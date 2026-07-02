@@ -21,6 +21,7 @@ type RagFlowConfigSummary = {
   api_url: string
   api_key_configured: boolean
   configured: boolean
+  knowledge_base_enabled?: boolean
 }
 
 const { showToast } = useToast()
@@ -37,7 +38,8 @@ const results = ref<RetrievalChunk[]>([])
 const errorMessage = ref('')
 const ragflowConfig = ref<RagFlowConfigSummary | null>(null)
 
-const canTest = computed(() => hasPermission('element:knowledge:test_retrieval'))
+const canTest = computed(() => hasPermission('element:knowledge:test_retrieval') && isKnowledgeEnabled.value)
+const isKnowledgeEnabled = computed(() => ragflowConfig.value?.knowledge_base_enabled !== false)
 const datasetIdsText = computed(() => datasetIds.value.join(','))
 const ragflowApiUrl = computed(() => ragflowConfig.value?.api_url || '未配置')
 const friendlyRagFlowError = computed(() => {
@@ -80,6 +82,10 @@ const validate = () => {
 }
 
 const runRetrieval = async () => {
+  if (!isKnowledgeEnabled.value) {
+    showToast('知识库功能未开启', 'warning')
+    return
+  }
   if (!validate()) return
   loading.value = true
   errorMessage.value = ''
@@ -142,6 +148,19 @@ onMounted(fetchRagFlowConfig)
 
 <template>
   <div class="h-full flex flex-col overflow-hidden">
+    <div
+      v-if="!isKnowledgeEnabled"
+      class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 shadow-sm mb-4 shrink-0"
+    >
+      <div class="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 border border-amber-200 shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+      </div>
+      <div>
+        <h4 class="text-sm font-bold text-amber-900">知识库功能未开启</h4>
+        <p class="text-xs text-amber-700 mt-1">请在系统配置 → 知识库设置中开启「knowledge_base_enabled」后，再进行检索测试。</p>
+      </div>
+    </div>
+
     <!-- Header -->
     <div class="flex items-center justify-between pb-4 shrink-0">
       <div>

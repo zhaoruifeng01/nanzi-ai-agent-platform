@@ -14,6 +14,8 @@ from app.services.ai.knowledge_utils import (
     normalize_dataset_ids,
     resolve_knowledge_dataset_ids,
     resolve_rag_retrieval_params,
+    is_knowledge_base_enabled,
+    KNOWLEDGE_BASE_DISABLED_TOOL_ERROR,
 )
 from app.services.permission_service import PermissionService
 
@@ -35,6 +37,10 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
             If omitted, uses the agent's configured datasets or system default.
     """
     client = RagFlowClient(config_prefix="knowledge_ragflow")
+
+    if not await is_knowledge_base_enabled():
+        logger.warning("[KnowledgeTool] Knowledge base feature is disabled")
+        return KNOWLEDGE_BASE_DISABLED_TOOL_ERROR
 
     logger.info(f"[KnowledgeTool] Called with query='{query}', explicit_ids='{dataset_ids}'")
 

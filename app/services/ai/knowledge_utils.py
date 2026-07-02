@@ -293,6 +293,23 @@ NO_KNOWLEDGE_DATASET_MESSAGE = (
     "请在输入框选择知识库，或由管理员为当前智能体绑定 dataset_ids 后重试。"
 )
 
+KNOWLEDGE_BASE_DISABLED_TOOL_ERROR = (
+    "[Tool Error] 知识库功能未开启。请联系管理员在系统配置 → 知识库设置中启用「知识库功能」。"
+)
+
+KNOWLEDGE_BASE_DISABLED_USER_MESSAGE = (
+    "⚠️ 知识库功能未开启，本次知识库问答已终止。\n"
+    "请联系管理员在系统配置 → 知识库设置中启用「知识库功能」。"
+)
+
+
+async def is_knowledge_base_enabled() -> bool:
+    """系统是否启用知识库（RAGFlow 检索与管理）。"""
+    from app.services.config_service import ConfigService
+
+    val = await ConfigService.get("knowledge_base_enabled", default="true")
+    return str(val).strip().lower() in {"true", "1", "yes", "on"}
+
 
 def collect_knowledge_dataset_ids_from_messages(messages: List[Dict[str, Any]]) -> List[str]:
     """从会话内全部 user 消息的 knowledge_base 附件提取 dataset ID（支持多轮追问继承）。"""

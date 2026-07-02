@@ -237,6 +237,21 @@ class MetadataIndexService:
                             logger.error(f"[Local Redis Sync] Embedding failed for doc {doc_name}: {emb_err}")
 
                     logger.info(f"[Local Redis Sync] Completed sync for dataset: {dataset.name}")
+
+                    from datetime import datetime
+                    from sqlalchemy import update
+                    from app.models.metadata import MetaDataset
+
+                    await db.execute(
+                        update(MetaDataset)
+                        .where(MetaDataset.id == dataset_id)
+                        .values(
+                            rag_sync_status=2,
+                            rag_sync_notes="local-redis synced",
+                            rag_synced_at=datetime.now(),
+                        )
+                    )
+                    await db.commit()
             except Exception as e:
                 logger.error(f"[Local Redis Sync] Background task failed for dataset {dataset_id}: {e}", exc_info=True)
 

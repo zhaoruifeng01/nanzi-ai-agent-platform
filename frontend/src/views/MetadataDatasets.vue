@@ -1039,7 +1039,7 @@ onMounted(async () => {
         
         <!-- RAG Sync Badge (Absolute Top-Right) -->
         <div 
-          v-if="ds.rag_sync_status !== undefined && ds.rag_sync_status !== 0"
+          v-if="!isLocalMode && ds.rag_sync_status !== undefined && ds.rag_sync_status !== 0"
           class="absolute top-4 right-4 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border shadow-sm z-10"
           :class="{
             'bg-green-50 text-green-600 border-green-200': ds.rag_sync_status === 2,
@@ -1267,7 +1267,7 @@ onMounted(async () => {
              <!-- RAG Status -->
              <div class="col-span-2">
                 <span 
-                   v-if="ds.rag_sync_status !== undefined && ds.rag_sync_status !== 0"
+                   v-if="!isLocalMode && ds.rag_sync_status !== undefined && ds.rag_sync_status !== 0"
                    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border"
                    :class="{
                       'bg-green-50 text-green-600 border-green-100': ds.rag_sync_status === 2,

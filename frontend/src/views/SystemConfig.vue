@@ -277,6 +277,21 @@ const metadataProvider = computed(() => {
   }
   return 'local'
 })
+
+const isKnowledgeFeatureEnabled = computed(() => {
+  const list = configGroups.value.knowledge
+  if (!list) return true
+  const item = list.find(x => x.key === 'knowledge_base_enabled')
+  return (item?.value ?? 'true') === 'true'
+})
+
+const isConfigItemDisabled = (category: string, item: ConfigItem) => {
+  if (!canSave.value) return true
+  if (category === 'knowledge' && item.key !== 'knowledge_base_enabled' && !isKnowledgeFeatureEnabled.value) {
+    return true
+  }
+  return false
+}
 const originalConfigs = ref<{ [key: string]: string }>({})
 const configLoading = ref(false)
 const saving = ref(false)
@@ -572,7 +587,8 @@ const getCategoryTip = (key: string) => {
 💡 调优建议：
 * 如果知识库多为技术文档、规格手册或包含大量专业代号，调低该值（如 0.2 ~ 0.3）。
 * 如果问题比较多样化、偏口语表述，调高该值（如 0.6 ~ 0.7）以强化语义召回。`,
-    'knowledge_ragflow_metadata_top_k': '知识库问答检索时，最大召回匹配的候选文档片段数。值越大参考条数越多，但会消耗更多的模型 Token。'
+    'knowledge_ragflow_metadata_top_k': '知识库问答检索时，最大召回匹配的候选文档片段数。值越大参考条数越多，但会消耗更多的模型 Token。',
+    'knowledge_base_enabled': '总开关：关闭后知识库管理、检索测试及智能体的 search_knowledge_base 工具均不可用；下方 RAGFlow 连接参数将变为只读。'
   }
   return tips[key] || ''
 }
@@ -694,6 +710,7 @@ const getVisibleItems = (items: ConfigItem[] | undefined, category: string) => {
   }
   if (category === 'knowledge') {
     const order = [
+      'knowledge_base_enabled',
       'knowledge_ragflow_api_url',
       'knowledge_ragflow_api_key',
       'knowledge_ragflow_dataset_ids',
@@ -1483,6 +1500,12 @@ onMounted(() => {
                           如果在此处变更了全局 <strong>Embedding 模型名</strong> 或 <strong>向量维度</strong>，已有的向量数据（包括本地元数据和经验案例集）必须进行重新向量化重建，否则无法正常进行相似度检索。保存变更后，请前往 <strong>【系统诊断】</strong> 标签页执行 <strong>【重构本地向量数据】</strong> 即可。
                        </div>
                     </div>
+                    <div v-if="category === 'knowledge' && !isKnowledgeFeatureEnabled" class="bg-gray-50 border-l-4 border-gray-300 p-4 rounded-md text-sm text-gray-600 flex items-start space-x-2 mb-4">
+                       <span class="text-gray-400 font-bold shrink-0">ℹ️</span>
+                       <div>
+                          知识库功能已<strong>关闭</strong>。开启上方「knowledge_base_enabled」开关后，方可编辑 RAGFlow 连接参数，并启用知识库管理、检索测试与智能体知识库检索工具。
+                       </div>
+                    </div>
                     <div v-for="item in getVisibleItems(configGroups[category], String(category))" :key="item.key" class="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div class="md:col-span-1 pt-2">
                          <label class="block text-sm font-medium text-gray-700 flex items-center gap-1.5">
@@ -1502,7 +1525,7 @@ onMounted(() => {
                       </div>
                        <div class="md:col-span-2 relative">
                           <div v-if="item.key === 'llm_model_name'">
-                              <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                              <select v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
                                  <option value="" disabled>选择默认模型...</option>
                                  <option v-for="m in models.filter(x => x.type === 'llm' && x.is_active)" :key="m.id" :value="m.model_id">
                                     {{ m.name }} ({{ m.model_id }})
@@ -1514,7 +1537,7 @@ onMounted(() => {
                           </div>
                           <div v-else-if="item.key === 'metadata_provider'">
                               <div class="flex items-center gap-2">
-                                <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block flex-1 min-w-0 sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                                <select v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block flex-1 min-w-0 sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
                                    <option value="local">local (本地元数据)</option>
                                    <option value="ragflow">ragflow (语义检索 RAG)</option>
                                 </select>
@@ -1539,13 +1562,13 @@ onMounted(() => {
                               </div>
                           </div>
                           <div v-else-if="item.key === 'sql_execution_mode'">
-                             <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                             <select v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
                                 <option value="remote">remote (走远程执行服务)</option>
                                 <option value="local">local (本地数据源直连执行)</option>
                              </select>
                           </div>
                           <div v-else-if="item.is_secret" class="relative">
-                             <input :type="showSecrets[item.key] ? 'text' : 'password'" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md pr-10 bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
+                             <input :type="showSecrets[item.key] ? 'text' : 'password'" v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md pr-10 bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                              <div @click="toggleSecret(item.key)" class="absolute inset-y-0 right-0 pr-3 flex items-center cursor-pointer text-gray-400">
                                 <EyeIcon v-if="!showSecrets[item.key]" class="h-5 w-5" />
                                 <EyeSlashIcon v-else class="h-5 w-5" />
@@ -1553,9 +1576,9 @@ onMounted(() => {
                           </div>
                           <div v-else-if="['ragflow_dataset_ids', 'knowledge_ragflow_dataset_ids'].includes(item.key)">
                                <div class="flex space-x-2">
-                                   <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
+                                   <input type="text" v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                                    <button
-                                       v-if="canSave"
+                                       v-if="canSave && !isConfigItemDisabled(String(category), item)"
                                        @click="openDatasetSelector(item)"
                                        class="px-3 py-2 bg-white border border-gray-300 rounded-md text-gray-500 hover:text-primary hover:border-primary transition-colors"
                                        title="选择知识库"
@@ -1587,7 +1610,7 @@ onMounted(() => {
                           </div>
                           <div v-else-if="item.key === 'embed_api_url'">
                               <div class="flex items-center space-x-2">
-                                  <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
+                                  <input type="text" v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
                                   <button
                                       @click="testGlobalEmbed"
                                       :disabled="globalEmbedTesting"
@@ -1608,7 +1631,7 @@ onMounted(() => {
                                         max="1"
                                         step="0.05"
                                         :value="Number(item.value)"
-                                        :disabled="!canSave"
+                                        :disabled="isConfigItemDisabled(String(category), item)"
                                         @input="(e) => item.value = (e.target as HTMLInputElement).value"
                                         class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary disabled:opacity-50"
                                       />
@@ -1632,7 +1655,7 @@ onMounted(() => {
                                       <input
                                         type="number"
                                         v-model="item.value"
-                                        :disabled="!canSave"
+                                        :disabled="isConfigItemDisabled(String(category), item)"
                                         min="0"
                                         max="1"
                                         step="0.05"
@@ -1641,10 +1664,10 @@ onMounted(() => {
                                   </div>
                               </div>
                           </div>
-                          <div v-else-if="['embedchat_watermark_enabled', 'yovole_sso_enabled'].includes(item.key)" class="flex items-center">
+                          <div v-else-if="['embedchat_watermark_enabled', 'yovole_sso_enabled', 'knowledge_base_enabled'].includes(item.key)" class="flex items-center">
                              <button
                                type="button"
-                               :disabled="!canSave"
+                               :disabled="isConfigItemDisabled(String(category), item)"
                                @click="item.value = item.value === 'true' ? 'false' : 'true'"
                                class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-inner"
                                :class="item.value === 'true' ? 'bg-primary' : 'bg-gray-200'"
@@ -1657,19 +1680,19 @@ onMounted(() => {
                              </button>
                           </div>
                           <div v-else-if="item.key === 'embedchat_watermark_style'">
-                             <select v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                             <select v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 p-2 disabled:opacity-70 disabled:cursor-not-allowed">
                                 <option value="user_time">用户名 + 时间戳</option>
                                 <option value="custom">自定义文字</option>
                              </select>
                           </div>
                           <div v-else-if="isLongText(item)">
-                             <textarea v-model="item.value" :disabled="!canSave" rows="10" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md font-mono text-xs bg-gray-100 p-3 disabled:opacity-70 disabled:cursor-not-allowed"></textarea>
+                             <textarea v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" rows="10" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md font-mono text-xs bg-gray-100 p-3 disabled:opacity-70 disabled:cursor-not-allowed"></textarea>
                           </div>
                           <div v-else-if="['audit_log_retention_days', 'agent_max_iterations', 'agent_max_context_turns', 'data_api_timeout_seconds', 'schema_api_timeout_seconds', 'ragflow_metadata_top_k', 'knowledge_ragflow_metadata_top_k', 'embed_dimensions', 'chatbi_sample_top_k'].includes(item.key)">
-	                             <input type="text" v-model="item.value" @keypress="!/[0-9]/.test(($event as KeyboardEvent).key) && ($event as KeyboardEvent).preventDefault()" @input="item.value = item.value.replace(/\D/g, '')" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
+	                             <input type="text" v-model="item.value" @keypress="!/[0-9]/.test(($event as KeyboardEvent).key) && ($event as KeyboardEvent).preventDefault()" @input="item.value = item.value.replace(/\D/g, '')" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed p-2" />
                           </div>
                           <div v-else>
-                             <input type="text" v-model="item.value" :disabled="!canSave" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
+                             <input type="text" v-model="item.value" :disabled="isConfigItemDisabled(String(category), item)" class="shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-100 disabled:opacity-70 disabled:cursor-not-allowed" />
                           </div>
                        </div>
                    </div>

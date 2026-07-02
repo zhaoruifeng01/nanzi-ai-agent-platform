@@ -59,6 +59,7 @@ class RetrievalTestRequest(BaseModel):
     vector_similarity_weight: float = Field(default=0.3, ge=0, le=1)
 
 async def get_ragflow_client():
+    await require_knowledge_base_enabled()
     base_url = await ConfigService.get("knowledge_ragflow_api_url")
     api_key = await ConfigService.get("knowledge_ragflow_api_key")
     
@@ -66,6 +67,13 @@ async def get_ragflow_client():
         raise HTTPException(status_code=500, detail="RAGFlow configuration missing in system settings")
         
     return base_url.rstrip("/"), api_key
+
+
+async def require_knowledge_base_enabled():
+    from app.services.ai.knowledge_utils import is_knowledge_base_enabled
+
+    if not await is_knowledge_base_enabled():
+        raise HTTPException(status_code=403, detail="知识库功能未开启，请在系统配置 → 知识库设置中启用")
 
 
 async def require_element_permission(user: dict, db: AsyncSession, permission_id: str):
@@ -177,9 +185,12 @@ async def _grant_dataset_to_creator(db: AsyncSession, user: dict, dataset_id: st
 
 @router.get("/config")
 async def get_ragflow_config_summary():
+    from app.services.ai.knowledge_utils import is_knowledge_base_enabled
+
     base_url = await ConfigService.get("knowledge_ragflow_api_url")
     api_key = await ConfigService.get("knowledge_ragflow_api_key")
     metadata_provider = await ConfigService.get("metadata_provider", default="ragflow")
+    knowledge_enabled = await is_knowledge_base_enabled()
     api_url = base_url.rstrip("/") + "/" if base_url else ""
     return {
         "code": 0,
@@ -188,6 +199,7 @@ async def get_ragflow_config_summary():
             "api_key_configured": bool(api_key),
             "configured": bool(api_url and api_key),
             "metadata_provider": metadata_provider,
+            "knowledge_base_enabled": knowledge_enabled,
         },
     }
 

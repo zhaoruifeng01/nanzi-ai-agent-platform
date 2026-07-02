@@ -48,6 +48,7 @@ type RagFlowConfigSummary = {
   api_url: string
   api_key_configured: boolean
   configured: boolean
+  knowledge_base_enabled?: boolean
 }
 
 const { showToast } = useToast()
@@ -99,8 +100,10 @@ const canUpload = computed(() => hasPermission('element:knowledge:upload_documen
 const canDeleteDocument = computed(() => hasPermission('element:knowledge:delete_document'))
 const canParse = computed(() => hasPermission('element:knowledge:parse_document'))
 const canSync = computed(() => canEdit.value)
-const isEngineReady = computed(() => engineStatus.value === 'connected' && !loading.value)
+const isKnowledgeEnabled = computed(() => ragflowConfig.value?.knowledge_base_enabled !== false)
+const isEngineReady = computed(() => isKnowledgeEnabled.value && engineStatus.value === 'connected' && !loading.value)
 const engineStatusText = computed(() => {
+  if (!isKnowledgeEnabled.value) return '功能已关闭'
   if (engineStatus.value === 'checking') return '知识库引擎连接中 ...'
   if (engineStatus.value === 'connected') return '已连接'
   return '未连接'
@@ -210,6 +213,12 @@ const openEdit = (dataset: KnowledgeBase) => {
 
 // 获取知识库列表
 const fetchDatasets = async () => {
+  if (!isKnowledgeEnabled.value) {
+    datasets.value = []
+    engineStatus.value = 'disconnected'
+    loading.value = false
+    return
+  }
   loading.value = true
   engineStatus.value = 'checking'
   errorMessage.value = ''
@@ -709,6 +718,19 @@ onMounted(async () => {
 
 <template>
   <div class="space-y-6">
+    <div
+      v-if="!isKnowledgeEnabled"
+      class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 shadow-sm"
+    >
+      <div class="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 border border-amber-200 shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+      </div>
+      <div>
+        <h4 class="text-sm font-bold text-amber-900">知识库功能未开启</h4>
+        <p class="text-xs text-amber-700 mt-1">请在系统配置 → 知识库设置中开启「knowledge_base_enabled」开关后，再使用知识库管理与文档解析能力。</p>
+      </div>
+    </div>
+
     <!-- Header Section -->
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm">
       <div>
@@ -725,9 +747,9 @@ onMounted(async () => {
         <div
           class="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border transition-colors"
           :class="{
-            'border-blue-200 bg-blue-50/50 text-blue-700': engineStatus === 'checking',
-            'border-emerald-200 bg-emerald-50/50 text-emerald-700': engineStatus === 'connected',
-            'border-amber-200 bg-amber-50/50 text-amber-700': engineStatus === 'disconnected'
+            'border-blue-200 bg-blue-50/50 text-blue-700': isKnowledgeEnabled && engineStatus === 'checking',
+            'border-emerald-200 bg-emerald-50/50 text-emerald-700': isKnowledgeEnabled && engineStatus === 'connected',
+            'border-amber-200 bg-amber-50/50 text-amber-700': !isKnowledgeEnabled || engineStatus === 'disconnected'
           }"
         >
           <span
