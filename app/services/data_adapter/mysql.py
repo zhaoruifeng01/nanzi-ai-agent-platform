@@ -32,19 +32,28 @@ class MySQLAdapter(DataSourceAdapter):
         raise NotImplementedError("本地适配器在智能体平台中仅供执行只读物理 SQL，暂不支持逻辑查询 execute_summary 方法。")
 
     async def get_tables(self) -> List[Dict[str, str]]:
-        """获取当前库下的所有表和视图名称"""
+        """获取当前库下的所有表和视图名称（含中文备注）"""
         from app.services.pool_manager import DataSourcePoolManager
         pool = await DataSourcePoolManager.get_pool(self.source_id)
 
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # SHOW FULL TABLES 返回: (Table_name, Table_type)
-                # Table_type: 'BASE TABLE', 'VIEW', 'SYSTEM VIEW'
-                await cursor.execute("SHOW FULL TABLES")
+                await cursor.execute(
+                    """
+                    SELECT TABLE_NAME, IFNULL(TABLE_COMMENT, ''), TABLE_TYPE
+                    FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = DATABASE()
+                    ORDER BY TABLE_NAME
+                    """
+                )
                 rows = await cursor.fetchall()
 
         return [
-            {"name": row[0], "type": "VIEW" if "VIEW" in row[1].upper() else "TABLE"}
+            {
+                "name": row[0],
+                "comment": row[1] or "",
+                "type": "VIEW" if "VIEW" in str(row[2]).upper() else "TABLE",
+            }
             for row in rows
         ]
 
@@ -69,10 +78,25 @@ class MySQLAdapter(DataSourceAdapter):
                 
             final_sql = f"SELECT * FROM ({sql}) as t LIMIT 0"
         elif table_name:
-            final_sql = f"SELECT * FROM `{table_name}` LIMIT 0"
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(
+                        """
+                        SELECT COLUMN_NAME, DATA_TYPE, IFNULL(COLUMN_COMMENT, '')
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                        ORDER BY ORDINAL_POSITION
+                        """,
+                        (table_name,),
+                    )
+                    rows = await cursor.fetchall()
+            return [
+                {"name": row[0], "type": row[1] or "String", "comment": row[2] or ""}
+                for row in rows
+            ]
         else:
             return []
-        
+
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 try:
@@ -81,7 +105,7 @@ class MySQLAdapter(DataSourceAdapter):
                 except Exception as e:
                     logger.error(f"MySQL 获取字段信息失败: {e}. SQL: {final_sql}")
                     raise ValueError(f"不合法的 SQL 语句或数据表: {e}")
-        
+
         return [{"name": col, "type": "String", "comment": ""} for col in columns]
 
     async def execute_sql(self, sql: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

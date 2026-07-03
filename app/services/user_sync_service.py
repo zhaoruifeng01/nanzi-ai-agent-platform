@@ -197,15 +197,63 @@ class UserSyncService:
         return await adapter.get_tables()
 
     @staticmethod
+    def _format_sample_value(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False)
+        elif hasattr(value, "isoformat"):
+            try:
+                text = value.isoformat()
+            except Exception:
+                text = str(value)
+        else:
+            text = str(value).strip()
+        if not text:
+            return None
+        if len(text) > 80:
+            return text[:77] + "..."
+        return text
+
+    @staticmethod
+    async def _fetch_table_sample_row(
+        adapter: Any,
+        table_name: str,
+        db_type: str,
+    ) -> Dict[str, Any]:
+        table_sql = UserSyncService._quote_ident(table_name, db_type)
+        sql = f"SELECT * FROM {table_sql}"
+        try:
+            result = await adapter.preview(sql, limit=1)
+            rows = UserSyncService._rows_to_dicts(result)
+            return rows[0] if rows else {}
+        except Exception as exc:
+            logger.warning("Failed to fetch sample row for table %s: %s", table_name, exc)
+            return {}
+
+    @staticmethod
     async def list_columns(
         db: AsyncSession,
         connection_config_id: int,
         table_name: str,
     ) -> List[Dict[str, str]]:
-        _, adapter = await UserSyncService._get_adapter_for_config(db, connection_config_id)
+        db_config, adapter = await UserSyncService._get_adapter_for_config(db, connection_config_id)
         if not hasattr(adapter, "get_columns"):
             raise ValueError("当前数据源适配器不支持列查询")
-        return await adapter.get_columns(table_name=table_name)
+        columns = await adapter.get_columns(table_name=table_name)
+        sample_row = await UserSyncService._fetch_table_sample_row(
+            adapter,
+            table_name,
+            db_config.db_type,
+        )
+        enriched: List[Dict[str, str]] = []
+        for col in columns:
+            item = dict(col)
+            sample = UserSyncService._format_sample_value(sample_row.get(col.get("name")))
+            if sample is not None:
+                item["sample"] = sample
+            enriched.append(item)
+        return enriched
 
     @staticmethod
     def _rows_to_dicts(result: Dict[str, Any]) -> List[Dict[str, Any]]:

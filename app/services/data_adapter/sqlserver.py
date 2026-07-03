@@ -66,16 +66,22 @@ class SQLServerAdapter(DataSourceAdapter):
         raise NotImplementedError("本地适配器在智能体平台中仅供执行只读物理 SQL，暂不支持逻辑查询 execute_summary 方法。")
 
     async def get_tables(self) -> List[Dict[str, str]]:
-        """获取当前库下的所有表和视图名称"""
+        """获取当前库下的所有表和视图名称（含中文备注）"""
         from app.services.pool_manager import DataSourcePoolManager
 
         pool = await DataSourcePoolManager.get_pool(self.source_id)
         sql = """
-            SELECT TABLE_NAME, TABLE_TYPE
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
-              AND TABLE_CATALOG = DB_NAME()
-            ORDER BY TABLE_NAME
+            SELECT
+                t.TABLE_NAME,
+                ISNULL(CAST(ep.value AS NVARCHAR(MAX)), '') AS TABLE_COMMENT,
+                CASE WHEN t.TABLE_TYPE = 'VIEW' THEN 'VIEW' ELSE 'TABLE' END AS obj_type
+            FROM INFORMATION_SCHEMA.TABLES t
+            LEFT JOIN sys.tables st ON st.name = t.TABLE_NAME
+            LEFT JOIN sys.extended_properties ep
+                ON ep.major_id = st.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
+            WHERE t.TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+              AND t.TABLE_CATALOG = DB_NAME()
+            ORDER BY t.TABLE_NAME
         """
 
         async with pool.acquire() as conn:
@@ -84,7 +90,7 @@ class SQLServerAdapter(DataSourceAdapter):
                 rows = await cursor.fetchall()
 
         return [
-            {"name": row[0], "type": "VIEW" if row[1] == "VIEW" else "TABLE"}
+            {"name": row[0], "comment": row[1] or "", "type": row[2]}
             for row in rows
         ]
 
@@ -114,7 +120,31 @@ class SQLServerAdapter(DataSourceAdapter):
                 min_limit=0,
             )
         elif table_name:
-            final_sql = f"SELECT TOP 0 * FROM [{table_name}]"
+            meta_sql = """
+                SELECT
+                    c.COLUMN_NAME,
+                    c.DATA_TYPE,
+                    ISNULL(CAST(ep.value AS NVARCHAR(MAX)), '') AS COLUMN_COMMENT
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                LEFT JOIN sys.tables st ON st.name = c.TABLE_NAME
+                LEFT JOIN sys.columns sc
+                    ON sc.object_id = st.object_id AND sc.name = c.COLUMN_NAME
+                LEFT JOIN sys.extended_properties ep
+                    ON ep.major_id = sc.object_id
+                    AND ep.minor_id = sc.column_id
+                    AND ep.name = 'MS_Description'
+                WHERE c.TABLE_NAME = ?
+                  AND c.TABLE_CATALOG = DB_NAME()
+                ORDER BY c.ORDINAL_POSITION
+            """
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(meta_sql, (table_name,))
+                    rows = await cursor.fetchall()
+            return [
+                {"name": row[0], "type": row[1] or "String", "comment": row[2] or ""}
+                for row in rows
+            ]
         else:
             return []
 
