@@ -9,9 +9,11 @@ from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 from app.utils.fs_access import (
     assert_path_allowed,
     get_allowed_fs_roots,
+    get_user_private_workspace_root,
     is_fs_admin,
     is_fs_virtual_root,
     is_path_allowed,
+    normalize_fs_path,
     resolve_parent_path,
 )
 
@@ -32,6 +34,7 @@ class FileItem(BaseModel):
     is_dir: bool = Field(..., description="是否是目录")
     size: int = Field(..., description="文件大小（字节），目录为0")
     mtime: float = Field(..., description="修改时间戳")
+    is_user_workspace: bool = Field(False, description="是否为当前用户的 AI 工作目录根")
 
 class FileListResponse(BaseModel):
     current_path: str = Field(..., description="当前浏览的绝对路径")
@@ -48,10 +51,19 @@ class FileSearchResponse(BaseModel):
     truncated: bool = Field(False, description="结果是否因上限被截断")
 
 
+def _is_user_workspace_path(path: str, user_info: Dict[str, Any] | None) -> bool:
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return False
+    return os.path.normpath(path) == os.path.normpath(private_root)
+
+
 def _append_fs_entry(
     results: List[FileItem],
     entry_path: str,
     is_dir: bool,
+    *,
+    user_info: Dict[str, Any] | None = None,
 ) -> None:
     try:
         stat = os.stat(entry_path)
@@ -62,6 +74,7 @@ def _append_fs_entry(
                 is_dir=is_dir,
                 size=0 if is_dir else stat.st_size,
                 mtime=stat.st_mtime,
+                is_user_workspace=_is_user_workspace_path(entry_path, user_info),
             )
         )
     except OSError:
@@ -110,11 +123,16 @@ def _list_virtual_root_entries(user_info: Dict[str, Any]) -> List[FileItem]:
                     is_dir=True,
                     size=0,
                     mtime=stat.st_mtime,
+                    is_user_workspace=_is_user_workspace_path(root, user_info),
                 )
             )
         except OSError:
             continue
-    items.sort(key=lambda x: x.name.lower())
+
+    def _sort_key(item: FileItem) -> tuple[int, str]:
+        return (0 if item.is_user_workspace else 1, item.name.lower())
+
+    items.sort(key=_sort_key)
     return items
 
 
@@ -228,12 +246,12 @@ async def preview_file(
                         break
 
     if not safe_path:
-        candidate = normalize_under_base(path)
+        candidate = normalize_fs_path(path)
         if candidate and os.path.isfile(candidate) and is_path_allowed(candidate, user_info):
             safe_path = candidate
 
     if not safe_path:
-        candidate = normalize_under_base(path)
+        candidate = normalize_fs_path(path)
         if candidate and not is_path_allowed(candidate, user_info):
             raise HTTPException(
                 status_code=403,
@@ -305,7 +323,7 @@ async def search_files(
 
             for name in sorted(dirs):
                 if keyword in name.lower():
-                    _append_fs_entry(results, os.path.join(root, name), True)
+                    _append_fs_entry(results, os.path.join(root, name), True, user_info=user_info)
                     if len(results) >= max_results:
                         truncated = True
                         break
@@ -316,7 +334,7 @@ async def search_files(
                 if name.startswith("."):
                     continue
                 if keyword in name.lower():
-                    _append_fs_entry(results, os.path.join(root, name), False)
+                    _append_fs_entry(results, os.path.join(root, name), False, user_info=user_info)
                     if len(results) >= max_results:
                         truncated = True
                         break

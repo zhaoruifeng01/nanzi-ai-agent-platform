@@ -6,10 +6,32 @@ from app.utils.fs_access import (
     get_allowed_fs_roots,
     is_fs_virtual_root,
     is_path_allowed,
+    normalize_fs_path,
 )
 from app.utils.fs_paths import get_data_base_dir
 
 pytestmark = pytest.mark.no_infrastructure
+
+
+def test_regular_user_allowed_roots_include_platform_skills(tmp_path, monkeypatch):
+    base = str(tmp_path / "data")
+    uploads = os.path.join(base, "uploads")
+    skills = str(tmp_path / "home-skills")
+    os.makedirs(uploads, exist_ok=True)
+    os.makedirs(skills, exist_ok=True)
+
+    monkeypatch.setattr("app.utils.fs_access.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_paths.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_access.get_platform_skills_root", lambda: skills)
+    monkeypatch.setattr(
+        "app.services.ai.runtime.agentscope.workspace.default_workspace_root",
+        lambda: os.path.join(base, "agent_workspaces"),
+    )
+
+    user_info = {"user_id": 1, "user_name": "alice", "role": "user"}
+    roots = get_allowed_fs_roots(user_info)
+    norm_roots = [os.path.normpath(r) for r in roots]
+    assert os.path.normpath(skills) in norm_roots
 
 
 def test_regular_user_allowed_roots_include_public_and_private(tmp_path, monkeypatch):
@@ -21,6 +43,7 @@ def test_regular_user_allowed_roots_include_public_and_private(tmp_path, monkeyp
 
     monkeypatch.setattr("app.utils.fs_access.get_data_base_dir", lambda: base)
     monkeypatch.setattr("app.utils.fs_paths.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_access.get_platform_skills_root", lambda: None)
     monkeypatch.setattr(
         "app.services.ai.runtime.agentscope.workspace.default_workspace_root",
         lambda: os.path.join(base, "agent_workspaces"),
@@ -34,6 +57,22 @@ def test_regular_user_allowed_roots_include_public_and_private(tmp_path, monkeyp
     ]
 
 
+def test_normalize_fs_path_supports_platform_skills_outside_data(tmp_path, monkeypatch):
+    base = str(tmp_path / "data")
+    skills = str(tmp_path / "home-skills")
+    skill_file = os.path.join(skills, "demo-skill", "SKILL.md")
+    os.makedirs(os.path.dirname(skill_file), exist_ok=True)
+    with open(skill_file, "w", encoding="utf-8") as handle:
+        handle.write("demo")
+
+    monkeypatch.setattr("app.utils.fs_access.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_paths.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_access.get_platform_skills_root", lambda: skills)
+
+    resolved = normalize_fs_path(skill_file)
+    assert resolved == os.path.normpath(skill_file)
+
+
 def test_regular_user_cannot_access_other_workspace(tmp_path, monkeypatch):
     base = str(tmp_path / "data")
     other = os.path.join(base, "agent_workspaces", "bob__2", "secret.txt")
@@ -43,6 +82,7 @@ def test_regular_user_cannot_access_other_workspace(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.utils.fs_access.get_data_base_dir", lambda: base)
     monkeypatch.setattr("app.utils.fs_paths.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_access.get_platform_skills_root", lambda: None)
     monkeypatch.setattr(
         "app.services.ai.runtime.agentscope.workspace.default_workspace_root",
         lambda: os.path.join(base, "agent_workspaces"),

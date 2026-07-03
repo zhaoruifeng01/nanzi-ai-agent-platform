@@ -217,9 +217,15 @@ const legendItems = FILE_TYPE_LEGEND.map((category) => ({
   ...getCategoryStyle(category),
 }))
 
+const scopedHomeCrumbName = () => '🏠 工作空间'
+const adminHomeCrumbName = () => '📁 root'
+
+const formatBaseCrumb = (currentScope: 'admin_all' | 'user_scoped') =>
+  currentScope === 'user_scoped' ? scopedHomeCrumbName() : adminHomeCrumbName()
+
 const breadcrumbs = computed(() => {
   if (isRoot.value && scope.value === 'user_scoped') {
-    return [{ name: '📁 root', path: '', isBase: true }]
+    return [{ name: scopedHomeCrumbName(), path: '', isBase: true }]
   }
 
   const base = baseDir.value
@@ -235,15 +241,19 @@ const breadcrumbs = computed(() => {
     if (runningPath.startsWith(base)) {
       const isBase = runningPath === base
       crumbs.push({
-        name: isBase ? '📁 root' : part,
-        path: runningPath,
-        isBase
+        name: isBase ? formatBaseCrumb(scope.value) : part,
+        path: isBase && scope.value === 'user_scoped' ? '' : runningPath,
+        isBase,
       })
     }
   }
 
   if (crumbs.length === 0) {
-    crumbs.push({ name: '📁 root', path: base || current, isBase: true })
+    crumbs.push({
+      name: formatBaseCrumb(scope.value),
+      path: scope.value === 'user_scoped' ? '' : (base || current),
+      isBase: true,
+    })
   }
 
   return crumbs
@@ -508,6 +518,13 @@ const handleConfirm = () => {
                         :class="selectedItem?.path === item.path ? 'text-primary font-bold' : ''"
                       >
                         {{ item.name }}
+                      </span>
+                      <span
+                        v-if="item.is_user_workspace"
+                        class="flex-shrink-0 px-1.5 py-0.5 rounded-md text-[9px] font-bold bg-primary/10 text-primary ring-1 ring-primary/20"
+                        title="当前登录用户的 AI 会话工作目录"
+                      >
+                        用户工作目录
                       </span>
                       <!-- 移动端类型标签 -->
                       <span

@@ -11,6 +11,22 @@ from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 PUBLIC_DATA_SUBDIRS: tuple[str, ...] = ("uploads", "branding", "sandbox", "skills")
 
 
+def get_platform_skills_root() -> str | None:
+    """Platform skills directory (Docker: data/skills, local dev: ~/.agents/skills)."""
+    try:
+        from app.core.config import settings
+
+        raw = getattr(settings, "SKILLS_DIR", None)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    skills_root = os.path.normpath(os.path.abspath(str(raw)))
+    if os.path.isdir(skills_root):
+        return skills_root
+    return None
+
+
 def is_fs_admin(user_info: dict[str, Any] | None) -> bool:
     if not user_info:
         return False
@@ -24,6 +40,15 @@ def get_public_data_roots(base: str | None = None) -> list[str]:
         candidate = os.path.normpath(os.path.join(data_base, name))
         if os.path.isdir(candidate):
             roots.append(candidate)
+    return sorted(set(roots))
+
+
+def get_public_fs_roots(base: str | None = None) -> list[str]:
+    """Public browse roots: data subdirs plus configured platform skills dir."""
+    roots = get_public_data_roots(base)
+    skills_root = get_platform_skills_root()
+    if skills_root and skills_root not in roots:
+        roots.append(skills_root)
     return sorted(set(roots))
 
 
@@ -48,7 +73,7 @@ def get_allowed_fs_roots(user_info: dict[str, Any] | None) -> list[str]:
     if is_fs_admin(user_info):
         return [data_base]
 
-    roots = get_public_data_roots(data_base)
+    roots = get_public_fs_roots(data_base)
     private_root = get_user_private_workspace_root(user_info)
     if private_root:
         roots.append(private_root)
@@ -63,7 +88,31 @@ def is_fs_virtual_root(path: str | None, base: str | None = None) -> bool:
 
 
 def normalize_fs_path(path: str, base: str | None = None) -> str | None:
-    return normalize_under_base(path, base or get_data_base_dir())
+    normalized = normalize_under_base(path, base or get_data_base_dir())
+    if normalized:
+        return normalized
+
+    skills_root = get_platform_skills_root()
+    if not skills_root:
+        return None
+
+    raw_path = str(path or "")
+    if raw_path.startswith("/app/data/skills/"):
+        raw_path = os.path.join(get_data_base_dir(), "skills", raw_path.removeprefix("/app/data/skills/"))
+    elif raw_path == "/app/data/skills":
+        data_skills = os.path.join(get_data_base_dir(), "skills")
+        if os.path.isdir(data_skills):
+            return os.path.normpath(data_skills)
+
+    candidate = os.path.abspath(raw_path)
+    if candidate == skills_root or candidate.startswith(skills_root + os.sep):
+        return os.path.normpath(candidate)
+
+    if not os.path.isabs(raw_path):
+        joined = os.path.normpath(os.path.join(skills_root, raw_path.lstrip("./")))
+        if joined == skills_root or joined.startswith(skills_root + os.sep):
+            return joined
+    return None
 
 
 def is_path_allowed(path: str, user_info: dict[str, Any] | None) -> bool:
