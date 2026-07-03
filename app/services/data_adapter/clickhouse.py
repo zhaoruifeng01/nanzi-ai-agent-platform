@@ -44,12 +44,32 @@ class ClickHouseAdapter(DataSourceAdapter):
         
         async with pool.connection() as conn:
             async with conn.cursor() as cursor:
-                sql = "SELECT name, engine FROM system.tables WHERE database = currentDatabase() ORDER BY name"
-                await cursor.execute(sql)
-                rows = await cursor.fetchall()
-                
+                try:
+                    sql = "SELECT name, comment, engine FROM system.tables WHERE database = currentDatabase() ORDER BY name"
+                    await cursor.execute(sql)
+                    rows = await cursor.fetchall()
+                except Exception as e:
+                    if "Missing columns" not in str(e) and "Code: 47" not in str(e):
+                        raise
+                    logger.warning("ClickHouse system.tables missing comment column, falling back: %s", e)
+                    sql = "SELECT name, engine FROM system.tables WHERE database = currentDatabase() ORDER BY name"
+                    await cursor.execute(sql)
+                    rows = await cursor.fetchall()
+                    return [
+                        {
+                            "name": row[0],
+                            "comment": "",
+                            "type": "VIEW" if "VIEW" in str(row[1]).upper() else "TABLE",
+                        }
+                        for row in rows
+                    ]
+
                 return [
-                    {"name": row[0], "type": "VIEW" if "VIEW" in row[1].upper() else "TABLE"}
+                    {
+                        "name": row[0],
+                        "comment": row[1] or "",
+                        "type": "VIEW" if "VIEW" in str(row[2]).upper() else "TABLE",
+                    }
                     for row in rows
                 ]
 

@@ -30,6 +30,15 @@
           同步第三方用户
         </button>
         <button
+          @click="showSystemQuotaModal = true"
+          class="bg-amber-600 text-white px-4 py-2 rounded-lg hover:bg-amber-700 transition flex items-center gap-2 shadow-sm"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          系统默认额度
+        </button>
+        <button
           @click="openCreateDialog"
           class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
         >
@@ -435,6 +444,17 @@
               class="px-4 py-2.5 border-b-2 font-medium text-sm transition-colors flex-1 sm:flex-none text-center"
             >
               权限配置
+            </button>
+            <button
+              @click="activeTab = 'quota'"
+              :class="
+                activeTab === 'quota'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              "
+              class="px-4 py-2.5 border-b-2 font-medium text-sm transition-colors flex-1 sm:flex-none text-center"
+            >
+              额度
             </button>
           </nav>
         </div>
@@ -882,6 +902,16 @@
               </div>
             </div>
           </div>
+
+          <!-- QUOTA TAB -->
+          <div v-show="activeTab === 'quota'" class="space-y-4 py-2">
+            <QuotaPolicyPanel
+              v-if="editingUserId"
+              scope-type="user"
+              :scope-id="editingUserId"
+              show-effective
+            />
+          </div>
         </div>
 
         <div
@@ -894,7 +924,7 @@
             取消
           </button>
           <button
-            v-if="!createdApiKey"
+            v-if="!createdApiKey && activeTab !== 'quota'"
             @click="saveUser"
             :disabled="submitting"
             class="order-1 sm:order-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-md shadow-blue-100"
@@ -1268,6 +1298,31 @@
     </div>
   </div>
 
+  <!-- System Default Quota Modal -->
+  <div
+    v-if="showSystemQuotaModal"
+    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9990] p-4"
+    @click.self="showSystemQuotaModal = false"
+  >
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900">系统默认额度</h2>
+          <p class="text-xs text-gray-500 mt-1">未配置用户/角色策略时的全局月 Token 上限</p>
+        </div>
+        <button
+          @click="showSystemQuotaModal = false"
+          class="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <QuotaPolicyPanel scope-type="system" />
+    </div>
+  </div>
+
   <ThirdPartyUserSyncDrawer
     :visible="showThirdPartyDrawer"
     @close="showThirdPartyDrawer = false"
@@ -1284,6 +1339,7 @@ import { MENU_TREE } from "../constants/permissions";
 import Switch from "../components/Switch.vue";
 import RoleList from "../components/RoleList.vue";
 import ThirdPartyUserSyncDrawer from "../components/ThirdPartyUserSyncDrawer.vue";
+import QuotaPolicyPanel from "../components/admin/QuotaPolicyPanel.vue";
 import {
   KeyIcon,
   ArrowPathIcon,
@@ -1336,6 +1392,7 @@ const showRegenerateDialog = ref(false);
 const showViewKeyDialog = ref(false);
 const showSsoModal = ref(false);
 const showThirdPartyDrawer = ref(false);
+const showSystemQuotaModal = ref(false);
 const userToDelete = ref<any>(null);
 const userToRegenerate = ref<any>(null);
 const userToViewKey = ref<any>(null);
@@ -1510,7 +1567,7 @@ const createdApiKey = ref("");
 const regeneratedApiKey = ref("");
 
 // Permission State
-const activeTab = ref<"info" | "permissions">("info");
+const activeTab = ref<"info" | "permissions" | "quota">("info");
 const activePermissionSubTab = ref<"assets" | "ui">("assets");
 const activeResTab = ref<"agents" | "datasets" | "metadata" | "apis">("agents");
 const resourceTypes = ["agents", "datasets", "metadata", "apis"] as const;

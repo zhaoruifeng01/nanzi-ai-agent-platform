@@ -1242,6 +1242,13 @@
 
     <!-- Input Area -->
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 relative z-20">
+      <div
+        v-if="quotaBannerMessage"
+        class="px-4 py-2 text-xs border-b"
+        :class="quotaIsBlocked ? 'bg-rose-50 text-rose-800 border-rose-100' : 'bg-amber-50 text-amber-800 border-amber-100'"
+      >
+        {{ quotaBannerMessage }}
+      </div>
       <ChatInput
         ref="chatInputRef"
         v-model="userInput"
@@ -2560,6 +2567,8 @@ import { finalizeConversation } from "@/utils/conversationFinalize";
 import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { createConversationId } from "@/utils/conversationId";
 import { useToast } from "../composables/useToast";
+import { useTokenQuota } from "../composables/useTokenQuota";
+import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import {
   DATASET_PORTAL_SLASH_COMMAND,
@@ -2568,6 +2577,13 @@ import {
 } from "@/constants/datasetPortalCommand";
 
 const toast = useToast();
+const {
+  bannerMessage: quotaBannerMessage,
+  isBlocked: quotaIsBlocked,
+  quotaStatus,
+  refreshQuota,
+  ensureCanSend,
+} = useTokenQuota();
 const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
@@ -3438,6 +3454,7 @@ const SYSTEM_SLASH_COMMANDS = [
   { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
+  { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];
 const showCommandMenu = ref(false);
@@ -5279,6 +5296,28 @@ const fetchConversationHistory = async (isLoadMore = false) => {
     isLoadingHistory.value = false;
   }
 };
+
+const showQuotaStatusInChat = async () => {
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: "/quota",
+    timestamp: new Date().toISOString(),
+  });
+  await refreshQuota();
+  messages.value.push({
+    id: Date.now() + 1,
+    role: "agent",
+    agentName: "sys_quota",
+    agentDisplayName: "系统助手",
+    content: buildQuotaStatusMarkdown(quotaStatus.value),
+    timestamp: new Date().toISOString(),
+  });
+  autoScrollEnabled.value = true;
+  await nextTick();
+  scrollToBottom(true);
+};
+
 // --- Logic ---
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, allowedAgents.value);
@@ -5310,6 +5349,11 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     case "/settings":
       userInput.value = "";
       showSettings.value = true;
+      return true;
+    case "/quota":
+    case "/tokens":
+      userInput.value = "";
+      await showQuotaStatusInChat();
       return true;
     case "/new":
     case "/clear": // legacy alias
@@ -5997,6 +6041,12 @@ const sendMessage = async () => {
   const files = chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [];
   if ((!content && files.length === 0) || isProcessing.value) return;
 
+  const quotaBlock = await ensureCanSend();
+  if (quotaBlock) {
+    showToast(quotaBlock, "error");
+    return;
+  }
+
   if (files.length === 0 && tryLocalChartOptionPatch(content)) {
     userInput.value = "";
     showCommandMenu.value = false;
@@ -6249,6 +6299,7 @@ const sendMessage = async () => {
   } finally {
     isProcessing.value = false;
     agentMsg.value.isThinking = false;
+    void refreshQuota();
     clearStallTimer();
     clearStalePendingTimer();
     showStalledPrompt.value = false;
@@ -6332,6 +6383,7 @@ const fetchUserInfo = async () => {
     if (res.data?.data) {
        currentUser.value = res.data.data;
     }
+    await refreshQuota();
   } catch (err) {
     console.warn("[Auth] Failed to fetch user info:", err);
   }

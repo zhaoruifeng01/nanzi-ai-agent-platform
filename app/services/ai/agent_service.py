@@ -88,6 +88,15 @@ class AgentService:
         }
         return sorted(path for path in paths if path)
 
+    @staticmethod
+    async def _quota_block_message(user_info: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not user_info:
+            return None
+        from app.services.quota_service import QuotaService
+
+        async with AsyncSessionLocal() as quota_session:
+            return await QuotaService(quota_session).check_before_call(user_info)
+
     async def chat_completion_stream(
         self,
         messages: List[Dict[str, str]],
@@ -113,6 +122,17 @@ class AgentService:
         yield {"trace_id": trace_id, "status": "init"}
 
         lane_user_id = user_info.get("user_id") if user_info else None
+
+        if user_info:
+            quota_block = await self._quota_block_message(user_info)
+            if quota_block:
+                yield {
+                    "type": "error",
+                    "status": "quota_exceeded",
+                    "content": quota_block,
+                    "trace_id": trace_id,
+                }
+                return
 
         try:
             async with conversation_run_lane.hold(
@@ -1205,6 +1225,17 @@ class AgentService:
             }
             return
 
+        if confirmed and user_info:
+            quota_block = await self._quota_block_message(user_info)
+            if quota_block:
+                yield {
+                    "type": "error",
+                    "status": "quota_exceeded",
+                    "content": quota_block,
+                    "trace_id": pending.trace_id,
+                }
+                return
+
         runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
 
         yield {
@@ -1399,6 +1430,17 @@ class AgentService:
                 "content": "该请求不是外部执行挂起，请使用 permission confirm 接口。",
             }
             return
+
+        if user_info:
+            quota_block = await self._quota_block_message(user_info)
+            if quota_block:
+                yield {
+                    "type": "error",
+                    "status": "quota_exceeded",
+                    "content": quota_block,
+                    "trace_id": pending.trace_id,
+                }
+                return
 
         runner = self._build_agentscope_runner_from_pending(pending, user_info=user_info)
         execution_results = self._build_external_execution_results(results)

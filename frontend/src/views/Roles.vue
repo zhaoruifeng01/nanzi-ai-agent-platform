@@ -240,7 +240,7 @@
             </div>
             
             <!-- Main Tabs (Assets vs UI) -->
-            <div class="flex-shrink-0 flex items-center space-x-1 p-1 bg-gray-100 rounded-xl my-4 sm:my-6 w-full max-w-xs mx-auto">
+            <div class="flex-shrink-0 flex items-center space-x-1 p-1 bg-gray-100 rounded-xl my-4 sm:my-6 w-full max-w-md mx-auto">
                 <button 
                     @click="activeMainTab = 'assets'"
                     :class="activeMainTab === 'assets' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
@@ -254,6 +254,13 @@
                     class="flex-1 py-2 rounded-lg text-xs font-bold transition-all"
                 >
                     🎨 菜单功能
+                </button>
+                <button 
+                    @click="activeMainTab = 'quota'"
+                    :class="activeMainTab === 'quota' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+                    class="flex-1 py-2 rounded-lg text-xs font-bold transition-all"
+                >
+                    📊 额度
                 </button>
             </div>
 
@@ -336,7 +343,7 @@
                 </template>
 
                 <!-- Tab 2: UI Interface Permissions -->
-                <template v-else>
+                <template v-else-if="activeMainTab === 'ui'">
                     <div class="flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-6 rounded-xl border border-gray-200">
                         <div class="space-y-4">
                             <div v-for="menu in MENU_TREE" :key="menu.id" class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
@@ -379,11 +386,23 @@
                         <span class="text-blue-600 font-bold">已选菜单: {{ permissionData.menus.length }}</span>
                     </div>
                 </template>
+
+                <!-- Tab 3: Quota -->
+                <template v-else-if="activeMainTab === 'quota'">
+                    <div class="flex-1 min-h-0 overflow-y-auto px-1">
+                        <QuotaPolicyPanel
+                            v-if="currentRole"
+                            scope-type="role"
+                            :scope-id="currentRole.id"
+                        />
+                    </div>
+                </template>
             </div>
 
             <div class="flex-shrink-0 p-4 sm:p-0 mt-2 sm:mt-6 flex flex-col sm:flex-row justify-end gap-2 sm:pt-4 border-t border-gray-100 sm:border-t-0">
                 <button @click="closePermissionDialog" class="order-2 sm:order-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium">取消</button>
                 <button 
+                    v-if="activeMainTab !== 'quota'"
                     @click="savePermissions" 
                     :disabled="submittingPerms" 
                     class="order-1 sm:order-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-lg shadow-blue-200"
@@ -547,6 +566,7 @@ import { ref, onMounted, computed, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useToast } from '../composables/useToast'
 import { MENU_TREE } from '../constants/permissions'
+import QuotaPolicyPanel from '../components/admin/QuotaPolicyPanel.vue'
 
 const { showToast } = useToast()
 
@@ -599,7 +619,7 @@ const assignedUserIds = ref<number[]>([])
 const userSearchQuery = ref('')
 
 // Permissions
-const activeMainTab = ref<'assets' | 'ui'>('assets')
+const activeMainTab = ref<'assets' | 'ui' | 'quota'>('assets')
 const activeResTab = ref<'agents' | 'datasets' | 'metadata' | 'apis'>('agents')
 const resourceTypes = ['agents', 'datasets', 'metadata', 'apis'] as const
 

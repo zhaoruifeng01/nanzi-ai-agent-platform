@@ -67,15 +67,23 @@ class OracleAdapter(DataSourceAdapter):
             return await asyncio.to_thread(sync_execute)
 
     async def get_tables(self) -> List[Dict[str, str]]:
-        """获取当前用户下的表和视图名称"""
+        """获取当前用户下的表和视图名称（含中文备注）"""
         sql = """
-            SELECT table_name, 'TABLE' as type FROM user_tables 
-            UNION ALL 
-            SELECT view_name as table_name, 'VIEW' as type FROM user_views 
-            ORDER BY type, table_name
+            SELECT t.table_name, t.table_type, NVL(tc.comments, '')
+            FROM (
+                SELECT table_name, 'TABLE' AS table_type FROM user_tables
+                UNION ALL
+                SELECT view_name AS table_name, 'VIEW' AS table_type FROM user_views
+            ) t
+            LEFT JOIN user_tab_comments tc
+                ON tc.table_name = t.table_name AND tc.table_type = t.table_type
+            ORDER BY t.table_type, t.table_name
         """
         rows, _ = await self._run_query_internal(sql)
-        return [{"name": row[0], "type": row[1]} for row in rows]
+        return [
+            {"name": row[0], "comment": row[2] or "", "type": row[1]}
+            for row in rows
+        ]
 
     async def get_columns(self, table_name: Optional[str] = None, custom_sql: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
         """获取表或自定义查询 SQL 的字段列定义"""

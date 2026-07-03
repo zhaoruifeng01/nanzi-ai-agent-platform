@@ -70,15 +70,11 @@
                   :disabled="!config.enabled || !config.connection_config_id || loadingTables"
                   @click.stop="toggleTablePicker"
                 >
-                  <span
-                    class="truncate"
-                    :class="config.table_name ? 'text-gray-900' : 'text-gray-400'"
-                  >
-                    {{
-                      loadingTables
-                        ? '加载中...'
-                        : config.table_name || '请选择用户表'
-                    }}
+                  <span v-if="loadingTables" class="text-gray-400">加载中...</span>
+                  <span v-else-if="!config.table_name" class="text-gray-400">请选择用户表</span>
+                  <span v-else class="flex flex-col min-w-0 flex-1">
+                    <span class="truncate font-medium text-gray-900">{{ config.table_name }}</span>
+                    <span class="truncate text-xs text-gray-400">{{ selectedTableSubtitle }}</span>
                   </span>
                   <svg
                     class="h-4 w-4 shrink-0 text-gray-400 transition-transform"
@@ -104,7 +100,7 @@
                       v-model="tableSearchQuery"
                       type="text"
                       class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-0.5 outline-none"
-                      placeholder="搜索表名..."
+                      placeholder="搜索表名或中文备注..."
                       @click.stop
                     />
                   </div>
@@ -113,11 +109,14 @@
                       v-for="t in filteredTables"
                       :key="t.name"
                       type="button"
-                      class="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-indigo-50"
-                      :class="config.table_name === t.name ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-800'"
+                      class="w-full px-3 py-2.5 text-left transition-colors hover:bg-indigo-50"
+                      :class="config.table_name === t.name ? 'bg-indigo-50 text-indigo-700' : 'text-gray-800'"
                       @click.stop="selectTable(t.name)"
                     >
-                      {{ t.name }}<span v-if="t.type" class="text-gray-400"> ({{ t.type }})</span>
+                      <div class="text-sm font-medium truncate">{{ t.name }}</div>
+                      <div class="text-xs truncate mt-0.5" :class="config.table_name === t.name ? 'text-indigo-500/80' : 'text-gray-400'">
+                        {{ tableSubtitle(t) }}
+                      </div>
                     </button>
                     <div
                       v-if="!loadingTables && filteredTables.length === 0"
@@ -173,20 +172,23 @@
                   </div>
 
                   <div class="min-w-0">
-                    <select
+                    <SourceColumnPicker
                       v-model="config.field_map[field.key]"
-                      class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-50 font-mono"
-                      :disabled="!config.enabled || loadingColumns"
-                    >
-                      <option value="">{{ loadingColumns ? '加载中...' : '请选择来源字段' }}</option>
-                      <option v-for="col in columns" :key="col.name" :value="col.name">{{ col.name }}</option>
-                    </select>
+                      :columns="columns"
+                      :loading="loadingColumns"
+                      :disabled="!config.enabled"
+                      accent="indigo"
+                    />
                     <p v-if="config.field_map[field.key]" class="text-xs text-emerald-600 mt-1 truncate">
                       {{ config.table_name }}.{{ config.field_map[field.key] }}
                     </p>
                   </div>
                 </div>
               </div>
+
+              <p v-if="columns.length > 0" class="text-xs text-gray-400">
+                共 {{ columns.length }} 个字段，可搜索字段名、中文备注或示例值
+              </p>
 
               <div class="space-y-3 pt-1">
                 <div class="flex items-center justify-between gap-3">
@@ -248,15 +250,14 @@
 
                     <div class="min-w-0 flex items-start gap-2">
                       <div class="flex-1 min-w-0">
-                        <select
+                        <SourceColumnPicker
                           v-model="mapping.source_column"
-                          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-violet-500 outline-none disabled:bg-gray-50 font-mono"
-                          :disabled="!config.enabled || loadingColumns"
-                          @change="onExtraSourceColumnChange(mapping)"
-                        >
-                          <option value="">{{ loadingColumns ? '加载中...' : '请选择来源字段' }}</option>
-                          <option v-for="col in columns" :key="col.name" :value="col.name">{{ col.name }}</option>
-                        </select>
+                          :columns="columns"
+                          :loading="loadingColumns"
+                          :disabled="!config.enabled"
+                          accent="violet"
+                          @update:model-value="onExtraSourceColumnChange(mapping)"
+                        />
                         <p v-if="mapping.source_column" class="text-xs text-emerald-600 mt-1 truncate">
                           {{ config.table_name }}.{{ mapping.source_column }}
                         </p>
@@ -497,7 +498,7 @@
             <ul class="text-sm text-gray-600 leading-relaxed pl-3 space-y-1.5 list-disc list-inside">
               <li>预览与同步会使用当前表单配置，可先预览再保存。</li>
               <li>「保存配置」用于持久化设置并注册定时任务。</li>
-              <li>扩展 JSON 键名请勿重复；来源表字段较多时可使用搜索选表。</li>
+              <li>扩展 JSON 键名请勿重复；表与字段均支持搜索快速定位。</li>
             </ul>
           </section>
         </div>
@@ -511,6 +512,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import axios from 'axios'
 import { XMarkIcon, TrashIcon } from '@heroicons/vue/24/outline'
 import Switch from './Switch.vue'
+import SourceColumnPicker from './SourceColumnPicker.vue'
 import { useToast } from '../composables/useToast'
 
 interface ExtraDataMapping {
@@ -663,13 +665,29 @@ const isAllSelected = computed(() => {
   return visible.length > 0 && visible.every((u) => selectedUserNames.value.includes(u.user_name))
 })
 
+const selectedTable = computed(() =>
+  tables.value.find((table) => table.name === config.value.table_name) || null,
+)
+
+const tableSubtitle = (table: { comment?: string; type?: string }) => {
+  const comment = String(table.comment || '').trim()
+  if (comment) return comment
+  return table.type || '—'
+}
+
+const selectedTableSubtitle = computed(() => {
+  if (!selectedTable.value) return ''
+  return tableSubtitle(selectedTable.value)
+})
+
 const filteredTables = computed(() => {
   const keyword = tableSearchQuery.value.trim().toLowerCase()
   if (!keyword) return tables.value
   return tables.value.filter((table) => {
     const name = String(table.name || '').toLowerCase()
     const type = String(table.type || '').toLowerCase()
-    return name.includes(keyword) || type.includes(keyword)
+    const comment = String(table.comment || '').toLowerCase()
+    return name.includes(keyword) || type.includes(keyword) || comment.includes(keyword)
   })
 })
 

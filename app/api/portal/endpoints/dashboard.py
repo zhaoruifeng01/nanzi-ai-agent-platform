@@ -19,6 +19,35 @@ def is_admin(user: dict) -> bool:
     """Check if user is admin"""
     return user.get("role") == "admin"
 
+
+def _resolve_token_stats_range(
+    days: int = 7,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> tuple[datetime, datetime, int]:
+    """解析 Token 统计时间范围，返回 (start, end, span_days)。"""
+    now = datetime.now()
+    if start_date and end_date:
+        start = datetime.strptime(start_date, "%Y-%m-%d").replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        end = datetime.strptime(end_date, "%Y-%m-%d").replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+        if end < start:
+            raise HTTPException(status_code=400, detail="结束日期不能早于开始日期")
+        span_days = (end.date() - start.date()).days + 1
+        if span_days > 90:
+            raise HTTPException(status_code=400, detail="时间范围不能超过 90 天")
+        return start, end, span_days
+
+    span_days = min(max(int(days or 7), 1), 90)
+    start = (now - timedelta(days=span_days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return start, end, span_days
+
 @router.get("/admin-stats")
 async def get_admin_stats(
     period: str = Query("today", pattern="^(today|week|month)$"),
@@ -522,28 +551,32 @@ async def get_agent_stats(
 @router.get("/token-stats/trends")
 async def get_token_stats_trends(
     days: int = Query(7, ge=1, le=90),
+    start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     user: dict = Depends(require_api_key),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
 ):
     admin_flag = is_admin(user)
     user_name = user["user_name"]
-    start_date = (datetime.now() - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    
+    range_start, range_end, span_days = _resolve_token_stats_range(days, start_date, end_date)
+
     stmt = select(
         func.date(AgentExecutionHistory.created_at).label("date"),
         func.count().label("calls"),
         func.coalesce(func.sum(AgentExecutionHistory.prompt_tokens), 0).label("prompt_tokens"),
         func.coalesce(func.sum(AgentExecutionHistory.completion_tokens), 0).label("completion_tokens"),
         func.coalesce(func.sum(AgentExecutionHistory.total_tokens), 0).label("total_tokens"),
-    ).where(AgentExecutionHistory.created_at >= start_date)
-    
+    ).where(
+        AgentExecutionHistory.created_at >= range_start,
+        AgentExecutionHistory.created_at <= range_end,
+    )
+
     if not admin_flag:
         stmt = stmt.where(AgentExecutionHistory.username == user_name)
-        
+
     stmt = stmt.group_by(func.date(AgentExecutionHistory.created_at)).order_by("date")
     rows = (await db.execute(stmt)).all()
-    
-    # 构造默认无数据的空值，确保前端折线图有连续日期
+
     results_map = {}
     for r in rows:
         results_map[str(r.date)] = {
@@ -552,12 +585,14 @@ async def get_token_stats_trends(
             "completion_tokens": int(r.completion_tokens or 0),
             "total_tokens": int(r.total_tokens or 0),
         }
-        
+
     trends = []
     empty_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    for i in range(days):
-        d = start_date + timedelta(days=i)
-        d_str = d.strftime('%Y-%m-%d')
+    for i in range(span_days):
+        d = range_start + timedelta(days=i)
+        if d > range_end:
+            break
+        d_str = d.strftime("%Y-%m-%d")
         stats = results_map.get(d_str, empty_stats)
         trends.append({
             "date": d_str,
@@ -566,8 +601,78 @@ async def get_token_stats_trends(
             "completion_tokens": stats["completion_tokens"],
             "total_tokens": stats["total_tokens"],
         })
-        
+
     return trends
+
+
+@router.get("/token-stats/records")
+async def get_token_stats_records(
+    days: int = Query(7, ge=1, le=90),
+    start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    user: dict = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """当前用户的 Token 消耗明细（按会话/交互粒度）。"""
+    admin_flag = is_admin(user)
+    user_name = user["user_name"]
+    range_start, range_end, _ = _resolve_token_stats_range(days, start_date, end_date)
+
+    base_filters = [
+        AgentExecutionHistory.created_at >= range_start,
+        AgentExecutionHistory.created_at <= range_end,
+    ]
+    if not admin_flag:
+        base_filters.append(AgentExecutionHistory.username == user_name)
+
+    count_stmt = select(func.count()).select_from(AgentExecutionHistory).where(*base_filters)
+    total = int((await db.execute(count_stmt)).scalar() or 0)
+
+    stmt = (
+        select(
+            AgentExecutionHistory.id,
+            AgentExecutionHistory.created_at,
+            AgentExecutionHistory.agent_id,
+            AIAgent.display_name,
+            AgentExecutionHistory.model_id,
+            AgentExecutionHistory.prompt_tokens,
+            AgentExecutionHistory.completion_tokens,
+            AgentExecutionHistory.total_tokens,
+            AgentExecutionHistory.status,
+        )
+        .outerjoin(AIAgent, AgentExecutionHistory.agent_id == AIAgent.id)
+        .where(*base_filters)
+        .order_by(desc(AgentExecutionHistory.created_at))
+        .offset((page - 1) * size)
+        .limit(size)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    items = []
+    for r in rows:
+        prompt = int(r.prompt_tokens or 0)
+        completion = int(r.completion_tokens or 0)
+        total_tokens = prompt + completion if (prompt + completion) > 0 else int(r.total_tokens or 0)
+        items.append({
+            "id": r.id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "agent_id": r.agent_id,
+            "agent_name": r.display_name or r.agent_id,
+            "model_id": r.model_id or "",
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total_tokens,
+            "status": r.status or "success",
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+    }
 
 @router.get("/token-stats/agents")
 async def get_token_stats_agents(
