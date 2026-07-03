@@ -46,8 +46,60 @@
       </div>
     </div>
 
+    <!-- 本月额度 -->
+    <div
+      v-if="quotaStatus"
+      class="rounded-xl border p-4 sm:p-5"
+      :class="quotaCardClass"
+    >
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h3 class="text-sm font-semibold text-gray-900">本月 Token 额度</h3>
+          <p class="text-xs text-gray-500 mt-0.5">
+            自然月统计（与下方「消耗趋势」时间范围独立）
+            · {{ quotaStatus.period_start }} ~ {{ quotaStatus.period_end }}
+            <span v-if="quotaStatus.source_label"> · {{ quotaStatus.source_label }}</span>
+          </p>
+        </div>
+        <p v-if="quotaStatus.is_admin_bypass" class="text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
+          管理员豁免
+        </p>
+      </div>
+
+      <div v-if="!quotaStatus.is_admin_bypass" class="mt-4 grid grid-cols-3 gap-3">
+        <div class="rounded-lg bg-white/80 border border-white/60 p-3">
+          <p class="text-[11px] text-gray-500">已用</p>
+          <p class="text-lg font-bold tabular-nums text-gray-900 mt-0.5">{{ formatNumber(quotaStatus.used_tokens) }}</p>
+        </div>
+        <div class="rounded-lg bg-white/80 border border-white/60 p-3">
+          <p class="text-[11px] text-gray-500">上限</p>
+          <p class="text-lg font-bold tabular-nums text-gray-900 mt-0.5">{{ quotaLimitLabel }}</p>
+        </div>
+        <div class="rounded-lg bg-white/80 border border-white/60 p-3">
+          <p class="text-[11px] text-gray-500">剩余</p>
+          <p class="text-lg font-bold tabular-nums mt-0.5" :class="quotaRemainingClass">{{ quotaRemainingLabel }}</p>
+        </div>
+      </div>
+
+      <div
+        v-if="!quotaStatus.is_admin_bypass && quotaStatus.limit_tokens != null"
+        class="mt-4"
+      >
+        <div class="h-2 rounded-full bg-white/70 overflow-hidden">
+          <div
+            class="h-full rounded-full transition-all"
+            :class="quotaProgressClass"
+            :style="{ width: `${quotaUsagePercent}%` }"
+          />
+        </div>
+        <p class="text-[11px] text-gray-500 mt-1.5">已使用 {{ quotaUsagePercent }}%</p>
+      </div>
+    </div>
+
     <!-- 汇总卡片 -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div>
+      <p class="text-xs text-gray-500 mb-2">下方为所选时间范围内的消耗统计（默认「本月」与额度周期一致）</p>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div class="rounded-xl border border-gray-100 bg-gray-50/80 p-4">
         <p class="text-xs text-gray-500">Token 总量</p>
         <p class="text-xl font-bold text-gray-900 tabular-nums mt-1">{{ formatNumber(summary.total_tokens) }}</p>
@@ -67,6 +119,7 @@
         <p class="text-xs text-gray-500">单次平均</p>
         <p class="text-xl font-bold text-gray-900 tabular-nums mt-1">{{ formatNumber(summary.avg_tokens) }}</p>
         <p class="text-[10px] text-gray-400 mt-1">Token / 次交互</p>
+      </div>
       </div>
     </div>
 
@@ -232,6 +285,7 @@ interface RecordRow {
 }
 
 const rangePresets = [
+  { key: 'month', label: '本月', days: 0 },
   { key: '7d', label: '近 7 天', days: 7 },
   { key: '30d', label: '近 30 天', days: 30 },
   { key: '90d', label: '近 90 天', days: 90 },
@@ -240,7 +294,7 @@ const rangePresets = [
 type PresetKey = typeof rangePresets[number]['key'] | 'custom'
 
 const loading = ref(false)
-const activePreset = ref<PresetKey>('7d')
+const activePreset = ref<PresetKey>('month')
 const queryDays = ref(7)
 const customStart = ref('')
 const customEnd = ref('')
@@ -249,6 +303,55 @@ const records = ref<RecordRow[]>([])
 const recordPage = ref(1)
 const recordPageSize = 20
 const recordTotal = ref(0)
+
+interface QuotaStatus {
+  period_start: string
+  period_end: string
+  used_tokens: number
+  limit_tokens: number | null
+  remaining_tokens: number | null
+  source: string
+  source_label?: string | null
+  is_admin_bypass: boolean
+}
+
+const quotaStatus = ref<QuotaStatus | null>(null)
+
+const quotaLimitLabel = computed(() => {
+  if (!quotaStatus.value || quotaStatus.value.limit_tokens == null) return '不限'
+  return formatNumber(quotaStatus.value.limit_tokens)
+})
+
+const quotaRemainingLabel = computed(() => {
+  if (!quotaStatus.value || quotaStatus.value.limit_tokens == null) return '不限'
+  return formatNumber(quotaStatus.value.remaining_tokens || 0)
+})
+
+const quotaUsagePercent = computed(() => {
+  if (!quotaStatus.value?.limit_tokens) return 0
+  const pct = (quotaStatus.value.used_tokens / quotaStatus.value.limit_tokens) * 100
+  return Math.min(100, Math.round(pct))
+})
+
+const quotaCardClass = computed(() => {
+  if (!quotaStatus.value?.limit_tokens) return 'border-gray-100 bg-gray-50/80'
+  if (quotaUsagePercent.value >= 100) return 'border-rose-200 bg-rose-50/80'
+  if (quotaUsagePercent.value >= 80) return 'border-amber-200 bg-amber-50/80'
+  return 'border-blue-100 bg-blue-50/60'
+})
+
+const quotaRemainingClass = computed(() => {
+  if (!quotaStatus.value?.limit_tokens) return 'text-gray-900'
+  if ((quotaStatus.value.remaining_tokens || 0) <= 0) return 'text-rose-700'
+  if (quotaUsagePercent.value >= 80) return 'text-amber-700'
+  return 'text-emerald-700'
+})
+
+const quotaProgressClass = computed(() => {
+  if (quotaUsagePercent.value >= 100) return 'bg-rose-500'
+  if (quotaUsagePercent.value >= 80) return 'bg-amber-500'
+  return 'bg-blue-500'
+})
 
 const formatDateInput = (date: Date) => {
   const y = date.getFullYear()
@@ -259,14 +362,19 @@ const formatDateInput = (date: Date) => {
 
 const initDefaultCustomRange = () => {
   const end = new Date()
-  const start = new Date()
-  start.setDate(end.getDate() - 6)
+  const start = new Date(end.getFullYear(), end.getMonth(), 1)
   customEnd.value = formatDateInput(end)
   customStart.value = formatDateInput(start)
 }
 
+const applyMonthPreset = () => {
+  activePreset.value = 'month'
+  initDefaultCustomRange()
+  recordPage.value = 1
+}
+
 const queryParams = computed(() => {
-  if (activePreset.value === 'custom') {
+  if (activePreset.value === 'month' || activePreset.value === 'custom') {
     return { start_date: customStart.value, end_date: customEnd.value }
   }
   return { days: queryDays.value }
@@ -415,6 +523,11 @@ const formatDateTime = (value: string) => {
 }
 
 const applyPreset = (key: typeof rangePresets[number]['key']) => {
+  if (key === 'month') {
+    applyMonthPreset()
+    refreshAll()
+    return
+  }
   activePreset.value = key
   const preset = rangePresets.find((item) => item.key === key)
   queryDays.value = preset?.days || 7
@@ -454,10 +567,15 @@ const loadRecords = async () => {
   recordTotal.value = res.data?.total || 0
 }
 
+const loadQuota = async () => {
+  const res = await axios.get('/api/portal/quota/me')
+  quotaStatus.value = res.data
+}
+
 const refreshAll = async () => {
   loading.value = true
   try {
-    await Promise.all([loadTrends(), loadRecords()])
+    await Promise.all([loadTrends(), loadRecords(), loadQuota()])
   } catch (error) {
     console.error('Failed to load personal token usage', error)
   } finally {
@@ -466,7 +584,7 @@ const refreshAll = async () => {
 }
 
 onMounted(() => {
-  initDefaultCustomRange()
+  applyMonthPreset()
   refreshAll()
 })
 </script>
