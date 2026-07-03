@@ -2568,6 +2568,7 @@ import { cancelConversationRun } from "@/utils/cancelConversationRun";
 import { createConversationId } from "@/utils/conversationId";
 import { useToast } from "../composables/useToast";
 import { useTokenQuota } from "../composables/useTokenQuota";
+import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
 import { useDatasetPortal } from "@/composables/useDatasetPortal";
 import {
   DATASET_PORTAL_SLASH_COMMAND,
@@ -2579,6 +2580,7 @@ const toast = useToast();
 const {
   bannerMessage: quotaBannerMessage,
   isBlocked: quotaIsBlocked,
+  quotaStatus,
   refreshQuota,
   ensureCanSend,
 } = useTokenQuota();
@@ -3452,6 +3454,7 @@ const SYSTEM_SLASH_COMMANDS = [
   { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
+  { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];
 const showCommandMenu = ref(false);
@@ -5293,6 +5296,28 @@ const fetchConversationHistory = async (isLoadMore = false) => {
     isLoadingHistory.value = false;
   }
 };
+
+const showQuotaStatusInChat = async () => {
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: "/quota",
+    timestamp: new Date().toISOString(),
+  });
+  await refreshQuota();
+  messages.value.push({
+    id: Date.now() + 1,
+    role: "agent",
+    agentName: "sys_quota",
+    agentDisplayName: "系统助手",
+    content: buildQuotaStatusMarkdown(quotaStatus.value),
+    timestamp: new Date().toISOString(),
+  });
+  autoScrollEnabled.value = true;
+  await nextTick();
+  scrollToBottom(true);
+};
+
 // --- Logic ---
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, allowedAgents.value);
@@ -5324,6 +5349,11 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     case "/settings":
       userInput.value = "";
       showSettings.value = true;
+      return true;
+    case "/quota":
+    case "/tokens":
+      userInput.value = "";
+      await showQuotaStatusInChat();
       return true;
     case "/new":
     case "/clear": // legacy alias

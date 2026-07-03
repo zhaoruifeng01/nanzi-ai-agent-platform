@@ -31,6 +31,8 @@ import {
   type PendingToolPermission,
 } from "@/utils/agentscopeSseHandlers";
 import { useToast } from "../composables/useToast";
+import { useTokenQuota } from "@/composables/useTokenQuota";
+import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
 import { isActiveThoughtStep, isDimmedThoughtStep } from "@/utils/turnLogDisplay";
 
 import ChatInput from "@/components/embed/ChatInput.vue";
@@ -59,6 +61,7 @@ import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 
 const route = useRoute();
 const { showToast } = useToast();
+const { quotaStatus, refreshQuota } = useTokenQuota();
 
 // --- New Features State ---
 const showSessionPreview = ref(false);
@@ -319,6 +322,7 @@ const SYSTEM_SLASH_COMMANDS = [
   { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
+  { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];
 const slashCommands = ref<any[]>([...SYSTEM_SLASH_COMMANDS]);
@@ -2156,6 +2160,26 @@ watch(
   }
 );
 
+const showQuotaStatusInChat = async () => {
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: "/quota",
+    timestamp: new Date().toISOString(),
+  });
+  await refreshQuota();
+  messages.value.push({
+    id: Date.now() + 1,
+    role: "agent",
+    agentName: "sys_quota",
+    agentDisplayName: "系统助手",
+    content: buildQuotaStatusMarkdown(quotaStatus.value),
+    timestamp: new Date().toISOString(),
+  });
+  await nextTick();
+  scrollToBottom(true);
+};
+
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, agents.value);
   if (isDatasetPortalSlashCommand(normalizedCmd)) {
@@ -2189,6 +2213,11 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     case "/settings":
       userInput.value = "";
       showConfigPanel.value = !showConfigPanel.value;
+      return true;
+    case "/quota":
+    case "/tokens":
+      userInput.value = "";
+      await showQuotaStatusInChat();
       return true;
     case "/new":
     case "/clear":
