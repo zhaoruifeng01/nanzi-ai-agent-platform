@@ -46,6 +46,20 @@ def test_build_extra_data_json():
     assert payload == '{"id": 100, "dept": "RD"}'
 
 
+def test_build_extra_data_json_null_as_empty_string():
+    row = {
+        "user_name": "alice",
+        "__extra__id": 100,
+        "__extra__dept": None,
+    }
+    mappings = [
+        ThirdPartyUserSyncExtraDataMapping(json_key="id", source_column="user_id"),
+        ThirdPartyUserSyncExtraDataMapping(json_key="dept", source_column="dept_code"),
+    ]
+    payload = UserSyncService._build_extra_data_json(row, mappings)
+    assert payload == '{"id": 100, "dept": ""}'
+
+
 def test_normalize_external_user():
     row = {"user_name": " alice ", "real_name": "Bob", "remark": None}
     result = UserSyncService._normalize_external_user(row)

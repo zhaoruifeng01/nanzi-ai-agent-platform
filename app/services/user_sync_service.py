@@ -125,8 +125,9 @@ class UserSyncService:
                 continue
             raw = row.get(alias)
             if raw is None:
-                continue
-            payload[json_key] = UserSyncService._serialize_extra_value(raw)
+                payload[json_key] = ""
+            else:
+                payload[json_key] = UserSyncService._serialize_extra_value(raw)
         if not payload:
             return None
         return json.dumps(payload, ensure_ascii=False)
