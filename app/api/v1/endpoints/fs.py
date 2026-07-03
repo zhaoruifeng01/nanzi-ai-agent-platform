@@ -1,3 +1,4 @@
+import fnmatch
 import os
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -141,6 +142,15 @@ def _contains_parent_path_segment(path: str | None) -> bool:
     if not path:
         return False
     return ".." in str(path).replace("\\", "/").split("/")
+
+
+def _name_matches_search_keyword(name: str, keyword: str) -> bool:
+    """Substring match by default; fnmatch when query contains glob wildcards."""
+    lower_name = name.lower()
+    lower_keyword = keyword.lower()
+    if any(ch in lower_keyword for ch in "*?"):
+        return fnmatch.fnmatch(lower_name, lower_keyword)
+    return lower_keyword in lower_name
 
 
 def get_base_dir() -> str:
@@ -387,6 +397,11 @@ async def search_files(
     if not keyword:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空。")
 
+    base_dir = get_base_dir()
+    # 非管理员在虚拟根（data 根）下搜索时，应遍历全部授权目录而非 data 根本身
+    if path and is_fs_virtual_root(path, base_dir) and not is_fs_admin(user_info):
+        path = None
+
     if path:
         search_roots = [assert_path_allowed(os.path.abspath(path), user_info)]
         search_root_label = search_roots[0]
@@ -412,7 +427,7 @@ async def search_files(
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
 
             for name in sorted(dirs):
-                if keyword in name.lower():
+                if _name_matches_search_keyword(name, keyword):
                     _append_fs_entry(results, os.path.join(root, name), True, user_info=user_info)
                     if len(results) >= max_results:
                         truncated = True
@@ -423,7 +438,7 @@ async def search_files(
             for name in sorted(files):
                 if name.startswith("."):
                     continue
-                if keyword in name.lower():
+                if _name_matches_search_keyword(name, keyword):
                     _append_fs_entry(results, os.path.join(root, name), False, user_info=user_info)
                     if len(results) >= max_results:
                         truncated = True

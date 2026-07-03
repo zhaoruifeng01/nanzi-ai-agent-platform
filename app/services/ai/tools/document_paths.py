@@ -85,9 +85,13 @@ async def resolve_document_input_path(
         raise DocumentPathError("文件大小超出 20MB 限制")
     _validate_extension(candidate, allowed_extensions)
 
+    allowed_resolved = {_normalize_platform_path(item) for item in allowed_attachment_paths}
+    if candidate in allowed_resolved:
+        return candidate
+
     data_root = Path(get_data_base_dir()).resolve()
     uploads_root = (data_root / "uploads").resolve()
-    allowed_uploads = {_normalize_platform_path(item) for item in allowed_attachment_paths}
+    allowed_uploads = allowed_resolved
     if _path_under(candidate, uploads_root):
         if candidate not in allowed_uploads:
             raise DocumentPathError("该上传文件不属于当前会话附件")

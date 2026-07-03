@@ -548,7 +548,7 @@ class AgentServicePrompts:
             f"- **会话工作目录**：`{workdir}`（位于 `/app/data/agent_workspaces/...`，仅供本会话读写落盘文件）\n"
             f"- **本轮文件/Shell 工具**：{tools_text}\n"
             "- Read/Write/Edit/Grep/Glob 的路径默认相对**会话工作目录**；本会话内新生成/落盘文件优先用相对路径（如 `./notes.md`）。\n"
-            "- **平台共享目录仍在 `/app/data` 沙箱内、可访问**：用户上传附件通常在 `/app/data/uploads/...`，技能文件在 `/app/data/skills/...`。"
+            "- **平台共享目录仍在 `/app/data` 沙箱内、可访问**：用户上传附件在本人工作目录 `.../uploads/`；SQLite 临时演算库在 `.../sandbox/sess_<id>.db`；技能文件在 `/app/data/skills/...`。"
             " 用户消息 `---` 之后或附件块中给出的**绝对路径**可直接用于 Read/Grep，无需先复制到会话工作目录。\n"
             "- 文件与命令工具仅能在平台允许的路径范围内生效（含上述会话目录与 `/app/data` 下授权子目录）；越界会被工具层拒绝。\n"
             "- 禁止访问其他用户或其他会话的 agent_workspaces 目录；不得臆造路径。\n"

@@ -58,7 +58,8 @@ async def test_upload_success(db_session, valid_api_key):
         assert data["data"]["filename"] == "chart.png"
         assert data["data"]["size"] == len(file_content)
         assert data["data"]["ext"] == "png"
-        assert "/static/uploads/" in data["data"]["url"]
+        assert "agent_workspaces" in data["data"]["url"]
+        assert data["data"]["url"].endswith("chart.png")
 
 @pytest.mark.asyncio
 async def test_upload_forbidden_extensions(db_session, valid_api_key):

@@ -45,7 +45,7 @@ import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import ChatCanvas from "@/components/embed/ChatCanvas.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
-import { isImageAttachment } from "@/utils/attachmentImages";
+import { isImageAttachment, getServerAttachmentPath } from "@/utils/attachmentImages";
 import { openWorkspaceFileInCanvas } from "@/utils/workspaceFilePreview";
 import { sanitizeStreamContent } from "@/utils/streamContentSanitize";
 import {
@@ -1939,17 +1939,6 @@ const formatBytes = (bytes: number) => {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-};
-
-const getServerAttachmentPath = (file: ChatFile) => {
-  if (file.type === "skill") {
-    return `/app/data/skills/${file.url}/SKILL.md`;
-  }
-  if (file.type === "local_file" || file.type === "local_dir") {
-    return file.url;
-  }
-  const fileName = file.url.split("/").filter(Boolean).pop() || file.filename;
-  return `/app/data/uploads/${fileName}`;
 };
 
 const buildImageAttachmentHint = (file: ChatFile, path: string) => {

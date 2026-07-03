@@ -13,6 +13,26 @@ from app.services.ai.tools.tool_compat import tool
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_SANDBOX_DIR = os.path.join("data", "sandbox")
+
+
+def _resolve_sqlite_scratchpad_dir() -> str:
+    """优先使用当前用户私有 sandbox；无 Agent 上下文时回退旧公共目录（单测/脚本）。"""
+    from app.core.context import get_current_agent_context
+    from app.utils.fs_access import get_user_sandbox_dir
+
+    ctx = get_current_agent_context()
+    if ctx and ctx.user_id is not None:
+        user_info = {
+            "user_id": ctx.user_id,
+            "role": "admin" if ctx.is_admin else "user",
+        }
+        sandbox_dir = get_user_sandbox_dir(user_info)
+        if sandbox_dir:
+            return sandbox_dir
+    return _LEGACY_SANDBOX_DIR
+
+
 @tool
 def sqlite_scratchpad(sql: str, session_id: str, import_data: str = None) -> str:
     """
@@ -23,7 +43,7 @@ def sqlite_scratchpad(sql: str, session_id: str, import_data: str = None) -> str
         session_id: 隔离会话的标识符 (如 123)。
         import_data: 可选的 JSON 序列化数据（字典格式）。键为临时表名，值为字典列表（数据行）。
     """
-    db_dir = "data/sandbox"
+    db_dir = _resolve_sqlite_scratchpad_dir()
     os.makedirs(db_dir, exist_ok=True)
     db_path = os.path.join(db_dir, f"sess_{session_id}.db")
     

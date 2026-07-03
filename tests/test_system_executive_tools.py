@@ -139,17 +139,26 @@ def test_search_text_finds_matches_with_context_and_limits():
             os.rmdir(test_dir)
 
 def test_sqlite_scratchpad():
+    from app.core.context import AgentContext, set_agent_context
+    from app.utils.fs_access import get_user_sandbox_dir
+
     session_id = "test_sess_99"
-    # 测试建表与查询
+    set_agent_context(AgentContext(
+        agent_id="test-agent",
+        agent_name="TestAgent",
+        user_id=1,
+        conversation_id="conv-test",
+    ))
     import_data = '{"users": [{"id": 1, "name": "Alice", "role": "admin"}, {"id": 2, "name": "Bob", "role": "user"}]}'
     sql = "SELECT name FROM users WHERE role = 'admin'"
     res = sqlite_scratchpad.invoke({"sql": sql, "session_id": session_id, "import_data": import_data})
-    
+
     assert "Alice" in res
     assert "Bob" not in res
-    
-    # 清理沙箱临时文件
-    db_path = f"data/sandbox/sess_{session_id}.db"
+
+    sandbox_dir = get_user_sandbox_dir({"user_id": 1, "role": "user"})
+    assert sandbox_dir
+    db_path = os.path.join(sandbox_dir, f"sess_{session_id}.db")
     if os.path.exists(db_path):
         os.remove(db_path)
 

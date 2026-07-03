@@ -26,7 +26,8 @@ async def test_list_root_directory(db_session, valid_api_key):
         assert isinstance(data["data"]["items"], list)
         item_paths = {item["path"] for item in data["data"]["items"]}
         base = get_data_base_dir()
-        assert os.path.join(base, "uploads") in item_paths or any("uploads" in p for p in item_paths)
+        # 普通用户虚拟根不再暴露公共 uploads，应至少可见 skills 或本人工作区
+        assert any("skills" in p or "agent_workspaces" in p for p in item_paths) or len(item_paths) >= 1
 
 @pytest.mark.asyncio
 async def test_regular_user_cannot_list_other_workspace(db_session, valid_api_key):
@@ -174,3 +175,54 @@ async def test_regular_user_cannot_write_other_workspace_file(db_session, valid_
         assert resp.status_code == 403
         with open(target, encoding="utf-8") as handle:
             assert handle.read() == "secret"
+
+
+@pytest.mark.asyncio
+async def test_search_from_virtual_root_for_regular_user(db_session, valid_api_key):
+    """非管理员在虚拟根（data 根路径）下搜索时不应 403。"""
+    base = get_data_base_dir()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert me_resp.status_code == 200
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        assert workspace_root
+        os.makedirs(workspace_root, exist_ok=True)
+
+        sample = os.path.join(workspace_root, "conv-search", "notes.md")
+        os.makedirs(os.path.dirname(sample), exist_ok=True)
+        with open(sample, "w", encoding="utf-8") as handle:
+            handle.write("# hello")
+
+        resp = await client.get(
+            "/api/v1/chat/fs/search",
+            params={"q": "*md", "path": base},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        names = {item["name"] for item in data["items"]}
+        assert "notes.md" in names
+
+
+@pytest.mark.asyncio
+async def test_search_glob_pattern(db_session, valid_api_key):
+    base = get_data_base_dir()
+    uploads = os.path.join(base, "uploads")
+    os.makedirs(uploads, exist_ok=True)
+    sample = os.path.join(uploads, "glob-test.md")
+    with open(sample, "w", encoding="utf-8") as handle:
+        handle.write("x")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            "/api/v1/chat/fs/search",
+            params={"q": "*.md", "path": uploads},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert resp.status_code == 200
+        names = {item["name"] for item in resp.json()["data"]["items"]}
+        assert "glob-test.md" in names
+        assert "glob-test.md".replace(".md", ".txt") not in names

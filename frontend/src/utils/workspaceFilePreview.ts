@@ -196,6 +196,43 @@ export async function openWorkspaceFileInCanvas(options: OpenWorkspacePreviewOpt
   }
 }
 
+export async function downloadWorkspaceFile(options: {
+  path: string
+  name: string
+  conversationId?: string | null
+  showToast: (message: string, type?: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const { path, name, conversationId, showToast } = options
+  const resolvedUrl = resolveFsPreviewUrl(path, conversationId)
+
+  try {
+    const response = await axios.get(resolvedUrl, { responseType: 'blob' })
+    const filename = name || 'download'
+    const blobUrl = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(blobUrl)
+    showToast(`已开始下载 ${filename}`, 'success')
+  } catch (err: any) {
+    console.error('下载工作空间文件失败:', err)
+    let errMsg = '下载文件失败'
+    if (err.response?.data?.detail) {
+      errMsg = err.response.data.detail
+    } else if (err.response?.status === 404) {
+      errMsg = '文件不存在，请确认路径是否正确。'
+    } else if (err.response?.status === 403) {
+      errMsg = '安全拦截：无权访问该服务器文件。'
+    } else if (err.response?.status === 400) {
+      errMsg = err.response?.data?.detail || '不支持下载该类型的文件。'
+    }
+    showToast(errMsg, 'error')
+  }
+}
+
 export async function saveWorkspaceFileContent(options: {
   path: string
   content: string

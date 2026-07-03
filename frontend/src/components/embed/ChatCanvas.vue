@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import MermaidRenderer from '@/components/MermaidRenderer.vue';
-import { renderMarkdown } from '@/utils/markdown';
+import { renderMarkdownPreview } from '@/utils/markdown';
 import PivotTable from '@/components/embed/PivotTable.vue';
 import { useToast } from '@/composables/useToast';
 import { canWriteWorkspaceFile, resolvePublicUploadsPreviewUrl, saveWorkspaceFileContent } from '@/utils/workspaceFilePreview';
@@ -371,8 +371,17 @@ const pivotRows = computed(() => {
 // ==========================================
 const activeTab = ref<'preview' | 'code'>('preview');
 
+const isMarkdownFile = computed(() => {
+  if (!props.data) return false;
+  if (props.data.type !== 'code' && props.data.type !== 'html') return false;
+  return props.data.title.toLowerCase().endsWith('.md');
+});
+
+const isMarkdownContent = computed(() => isMarkdownFile.value);
+
 const isHtmlContent = computed(() => {
   if (!props.data) return false;
+  if (isMarkdownFile.value) return false;
   if (props.data.type === 'html') return true;
   if (props.data.type === 'code') {
     const content = props.data.content.trim().toLowerCase();
@@ -390,20 +399,12 @@ const isHtmlContent = computed(() => {
   return false;
 });
 
-const isMarkdownContent = computed(() => {
-  if (!props.data) return false;
-  if (props.data.type === 'code') {
-    return props.data.title.toLowerCase().endsWith('.md');
-  }
-  return false;
-});
-
 const renderedMarkdownContent = computed(() => {
   const content = canSaveWorkspaceFile.value
     ? editorContent.value
     : (props.data?.content || '');
   if (!content) return '';
-  return renderMarkdown(content);
+  return renderMarkdownPreview(content);
 });
 
 const resolveConversationId = () =>
@@ -592,18 +593,18 @@ const panelFrameClass = computed(() => {
     return 'fixed inset-0 z-[260] w-full max-w-none pointer-events-auto border-0';
   }
   if (props.overlay) {
-    return 'absolute inset-0 z-50 w-full max-w-none pointer-events-auto border-0';
+    return 'absolute inset-0 z-[140] w-full max-w-none pointer-events-auto border-0';
   }
   if (props.dockSide === 'left') {
-    return 'fixed left-0 right-auto top-0 bottom-0 z-[118] w-full sm:w-[min(28rem,92%)] sm:max-w-[28rem] border-r border-l-0';
+    return 'fixed left-0 right-auto top-0 bottom-0 z-[140] w-full sm:w-[min(28rem,92%)] sm:max-w-[28rem] border-r border-l-0';
   }
-  return 'fixed right-0 left-0 sm:left-auto top-0 bottom-0 z-[118] w-full sm:w-[80%] sm:max-w-[520px] border-l border-r-0';
+  return 'fixed right-0 left-0 sm:left-auto top-0 bottom-0 z-[140] w-full sm:w-[80%] sm:max-w-[520px] border-l border-r-0';
 });
 
 const overlayBackdropClass = computed(() =>
   isFullscreen.value || isMobile.value
     ? 'fixed inset-0 z-[259]'
-    : 'absolute inset-0 z-40',
+    : 'absolute inset-0 z-[139]',
 );
 </script>
 
@@ -640,11 +641,13 @@ const overlayBackdropClass = computed(() =>
               data?.type === 'csv' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400' :
               data?.type === 'mermaid' ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' :
               data?.type === 'compare' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' :
+              isMarkdownFile ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400' :
               'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
             "
           >
             {{
               data?.type === 'html' ? 'Application' :
+              isMarkdownFile ? 'Markdown' :
               data?.type === 'image' ? 'Image' :
               data?.type === 'pdf' ? 'PDF' :
               data?.type === 'csv' ? 'CSV Table' :
@@ -1212,5 +1215,56 @@ const overlayBackdropClass = computed(() =>
     transparent 2px,
     transparent 8px
   );
+}
+
+.markdown-body :deep(p) {
+  margin-bottom: 0.75em;
+  line-height: 1.75;
+}
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3) {
+  font-weight: 600;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  color: var(--primary-color, #1677ff);
+}
+.markdown-body :deep(h1) { font-size: 1.5em; }
+.markdown-body :deep(h2) { font-size: 1.25em; }
+.markdown-body :deep(h3) { font-size: 1.1em; }
+.markdown-body :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background-color: rgba(175, 184, 193, 0.2);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.markdown-body :deep(pre) {
+  background: #f6f8fa;
+  border-radius: 8px;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.dark .markdown-body :deep(pre) {
+  background: rgba(17, 24, 39, 0.6);
+}
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+.markdown-body :deep(blockquote) {
+  border-left: 3px solid rgba(22, 119, 255, 0.35);
+  padding-left: 1em;
+  color: #64748b;
+  margin: 0.75em 0;
+}
+.markdown-body :deep(a) {
+  color: #2563eb;
+  text-decoration: underline;
 }
 </style>

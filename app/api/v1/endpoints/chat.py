@@ -14,7 +14,9 @@ from app.services.ai.agent_service import agent_service
 from app.services.ai.export_service import ExportService
 from app.core.context import set_debug_context
 from app.core.dependencies import require_api_key
+from app.schemas.response import StandardResponse
 from app.schemas.agent import TraceLogResponse, AgentExecutionHistoryListResponse
+from app.utils.fs_access import get_user_uploads_dir
 from app.services.permission_service import PermissionService
 import logging
 
@@ -1019,7 +1021,7 @@ async def export_trace_data(
 
 
 class UploadResponse(BaseModel):
-    url: str = Field(..., description="文件可访问的静态 URL")
+    url: str = Field(..., description="文件在服务器上的绝对路径（供 AI 与鉴权预览使用）")
     filename: str = Field(..., description="原始文件名")
     size: int = Field(..., description="文件字节大小")
     ext: str = Field(..., description="文件后缀名")
@@ -1027,14 +1029,14 @@ class UploadResponse(BaseModel):
 @router.post("/upload",
     response_model=StandardResponse[UploadResponse],
     summary="会话附件上传",
-    description="支持会话过程中附件的上传、自动清洗和安全托管（最大限制 20MB，阻断敏感危险后缀）。"
+    description="支持会话过程中附件的上传、自动清洗和安全托管（最大限制 20MB，阻断敏感危险后缀）。文件保存至本人 agent_workspaces/uploads 目录。",
 )
 async def upload_chat_file(
     file: UploadFile = File(...),
     user_info: Dict[str, Any] = Depends(require_api_key)
 ):
     """
-    Upload a session attachment with security checks and static hosting mapping.
+    Upload a session attachment into the current user's private workspace uploads folder.
     """
     # 1. 20MB 大小硬上限校验
     MAX_SIZE = 20 * 1024 * 1024
@@ -1055,11 +1057,12 @@ async def upload_chat_file(
         
     unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:12]}_{clean_name}"
     
-    # 4. 保存到持久卷规划目录 data/uploads
-    upload_dir = os.path.join("data", "uploads")
+    upload_dir = get_user_uploads_dir(user_info)
+    if not upload_dir:
+        raise HTTPException(status_code=403, detail="无法解析用户工作目录，上传失败。")
     os.makedirs(upload_dir, exist_ok=True)
     
-    file_path = os.path.join(upload_dir, unique_name)
+    file_path = os.path.normpath(os.path.join(upload_dir, unique_name))
     try:
         with open(file_path, "wb") as f:
             f.write(contents)
@@ -1068,7 +1071,7 @@ async def upload_chat_file(
         raise HTTPException(status_code=500, detail="保存文件失败，请稍后重试。")
         
     return StandardResponse(data=UploadResponse(
-        url=f"/static/uploads/{unique_name}",
+        url=file_path,
         filename=file.filename or unique_name,
         size=len(contents),
         ext=ext.replace(".", "")

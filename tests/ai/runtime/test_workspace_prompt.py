@@ -42,7 +42,8 @@ async def test_append_workspace_prompt_when_file_tools_and_conversation(monkeypa
     assert "Base prompt" in result
     assert "[Session Workspace & Path Sandbox]" in result
     assert "/tmp/workspaces/u1/conv-1" in result
-    assert "/app/data/uploads" in result
+    assert "/uploads/" in result
+    assert "/sandbox/" in result
     assert "Grep" in result
 
 

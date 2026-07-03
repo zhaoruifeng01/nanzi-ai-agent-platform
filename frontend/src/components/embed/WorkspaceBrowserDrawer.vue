@@ -4,8 +4,9 @@ import axios from '@/utils/axios'
 import { useToast } from '@/composables/useToast'
 import {
   resolveFileTypeVisual,
+  type FileTypeCategory,
 } from '@/utils/fileTypeVisual'
-import { canPreviewWorkspaceFile } from '@/utils/workspaceFilePreview'
+import { canPreviewWorkspaceFile, downloadWorkspaceFile } from '@/utils/workspaceFilePreview'
 
 const modelValue = defineModel<boolean>({ default: false })
 const keepOpenOnSelect = defineModel<boolean>('keepOpenOnSelect', { default: false })
@@ -40,6 +41,40 @@ const includeSubdirs = ref(true)
 const searchLoading = ref(false)
 const recursiveSearchResults = ref<any[]>([])
 const searchTruncated = ref(false)
+type TypeFilterKey = 'all' | FileTypeCategory | 'markdown' | 'html'
+const typeFilter = ref<TypeFilterKey>('all')
+
+const TYPE_FILTER_OPTIONS: Array<{ key: TypeFilterKey; label: string; icon: string }> = [
+  { key: 'all', label: '全部', icon: '✨' },
+  { key: 'folder', label: '文件夹', icon: '📁' },
+  { key: 'image', label: '图片', icon: '🖼️' },
+  { key: 'markdown', label: 'Markdown', icon: '📝' },
+  { key: 'document', label: '文档', icon: '📄' },
+  { key: 'html', label: 'HTML', icon: '🌐' },
+  { key: 'code', label: '代码', icon: '💻' },
+  { key: 'spreadsheet', label: '表格', icon: '📊' },
+  { key: 'presentation', label: '演示', icon: '📽️' },
+  { key: 'archive', label: '压缩包', icon: '🗜️' },
+  { key: 'video', label: '视频', icon: '🎬' },
+  { key: 'audio', label: '音频', icon: '🎵' },
+  { key: 'data', label: '数据', icon: '🗃️' },
+]
+
+/** 仅选类型、无搜索词时，按扩展名通配符递归扫描子目录 */
+const TYPE_SCAN_PATTERNS: Partial<Record<TypeFilterKey, string[]>> = {
+  markdown: ['*.md'],
+  html: ['*.html', '*.htm'],
+  image: ['*.png', '*.jpg', '*.jpeg', '*.webp', '*.gif', '*.svg', '*.bmp'],
+  document: ['*.pdf', '*.doc', '*.docx', '*.txt', '*.rtf'],
+  code: ['*.py', '*.js', '*.ts', '*.tsx', '*.jsx', '*.json', '*.yaml', '*.yml', '*.css', '*.sh', '*.sql', '*.xml'],
+  spreadsheet: ['*.xls', '*.xlsx', '*.csv'],
+  presentation: ['*.ppt', '*.pptx'],
+  archive: ['*.zip', '*.rar', '*.tar', '*.gz', '*.7z'],
+  video: ['*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'],
+  audio: ['*.mp3', '*.wav', '*.flac', '*.aac'],
+  data: ['*.db', '*.sqlite', '*.parquet'],
+}
+
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const isMobile = ref(
@@ -70,15 +105,58 @@ const clearSearch = () => {
 
 const resetSearchState = () => {
   clearSearch()
+  typeFilter.value = 'all'
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
   }
 }
 
-const fetchRecursiveSearch = async () => {
+/** 非管理员虚拟根目录的 currentPath 为 data 根，不可作为搜索起点 */
+const resolveSearchPathParam = (): string | undefined => {
+  if (isRoot.value && scope.value === 'user_scoped') return undefined
+  return currentPath.value || undefined
+}
+
+const nameMatchesSearchQuery = (name: string, query: string): boolean => {
+  const lowerName = name.toLowerCase()
+  const lowerQuery = query.toLowerCase()
+  if (/[*?]/.test(lowerQuery)) {
+    const escaped = lowerQuery.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    const pattern = `^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`
+    return new RegExp(pattern).test(lowerName)
+  }
+  return lowerName.includes(lowerQuery)
+}
+
+const filteredCurrentItems = computed(() => {
   const q = searchQuery.value.trim()
-  if (!q || !includeSubdirs.value) {
+  if (!q) return items.value
+  return items.value.filter((item) => nameMatchesSearchQuery(item.name, q))
+})
+
+const isSearchActive = computed(() => searchQuery.value.trim().length > 0)
+const isTypeFilterActive = computed(() => typeFilter.value !== 'all')
+const isTypeScanActive = computed(() => {
+  const key = typeFilter.value
+  return key !== 'all' && key !== 'folder' && !searchQuery.value.trim()
+})
+const isRecursiveListingActive = computed(
+  () => isTypeScanActive.value || (isSearchActive.value && includeSubdirs.value),
+)
+
+const resolveRecursiveSearchPatterns = (): string[] => {
+  const userQ = searchQuery.value.trim()
+  if (userQ) return [userQ]
+  if (isTypeScanActive.value) {
+    return TYPE_SCAN_PATTERNS[typeFilter.value] || []
+  }
+  return []
+}
+
+const fetchRecursiveSearch = async () => {
+  const patterns = resolveRecursiveSearchPatterns()
+  if (!patterns.length || !isRecursiveListingActive.value) {
     recursiveSearchResults.value = []
     searchTruncated.value = false
     return
@@ -86,17 +164,25 @@ const fetchRecursiveSearch = async () => {
 
   searchLoading.value = true
   try {
-    const res = await axios.get('/api/v1/chat/fs/search', {
-      params: {
-        q,
-        path: currentPath.value || undefined,
-        max_results: 80,
-      },
-    })
-    if (res.data?.data) {
-      recursiveSearchResults.value = res.data.data.items || []
-      searchTruncated.value = !!res.data.data.truncated
+    const merged = new Map<string, any>()
+    let truncated = false
+    for (const q of patterns) {
+      const res = await axios.get('/api/v1/chat/fs/search', {
+        params: {
+          q,
+          path: resolveSearchPathParam(),
+          max_results: 80,
+        },
+      })
+      if (res.data?.data) {
+        for (const item of res.data.data.items || []) {
+          merged.set(item.path, item)
+        }
+        if (res.data.data.truncated) truncated = true
+      }
     }
+    recursiveSearchResults.value = Array.from(merged.values())
+    searchTruncated.value = truncated
   } catch (error) {
     console.error('Failed to search files:', error)
     recursiveSearchResults.value = []
@@ -106,19 +192,23 @@ const fetchRecursiveSearch = async () => {
   }
 }
 
+const scheduleRecursiveSearch = (delay = 200) => {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(fetchRecursiveSearch, delay)
+}
+
 watch(searchQuery, () => {
   selectedItem.value = null
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
 
-  const q = searchQuery.value.trim()
-  if (!q) {
+  if (!searchQuery.value.trim() && !isTypeScanActive.value) {
     recursiveSearchResults.value = []
     searchTruncated.value = false
     return
   }
 
-  if (includeSubdirs.value) {
-    searchDebounceTimer = setTimeout(fetchRecursiveSearch, 300)
+  if (isRecursiveListingActive.value) {
+    scheduleRecursiveSearch(300)
   } else {
     recursiveSearchResults.value = []
     searchTruncated.value = false
@@ -127,33 +217,69 @@ watch(searchQuery, () => {
 
 watch(includeSubdirs, () => {
   selectedItem.value = null
+  if (isTypeScanActive.value) return
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   if (searchQuery.value.trim() && includeSubdirs.value) {
-    if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-    searchDebounceTimer = setTimeout(fetchRecursiveSearch, 200)
+    scheduleRecursiveSearch(200)
   } else {
     recursiveSearchResults.value = []
     searchTruncated.value = false
   }
 })
 
-const filteredCurrentItems = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return items.value
-  return items.value.filter((item) => item.name.toLowerCase().includes(q))
+watch(typeFilter, () => {
+  selectedItem.value = null
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  if (isTypeScanActive.value || (searchQuery.value.trim() && includeSubdirs.value)) {
+    scheduleRecursiveSearch(150)
+  } else if (!searchQuery.value.trim()) {
+    recursiveSearchResults.value = []
+    searchTruncated.value = false
+  }
 })
 
-const isSearchActive = computed(() => searchQuery.value.trim().length > 0)
+const itemMatchesTypeFilter = (item: { name: string; is_dir: boolean }) => {
+  if (typeFilter.value === 'all') return true
+  const visual = getItemVisual(item)
+  if (typeFilter.value === 'folder') return item.is_dir
+  if (item.is_dir) {
+    if (typeFilter.value === 'folder') return true
+    if (activeTab.value === 'directory') return true
+    if (isRecursiveListingActive.value) return false
+    return false
+  }
+  if (typeFilter.value === 'markdown') return visual.ext === 'md'
+  if (typeFilter.value === 'html') return visual.ext === 'html' || visual.ext === 'htm'
+  if (typeFilter.value === 'document') {
+    return visual.category === 'document' && visual.ext !== 'md'
+  }
+  return visual.category === typeFilter.value
+}
 
-const displayItems = computed(() => {
-  if (!isSearchActive.value) return items.value
-  if (includeSubdirs.value) return recursiveSearchResults.value
-  return filteredCurrentItems.value
+const baseDisplayItems = computed(() => {
+  if (isRecursiveListingActive.value) return recursiveSearchResults.value
+  if (isSearchActive.value) return filteredCurrentItems.value
+  return items.value
 })
+
+const displayItems = computed(() => baseDisplayItems.value.filter(itemMatchesTypeFilter))
 
 const displayEmptyHint = computed(() => {
-  if (!isSearchActive.value) return '暂无子文件或子目录'
-  if (includeSubdirs.value && searchLoading.value) return ''
+  if (isRecursiveListingActive.value && searchLoading.value) return ''
+  if (isTypeScanActive.value) return '未找到符合类型筛选的文件'
+  if (isTypeFilterActive.value && !isSearchActive.value) return '当前目录下没有符合类型筛选的项'
+  if (!isSearchActive.value && !isTypeFilterActive.value) return '暂无子文件或子目录'
+  if (isTypeFilterActive.value) return '未找到符合搜索与类型筛选的文件'
   return '未找到匹配的文件或目录'
+})
+
+const setTypeFilter = (key: TypeFilterKey) => {
+  typeFilter.value = key
+}
+
+const activeTypeFilterLabel = computed(() => {
+  const opt = TYPE_FILTER_OPTIONS.find((o) => o.key === typeFilter.value)
+  return opt?.label || '全部'
 })
 
 const getItemLocationHint = (itemPath: string) => {
@@ -256,7 +382,7 @@ const formatBaseCrumb = (currentScope: 'admin_all' | 'user_scoped') =>
 
 const breadcrumbs = computed(() => {
   if (isRoot.value && scope.value === 'user_scoped') {
-    return [{ name: scopedHomeCrumbName(), path: '', isBase: true }]
+    return [{ name: scopedHomeCrumbName(), path: '', isBase: true, navigable: true }]
   }
 
   const base = baseDir.value
@@ -264,17 +390,20 @@ const breadcrumbs = computed(() => {
   if (!current) return []
 
   const parts = current.split('/').filter(Boolean)
-  const crumbs: Array<{ name: string; path: string; isBase: boolean }> = []
+  const crumbs: Array<{ name: string; path: string; isBase: boolean; navigable: boolean }> = []
   let runningPath = ''
 
   for (const part of parts) {
     runningPath += `/${part}`
     if (runningPath.startsWith(base)) {
       const isBase = runningPath === base
+      // 普通用户无权浏览 agent_workspaces 汇总目录，仅可进入本人工作区
+      const navigable = !(scope.value === 'user_scoped' && part === 'agent_workspaces')
       crumbs.push({
         name: isBase ? formatBaseCrumb(scope.value) : part,
         path: isBase && scope.value === 'user_scoped' ? '' : runningPath,
         isBase,
+        navigable,
       })
     }
   }
@@ -284,6 +413,7 @@ const breadcrumbs = computed(() => {
       name: formatBaseCrumb(scope.value),
       path: scope.value === 'user_scoped' ? '' : (base || current),
       isBase: true,
+      navigable: true,
     })
   }
 
@@ -317,14 +447,12 @@ const previewItem = (item: { path: string; name: string }) => {
   emit('preview', { path: item.path, name: item.name })
 }
 
-const canPreviewSelected = computed(() => {
-  if (!selectedItem.value || selectedItem.value.is_dir) return false
-  return canPreviewWorkspaceFile(selectedItem.value.name)
-})
-
-const handlePreviewSelected = () => {
-  if (!selectedItem.value) return
-  previewItem(selectedItem.value)
+const downloadItem = async (item: { path: string; name: string }) => {
+  await downloadWorkspaceFile({
+    path: item.path,
+    name: item.name,
+    showToast,
+  })
 }
 
 const handleSelectRow = (item: any) => {
@@ -358,31 +486,18 @@ const finishSelect = (payload: {
   }
 }
 
-const handleConfirm = () => {
-  if (activeTab.value === 'directory' && !selectedItem.value) {
-    const dirName = currentPath.value.split('/').filter(Boolean).pop() || 'data'
-    finishSelect({
-      type: 'local_dir',
-      path: currentPath.value,
-      name: dirName,
-      size: 0,
-      ext: '',
-    })
-    return
-  }
-
-  if (!selectedItem.value) return
-
-  const item = selectedItem.value
-  if (activeTab.value === 'file') {
+const mountItemToSession = (item: { path: string; name: string; is_dir: boolean; size?: number }) => {
+  if (activeTab.value === 'file' && !item.is_dir) {
     finishSelect({
       type: 'local_file',
       path: item.path,
       name: item.name,
-      size: item.size,
+      size: item.size ?? 0,
       ext: getFileExt(item.name),
     })
-  } else {
+    return
+  }
+  if (item.is_dir) {
     finishSelect({
       type: 'local_dir',
       path: item.path,
@@ -391,6 +506,29 @@ const handleConfirm = () => {
       ext: '',
     })
   }
+}
+
+const mountCurrentDirectoryToSession = () => {
+  if (activeTab.value !== 'directory' || !currentPath.value) return
+  const dirName = currentPath.value.split('/').filter(Boolean).pop() || 'data'
+  finishSelect({
+    type: 'local_dir',
+    path: currentPath.value,
+    name: dirName,
+    size: 0,
+    ext: '',
+  })
+}
+
+const shouldShowRowActions = (item: { path: string; is_dir: boolean }) => {
+  if (selectedItem.value?.path !== item.path) return false
+  if (activeTab.value === 'file') return !item.is_dir
+  return item.is_dir
+}
+
+const canMountItem = (item: { is_dir: boolean }) => {
+  if (activeTab.value === 'file') return !item.is_dir
+  return item.is_dir
 }
 
 const sheetEnterFrom = computed(() => (isMobile.value ? 'translate-y-full' : 'translate-x-full'))
@@ -582,31 +720,51 @@ const closeDrawer = () => {
                   </button>
                 </div>
 
-                <div class="flex items-center space-x-2 px-2 py-1.5 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-100 dark:border-gray-800 mb-2 overflow-x-auto no-scrollbar shrink-0">
-                  <button
-                    class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                    :disabled="isRoot || loading"
-                    title="返回上一级"
-                    @click="goParent"
-                  >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
-                    </svg>
-                  </button>
-                  <span class="text-gray-300 dark:text-gray-700">|</span>
-                  <div class="flex items-center space-x-1 whitespace-nowrap text-xs">
-                    <template v-for="(crumb, idx) in breadcrumbs" :key="idx">
-                      <span v-if="idx > 0" class="text-gray-400 dark:text-gray-600">/</span>
-                      <button
-                        class="font-medium hover:text-primary transition-colors focus:outline-none"
-                        :class="idx === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-bold' : 'text-gray-400 dark:text-gray-500'"
-                        :disabled="loading"
-                        @click="clickBreadcrumb(crumb.path)"
-                      >
-                        {{ crumb.name }}
-                      </button>
-                    </template>
+                <div class="flex items-center gap-2 mb-2 shrink-0">
+                  <div class="flex items-center space-x-2 px-2 py-1.5 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-100 dark:border-gray-800 flex-1 min-w-0 overflow-x-auto no-scrollbar">
+                    <button
+                      class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                      :disabled="isRoot || loading"
+                      title="返回上一级"
+                      @click="goParent"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <span class="text-gray-300 dark:text-gray-700 shrink-0">|</span>
+                    <div class="flex items-center space-x-1 whitespace-nowrap text-xs min-w-0">
+                      <template v-for="(crumb, idx) in breadcrumbs" :key="idx">
+                        <span v-if="idx > 0" class="text-gray-400 dark:text-gray-600">/</span>
+                        <button
+                          v-if="crumb.navigable"
+                          class="font-medium hover:text-primary transition-colors focus:outline-none"
+                          :class="idx === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-bold' : 'text-gray-400 dark:text-gray-500'"
+                          :disabled="loading"
+                          @click="clickBreadcrumb(crumb.path)"
+                        >
+                          {{ crumb.name }}
+                        </button>
+                        <span
+                          v-else
+                          class="font-medium text-gray-400/70 dark:text-gray-500/70 cursor-default select-none"
+                          :class="idx === breadcrumbs.length - 1 ? 'text-gray-600 dark:text-gray-400 font-bold' : ''"
+                          title="无权访问该目录"
+                        >
+                          {{ crumb.name }}
+                        </span>
+                      </template>
+                    </div>
                   </div>
+                  <button
+                    v-if="activeTab === 'directory' && !isSearchActive && currentPath"
+                    type="button"
+                    class="flex-shrink-0 px-2.5 py-1.5 rounded-lg text-[10px] font-bold text-primary bg-primary/10 hover:bg-primary/15 border border-primary/20 transition-all whitespace-nowrap focus:outline-none"
+                    title="将当前浏览的目录挂载到输入框"
+                    @click="mountCurrentDirectoryToSession"
+                  >
+                    添加当前目录
+                  </button>
                 </div>
 
                 <div class="flex items-center gap-2 mb-2 shrink-0">
@@ -644,14 +802,38 @@ const closeDrawer = () => {
                   </button>
                 </div>
 
-                <div v-if="isSearchActive" class="flex items-center justify-between px-1 mb-2 text-[10px] text-gray-400 shrink-0">
+                <div class="flex items-center gap-1.5 mb-2 shrink-0 min-w-0">
+                  <span class="text-[10px] font-black text-gray-400 tracking-wider shrink-0">类型</span>
+                  <div class="flex-1 min-w-0 overflow-x-auto no-scrollbar">
+                    <div class="flex items-center gap-1.5 pr-1">
+                      <button
+                        v-for="opt in TYPE_FILTER_OPTIONS"
+                        :key="opt.key"
+                        type="button"
+                        class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold border transition-all whitespace-nowrap focus:outline-none"
+                        :class="typeFilter === opt.key
+                          ? 'bg-primary/10 border-primary/30 text-primary shadow-sm'
+                          : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-500 hover:border-primary/20 hover:text-primary'"
+                        @click="setTypeFilter(opt.key)"
+                      >
+                        <span class="text-[10px] leading-none">{{ opt.icon }}</span>
+                        {{ opt.label }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="isSearchActive || isTypeFilterActive" class="flex items-center justify-between px-1 mb-2 text-[10px] text-gray-400 shrink-0">
                   <span>
-                    <template v-if="includeSubdirs && searchLoading">正在搜索...</template>
-                    <template v-else>找到 {{ displayItems.length }} 项</template>
+                    <template v-if="isRecursiveListingActive && searchLoading">正在搜索...</template>
+                    <template v-else>
+                      找到 {{ displayItems.length }} 项
+                      <span v-if="isTypeFilterActive" class="text-primary/80">（{{ activeTypeFilterLabel }}）</span>
+                    </template>
                     <span v-if="searchTruncated" class="text-amber-600 dark:text-amber-400 ml-1">（结果已截断）</span>
                   </span>
-                  <span v-if="includeSubdirs" class="font-mono truncate max-w-[50%]">{{ currentPath }}</span>
-                  <span v-else>仅当前目录</span>
+                  <span v-if="isRecursiveListingActive" class="font-mono truncate max-w-[50%]">{{ isRoot && scope === 'user_scoped' ? '全部授权目录' : currentPath }}</span>
+                  <span v-else-if="isSearchActive">仅当前目录</span>
                 </div>
 
                 <div class="flex-1 min-h-[240px] border border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden flex flex-col relative bg-gray-50/10">
@@ -665,7 +847,7 @@ const closeDrawer = () => {
                   </div>
 
                   <div
-                    v-if="loading || (isSearchActive && includeSubdirs && searchLoading)"
+                    v-if="loading || (isRecursiveListingActive && searchLoading)"
                     class="absolute inset-0 bg-white/70 dark:bg-gray-900/70 z-10 flex items-center justify-center"
                   >
                     <div class="flex flex-col items-center space-y-2">
@@ -676,7 +858,7 @@ const closeDrawer = () => {
 
                   <div class="flex-1 overflow-y-auto custom-scrollbar p-1 min-h-0">
                     <div v-if="displayItems.length === 0 && !searchLoading" class="h-full flex flex-col items-center justify-center text-gray-400 py-12">
-                      <span class="text-4xl mb-2">{{ isSearchActive ? '🔍' : '📂' }}</span>
+                      <span class="text-4xl mb-2">{{ isRecursiveListingActive || isSearchActive ? '🔍' : '📂' }}</span>
                       <span class="text-xs font-bold">{{ displayEmptyHint }}</span>
                     </div>
 
@@ -720,7 +902,7 @@ const closeDrawer = () => {
                                 用户工作目录
                               </span>
                               <div
-                                v-if="isSearchActive && includeSubdirs && getItemLocationHint(item.path)"
+                                v-if="isRecursiveListingActive && getItemLocationHint(item.path)"
                                 class="text-[9px] text-gray-400 dark:text-gray-500 mt-0.5 truncate font-mono"
                                 :title="item.path"
                               >
@@ -740,56 +922,50 @@ const closeDrawer = () => {
                         <div class="col-span-5 sm:col-span-4 text-right text-[10px] font-mono text-gray-400 dark:text-gray-500 leading-tight">
                           <div>{{ item.is_dir ? '—' : formatSize(item.size) }}</div>
                           <div class="text-[9px] text-gray-400/80 dark:text-gray-500/80">{{ formatTime(item.mtime) }}</div>
+                          <div
+                            v-if="shouldShowRowActions(item)"
+                            class="mt-1.5 flex flex-wrap items-center justify-end gap-x-1 gap-y-0.5 text-[10px] font-sans font-bold"
+                            @click.stop
+                          >
+                            <template v-if="activeTab === 'file' && !item.is_dir">
+                              <button
+                                type="button"
+                                class="transition-colors focus:outline-none"
+                                :class="canPreviewWorkspaceFile(item.name)
+                                  ? 'text-primary hover:text-primary/80'
+                                  : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'"
+                                :disabled="!canPreviewWorkspaceFile(item.name)"
+                                title="在左侧画布中预览"
+                                @click="previewItem(item)"
+                              >
+                                预览
+                              </button>
+                              <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                              <button
+                                type="button"
+                                class="text-gray-600 dark:text-gray-300 hover:text-primary transition-colors focus:outline-none"
+                                title="下载到本地"
+                                @click="downloadItem(item)"
+                              >
+                                下载
+                              </button>
+                              <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                            </template>
+                            <button
+                              v-if="canMountItem(item)"
+                              type="button"
+                              class="text-primary hover:text-primary/80 transition-colors focus:outline-none whitespace-nowrap"
+                              title="挂载到聊天输入框，随下一条消息发送"
+                              @click="mountItemToSession(item)"
+                            >
+                              添加到 AI 会话
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <div class="shrink-0 px-4 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/20">
-              <div class="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">当前已选择</div>
-              <div class="text-xs truncate font-bold text-gray-700 dark:text-gray-200 mb-3 min-h-[1.25rem]">
-                <template v-if="selectedItem">
-                  <span class="text-gray-500 dark:text-gray-400 font-mono font-normal">{{ selectedItem.path }}</span>
-                </template>
-                <template v-else-if="activeTab === 'directory'">
-                  <span class="text-primary">📁</span> {{ currentPath }}
-                </template>
-                <template v-else>
-                  <span class="text-gray-400 font-normal">
-                    {{ isMobile ? '点按文件夹进入，点按文件选中后可预览或挂载' : '单击选中，双击文件夹下钻、双击文件可预览...' }}
-                  </span>
-                </template>
-              </div>
-              <div class="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  class="px-4 py-2 text-xs font-bold text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 rounded-xl transition-all"
-                  @click="closeDrawer"
-                >
-                  取消
-                </button>
-                <button
-                  v-if="activeTab === 'file'"
-                  type="button"
-                  class="px-4 py-2 text-xs font-bold text-primary bg-primary/10 hover:bg-primary/15 disabled:opacity-40 rounded-xl transition-all focus:outline-none"
-                  :disabled="!canPreviewSelected"
-                  title="在左侧画布中预览选中文件"
-                  @click="handlePreviewSelected"
-                >
-                  预览
-                </button>
-                <button
-                  type="button"
-                  class="px-4 py-2 text-xs font-bold text-white bg-primary hover:bg-primary-hover disabled:opacity-40 disabled:hover:bg-primary rounded-xl shadow-lg shadow-primary/20 transition-all focus:outline-none"
-                  :disabled="!selectedItem && activeTab === 'file'"
-                  :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
-                  @click="handleConfirm"
-                >
-                  确认挂载
-                </button>
               </div>
             </div>
           </div>

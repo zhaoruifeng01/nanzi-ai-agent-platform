@@ -69,12 +69,30 @@ def _resolve_image_local_path(file_obj: Dict[str, Any]) -> Optional[str]:
         local_path = os.path.join("data", "uploads", os.path.basename(url))
         return local_path if os.path.isfile(local_path) else None
 
+    safe_path = normalize_under_base(url, get_data_base_dir())
+    if safe_path and os.path.isfile(safe_path):
+        return safe_path
+
     if file_obj.get("type") == "local_file" or os.path.isabs(url):
-        safe_path = normalize_under_base(url, get_data_base_dir())
-        if safe_path and os.path.isfile(safe_path):
-            return safe_path
+        if os.path.isfile(url):
+            return url
 
     return None
+
+
+def _attachment_abs_path(file_obj: Dict[str, Any]) -> str:
+    url = file_obj.get("url", "")
+    ftype = file_obj.get("type")
+    if ftype in ("local_file", "local_dir"):
+        return url
+    if url.startswith("/static/uploads/"):
+        return f"/app/data/uploads/{os.path.basename(url)}"
+    normalized = normalize_under_base(url, get_data_base_dir())
+    if normalized:
+        return normalized
+    if url and (url.startswith("/") or os.path.isabs(url)):
+        return url
+    return url or "/app/data/uploads/unknown"
 
 
 def _encode_image_data_url(local_path: str, ext: str = "") -> Optional[str]:
@@ -90,16 +108,6 @@ def _encode_image_data_url(local_path: str, ext: str = "") -> Optional[str]:
     except Exception as e:
         logger.warning("Failed to read local image for vision: %s", e)
         return None
-
-
-def _attachment_abs_path(file_obj: Dict[str, Any]) -> str:
-    url = file_obj.get("url", "")
-    ftype = file_obj.get("type")
-    if ftype in ("local_file", "local_dir"):
-        return url
-    if url.startswith("/static/uploads/"):
-        return f"/app/data/uploads/{os.path.basename(url)}"
-    return url or "/app/data/uploads/unknown"
 
 
 def is_retryable_stream_error(exc: Exception) -> bool:

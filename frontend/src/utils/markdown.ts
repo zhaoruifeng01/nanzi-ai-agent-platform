@@ -132,3 +132,18 @@ const normalizePipeTables = (content: string) => {
 export const renderMarkdown = (content: string) => {
   return md.render(normalizePipeTables(content))
 }
+
+/** 画布/预览场景：保留单行换行，便于 .md 纯文本阅读 */
+const mdPreview = new MarkdownIt({
+  html: true,
+  linkify: true,
+  typographer: true,
+  breaks: true,
+  highlight: null,
+})
+mdPreview.renderer.rules.fence = md.renderer.rules.fence!
+mdPreview.validateLink = md.validateLink
+
+export const renderMarkdownPreview = (content: string) => {
+  return mdPreview.render(normalizePipeTables(content))
+}

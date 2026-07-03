@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 
-PUBLIC_DATA_SUBDIRS: tuple[str, ...] = ("uploads", "branding", "sandbox", "skills")
+PUBLIC_DATA_SUBDIRS: tuple[str, ...] = ("branding", "skills")
 
 
 def get_platform_skills_root() -> str | None:
@@ -66,6 +66,22 @@ def get_user_private_workspace_root(user_info: dict[str, Any] | None) -> str | N
         return None
     user_key = resolve_workspace_user_key(user_id=user_id, user_name=user_name)
     return os.path.normpath(os.path.join(default_workspace_root(), user_key))
+
+
+def get_user_uploads_dir(user_info: dict[str, Any] | None) -> str | None:
+    """用户会话附件目录：agent_workspaces/{user_key}/uploads（仅本人可访问）。"""
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return None
+    return os.path.normpath(os.path.join(private_root, "uploads"))
+
+
+def get_user_sandbox_dir(user_info: dict[str, Any] | None) -> str | None:
+    """用户 SQLite 临时沙箱目录：agent_workspaces/{user_key}/sandbox（仅本人可访问）。"""
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return None
+    return os.path.normpath(os.path.join(private_root, "sandbox"))
 
 
 def get_allowed_fs_roots(user_info: dict[str, Any] | None) -> list[str]:
