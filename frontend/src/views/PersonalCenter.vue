@@ -101,8 +101,9 @@ const handlePasswordChange = async () => {
 import { watch } from 'vue'
 import Modal from '../components/Modal.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import PersonalTokenUsage from '../components/personal/PersonalTokenUsage.vue'
 
-const activeTab = ref<'info' | 'permissions' | 'memory'>('info')
+const activeTab = ref<'info' | 'permissions' | 'memory' | 'tokens'>('info')
 const permissionsSubTab = ref<'list' | 'about'>('list')
 const showAboutTab = computed(() => !!branding.value.contact_markdown?.trim())
 const contactHtml = computed(() => renderMarkdown(branding.value.contact_markdown || ''))
@@ -524,7 +525,7 @@ onMounted(() => {
         
         <!-- Tabs -->
         <div class="border-b border-gray-200 mb-4 sm:mb-6">
-            <nav class="-mb-px flex space-x-4 sm:space-x-8">
+            <nav class="-mb-px flex space-x-4 sm:space-x-8 overflow-x-auto">
                 <button 
                     @click="activeTab = 'info'"
                     :class="[
@@ -557,6 +558,17 @@ onMounted(() => {
                     ]"
                 >
                     我的记忆
+                </button>
+                <button 
+                    @click="activeTab = 'tokens'"
+                    :class="[
+                        activeTab === 'tokens'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
+                        'whitespace-nowrap py-3 sm:py-4 px-1 border-b-2 font-medium text-xs sm:text-sm transition-colors'
+                    ]"
+                >
+                    我的 Token 消耗
                 </button>
             </nav>
         </div>
@@ -1119,6 +1131,11 @@ onMounted(() => {
                     </div>
                 </div>
             </div>
+        </div>
+
+        <!-- Token Usage Tab -->
+        <div v-else-if="activeTab === 'tokens'">
+            <PersonalTokenUsage />
         </div>
 
     </div>
