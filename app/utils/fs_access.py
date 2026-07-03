@@ -143,6 +143,32 @@ def assert_path_allowed(path: str, user_info: dict[str, Any] | None) -> str:
     return normalized
 
 
+def is_path_writable(path: str, user_info: dict[str, Any] | None) -> bool:
+    """仅允许写入当前用户的 agent_workspaces 私有目录（不含公共目录）。"""
+    normalized = normalize_fs_path(path)
+    if not normalized:
+        return False
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return False
+    return normalized.startswith(private_root + os.sep)
+
+
+def assert_path_writable(path: str, user_info: dict[str, Any] | None) -> str:
+    normalized = normalize_fs_path(path)
+    if not normalized:
+        raise HTTPException(
+            status_code=403,
+            detail="安全越权拦截：禁止访问安全根目录以外的文件系统空间。",
+        )
+    if not is_path_writable(normalized, user_info):
+        raise HTTPException(
+            status_code=403,
+            detail="仅允许写入本人 AI 工作目录内的文件。",
+        )
+    return normalized
+
+
 def resolve_parent_path(current_path: str, user_info: dict[str, Any] | None) -> str | None:
     data_base = get_data_base_dir()
     normalized = assert_path_allowed(current_path, user_info)

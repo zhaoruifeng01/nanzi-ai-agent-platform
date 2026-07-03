@@ -8,6 +8,7 @@ from app.core.dependencies import require_api_key
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 from app.utils.fs_access import (
     assert_path_allowed,
+    assert_path_writable,
     get_allowed_fs_roots,
     get_user_private_workspace_root,
     is_fs_admin,
@@ -136,6 +137,12 @@ def _list_virtual_root_entries(user_info: Dict[str, Any]) -> List[FileItem]:
     return items
 
 
+def _contains_parent_path_segment(path: str | None) -> bool:
+    if not path:
+        return False
+    return ".." in str(path).replace("\\", "/").split("/")
+
+
 def get_base_dir() -> str:
     return get_data_base_dir()
 
@@ -150,6 +157,12 @@ async def list_files(
     user_info: Dict[str, Any] = Depends(require_api_key)
 ):
     base_dir = get_base_dir()
+
+    if _contains_parent_path_segment(path):
+        raise HTTPException(
+            status_code=403,
+            detail="安全越权拦截：禁止访问安全根目录以外的文件系统空间。",
+        )
 
     if is_fs_virtual_root(path, base_dir) and not is_fs_admin(user_info):
         return StandardResponse(data=FileListResponse(
@@ -195,27 +208,38 @@ OFFICE_PREVIEW_EXTENSIONS = {
     ".ppt": "application/vnd.ms-powerpoint",
 }
 
+MAX_WRITE_BYTES = 5 * 1024 * 1024
 
-@router.get(
-    "/preview",
-    summary="预览服务器文件内容",
-    description="在安全根目录内读取图片或常规文本/PDF文件内容，供 EmbedChat 画布和数据渲染使用。",
-)
-async def preview_file(
-    path: str = Query(..., description="文件绝对路径，须在安全根目录内"),
-    conversation_id: Optional[str] = Query(None, description="所属会话 ID"),
-    user_info: Dict[str, Any] = Depends(require_api_key),
-):
+
+class FileWriteRequest(BaseModel):
+    path: str = Field(..., description="文件绝对路径，须在本人工作目录内")
+    content: str = Field(..., description="文件文本内容")
+    conversation_id: Optional[str] = Field(None, description="所属会话 ID（用于解析相对路径）")
+
+
+class FileWriteResponse(BaseModel):
+    path: str = Field(..., description="已写入文件的绝对路径")
+    size: int = Field(..., description="写入后文件大小（字节）")
+    mtime: float = Field(..., description="写入后修改时间戳")
+
+
+def _resolve_fs_file_path(
+    path: str,
+    conversation_id: Optional[str],
+    user_info: Dict[str, Any],
+    *,
+    workspace_root: str,
+    must_exist: bool = True,
+) -> str:
     from app.services.ai.runtime.agentscope.workspace import (
         resolve_session_workdir,
         resolve_user_workspace_root,
-        resolve_workspace_root,
     )
 
     safe_path: str | None = None
 
     if conversation_id and not path.startswith("/") and not path.startswith("/app/data"):
-        root = await resolve_workspace_root()
+        root = workspace_root
         session_workdir = resolve_session_workdir(
             root=root,
             user_id=user_info.get("user_id") or user_info.get("id"),
@@ -225,7 +249,7 @@ async def preview_file(
         )
         if os.path.isdir(session_workdir):
             candidate = normalize_under_base(path, session_workdir)
-            if candidate and os.path.isfile(candidate) and is_path_allowed(candidate, user_info):
+            if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
                 safe_path = candidate
 
         if not safe_path:
@@ -241,13 +265,13 @@ async def preview_file(
                     if not os.path.isdir(candidate_dir):
                         continue
                     candidate = normalize_under_base(path, candidate_dir)
-                    if candidate and os.path.isfile(candidate) and is_path_allowed(candidate, user_info):
+                    if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
                         safe_path = candidate
                         break
 
     if not safe_path:
         candidate = normalize_fs_path(path)
-        if candidate and os.path.isfile(candidate) and is_path_allowed(candidate, user_info):
+        if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
             safe_path = candidate
 
     if not safe_path:
@@ -258,6 +282,26 @@ async def preview_file(
                 detail="安全越权拦截：无权访问其他用户的私有目录或非授权路径。",
             )
         raise HTTPException(status_code=404, detail="文件不存在。")
+
+    return safe_path
+
+
+@router.get(
+    "/preview",
+    summary="预览服务器文件内容",
+    description="在安全根目录内读取图片或常规文本/PDF文件内容，供 EmbedChat 画布和数据渲染使用。",
+)
+async def preview_file(
+    path: str = Query(..., description="文件绝对路径，须在安全根目录内"),
+    conversation_id: Optional[str] = Query(None, description="所属会话 ID"),
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    from app.services.ai.runtime.agentscope.workspace import resolve_workspace_root
+
+    workspace_root = await resolve_workspace_root()
+    safe_path = _resolve_fs_file_path(
+        path, conversation_id, user_info, workspace_root=workspace_root, must_exist=True,
+    )
 
     ext = os.path.splitext(safe_path)[1].lower()
     if ext in IMAGE_PREVIEW_EXTENSIONS:
@@ -279,6 +323,52 @@ async def preview_file(
             filename=os.path.basename(safe_path),
         )
     raise HTTPException(status_code=400, detail="不支持预览该类型的文件。")
+
+
+@router.put(
+    "/write",
+    response_model=StandardResponse[FileWriteResponse],
+    summary="写入工作空间文本文件",
+    description="仅允许写入本人 agent_workspaces 目录内的文本类文件。",
+)
+async def write_file(
+    body: FileWriteRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    from app.services.ai.runtime.agentscope.workspace import resolve_workspace_root
+
+    workspace_root = await resolve_workspace_root()
+    safe_path = _resolve_fs_file_path(
+        body.path,
+        body.conversation_id,
+        user_info,
+        workspace_root=workspace_root,
+        must_exist=True,
+    )
+    writable_path = assert_path_writable(safe_path, user_info)
+
+    ext = os.path.splitext(writable_path)[1].lower()
+    if ext not in TEXT_PREVIEW_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="不支持写入该类型的文件。")
+
+    encoded = body.content.encode("utf-8")
+    if len(encoded) > MAX_WRITE_BYTES:
+        raise HTTPException(status_code=400, detail="文件内容过大，超过写入上限。")
+
+    try:
+        with open(writable_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body.content)
+        stat = os.stat(writable_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写入文件失败: {exc}") from exc
+
+    return StandardResponse(
+        data=FileWriteResponse(
+            path=writable_path,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+    )
 
 
 @router.get(
