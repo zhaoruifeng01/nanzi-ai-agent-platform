@@ -11,6 +11,7 @@ const readSource = (path: string) => readFileSync(resolve(root, path), "utf8");
 const chatCanvas = readSource("src/components/embed/ChatCanvas.vue");
 const datasetPortalDrawer = readSource("src/components/chatbi/DatasetPortalDrawer.vue");
 const workspaceBrowserDrawer = readSource("src/components/embed/WorkspaceBrowserDrawer.vue");
+const memoryBrowserDrawer = readSource("src/components/embed/MemoryBrowserDrawer.vue");
 
 const maxZ = (source: string) => {
   const matches = Array.from(source.matchAll(/z-\[(\d+)\]/g), (match) => Number(match[1]));
@@ -18,7 +19,11 @@ const maxZ = (source: string) => {
   return Math.max(...matches);
 };
 
-const drawerMaxZ = Math.max(maxZ(datasetPortalDrawer), maxZ(workspaceBrowserDrawer));
+const drawerMaxZ = Math.max(
+  maxZ(datasetPortalDrawer),
+  maxZ(workspaceBrowserDrawer),
+  maxZ(memoryBrowserDrawer),
+);
 
 const expectCanvasLayer = (label: string, pattern: RegExp) => {
   const match = chatCanvas.match(pattern);
