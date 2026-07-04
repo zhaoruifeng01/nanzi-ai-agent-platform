@@ -247,3 +247,61 @@ export async function saveWorkspaceFileContent(options: {
   }
   return axios.put('/api/v1/chat/fs/write', payload)
 }
+
+export async function createWorkspaceEntry(options: {
+  parentPath: string
+  name: string
+  kind: 'file' | 'dir'
+  content?: string
+}) {
+  return axios.post('/api/v1/chat/fs/create-entry', {
+    parent_path: options.parentPath,
+    name: options.name,
+    kind: options.kind,
+    content: options.content ?? '',
+  })
+}
+
+export async function renameWorkspaceEntry(path: string, newName: string) {
+  return axios.post('/api/v1/chat/fs/rename-entry', { path, new_name: newName })
+}
+
+export async function deleteWorkspaceEntry(path: string) {
+  return axios.post('/api/v1/chat/fs/delete-entry', { path })
+}
+
+export async function restoreWorkspaceEntry(path: string) {
+  return axios.post('/api/v1/chat/fs/restore-entry', { path })
+}
+
+export async function purgeWorkspaceEntry(path: string) {
+  return axios.post('/api/v1/chat/fs/purge-entry', { path })
+}
+
+export async function emptyWorkspaceTrash() {
+  return axios.post('/api/v1/chat/fs/empty-trash')
+}
+
+export async function uploadToWorkspaceDir(parentPath: string, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return axios.post('/api/v1/chat/fs/upload', form, {
+    params: { parent_path: parentPath },
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const el = document.createElement('textarea')
+  el.value = text
+  el.style.position = 'fixed'
+  el.style.opacity = '0'
+  document.body.appendChild(el)
+  el.select()
+  document.execCommand('copy')
+  document.body.removeChild(el)
+}

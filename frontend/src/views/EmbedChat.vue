@@ -325,7 +325,7 @@
         @quick-question="handleQuickQuestion"
         @open-data-portal="openPortalDrawer"
         @select-knowledge-base="showKnowledgeBaseSelector = true"
-        @select-skill="openSkillSelector"
+        @open-workspace="showWorkspaceDrawer = true"
       />
       <!-- Start of Conversation Indicator -->
       <div v-if="!hasMoreHistory && messages.length > 0" class="w-full flex flex-col items-center py-8 opacity-60">
@@ -1292,6 +1292,7 @@
       :conversation-id="conversationId"
       @close="closeCanvas"
       @analyze-diff="handleAnalyzeDiff"
+      @content-saved="handleWorkspaceContentSaved"
     />
     </div> <!-- Closing div for .flex-1.flex.flex-col -->
 
@@ -1303,10 +1304,13 @@
     />
 
     <WorkspaceBrowserDrawer
+      ref="workspaceDrawerRef"
       v-model="showWorkspaceDrawer"
       v-model:keep-open-on-select="workspaceKeepOpenOnSelect"
       v-model:pinned="workspacePinned"
       :pinned-dock-class="workspacePinnedDockClass"
+      :conversation-id="conversationId"
+      :session-started="messages.length > 0"
       @select="handleSelectLocalFs"
       @preview="handleWorkspaceFilePreview"
     />
@@ -2934,6 +2938,7 @@ const chatInputRef = ref<any>(null);
 const userInput = ref("");
 const showKnowledgeBaseSelector = ref(false);
 const showWorkspaceDrawer = ref(false);
+const workspaceDrawerRef = ref<{ refreshDirectory: (path?: string) => Promise<void> } | null>(null);
 
 const readStoredBoolean = (key: string, defaultWhenUnset: boolean) => {
   const stored = localStorage.getItem(key);
@@ -3106,6 +3111,12 @@ const handleWorkspaceFilePreview = async (payload: { path: string; name: string 
       canvasVisible.value = true;
     },
   });
+};
+
+const handleWorkspaceContentSaved = (payload: { path: string }) => {
+  if (showWorkspaceDrawer.value) {
+    void workspaceDrawerRef.value?.refreshDirectory(payload.path);
+  }
 };
 
 const isImageFile = isImageAttachment;
@@ -3492,10 +3503,10 @@ const resetStallTimer = () => {
 };
 // Slash Commands
 const SYSTEM_SLASH_COMMANDS = [
+  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -40 },
+  { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -39 },
   { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: WORKSPACE_SYSTEM_COMMAND_ID, command: WORKSPACE_SLASH_COMMAND, label: "💻 工作空间", sort_order: -34 },
-  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
-  { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
   { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];

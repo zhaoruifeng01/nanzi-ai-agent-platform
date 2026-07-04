@@ -167,7 +167,7 @@ def is_path_writable(path: str, user_info: dict[str, Any] | None) -> bool:
     private_root = get_user_private_workspace_root(user_info)
     if not private_root:
         return False
-    return normalized.startswith(private_root + os.sep)
+    return normalized == private_root or normalized.startswith(private_root + os.sep)
 
 
 def assert_path_writable(path: str, user_info: dict[str, Any] | None) -> str:

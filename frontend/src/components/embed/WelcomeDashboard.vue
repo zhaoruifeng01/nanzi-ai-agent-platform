@@ -10,10 +10,10 @@ const emit = defineEmits<{
   (e: 'quick-question', command: string): void;
   (e: 'open-data-portal'): void;
   (e: 'select-knowledge-base'): void;
-  (e: 'select-skill'): void;
+  (e: 'open-workspace'): void;
 }>();
 
-type CapabilityAction = 'data-portal' | 'knowledge-base' | 'skill';
+type CapabilityAction = 'data-portal' | 'knowledge-base' | 'workspace';
 
 // 2. Capabilities (Static highlights for the platform)
 const capabilities: Array<{
@@ -35,10 +35,10 @@ const capabilities: Array<{
     action: 'knowledge-base',
   },
   {
-    icon: '🛠️',
-    title: '技能工作流',
-    desc: '挂载生态技能，按标准流程执行复杂任务。',
-    action: 'skill',
+    icon: '💻',
+    title: '管理工作空间',
+    desc: '浏览、上传和整理您的 AI 工作目录文件。',
+    action: 'workspace',
   },
 ];
 
@@ -51,7 +51,7 @@ const handleCapabilityClick = (action: CapabilityAction) => {
     emit('select-knowledge-base');
     return;
   }
-  emit('select-skill');
+  emit('open-workspace');
 };
 
 // 1. Dynamic Greeting

@@ -208,6 +208,187 @@ async def test_search_from_virtual_root_for_regular_user(db_session, valid_api_k
 
 
 @pytest.mark.asyncio
+async def test_create_file_in_workspace_root(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        os.makedirs(workspace_root, exist_ok=True)
+
+        resp = await client.post(
+            "/api/v1/chat/fs/create-entry",
+            json={"parent_path": workspace_root, "name": "root-note.md", "kind": "file", "content": "root"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert resp.status_code == 200
+        assert os.path.isfile(os.path.join(workspace_root, "root-note.md"))
+
+
+@pytest.mark.asyncio
+async def test_list_user_workspace_is_writable(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        os.makedirs(workspace_root, exist_ok=True)
+
+        list_resp = await client.get(
+            "/api/v1/chat/fs/list",
+            params={"path": workspace_root},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert list_resp.status_code == 200
+        data = list_resp.json()["data"]
+        assert data["writable"] is True
+        assert data["user_workspace_root"] == os.path.normpath(workspace_root)
+
+
+@pytest.mark.asyncio
+async def test_create_file_and_folder_in_own_workspace(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        parent = os.path.join(workspace_root, "ctx-menu-test")
+        os.makedirs(parent, exist_ok=True)
+
+        dir_resp = await client.post(
+            "/api/v1/chat/fs/create-entry",
+            json={"parent_path": parent, "name": "nested-dir", "kind": "dir"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert dir_resp.status_code == 200
+        assert dir_resp.json()["data"]["is_dir"] is True
+
+        file_resp = await client.post(
+            "/api/v1/chat/fs/create-entry",
+            json={"parent_path": parent, "name": "draft.md", "kind": "file", "content": "# hi"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert file_resp.status_code == 200
+        created = file_resp.json()["data"]["path"]
+        with open(created, encoding="utf-8") as handle:
+            assert handle.read() == "# hi"
+
+
+@pytest.mark.asyncio
+async def test_cannot_create_in_public_skills(db_session, valid_api_key):
+    base = get_data_base_dir()
+    skills = os.path.join(base, "skills")
+    os.makedirs(skills, exist_ok=True)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/chat/fs/create-entry",
+            json={"parent_path": skills, "name": "hack.md", "kind": "file"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_restore_and_purge_trash_entry(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        os.makedirs(workspace_root, exist_ok=True)
+        original = os.path.join(workspace_root, "restore-me.txt")
+        with open(original, "w", encoding="utf-8") as handle:
+            handle.write("bye")
+
+        delete_resp = await client.post(
+            "/api/v1/chat/fs/delete-entry",
+            json={"path": original},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert delete_resp.status_code == 200
+        trashed_path = delete_resp.json()["data"]["trashed_path"]
+        assert not os.path.exists(original)
+
+        restore_resp = await client.post(
+            "/api/v1/chat/fs/restore-entry",
+            json={"path": trashed_path},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert restore_resp.status_code == 200
+        restored_path = restore_resp.json()["data"]["path"]
+        assert os.path.isfile(restored_path)
+        with open(restored_path, encoding="utf-8") as handle:
+            assert handle.read() == "bye"
+
+        delete_resp2 = await client.post(
+            "/api/v1/chat/fs/delete-entry",
+            json={"path": restored_path},
+            headers={"X-API-Key": valid_api_key},
+        )
+        trashed_path2 = delete_resp2.json()["data"]["trashed_path"]
+
+        purge_resp = await client.post(
+            "/api/v1/chat/fs/purge-entry",
+            json={"path": trashed_path2},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert purge_resp.status_code == 200
+        assert not os.path.exists(trashed_path2)
+
+
+@pytest.mark.asyncio
+async def test_empty_trash_and_protect_trash_root(db_session, valid_api_key):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        me_resp = await client.get(
+            "/api/portal/auth/me",
+            headers={"X-API-Key": valid_api_key},
+        )
+        workspace_root = get_user_private_workspace_root(me_resp.json()["data"])
+        os.makedirs(workspace_root, exist_ok=True)
+        trash_root = os.path.join(workspace_root, ".trash")
+        os.makedirs(trash_root, exist_ok=True)
+
+        for index in range(2):
+            original = os.path.join(workspace_root, f"trash-item-{index}.txt")
+            with open(original, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            delete_resp = await client.post(
+                "/api/v1/chat/fs/delete-entry",
+                json={"path": original},
+                headers={"X-API-Key": valid_api_key},
+            )
+            assert delete_resp.status_code == 200
+
+        empty_resp = await client.post(
+            "/api/v1/chat/fs/empty-trash",
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert empty_resp.status_code == 200
+        assert empty_resp.json()["data"]["deleted_count"] == 2
+        assert os.path.isdir(trash_root)
+        assert os.listdir(trash_root) == []
+
+        rename_resp = await client.post(
+            "/api/v1/chat/fs/rename-entry",
+            json={"path": trash_root, "new_name": "old-trash"},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert rename_resp.status_code == 400
+
+        delete_root_resp = await client.post(
+            "/api/v1/chat/fs/delete-entry",
+            json={"path": trash_root},
+            headers={"X-API-Key": valid_api_key},
+        )
+        assert delete_root_resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_search_glob_pattern(db_session, valid_api_key):
     base = get_data_base_dir()
     uploads = os.path.join(base, "uploads")

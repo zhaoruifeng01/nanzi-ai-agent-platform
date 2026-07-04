@@ -1,7 +1,11 @@
 import fnmatch
 import os
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, Query
+import re
+import shutil
+import time
+import uuid
+from typing import List, Optional, Dict, Any, Literal
+from fastapi import APIRouter, HTTPException, Depends, Query, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.schemas.response import StandardResponse
@@ -15,11 +19,14 @@ from app.utils.fs_access import (
     is_fs_admin,
     is_fs_virtual_root,
     is_path_allowed,
+    is_path_writable,
     normalize_fs_path,
     resolve_parent_path,
 )
 
 router = APIRouter()
+
+TRASH_DIR_NAME = ".trash"
 
 IMAGE_PREVIEW_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 IMAGE_MEDIA_TYPES = {
@@ -44,6 +51,9 @@ class FileListResponse(BaseModel):
     is_root: bool = Field(..., description="是否已在安全根目录")
     items: List[FileItem] = Field(..., description="子文件和子目录列表")
     scope: str = Field(..., description="当前可见范围：admin_all / user_scoped")
+    writable: bool = Field(False, description="当前目录是否允许新建文件/文件夹")
+    user_workspace_root: Optional[str] = Field(None, description="当前用户私有工作区根路径")
+    is_virtual_root: bool = Field(False, description="是否为授权根目录汇总视图（非真实单一路径目录）")
 
 
 class FileSearchResponse(BaseModel):
@@ -83,6 +93,15 @@ def _append_fs_entry(
         pass
 
 
+def _is_trash_path(path: str, user_info: Dict[str, Any]) -> bool:
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return False
+    trash = os.path.normpath(os.path.join(private_root, TRASH_DIR_NAME))
+    normalized = os.path.normpath(path)
+    return normalized == trash or normalized.startswith(trash + os.sep)
+
+
 def _list_directory_entries(target_path: str, user_info: Dict[str, Any]) -> List[FileItem]:
     items: List[FileItem] = []
     try:
@@ -106,6 +125,25 @@ def _list_directory_entries(target_path: str, user_info: Dict[str, Any]) -> List
                     continue
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"读取目录失败: {str(exc)}") from exc
+
+    private_root = get_user_private_workspace_root(user_info)
+    if private_root and os.path.normpath(target_path) == os.path.normpath(private_root):
+        trash_path = os.path.join(private_root, TRASH_DIR_NAME)
+        if not any(i.path == trash_path for i in items):
+            try:
+                os.makedirs(trash_path, exist_ok=True)
+                stat = os.stat(trash_path)
+                items.append(
+                    FileItem(
+                        name=TRASH_DIR_NAME,
+                        path=trash_path,
+                        is_dir=True,
+                        size=0,
+                        mtime=stat.st_mtime,
+                    )
+                )
+            except OSError:
+                pass
 
     items.sort(key=lambda x: (not x.is_dir, x.name.lower()))
     return items
@@ -157,6 +195,25 @@ def get_base_dir() -> str:
     return get_data_base_dir()
 
 
+def _user_workspace_root_for_response(user_info: Dict[str, Any]) -> Optional[str]:
+    return get_user_private_workspace_root(user_info)
+
+
+def _validate_new_entry_basename(name: str) -> str:
+    cleaned = name.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="名称不能为空。")
+    if cleaned in (".", ".."):
+        raise HTTPException(status_code=400, detail="非法名称。")
+    if cleaned.startswith("."):
+        raise HTTPException(status_code=400, detail="不能以 . 开头。")
+    if "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(status_code=400, detail="名称不能包含路径分隔符。")
+    if len(cleaned) > 200:
+        raise HTTPException(status_code=400, detail="名称过长。")
+    return cleaned
+
+
 @router.get("/list",
     response_model=StandardResponse[FileListResponse],
     summary="浏览服务器文件系统",
@@ -181,9 +238,17 @@ async def list_files(
             is_root=True,
             scope="user_scoped",
             items=_list_virtual_root_entries(user_info),
+            writable=False,
+            user_workspace_root=_user_workspace_root_for_response(user_info),
+            is_virtual_root=True,
         ))
 
     target_path = assert_path_allowed(path or base_dir, user_info)
+    private_root = get_user_private_workspace_root(user_info)
+    if private_root:
+        trash_path = os.path.normpath(os.path.join(private_root, TRASH_DIR_NAME))
+        if os.path.normpath(target_path) == trash_path:
+            os.makedirs(trash_path, exist_ok=True)
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="请求的路径不存在。")
     if not os.path.isdir(target_path):
@@ -199,6 +264,9 @@ async def list_files(
         is_root=is_root,
         scope=scope,
         items=_list_directory_entries(target_path, user_info),
+        writable=is_path_writable(target_path, user_info) and not _is_trash_path(target_path, user_info),
+        user_workspace_root=_user_workspace_root_for_response(user_info),
+        is_virtual_root=False,
     ))
 
 
@@ -231,6 +299,21 @@ class FileWriteResponse(BaseModel):
     path: str = Field(..., description="已写入文件的绝对路径")
     size: int = Field(..., description="写入后文件大小（字节）")
     mtime: float = Field(..., description="写入后修改时间戳")
+
+
+class FileEntryCreateRequest(BaseModel):
+    parent_path: str = Field(..., description="父目录绝对路径，须在本人工作目录内")
+    name: str = Field(..., description="新建文件或文件夹名称")
+    kind: Literal["file", "dir"] = Field("file", description="file=文件，dir=文件夹")
+    content: str = Field("", description="新建文件的初始文本内容")
+
+
+class FileEntryCreateResponse(BaseModel):
+    path: str = Field(..., description="新建项绝对路径")
+    name: str = Field(..., description="名称")
+    is_dir: bool = Field(..., description="是否为目录")
+    size: int = Field(..., description="大小（字节）")
+    mtime: float = Field(..., description="修改时间戳")
 
 
 def _resolve_fs_file_path(
@@ -375,6 +458,349 @@ async def write_file(
     return StandardResponse(
         data=FileWriteResponse(
             path=writable_path,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+    )
+
+
+@router.post(
+    "/create-entry",
+    response_model=StandardResponse[FileEntryCreateResponse],
+    summary="在工作空间新建文件或文件夹",
+    description="仅允许在本人 agent_workspaces 目录内新建。",
+)
+async def create_fs_entry(
+    body: FileEntryCreateRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    parent_path = assert_path_allowed(body.parent_path, user_info)
+    parent_writable = assert_path_writable(parent_path, user_info)
+    if not os.path.isdir(parent_writable):
+        raise HTTPException(status_code=400, detail="目标路径不是目录。")
+
+    name = _validate_new_entry_basename(body.name)
+    target = os.path.normpath(os.path.join(parent_writable, name))
+    if os.path.exists(target):
+        raise HTTPException(status_code=409, detail="同名文件或目录已存在。")
+
+    try:
+        if body.kind == "dir":
+            os.makedirs(target, exist_ok=False)
+        else:
+            ext = os.path.splitext(name)[1].lower()
+            if ext and ext not in TEXT_PREVIEW_EXTENSIONS:
+                raise HTTPException(status_code=400, detail="不支持创建该类型的文件。")
+            encoded = body.content.encode("utf-8")
+            if len(encoded) > MAX_WRITE_BYTES:
+                raise HTTPException(status_code=400, detail="文件内容过大，超过写入上限。")
+            with open(target, "w", encoding="utf-8", newline="") as handle:
+                handle.write(body.content)
+        stat = os.stat(target)
+    except HTTPException:
+        raise
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="同名文件或目录已存在。") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"创建失败: {exc}") from exc
+
+    return StandardResponse(
+        data=FileEntryCreateResponse(
+            path=target,
+            name=name,
+            is_dir=body.kind == "dir",
+            size=0 if body.kind == "dir" else stat.st_size,
+            mtime=stat.st_mtime,
+        )
+    )
+
+
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+FORBIDDEN_UPLOAD_EXTENSIONS = {".exe", ".bat", ".sh", ".cmd", ".com", ".msi", ".php", ".jsp", ".asp", ".py", ".pl"}
+
+
+def _resolve_writable_entry_path(path: str, user_info: Dict[str, Any]) -> str:
+    safe_path = assert_path_allowed(path, user_info)
+    return assert_path_writable(safe_path, user_info)
+
+
+def _parse_trashed_entry_name(trashed_name: str) -> str:
+    match = re.match(r"^\d+_[a-f0-9]{8}_(.+)$", trashed_name)
+    if match:
+        return match.group(1)
+    return trashed_name
+
+
+def _resolve_restore_target_path(restore_dir: str, original_name: str) -> str:
+    target = os.path.normpath(os.path.join(restore_dir, original_name))
+    if not os.path.exists(target):
+        return target
+    base, ext = os.path.splitext(original_name)
+    for index in range(1, 100):
+        if ext:
+            candidate_name = f"{base}_restored{index}{ext}"
+        else:
+            candidate_name = f"{original_name}_restored{index}"
+        candidate = os.path.normpath(os.path.join(restore_dir, candidate_name))
+        if not os.path.exists(candidate):
+            return candidate
+    raise HTTPException(status_code=409, detail="恢复失败：目标位置存在过多同名文件。")
+
+
+def _trash_root_for(user_info: Dict[str, Any]) -> str:
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        raise HTTPException(status_code=403, detail="无法解析用户工作目录。")
+    return os.path.normpath(os.path.join(private_root, TRASH_DIR_NAME))
+
+
+def _assert_not_trash_root(path: str, user_info: Dict[str, Any]) -> str:
+    safe_path = assert_path_allowed(path, user_info)
+    if os.path.normpath(safe_path) == _trash_root_for(user_info):
+        raise HTTPException(status_code=400, detail="回收站目录不可重命名或删除。")
+    return safe_path
+
+
+def _assert_trash_entry_path(path: str, user_info: Dict[str, Any]) -> str:
+    safe_path = assert_path_allowed(path, user_info)
+    if not _is_trash_path(safe_path, user_info):
+        raise HTTPException(status_code=403, detail="只能操作回收站内的文件或文件夹。")
+    if os.path.normpath(safe_path) == _trash_root_for(user_info):
+        raise HTTPException(status_code=400, detail="不能对回收站目录本身执行该操作。")
+    return safe_path
+
+
+def _trash_dir_for(user_info: Dict[str, Any]) -> str:
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        raise HTTPException(status_code=403, detail="无法解析用户工作目录。")
+    trash = os.path.join(private_root, TRASH_DIR_NAME)
+    os.makedirs(trash, exist_ok=True)
+    return trash
+
+
+class FileRenameRequest(BaseModel):
+    path: str = Field(..., description="待重命名项绝对路径")
+    new_name: str = Field(..., description="新名称（不含路径）")
+
+
+class FileDeleteRequest(BaseModel):
+    path: str = Field(..., description="待删除项绝对路径")
+
+
+class FileRenameResponse(BaseModel):
+    path: str
+    name: str
+    is_dir: bool
+    mtime: float
+
+
+class FileDeleteResponse(BaseModel):
+    path: str
+    trashed_path: str
+
+
+class FileUploadResponse(BaseModel):
+    path: str
+    name: str
+    size: int
+    mtime: float
+
+
+@router.post(
+    "/rename-entry",
+    response_model=StandardResponse[FileRenameResponse],
+    summary="重命名工作空间文件或文件夹",
+)
+async def rename_fs_entry(
+    body: FileRenameRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    _assert_not_trash_root(body.path, user_info)
+    source = _resolve_writable_entry_path(body.path, user_info)
+    if not os.path.exists(source):
+        raise HTTPException(status_code=404, detail="文件或目录不存在。")
+    new_name = _validate_new_entry_basename(body.new_name)
+    target = os.path.normpath(os.path.join(os.path.dirname(source), new_name))
+    if os.path.exists(target):
+        raise HTTPException(status_code=409, detail="目标名称已存在。")
+    try:
+        os.rename(source, target)
+        stat = os.stat(target)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"重命名失败: {exc}") from exc
+    return StandardResponse(
+        data=FileRenameResponse(
+            path=target,
+            name=new_name,
+            is_dir=os.path.isdir(target),
+            mtime=stat.st_mtime,
+        )
+    )
+
+
+@router.post(
+    "/delete-entry",
+    response_model=StandardResponse[FileDeleteResponse],
+    summary="删除工作空间文件或文件夹（移入回收站）",
+)
+async def delete_fs_entry(
+    body: FileDeleteRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    _assert_not_trash_root(body.path, user_info)
+    source = _resolve_writable_entry_path(body.path, user_info)
+    if not os.path.exists(source):
+        raise HTTPException(status_code=404, detail="文件或目录不存在。")
+    basename = os.path.basename(source)
+    trash_dir = _trash_dir_for(user_info)
+    trashed_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{basename}"
+    trashed_path = os.path.normpath(os.path.join(trash_dir, trashed_name))
+    try:
+        shutil.move(source, trashed_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"删除失败: {exc}") from exc
+    return StandardResponse(
+        data=FileDeleteResponse(path=source, trashed_path=trashed_path)
+    )
+
+
+class FileRestoreResponse(BaseModel):
+    path: str
+    name: str
+    is_dir: bool
+    mtime: float
+
+
+class FilePurgeResponse(BaseModel):
+    path: str
+
+
+class FileEmptyTrashResponse(BaseModel):
+    deleted_count: int
+
+
+@router.post(
+    "/restore-entry",
+    response_model=StandardResponse[FileRestoreResponse],
+    summary="从回收站恢复文件或文件夹",
+    description="恢复至本人工作目录根下；若同名已存在则自动追加 _restored 后缀。",
+)
+async def restore_fs_entry(
+    body: FileDeleteRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    source = _assert_trash_entry_path(body.path, user_info)
+    if not os.path.exists(source):
+        raise HTTPException(status_code=404, detail="文件或目录不存在。")
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        raise HTTPException(status_code=403, detail="无法解析用户工作目录。")
+    original_name = _parse_trashed_entry_name(os.path.basename(source))
+    target = _resolve_restore_target_path(private_root, original_name)
+    try:
+        shutil.move(source, target)
+        stat = os.stat(target)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"恢复失败: {exc}") from exc
+    return StandardResponse(
+        data=FileRestoreResponse(
+            path=target,
+            name=os.path.basename(target),
+            is_dir=os.path.isdir(target),
+            mtime=stat.st_mtime,
+        )
+    )
+
+
+@router.post(
+    "/purge-entry",
+    response_model=StandardResponse[FilePurgeResponse],
+    summary="永久删除回收站内的文件或文件夹",
+)
+async def purge_fs_entry(
+    body: FileDeleteRequest,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    source = _assert_trash_entry_path(body.path, user_info)
+    if not os.path.exists(source):
+        raise HTTPException(status_code=404, detail="文件或目录不存在。")
+    try:
+        if os.path.isdir(source):
+            shutil.rmtree(source)
+        else:
+            os.remove(source)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"永久删除失败: {exc}") from exc
+    return StandardResponse(data=FilePurgeResponse(path=source))
+
+
+@router.post(
+    "/empty-trash",
+    response_model=StandardResponse[FileEmptyTrashResponse],
+    summary="清空回收站（永久删除全部回收项）",
+)
+async def empty_trash(
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    trash_dir = _trash_dir_for(user_info)
+    deleted_count = 0
+    try:
+        for name in os.listdir(trash_dir):
+            if name.startswith("."):
+                continue
+            entry = os.path.join(trash_dir, name)
+            if os.path.isdir(entry):
+                shutil.rmtree(entry)
+            elif os.path.isfile(entry) or os.path.islink(entry):
+                os.remove(entry)
+            else:
+                continue
+            deleted_count += 1
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"清空回收站失败: {exc}") from exc
+    return StandardResponse(data=FileEmptyTrashResponse(deleted_count=deleted_count))
+
+
+@router.post(
+    "/upload",
+    response_model=StandardResponse[FileUploadResponse],
+    summary="上传文件到工作空间指定目录",
+)
+async def upload_to_workspace(
+    parent_path: str = Query(..., description="目标目录绝对路径"),
+    file: UploadFile = File(...),
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    parent = _resolve_writable_entry_path(parent_path, user_info)
+    if not os.path.isdir(parent):
+        raise HTTPException(status_code=400, detail="目标路径不是目录。")
+
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="文件大小超出 20MB 限制")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext in FORBIDDEN_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=403, detail=f"禁止上传该类型文件: {ext}")
+
+    clean_name = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename or "")
+    if not clean_name or clean_name.startswith("."):
+        clean_name = f"upload{ext or '.bin'}"
+    unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{clean_name}"
+    target = os.path.normpath(os.path.join(parent, unique_name))
+
+    try:
+        with open(target, "wb") as handle:
+            handle.write(contents)
+        stat = os.stat(target)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"上传失败: {exc}") from exc
+
+    return StandardResponse(
+        data=FileUploadResponse(
+            path=target,
+            name=unique_name,
             size=stat.st_size,
             mtime=stat.st_mtime,
         )

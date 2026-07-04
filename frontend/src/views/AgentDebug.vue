@@ -326,10 +326,10 @@ watch(
 const agents = ref<any[]>([]);
 const debugMode = ref<"auto" | "specific">("auto");
 const SYSTEM_SLASH_COMMANDS = [
+  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -40 },
+  { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -39 },
   { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
   { id: WORKSPACE_SYSTEM_COMMAND_ID, command: WORKSPACE_SLASH_COMMAND, label: "💻 工作空间", sort_order: -34 },
-  { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -30 },
-  { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -20 },
   { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
 ];

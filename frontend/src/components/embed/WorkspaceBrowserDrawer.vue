@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import axios from '@/utils/axios'
 import { useToast } from '@/composables/useToast'
 import {
   resolveFileTypeVisual,
   type FileTypeCategory,
 } from '@/utils/fileTypeVisual'
-import { canPreviewWorkspaceFile, downloadWorkspaceFile } from '@/utils/workspaceFilePreview'
+import { canPreviewWorkspaceFile, downloadWorkspaceFile, createWorkspaceEntry, renameWorkspaceEntry, deleteWorkspaceEntry, uploadToWorkspaceDir, copyTextToClipboard, restoreWorkspaceEntry, purgeWorkspaceEntry, emptyWorkspaceTrash } from '@/utils/workspaceFilePreview'
+
+const RECENT_FILES_KEY = 'workspace_recent_files_v1'
+const BROWSER_PREFS_KEY = 'workspace_browser_prefs_v1'
+const MAX_RECENT = 20
+const LIST_PAGE_SIZE = 200
 
 const modelValue = defineModel<boolean>({ default: false })
 const keepOpenOnSelect = defineModel<boolean>('keepOpenOnSelect', { default: false })
@@ -16,8 +21,11 @@ const props = withDefaults(
   defineProps<{
     /** 与数据门户等同侧钉住时的水平偏移（如 right-[28rem]） */
     pinnedDockClass?: string
+    conversationId?: string | null
+    /** 当前会话是否已开始（有消息往来）；未开始时「本会话目录」不可用 */
+    sessionStarted?: boolean
   }>(),
-  { pinnedDockClass: 'right-0' },
+  { pinnedDockClass: 'right-0', conversationId: null, sessionStarted: false },
 )
 
 const emit = defineEmits<{
@@ -25,14 +33,38 @@ const emit = defineEmits<{
   (e: 'preview', payload: { path: string; name: string }): void
 }>()
 
-const activeTab = ref<'file' | 'directory'>('file')
 const currentPath = ref<string>('')
 const parentPath = ref<string | null>(null)
 const isRoot = ref<boolean>(true)
+const isVirtualRoot = ref(false)
 const scope = ref<'admin_all' | 'user_scoped'>('user_scoped')
 const items = ref<any[]>([])
 const loading = ref<boolean>(false)
 const baseDir = ref<string>('')
+const currentPathWritable = ref(false)
+const userWorkspaceRoot = ref<string>('')
+
+const contextMenu = ref<{ x: number; y: number; parentPath: string; item?: { path: string; name: string; is_dir: boolean } } | null>(null)
+const createDialog = ref<{ kind: 'file' | 'dir'; parentPath: string; name: string } | null>(null)
+const createSubmitting = ref(false)
+const renameDialog = ref<{ path: string; name: string; isDir: boolean } | null>(null)
+const deleteTarget = ref<{ path: string; name: string; isDir: boolean } | null>(null)
+const purgeTarget = ref<{ path: string; name: string; isDir: boolean } | null>(null)
+const emptyTrashConfirm = ref(false)
+const emptyTrashSubmitting = ref(false)
+const uploadInputRef = ref<HTMLInputElement | null>(null)
+const uploadTargetPath = ref('')
+const highlightedPath = ref('')
+const selectedPaths = ref<Set<string>>(new Set())
+const multiSelectMode = ref(false)
+const listPage = ref(1)
+const recentFiles = ref<Array<{ path: string; name: string; mtime: number }>>([])
+const recentFilesOpen = ref(false)
+const recentFilesMenuRef = ref<HTMLElement | null>(null)
+const recentFilesTriggerRef = ref<HTMLElement | null>(null)
+const recentFilesMenuPos = ref({ top: 0, left: 0 })
+const RECENT_FILES_MENU_WIDTH = 288
+const longPressTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 const { showToast } = useToast()
 const selectedItem = ref<any | null>(null)
@@ -74,6 +106,121 @@ const TYPE_SCAN_PATTERNS: Partial<Record<TypeFilterKey, string[]>> = {
   audio: ['*.mp3', '*.wav', '*.flac', '*.aac'],
   data: ['*.db', '*.sqlite', '*.parquet'],
 }
+
+const loadBrowserPrefs = () => {
+  try {
+    const raw = localStorage.getItem(BROWSER_PREFS_KEY)
+    if (!raw) return
+    const prefs = JSON.parse(raw)
+    if (typeof prefs.includeSubdirs === 'boolean') includeSubdirs.value = prefs.includeSubdirs
+    if (prefs.typeFilter) typeFilter.value = prefs.typeFilter
+  } catch { /* ignore */ }
+}
+
+const saveBrowserPrefs = () => {
+  try {
+    localStorage.setItem(BROWSER_PREFS_KEY, JSON.stringify({
+      includeSubdirs: includeSubdirs.value,
+      typeFilter: typeFilter.value,
+    }))
+  } catch { /* ignore */ }
+}
+
+const loadRecentFiles = () => {
+  try {
+    const raw = localStorage.getItem(RECENT_FILES_KEY)
+    recentFiles.value = raw ? JSON.parse(raw) : []
+  } catch {
+    recentFiles.value = []
+  }
+}
+
+const persistRecentFiles = () => {
+  try {
+    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(recentFiles.value))
+  } catch { /* ignore */ }
+}
+
+const trackRecentFile = (item: { path: string; name: string; mtime?: number }) => {
+  if (item.path.includes('/.trash/')) return
+  const next = [{ path: item.path, name: item.name, mtime: item.mtime || Date.now() / 1000 }, ...recentFiles.value.filter((r) => r.path !== item.path)]
+  recentFiles.value = next.slice(0, MAX_RECENT)
+  persistRecentFiles()
+}
+
+const removeRecentFile = (path: string) => {
+  recentFiles.value = recentFiles.value.filter((r) => r.path !== path)
+  persistRecentFiles()
+}
+
+const clearRecentFiles = () => {
+  recentFiles.value = []
+  persistRecentFiles()
+  showToast('已清空最近记录', 'success')
+}
+
+const updateRecentFilesMenuPosition = () => {
+  const trigger = recentFilesTriggerRef.value
+  if (!trigger) return
+  const rect = trigger.getBoundingClientRect()
+  const width = Math.min(RECENT_FILES_MENU_WIDTH, window.innerWidth - 16)
+  let left = rect.right - width
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8))
+  recentFilesMenuPos.value = { top: rect.bottom + 4, left }
+}
+
+const syncRecentFilesMenuPosition = () => {
+  if (recentFilesOpen.value) updateRecentFilesMenuPosition()
+}
+
+const toggleRecentFilesMenu = () => {
+  if (recentFilesOpen.value) {
+    closeRecentFilesMenu()
+    return
+  }
+  loadRecentFiles()
+  recentFilesOpen.value = true
+  nextTick(updateRecentFilesMenuPosition)
+}
+
+const closeRecentFilesMenu = () => {
+  recentFilesOpen.value = false
+}
+
+const formatRecentFileLocation = (filePath: string) => {
+  const parent = filePath.split('/').slice(0, -1).join('/')
+  const root = userWorkspaceRoot.value
+  if (root && parent.startsWith(root)) {
+    const rel = parent.slice(root.length).replace(/^\//, '')
+    return rel ? `📂 ${rel}` : '📂 我的目录'
+  }
+  const parts = parent.split('/').filter(Boolean)
+  if (parts.length >= 2) return `📂 …/${parts.slice(-2).join('/')}`
+  return parts.length ? `📂 ${parts[parts.length - 1]}` : '📂 —'
+}
+
+const openRecentFile = async (recent: { path: string; name: string; mtime: number }) => {
+  closeRecentFilesMenu()
+  const parentDir = recent.path.split('/').slice(0, -1).join('/')
+  highlightedPath.value = recent.path
+  await fetchDirectory(parentDir, { preserveSearch: true })
+  await nextTick()
+  const index = sortedDisplayItems.value.findIndex((item) => item.path === recent.path)
+  if (index >= 0) {
+    listPage.value = Math.floor(index / LIST_PAGE_SIZE) + 1
+  }
+  const matched = items.value.find((item) => item.path === recent.path)
+  selectedItem.value = matched || {
+    path: recent.path,
+    name: recent.name,
+    is_dir: false,
+    mtime: recent.mtime,
+  }
+  setTimeout(() => { highlightedPath.value = '' }, 3000)
+}
+
+loadBrowserPrefs()
+loadRecentFiles()
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -244,7 +391,6 @@ const itemMatchesTypeFilter = (item: { name: string; is_dir: boolean }) => {
   if (typeFilter.value === 'folder') return item.is_dir
   if (item.is_dir) {
     if (typeFilter.value === 'folder') return true
-    if (activeTab.value === 'directory') return true
     if (isRecursiveListingActive.value) return false
     return false
   }
@@ -264,6 +410,57 @@ const baseDisplayItems = computed(() => {
 
 const displayItems = computed(() => baseDisplayItems.value.filter(itemMatchesTypeFilter))
 
+type SortKey = 'name' | 'type' | 'size' | 'mtime'
+const sortKey = ref<SortKey>('type')
+const sortDir = ref<'asc' | 'desc'>('asc')
+
+const toggleSort = (key: SortKey) => {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortDir.value = key === 'size' || key === 'mtime' ? 'desc' : 'asc'
+  }
+}
+
+/** 仅当前排序列显示 ↑/↓，未激活列不显示静态 ↕ */
+const activeSortArrow = (key: SortKey) => {
+  if (sortKey.value !== key) return ''
+  return sortDir.value === 'asc' ? '↑' : '↓'
+}
+
+const sortedDisplayItems = computed(() => {
+  const list = [...displayItems.value]
+  const dir = sortDir.value === 'asc' ? 1 : -1
+
+  list.sort((a, b) => {
+    let cmp = 0
+    switch (sortKey.value) {
+      case 'name':
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+        cmp = a.name.localeCompare(b.name, 'zh-CN', { sensitivity: 'base', numeric: true })
+        break
+      case 'type': {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+        const va = getItemVisual(a)
+        const vb = getItemVisual(b)
+        cmp = va.label.localeCompare(vb.label, 'zh-CN', { sensitivity: 'base' })
+          || va.ext.localeCompare(vb.ext)
+        break
+      }
+      case 'size':
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+        cmp = (a.size || 0) - (b.size || 0)
+        break
+      case 'mtime':
+        cmp = (a.mtime || 0) - (b.mtime || 0)
+        break
+    }
+    return cmp * dir
+  })
+  return list
+})
+
 const displayEmptyHint = computed(() => {
   if (isRecursiveListingActive.value && searchLoading.value) return ''
   if (isTypeScanActive.value) return '未找到符合类型筛选的文件'
@@ -273,8 +470,26 @@ const displayEmptyHint = computed(() => {
   return '未找到匹配的文件或目录'
 })
 
+const paginatedDisplayItems = computed(() => {
+  const end = listPage.value * LIST_PAGE_SIZE
+  return sortedDisplayItems.value.slice(0, end)
+})
+
+const hasMoreListItems = computed(() => paginatedDisplayItems.value.length < sortedDisplayItems.value.length)
+
+const loadMoreListItems = () => {
+  if (hasMoreListItems.value) listPage.value += 1
+}
+
+watch([displayItems, sortKey, sortDir], () => {
+  listPage.value = 1
+})
+
+watch([includeSubdirs, typeFilter], saveBrowserPrefs)
+
 const setTypeFilter = (key: TypeFilterKey) => {
   typeFilter.value = key
+  saveBrowserPrefs()
 }
 
 const activeTypeFilterLabel = computed(() => {
@@ -290,10 +505,147 @@ const getItemLocationHint = (itemPath: string) => {
   return rel || parent.split('/').pop() || ''
 }
 
-const fetchDirectory = async (pathUrl: string = '') => {
+const normalizeFsPathForCompare = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+const trashDirPath = computed(() => (userWorkspaceRoot.value ? `${userWorkspaceRoot.value}/.trash` : ''))
+
+const isTrashPath = (path: string) => {
+  const trash = trashDirPath.value
+  if (!trash || !path) return false
+  const norm = normalizeFsPathForCompare(path)
+  const t = normalizeFsPathForCompare(trash)
+  return norm === t || norm.startsWith(`${t}/`)
+}
+
+const isTrashView = computed(() => isTrashPath(currentPath.value))
+
+const displayItemName = (item: { name: string; path: string; is_dir: boolean }) => {
+  if (item.name === '.trash' || (item.is_dir && isTrashPath(item.path) && normalizeFsPathForCompare(item.path) === normalizeFsPathForCompare(trashDirPath.value))) {
+    return '回收站'
+  }
+  return item.name
+}
+
+const formatTrashItemName = (name: string) => {
+  const match = name.match(/^\d+_[a-f0-9]{8}_(.+)$/)
+  return match?.[1] || name
+}
+
+const resolveItemDisplayName = (item: { name: string; path: string; is_dir: boolean }) => (
+  isTrashView.value ? formatTrashItemName(item.name) : displayItemName(item)
+)
+
+const isTrashRootItem = (item: { path: string; name: string; is_dir: boolean }) => {
+  if (!item.is_dir || !trashDirPath.value) return false
+  return normalizeFsPathForCompare(item.path) === normalizeFsPathForCompare(trashDirPath.value)
+}
+
+const isTrashListItem = (item: { path: string; name: string; is_dir: boolean }) => (
+  isTrashPath(item.path) && !isTrashRootItem(item)
+)
+
+const isPathInUserWorkspace = (path: string) => {
+  const root = userWorkspaceRoot.value
+  if (!root || !path) return false
+  const norm = normalizeFsPathForCompare(path)
+  const rootNorm = normalizeFsPathForCompare(root)
+  return norm === rootNorm || norm.startsWith(`${rootNorm}/`)
+}
+
+const canCreateInPath = (parentPath: string) => isPathInUserWorkspace(parentPath) && !isTrashPath(parentPath)
+
+const canUseCreateMenu = computed(
+  () => !isRecursiveListingActive.value && !loading.value && !searchLoading.value,
+)
+
+const closeContextMenu = () => {
+  contextMenu.value = null
+}
+
+const openContextMenu = (event: MouseEvent, parentPath: string, item?: { path: string; name: string; is_dir: boolean }) => {
+  const itemAllowed = item && (canManageItem(item) || isTrashListItem(item) || isTrashRootItem(item))
+  if (!canUseCreateMenu.value && !itemAllowed) return
+  if (!canCreateInPath(parentPath) && !itemAllowed) return
+  event.preventDefault()
+  event.stopPropagation()
+  contextMenu.value = { x: event.clientX, y: event.clientY, parentPath, item }
+}
+
+const handleListContextMenu = (event: MouseEvent) => {
+  if (!currentPath.value || !currentPathWritable.value) return
+  openContextMenu(event, currentPath.value)
+}
+
+const handleItemContextMenu = (event: MouseEvent, item: { path: string; name: string; is_dir: boolean }) => {
+  const parentPath = item.is_dir ? item.path : currentPath.value
+  if (!parentPath) return
+  openContextMenu(event, parentPath, item)
+}
+
+const startCreateEntry = (kind: 'file' | 'dir') => {
+  if (!contextMenu.value) return
+  createDialog.value = {
+    kind,
+    parentPath: contextMenu.value.parentPath,
+    name: kind === 'file' ? '未命名.md' : '新建文件夹',
+  }
+  closeContextMenu()
+}
+
+const cancelCreateEntry = () => {
+  createDialog.value = null
+}
+
+const submitCreateEntry = async () => {
+  if (!createDialog.value || createSubmitting.value) return
+  const { kind, parentPath, name } = createDialog.value
+  const trimmed = name.trim()
+  if (!trimmed) {
+    showToast('请输入名称', 'error')
+    return
+  }
+
+  createSubmitting.value = true
+  try {
+    const res = await createWorkspaceEntry({
+      parentPath,
+      name: trimmed,
+      kind,
+      content: kind === 'file' ? '' : undefined,
+    })
+    const created = res.data?.data
+    showToast(kind === 'file' ? '文件已创建' : '文件夹已创建', 'success')
+    createDialog.value = null
+
+    const refreshPath = normalizeFsPathForCompare(currentPath.value) === normalizeFsPathForCompare(parentPath)
+      ? parentPath
+      : currentPath.value
+    await fetchDirectory(refreshPath, { preserveSearch: true })
+
+    if (created && kind === 'file') {
+      selectedItem.value = {
+        path: created.path,
+        name: created.name,
+        is_dir: false,
+        size: created.size ?? 0,
+      }
+    }
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail || error?.response?.data?.message
+    showToast(detail || '创建失败，请稍后重试', 'error')
+  } finally {
+    createSubmitting.value = false
+  }
+}
+
+const fetchDirectory = async (pathUrl: string = '', options?: { preserveSearch?: boolean }) => {
   loading.value = true
   selectedItem.value = null
-  resetSearchState()
+  closeContextMenu()
+  closeRecentFilesMenu()
+  if (!options?.preserveSearch) {
+    resetSearchState()
+  }
   try {
     const res = await axios.get('/api/v1/chat/fs/list', {
       params: { path: pathUrl },
@@ -303,8 +655,13 @@ const fetchDirectory = async (pathUrl: string = '') => {
       currentPath.value = data.current_path
       parentPath.value = data.parent_path
       isRoot.value = data.is_root
+      isVirtualRoot.value = !!data.is_virtual_root
       scope.value = data.scope === 'admin_all' ? 'admin_all' : 'user_scoped'
       items.value = data.items
+      currentPathWritable.value = !!data.writable
+      if (data.user_workspace_root) {
+        userWorkspaceRoot.value = data.user_workspace_root
+      }
       if (data.is_root && !baseDir.value) {
         baseDir.value = data.current_path
       }
@@ -323,15 +680,37 @@ watch(
     setMobileBodyScrollLock(!!open)
     if (open) {
       baseDir.value = ''
+      loadRecentFiles()
       fetchDirectory()
+    } else {
+      closeRecentFilesMenu()
     }
   },
   { immediate: true },
 )
 
-watch(activeTab, () => {
-  selectedItem.value = null
-})
+const onGlobalKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') {
+    closeRecentFilesMenu()
+    closeContextMenu()
+    if (createDialog.value && !createSubmitting.value) {
+      createDialog.value = null
+    }
+  }
+  if (event.key === 'Enter' && createDialog.value && !createSubmitting.value) {
+    event.preventDefault()
+    submitCreateEntry()
+  }
+}
+
+const onDocumentClick = (event: MouseEvent) => {
+  closeContextMenu()
+  if (!recentFilesOpen.value) return
+  const target = event.target as Node
+  if (recentFilesMenuRef.value?.contains(target)) return
+  if (recentFilesTriggerRef.value?.contains(target)) return
+  closeRecentFilesMenu()
+}
 
 onMounted(() => {
   mobileMq = window.matchMedia('(max-width: 639px)')
@@ -340,10 +719,18 @@ onMounted(() => {
     pinned.value = false
   }
   mobileMq.addEventListener('change', syncMobile)
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('resize', syncRecentFilesMenuPosition)
+  window.addEventListener('scroll', syncRecentFilesMenuPosition, true)
 })
 
 onUnmounted(() => {
   mobileMq?.removeEventListener('change', syncMobile)
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('resize', syncRecentFilesMenuPosition)
+  window.removeEventListener('scroll', syncRecentFilesMenuPosition, true)
   setMobileBodyScrollLock(false)
   resetSearchState()
 })
@@ -375,46 +762,76 @@ const getFileExt = (filename: string) => {
 const getItemVisual = (item: { name: string; is_dir: boolean }) =>
   resolveFileTypeVisual(item.name, item.is_dir)
 
+const getRowVisual = (item: { name: string; is_dir: boolean; path: string }) => {
+  if (isTrashRootItem(item)) {
+    return {
+      icon: '🗑️',
+      label: '回收站',
+      iconBg: 'bg-amber-50 dark:bg-amber-500/10',
+      iconRing: 'ring-amber-200/60 dark:ring-amber-500/20',
+      badgeBg: 'bg-amber-50 dark:bg-amber-500/10',
+      badgeText: 'text-amber-700 dark:text-amber-300',
+      category: 'folder' as FileTypeCategory,
+      ext: '',
+    }
+  }
+  return getItemVisual(item)
+}
+
 const scopedHomeCrumbName = () => '🏠 工作空间'
 const adminHomeCrumbName = () => '📁 root'
 const formatBaseCrumb = (currentScope: 'admin_all' | 'user_scoped') =>
   currentScope === 'user_scoped' ? scopedHomeCrumbName() : adminHomeCrumbName()
 
+const userHomeCrumbLabel = () => {
+  const root = userWorkspaceRoot.value
+  if (!root) return '我的目录'
+  const base = root.split('/').filter(Boolean).pop()
+  return base ? `我的目录 (${base})` : '我的目录'
+}
+
 const breadcrumbs = computed(() => {
-  if (isRoot.value && scope.value === 'user_scoped') {
+  if (isVirtualRoot.value && scope.value === 'user_scoped') {
     return [{ name: scopedHomeCrumbName(), path: '', isBase: true, navigable: true }]
   }
 
-  const base = baseDir.value
+  const crumbs: Array<{ name: string; path: string; isBase: boolean; navigable: boolean }> = [
+    { name: scopedHomeCrumbName(), path: '', isBase: true, navigable: true },
+  ]
+
+  const root = userWorkspaceRoot.value
   const current = currentPath.value
-  if (!current) return []
+  if (!current) return crumbs
 
-  const parts = current.split('/').filter(Boolean)
-  const crumbs: Array<{ name: string; path: string; isBase: boolean; navigable: boolean }> = []
-  let runningPath = ''
-
-  for (const part of parts) {
-    runningPath += `/${part}`
-    if (runningPath.startsWith(base)) {
-      const isBase = runningPath === base
-      // 普通用户无权浏览 agent_workspaces 汇总目录，仅可进入本人工作区
-      const navigable = !(scope.value === 'user_scoped' && part === 'agent_workspaces')
-      crumbs.push({
-        name: isBase ? formatBaseCrumb(scope.value) : part,
-        path: isBase && scope.value === 'user_scoped' ? '' : runningPath,
-        isBase,
-        navigable,
-      })
+  if (root && normalizeFsPathForCompare(current).startsWith(normalizeFsPathForCompare(root))) {
+    crumbs.push({ name: userHomeCrumbLabel(), path: root, isBase: false, navigable: true })
+    const rel = normalizeFsPathForCompare(current) === normalizeFsPathForCompare(root)
+      ? ''
+      : current.slice(root.length).replace(/^[/\\]+/, '')
+    if (rel) {
+      let acc = root
+      for (const seg of rel.split(/[/\\]/).filter(Boolean)) {
+        acc = `${acc}/${seg}`
+        crumbs.push({
+          name: seg === '.trash' ? '回收站' : seg,
+          path: acc,
+          isBase: false,
+          navigable: true,
+        })
+      }
     }
+    return crumbs
   }
 
-  if (crumbs.length === 0) {
-    crumbs.push({
-      name: formatBaseCrumb(scope.value),
-      path: scope.value === 'user_scoped' ? '' : (base || current),
-      isBase: true,
-      navigable: true,
-    })
+  const base = baseDir.value
+  if (base && current.startsWith(base)) {
+    const relParts = current.slice(base.length).replace(/^[/\\]+/, '').split(/[/\\]/).filter(Boolean)
+    let acc = base
+    for (const seg of relParts) {
+      acc = `${acc}/${seg}`
+      const navigable = !(scope.value === 'user_scoped' && seg === 'agent_workspaces')
+      crumbs.push({ name: seg, path: acc, isBase: false, navigable })
+    }
   }
 
   return crumbs
@@ -434,17 +851,19 @@ const handleDoubleClick = (item: any) => {
     fetchDirectory(item.path)
     return
   }
-  if (activeTab.value === 'file' && canPreviewWorkspaceFile(item.name)) {
+  if (canPreviewWorkspaceFile(item.name)) {
     previewItem(item)
   }
 }
 
 const previewItem = (item: { path: string; name: string }) => {
-  if (!canPreviewWorkspaceFile(item.name)) {
+  const displayName = isTrashView.value ? formatTrashItemName(item.name) : item.name
+  if (!canPreviewWorkspaceFile(displayName)) {
     showToast('不支持预览该类型的文件', 'error')
     return
   }
-  emit('preview', { path: item.path, name: item.name })
+  trackRecentFile({ path: item.path, name: displayName })
+  emit('preview', { path: item.path, name: displayName })
 }
 
 const downloadItem = async (item: { path: string; name: string }) => {
@@ -456,11 +875,19 @@ const downloadItem = async (item: { path: string; name: string }) => {
 }
 
 const handleSelectRow = (item: any) => {
-  if (activeTab.value === 'file') {
-    selectedItem.value = item.is_dir ? null : item
-  } else {
-    selectedItem.value = item.is_dir ? item : null
-  }
+  selectedItem.value = item
+}
+
+const toggleMultiSelect = (item: { path: string }) => {
+  const next = new Set(selectedPaths.value)
+  if (next.has(item.path)) next.delete(item.path)
+  else next.add(item.path)
+  selectedPaths.value = next
+}
+
+const clearMultiSelect = () => {
+  selectedPaths.value = new Set()
+  multiSelectMode.value = false
 }
 
 const handleRowClick = (item: any) => {
@@ -487,7 +914,8 @@ const finishSelect = (payload: {
 }
 
 const mountItemToSession = (item: { path: string; name: string; is_dir: boolean; size?: number }) => {
-  if (activeTab.value === 'file' && !item.is_dir) {
+  trackRecentFile({ path: item.path, name: item.name })
+  if (!item.is_dir) {
     finishSelect({
       type: 'local_file',
       path: item.path,
@@ -497,19 +925,26 @@ const mountItemToSession = (item: { path: string; name: string; is_dir: boolean;
     })
     return
   }
-  if (item.is_dir) {
-    finishSelect({
-      type: 'local_dir',
-      path: item.path,
-      name: item.name,
-      size: 0,
-      ext: '',
-    })
+  finishSelect({
+    type: 'local_dir',
+    path: item.path,
+    name: item.name,
+    size: 0,
+    ext: '',
+  })
+}
+
+const mountSelectedBatch = () => {
+  const selected = sortedDisplayItems.value.filter((item) => selectedPaths.value.has(item.path))
+  if (!selected.length) return
+  for (const item of selected) {
+    mountItemToSession(item)
   }
+  clearMultiSelect()
 }
 
 const mountCurrentDirectoryToSession = () => {
-  if (activeTab.value !== 'directory' || !currentPath.value) return
+  if (!currentPath.value || isVirtualRoot.value) return
   const dirName = currentPath.value.split('/').filter(Boolean).pop() || 'data'
   finishSelect({
     type: 'local_dir',
@@ -520,16 +955,201 @@ const mountCurrentDirectoryToSession = () => {
   })
 }
 
-const shouldShowRowActions = (item: { path: string; is_dir: boolean }) => {
-  if (selectedItem.value?.path !== item.path) return false
-  if (activeTab.value === 'file') return !item.is_dir
-  return item.is_dir
+const shouldShowRowActions = (item: { path: string }) => selectedItem.value?.path === item.path
+
+const quickNavLinks = computed(() => {
+  const links: Array<{
+    key: string
+    label: string
+    path: string
+    icon: string
+    disabled?: boolean
+    disabledTitle?: string
+  }> = []
+  if (userWorkspaceRoot.value) {
+    links.push({ key: 'home', label: '我的目录', path: userWorkspaceRoot.value, icon: '🏠' })
+    links.push({ key: 'uploads', label: 'uploads', path: `${userWorkspaceRoot.value}/uploads`, icon: '📤' })
+    links.push({ key: 'trash', label: '回收站', path: `${userWorkspaceRoot.value}/.trash`, icon: '🗑️' })
+  }
+  if (props.conversationId && userWorkspaceRoot.value) {
+    links.push({
+      key: 'session',
+      label: '本会话目录',
+      path: `${userWorkspaceRoot.value}/${props.conversationId}`,
+      icon: '💬',
+      disabled: !props.sessionStarted,
+      disabledTitle: '发送首条消息后会话目录才会创建',
+    })
+  }
+  return links
+})
+
+const handleQuickNavClick = (link: { path: string; disabled?: boolean; disabledTitle?: string }) => {
+  if (link.disabled) {
+    showToast(link.disabledTitle || '当前不可用', 'info')
+    return
+  }
+  navigateQuick(link.path)
 }
 
-const canMountItem = (item: { is_dir: boolean }) => {
-  if (activeTab.value === 'file') return !item.is_dir
-  return item.is_dir
+const navigateQuick = (path: string) => {
+  if (!path) return fetchDirectory('')
+  fetchDirectory(path)
 }
+
+const openUploadPicker = (parentPath?: string) => {
+  const target = parentPath || currentPath.value
+  if (!target || !canCreateInPath(target)) {
+    showToast('仅可在本人工作目录内上传', 'error')
+    return
+  }
+  uploadTargetPath.value = target
+  uploadInputRef.value?.click()
+}
+
+const handleUploadFiles = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = input.files
+  if (!files?.length || !uploadTargetPath.value) return
+  for (const file of Array.from(files)) {
+    try {
+      await uploadToWorkspaceDir(uploadTargetPath.value, file)
+      showToast(`已上传 ${file.name}`, 'success')
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || `上传 ${file.name} 失败`, 'error')
+    }
+  }
+  input.value = ''
+  await fetchDirectory(currentPath.value, { preserveSearch: true })
+}
+
+const copyItemPath = async (path: string) => {
+  try {
+    await copyTextToClipboard(path)
+    showToast('路径已复制', 'success')
+  } catch {
+    showToast('复制失败', 'error')
+  }
+  closeContextMenu()
+}
+
+const startRenameEntry = (item: { path: string; name: string; is_dir: boolean }) => {
+  renameDialog.value = { path: item.path, name: item.name, isDir: item.is_dir }
+  closeContextMenu()
+}
+
+const submitRename = async () => {
+  if (!renameDialog.value) return
+  try {
+    await renameWorkspaceEntry(renameDialog.value.path, renameDialog.value.name.trim())
+    showToast('重命名成功', 'success')
+    renameDialog.value = null
+    await fetchDirectory(currentPath.value, { preserveSearch: true })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '重命名失败', 'error')
+  }
+}
+
+const confirmDeleteEntry = (item: { path: string; name: string; is_dir: boolean }) => {
+  deleteTarget.value = item
+  closeContextMenu()
+}
+
+const submitDelete = async () => {
+  if (!deleteTarget.value) return
+  try {
+    await deleteWorkspaceEntry(deleteTarget.value.path)
+    showToast('已移入回收站', 'success')
+    deleteTarget.value = null
+    await fetchDirectory(currentPath.value, { preserveSearch: true })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '删除失败', 'error')
+  }
+}
+
+const restoreTrashItem = async (item: { path: string; name: string }) => {
+  try {
+    const res = await restoreWorkspaceEntry(item.path)
+    const restored = res.data?.data
+    showToast(`已恢复至我的目录：${restored?.name || formatTrashItemName(item.name)}`, 'success')
+    selectedItem.value = null
+    await fetchDirectory(currentPath.value, { preserveSearch: true })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '恢复失败', 'error')
+  }
+}
+
+const confirmPurgeEntry = (item: { path: string; name: string; is_dir: boolean }) => {
+  purgeTarget.value = item
+  closeContextMenu()
+}
+
+const submitPurge = async () => {
+  if (!purgeTarget.value) return
+  try {
+    await purgeWorkspaceEntry(purgeTarget.value.path)
+    showToast('已永久删除', 'success')
+    purgeTarget.value = null
+    selectedItem.value = null
+    await fetchDirectory(currentPath.value, { preserveSearch: true })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '永久删除失败', 'error')
+  }
+}
+
+const confirmEmptyTrash = () => {
+  emptyTrashConfirm.value = true
+  closeContextMenu()
+}
+
+const submitEmptyTrash = async () => {
+  if (emptyTrashSubmitting.value) return
+  emptyTrashSubmitting.value = true
+  try {
+    const res = await emptyWorkspaceTrash()
+    const count = res.data?.data?.deleted_count ?? 0
+    showToast(count > 0 ? `已清空回收站（${count} 项）` : '回收站已是空的', 'success')
+    emptyTrashConfirm.value = false
+    selectedItem.value = null
+    await fetchDirectory(currentPath.value || trashDirPath.value, { preserveSearch: true })
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || '清空回收站失败', 'error')
+  } finally {
+    emptyTrashSubmitting.value = false
+  }
+}
+
+const openTrashFolder = async (item: { path: string }) => {
+  closeContextMenu()
+  await fetchDirectory(item.path)
+}
+
+const canManageItem = (item: { path: string }) => isPathInUserWorkspace(item.path) && !isTrashPath(item.path)
+
+const handleTouchStart = (event: TouchEvent, item: { path: string; name: string; is_dir: boolean }) => {
+  if (!isMobile.value) return
+  const parentPath = item.is_dir ? item.path : currentPath.value
+  const itemAllowed = canManageItem(item) || isTrashListItem(item) || isTrashRootItem(item)
+  if (!canCreateInPath(parentPath) && !itemAllowed) return
+  longPressTimer.value = setTimeout(() => {
+    const touch = event.touches[0]
+    if (touch) openContextMenu({ clientX: touch.clientX, clientY: touch.clientY } as MouseEvent, parentPath, item)
+  }, 550)
+}
+
+const handleTouchEnd = () => {
+  if (longPressTimer.value) clearTimeout(longPressTimer.value)
+}
+
+const refreshDirectory = async (highlightPathArg?: string) => {
+  if (highlightPathArg) highlightedPath.value = highlightPathArg
+  await fetchDirectory(currentPath.value || '', { preserveSearch: true })
+  if (highlightPathArg) {
+    setTimeout(() => { highlightedPath.value = '' }, 3000)
+  }
+}
+
+defineExpose({ refreshDirectory })
 
 const sheetEnterFrom = computed(() => (isMobile.value ? 'translate-y-full' : 'translate-x-full'))
 const sheetLeaveTo = computed(() => (isMobile.value ? 'translate-y-full' : 'translate-x-full'))
@@ -639,14 +1259,14 @@ const closeDrawer = () => {
               <div class="flex items-center gap-2 flex-shrink-0">
                 <label
                   class="hidden sm:flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400 cursor-pointer select-none whitespace-nowrap"
-                  title="开启后确认挂载不会关闭侧栏，可连续选择文件"
+                  title="开启后确认添加不会关闭侧栏，可连续选择"
                 >
                   <input
                     v-model="keepOpenOnSelect"
                     type="checkbox"
                     class="rounded border-gray-300 text-primary focus:ring-primary/30"
                   />
-                  挂载后保持
+                  添加后保持
                 </label>
                 <button
                   type="button"
@@ -701,22 +1321,76 @@ const closeDrawer = () => {
 
             <div class="workspace-drawer-scroll flex-1 overflow-y-auto overscroll-y-contain p-3 sm:p-4 bg-white dark:bg-gray-900/60 min-h-0 touch-pan-y flex flex-col">
               <div class="flex flex-col flex-1 min-h-0">
-                <div class="flex border-b border-gray-100 dark:border-gray-800 mb-3 bg-gray-50/50 dark:bg-gray-900/30 p-1 rounded-xl shrink-0">
+                <div class="flex items-center gap-1.5 mb-3 shrink-0 overflow-x-auto no-scrollbar flex-nowrap min-w-0 touch-pan-x">
                   <button
-                    class="flex-1 py-2 text-xs font-black rounded-lg transition-all duration-200 flex items-center justify-center space-x-1.5 focus:outline-none"
-                    :class="activeTab === 'file' ? 'bg-white dark:bg-gray-800 text-primary shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100'"
-                    @click="activeTab = 'file'"
+                    v-for="link in quickNavLinks"
+                    :key="link.key"
+                    type="button"
+                    class="inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-all"
+                    :class="link.disabled
+                      ? 'opacity-40 cursor-not-allowed text-gray-400 dark:text-gray-500'
+                      : 'hover:border-primary/30 hover:text-primary'"
+                    :aria-disabled="link.disabled ? 'true' : undefined"
+                    :title="link.disabled ? link.disabledTitle : link.label"
+                    @click="handleQuickNavClick(link)"
                   >
-                    <span>📄</span>
-                    <span>挂载系统文件</span>
+                    <span>{{ link.icon }}</span>
+                    <span>{{ link.label }}</span>
                   </button>
+                  <div class="shrink-0">
+                    <button
+                      ref="recentFilesTriggerRef"
+                      type="button"
+                      class="inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 transition-all"
+                      :class="recentFilesOpen ? 'border-primary/30 text-primary bg-primary/5' : 'text-gray-500 hover:border-primary/30 hover:text-primary'"
+                      @click.stop="toggleRecentFilesMenu"
+                    >
+                      <span>🕒</span>
+                      <span>最近文件</span>
+                      <svg
+                        class="w-3 h-3 transition-transform"
+                        :class="recentFilesOpen ? 'rotate-180' : ''"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-1.5">
+                    <button
+                      v-if="selectedPaths.size > 0"
+                      type="button"
+                      class="inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border border-primary/30 text-primary bg-primary/10 transition-all"
+                      @click="mountSelectedBatch"
+                    >
+                      批量添加 ({{ selectedPaths.size }})
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border border-gray-200 dark:border-gray-700 text-gray-500 transition-all"
+                      :class="multiSelectMode ? 'text-primary border-primary/30 bg-primary/5' : ''"
+                      @click="multiSelectMode = !multiSelectMode; if (!multiSelectMode) clearMultiSelect()"
+                    >
+                      {{ multiSelectMode ? '取消多选' : '多选' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  v-if="isTrashView"
+                  class="mb-2 px-2.5 py-2 rounded-lg text-[10px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/10 border border-amber-200/60 dark:border-amber-500/20 shrink-0 flex items-center justify-between gap-2"
+                >
+                  <span>已删文件暂存于此，可恢复至目录根，或永久删除。</span>
                   <button
-                    class="flex-1 py-2 text-xs font-black rounded-lg transition-all duration-200 flex items-center justify-center space-x-1.5 focus:outline-none"
-                    :class="activeTab === 'directory' ? 'bg-white dark:bg-gray-800 text-primary shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-100'"
-                    @click="activeTab = 'directory'"
+                    v-if="displayItems.length > 0"
+                    type="button"
+                    class="shrink-0 px-2 py-1 rounded-md text-[10px] font-bold text-red-600 dark:text-red-400 bg-white/80 dark:bg-gray-900/60 border border-red-200/60 dark:border-red-500/30 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors focus:outline-none"
+                    @click="confirmEmptyTrash"
                   >
-                    <span>📁</span>
-                    <span>挂载系统目录</span>
+                    清空回收站
                   </button>
                 </div>
 
@@ -757,10 +1431,10 @@ const closeDrawer = () => {
                     </div>
                   </div>
                   <button
-                    v-if="activeTab === 'directory' && !isSearchActive && currentPath"
+                    v-if="!isSearchActive && currentPath && !isVirtualRoot"
                     type="button"
                     class="flex-shrink-0 px-2.5 py-1.5 rounded-lg text-[10px] font-bold text-primary bg-primary/10 hover:bg-primary/15 border border-primary/20 transition-all whitespace-nowrap focus:outline-none"
-                    title="将当前浏览的目录挂载到输入框"
+                    title="将当前目录添加到 AI 会话"
                     @click="mountCurrentDirectoryToSession"
                   >
                     添加当前目录
@@ -830,7 +1504,7 @@ const closeDrawer = () => {
                       找到 {{ displayItems.length }} 项
                       <span v-if="isTypeFilterActive" class="text-primary/80">（{{ activeTypeFilterLabel }}）</span>
                     </template>
-                    <span v-if="searchTruncated" class="text-amber-600 dark:text-amber-400 ml-1">（结果已截断）</span>
+                    <span v-if="searchTruncated" class="text-amber-600 dark:text-amber-400 ml-1">（结果已截断，请缩小范围）</span>
                   </span>
                   <span v-if="isRecursiveListingActive" class="font-mono truncate max-w-[50%]">{{ isRoot && scope === 'user_scoped' ? '全部授权目录' : currentPath }}</span>
                   <span v-else-if="isSearchActive">仅当前目录</span>
@@ -838,11 +1512,43 @@ const closeDrawer = () => {
 
                 <div class="flex-1 min-h-[240px] border border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden flex flex-col relative bg-gray-50/10">
                   <div class="grid grid-cols-12 gap-2 px-4 py-2 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/20 text-[10px] font-black text-gray-400 tracking-wider shrink-0">
-                    <div class="col-span-7 sm:col-span-6">名称</div>
-                    <div class="col-span-2 hidden sm:block">类型</div>
+                    <button
+                      type="button"
+                      class="col-span-7 sm:col-span-6 inline-flex items-center gap-1 text-left hover:text-primary transition-colors focus:outline-none"
+                      :class="sortKey === 'name' ? 'text-primary' : ''"
+                      @click="toggleSort('name')"
+                    >
+                      <span>名称</span>
+                      <span v-if="activeSortArrow('name')" class="text-[9px] opacity-80 ml-0.5">{{ activeSortArrow('name') }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="col-span-2 hidden sm:inline-flex items-center hover:text-primary transition-colors focus:outline-none"
+                      :class="sortKey === 'type' ? 'text-primary' : ''"
+                      @click="toggleSort('type')"
+                    >
+                      <span>类型</span>
+                      <span v-if="activeSortArrow('type')" class="text-[9px] opacity-80 ml-0.5">{{ activeSortArrow('type') }}</span>
+                    </button>
                     <div class="col-span-5 sm:col-span-4 text-right leading-tight">
-                      <span>大小</span>
-                      <span class="block text-[9px] font-normal text-gray-300 dark:text-gray-600">修改时间</span>
+                      <button
+                        type="button"
+                        class="inline-flex items-center justify-end w-full hover:text-primary transition-colors focus:outline-none"
+                        :class="sortKey === 'size' ? 'text-primary' : ''"
+                        @click="toggleSort('size')"
+                      >
+                        <span>大小</span>
+                        <span v-if="activeSortArrow('size')" class="text-[9px] opacity-80 ml-0.5">{{ activeSortArrow('size') }}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="inline-flex items-center justify-end w-full text-[9px] font-normal mt-0.5 hover:text-primary transition-colors focus:outline-none"
+                        :class="sortKey === 'mtime' ? 'text-primary font-bold' : 'text-gray-300 dark:text-gray-600'"
+                        @click="toggleSort('mtime')"
+                      >
+                        <span>修改时间</span>
+                        <span v-if="activeSortArrow('mtime')" class="opacity-80 ml-0.5">{{ activeSortArrow('mtime') }}</span>
+                      </button>
                     </div>
                   </div>
 
@@ -856,29 +1562,38 @@ const closeDrawer = () => {
                     </div>
                   </div>
 
-                  <div class="flex-1 overflow-y-auto custom-scrollbar p-1 min-h-0">
-                    <div v-if="displayItems.length === 0 && !searchLoading" class="h-full flex flex-col items-center justify-center text-gray-400 py-12">
+                  <div class="flex-1 overflow-y-auto custom-scrollbar p-1 min-h-0" @contextmenu="handleListContextMenu">
+                    <div v-if="displayItems.length === 0 && !searchLoading" class="h-full flex flex-col items-center justify-center text-gray-400 py-12 px-4">
                       <span class="text-4xl mb-2">{{ isRecursiveListingActive || isSearchActive ? '🔍' : '📂' }}</span>
                       <span class="text-xs font-bold">{{ displayEmptyHint }}</span>
+                      <div v-if="currentPathWritable && !isRecursiveListingActive && !isSearchActive" class="mt-4 flex flex-wrap items-center justify-center gap-2">
+                        <button type="button" class="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-primary text-white" @click="createDialog = { kind: 'file', parentPath: currentPath, name: '未命名.md' }">新建文件</button>
+                        <button type="button" class="px-3 py-1.5 rounded-lg text-[10px] font-bold border border-gray-200 dark:border-gray-700" @click="createDialog = { kind: 'dir', parentPath: currentPath, name: '新建文件夹' }">新建文件夹</button>
+                        <button type="button" class="px-3 py-1.5 rounded-lg text-[10px] font-bold border border-gray-200 dark:border-gray-700" @click="openUploadPicker()">上传文件</button>
+                      </div>
                     </div>
 
                     <div v-else class="space-y-0.5">
                       <div
-                        v-for="item in displayItems"
+                        v-for="item in paginatedDisplayItems"
                         :key="item.path"
                         class="grid grid-cols-12 gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all duration-150 select-none group items-center"
                         :class="[
-                          selectedItem?.path === item.path
+                          selectedItem?.path === item.path || selectedPaths.has(item.path) || highlightedPath === item.path
                             ? 'bg-primary/10 dark:bg-primary/20 ring-1 ring-primary/20'
                             : 'hover:bg-gray-100/50 dark:hover:bg-gray-800/40',
-                          (activeTab === 'file' && item.is_dir) || (activeTab === 'directory' && !item.is_dir)
-                            ? 'opacity-70 group-hover:opacity-100'
-                            : '',
                         ]"
-                        @click="handleRowClick(item)"
+                        @click="multiSelectMode ? toggleMultiSelect(item) : handleRowClick(item)"
                         @dblclick="handleDoubleClick(item)"
+                        @contextmenu="handleItemContextMenu($event, item)"
+                        @touchstart.passive="handleTouchStart($event, item)"
+                        @touchend="handleTouchEnd"
+                        @touchmove="handleTouchEnd"
                       >
-                        <template v-for="visual in [getItemVisual(item)]" :key="item.path + '-visual'">
+                        <div v-if="multiSelectMode" class="col-span-1 flex items-center">
+                          <input type="checkbox" class="rounded border-gray-300 text-primary" :checked="selectedPaths.has(item.path)" @click.stop="toggleMultiSelect(item)">
+                        </div>
+                        <template v-for="visual in [getRowVisual(item)]" :key="item.path + '-visual'">
                           <div class="col-span-7 sm:col-span-6 flex items-start gap-2.5 min-w-0">
                             <div
                               class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ring-1 text-sm mt-0.5"
@@ -890,9 +1605,9 @@ const closeDrawer = () => {
                               <div
                                 class="text-xs font-medium text-gray-700 dark:text-gray-200 break-all leading-snug"
                                 :class="selectedItem?.path === item.path ? 'text-primary font-bold' : ''"
-                                :title="item.name"
+                                :title="resolveItemDisplayName(item)"
                               >
-                                {{ item.name }}
+                                {{ resolveItemDisplayName(item) }}
                               </div>
                               <span
                                 v-if="item.is_user_workspace"
@@ -927,41 +1642,93 @@ const closeDrawer = () => {
                             class="mt-1.5 flex flex-wrap items-center justify-end gap-x-1 gap-y-0.5 text-[10px] font-sans font-bold"
                             @click.stop
                           >
-                            <template v-if="activeTab === 'file' && !item.is_dir">
+                            <template v-if="isTrashListItem(item)">
                               <button
                                 type="button"
-                                class="transition-colors focus:outline-none"
-                                :class="canPreviewWorkspaceFile(item.name)
-                                  ? 'text-primary hover:text-primary/80'
-                                  : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'"
-                                :disabled="!canPreviewWorkspaceFile(item.name)"
-                                title="在左侧画布中预览"
-                                @click="previewItem(item)"
+                                class="text-emerald-600 hover:text-emerald-500 transition-colors focus:outline-none whitespace-nowrap"
+                                title="恢复至我的目录"
+                                @click="restoreTrashItem(item)"
                               >
-                                预览
+                                恢复
                               </button>
                               <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
                               <button
                                 type="button"
-                                class="text-gray-600 dark:text-gray-300 hover:text-primary transition-colors focus:outline-none"
-                                title="下载到本地"
-                                @click="downloadItem(item)"
+                                class="text-red-600 hover:text-red-500 transition-colors focus:outline-none whitespace-nowrap"
+                                title="永久删除，无法找回"
+                                @click="confirmPurgeEntry(item)"
                               >
-                                下载
+                                永久删除
                               </button>
-                              <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                              <template v-if="!item.is_dir && canPreviewWorkspaceFile(resolveItemDisplayName(item))">
+                                <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                                <button
+                                  type="button"
+                                  class="text-primary hover:text-primary/80 transition-colors focus:outline-none"
+                                  @click="previewItem(item)"
+                                >
+                                  画布打开
+                                </button>
+                              </template>
                             </template>
-                            <button
-                              v-if="canMountItem(item)"
-                              type="button"
-                              class="text-primary hover:text-primary/80 transition-colors focus:outline-none whitespace-nowrap"
-                              title="挂载到聊天输入框，随下一条消息发送"
-                              @click="mountItemToSession(item)"
-                            >
-                              添加到 AI 会话
-                            </button>
+                            <template v-else-if="isTrashRootItem(item)">
+                              <button
+                                type="button"
+                                class="text-primary hover:text-primary/80 transition-colors focus:outline-none whitespace-nowrap"
+                                @click="openTrashFolder(item)"
+                              >
+                                打开
+                              </button>
+                              <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                              <button
+                                type="button"
+                                class="text-red-600 hover:text-red-500 transition-colors focus:outline-none whitespace-nowrap"
+                                @click="confirmEmptyTrash"
+                              >
+                                清空回收站
+                              </button>
+                            </template>
+                            <template v-else>
+                              <template v-if="!item.is_dir">
+                                <button
+                                  type="button"
+                                  class="transition-colors focus:outline-none"
+                                  :class="canPreviewWorkspaceFile(item.name)
+                                    ? 'text-primary hover:text-primary/80'
+                                    : 'text-gray-300 dark:text-gray-600 cursor-not-allowed'"
+                                  :disabled="!canPreviewWorkspaceFile(item.name)"
+                                  title="在左侧画布中打开"
+                                  @click="previewItem(item)"
+                                >
+                                  画布打开
+                                </button>
+                                <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                                <button
+                                  type="button"
+                                  class="text-gray-600 dark:text-gray-300 hover:text-primary transition-colors focus:outline-none"
+                                  title="下载到本地"
+                                  @click="downloadItem(item)"
+                                >
+                                  下载
+                                </button>
+                                <span class="text-gray-300 dark:text-gray-600 font-normal">|</span>
+                              </template>
+                              <button
+                                type="button"
+                                class="text-primary hover:text-primary/80 transition-colors focus:outline-none whitespace-nowrap"
+                                title="添加到 AI 会话，随下一条消息发送"
+                                @click="mountItemToSession(item)"
+                              >
+                                {{ item.is_dir ? '添加文件夹' : '添加文件' }}
+                              </button>
+                            </template>
                           </div>
                         </div>
+                      </div>
+                      <div v-if="hasMoreListItems" class="py-3 text-center">
+                        <button type="button" class="text-[10px] font-bold text-primary hover:opacity-80" @click="loadMoreListItems">
+                          加载更多 ({{ paginatedDisplayItems.length }}/{{ sortedDisplayItems.length }})
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -973,6 +1740,204 @@ const closeDrawer = () => {
       </div>
     </div>
   </teleport>
+
+  <input ref="uploadInputRef" type="file" multiple class="hidden" @change="handleUploadFiles">
+
+  <Teleport to="body">
+    <div
+      v-if="recentFilesOpen"
+      ref="recentFilesMenuRef"
+      class="fixed z-[130] w-72 max-w-[calc(100vw-2rem)] max-h-60 overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl ring-1 ring-black/5 py-1 text-xs"
+      :style="{ top: `${recentFilesMenuPos.top}px`, left: `${recentFilesMenuPos.left}px` }"
+      @click.stop
+    >
+      <div class="px-3 py-1.5 text-[9px] font-bold text-gray-400 uppercase tracking-wide border-b border-gray-100 dark:border-gray-800 mb-0.5 flex items-center justify-between gap-2">
+        <span>最近打开 / 添加的文件</span>
+        <span v-if="recentFiles.length" class="normal-case font-medium text-gray-400/80">{{ recentFiles.length }}/{{ MAX_RECENT }}</span>
+      </div>
+      <template v-if="recentFiles.length">
+        <div
+          v-for="recent in recentFiles"
+          :key="recent.path"
+          class="flex items-start gap-0.5 px-1.5 py-1 border-b border-gray-50 dark:border-gray-800/60 last:border-b-0 group hover:bg-gray-50 dark:hover:bg-gray-800/80 transition-colors"
+        >
+          <button
+            type="button"
+            class="flex-1 min-w-0 px-1.5 py-1 text-left rounded-md focus:outline-none"
+            @click="openRecentFile(recent)"
+          >
+            <div class="flex items-start gap-2 min-w-0">
+              <span class="text-sm shrink-0 mt-0.5">{{ getItemVisual({ name: recent.name, is_dir: false }).icon }}</span>
+              <div class="min-w-0 flex-1">
+                <div class="text-[11px] font-bold text-gray-700 dark:text-gray-200 truncate" :title="recent.name">
+                  {{ recent.name }}
+                </div>
+                <div class="text-[9px] text-gray-400 dark:text-gray-500 truncate mt-0.5" :title="recent.path">
+                  {{ formatRecentFileLocation(recent.path) }}
+                </div>
+                <div class="text-[9px] text-gray-400/80 dark:text-gray-500/80 mt-0.5">
+                  {{ formatTime(recent.mtime) }}
+                </div>
+              </div>
+            </div>
+          </button>
+          <button
+            type="button"
+            class="shrink-0 p-1.5 mt-0.5 rounded-md text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-60 group-hover:opacity-100 transition-all focus:outline-none"
+            title="从最近列表移除"
+            aria-label="从最近列表移除"
+            @click.stop="removeRecentFile(recent.path)"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="px-3 py-2 border-t border-gray-100 dark:border-gray-800">
+          <button
+            type="button"
+            class="w-full text-[10px] font-bold text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition-colors focus:outline-none"
+            @click="clearRecentFiles"
+          >
+            清空记录
+          </button>
+        </div>
+      </template>
+      <div v-else class="px-3 py-5 text-center text-[10px] text-gray-400 leading-relaxed">
+        暂无最近文件<br>
+        <span class="text-[9px] text-gray-400/70">预览或添加文件后会出现在这里</span>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="contextMenu"
+      class="fixed z-[130] min-w-[10rem] py-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl ring-1 ring-black/5 text-xs font-bold text-gray-700 dark:text-gray-200"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <template v-if="canCreateInPath(contextMenu.parentPath)">
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="startCreateEntry('file')">📄 新建文件</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="startCreateEntry('dir')">📁 新建文件夹</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="openUploadPicker(contextMenu.parentPath); closeContextMenu()">⬆️ 上传到此目录</button>
+      </template>
+      <template v-if="contextMenu.item && isTrashRootItem(contextMenu.item)">
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="openTrashFolder(contextMenu.item!)">📂 打开</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 transition-colors focus:outline-none" @click="confirmEmptyTrash">🗑️ 清空回收站</button>
+      </template>
+      <template v-if="contextMenu.item && canManageItem(contextMenu.item)">
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="copyItemPath(contextMenu.item!.path)">📋 复制路径</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="startRenameEntry(contextMenu.item!)">✏️ 重命名</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 transition-colors focus:outline-none" @click="confirmDeleteEntry(contextMenu.item!)">🗑️ 删除</button>
+      </template>
+      <template v-if="contextMenu.item && isTrashListItem(contextMenu.item)">
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-emerald-50 dark:hover:bg-emerald-900/20 text-emerald-600 transition-colors focus:outline-none" @click="restoreTrashItem(contextMenu.item!); closeContextMenu()">♻️ 恢复</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 transition-colors focus:outline-none" @click="confirmPurgeEntry(contextMenu.item!)">🗑️ 永久删除</button>
+        <button type="button" class="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors focus:outline-none" @click="copyItemPath(contextMenu.item!.path)">📋 复制路径</button>
+      </template>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="createDialog"
+      class="fixed inset-0 z-[131] flex items-center justify-center p-4 bg-black/30 backdrop-blur-[1px]"
+      @click.self="cancelCreateEntry"
+    >
+      <div
+        class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl p-4"
+        @click.stop
+      >
+        <h3 class="text-sm font-bold text-gray-800 dark:text-gray-100 mb-3">
+          {{ createDialog.kind === 'file' ? '新建文件' : '新建文件夹' }}
+        </h3>
+        <input
+          v-model="createDialog.name"
+          type="text"
+          class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 focus:ring-2 focus:ring-primary/30 focus:border-primary focus:outline-none"
+          :placeholder="createDialog.kind === 'file' ? '例如 notes.md' : '文件夹名称'"
+          autofocus
+        >
+        <p class="mt-2 text-[10px] text-gray-400 leading-relaxed">
+          仅可在本人工作目录内创建；文件支持常见文本类型（如 .md、.txt、.json）。
+        </p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            class="px-3 py-1.5 text-xs font-bold text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg focus:outline-none"
+            :disabled="createSubmitting"
+            @click="cancelCreateEntry"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 text-xs font-bold text-white bg-primary hover:bg-primary/90 rounded-lg focus:outline-none disabled:opacity-60"
+            :disabled="createSubmitting"
+            @click="submitCreateEntry"
+          >
+            {{ createSubmitting ? '创建中…' : '创建' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="renameDialog" class="fixed inset-0 z-[131] flex items-center justify-center p-4 bg-black/30" @click.self="renameDialog = null">
+      <div class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl p-4" @click.stop>
+        <h3 class="text-sm font-bold mb-3">重命名</h3>
+        <input v-model="renameDialog.name" type="text" class="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 focus:outline-none focus:ring-2 focus:ring-primary/30">
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-gray-500" @click="renameDialog = null">取消</button>
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-white bg-primary rounded-lg" @click="submitRename">确定</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="deleteTarget" class="fixed inset-0 z-[131] flex items-center justify-center p-4 bg-black/30" @click.self="deleteTarget = null">
+      <div class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl p-4" @click.stop>
+        <h3 class="text-sm font-bold mb-2">移入回收站？</h3>
+        <p class="text-xs text-gray-500 mb-4">{{ deleteTarget.name }}</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-gray-500" @click="deleteTarget = null">取消</button>
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-white bg-red-500 rounded-lg" @click="submitDelete">删除</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="purgeTarget" class="fixed inset-0 z-[131] flex items-center justify-center p-4 bg-black/30" @click.self="purgeTarget = null">
+      <div class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl p-4" @click.stop>
+        <h3 class="text-sm font-bold mb-2 text-red-600">永久删除？</h3>
+        <p class="text-xs text-gray-500 mb-4">{{ formatTrashItemName(purgeTarget.name) }} — 删除后无法恢复。</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-gray-500" @click="purgeTarget = null">取消</button>
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-white bg-red-500 rounded-lg" @click="submitPurge">永久删除</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="emptyTrashConfirm" class="fixed inset-0 z-[131] flex items-center justify-center p-4 bg-black/30" @click.self="emptyTrashConfirm = false">
+      <div class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl p-4" @click.stop>
+        <h3 class="text-sm font-bold mb-2 text-red-600">清空回收站？</h3>
+        <p class="text-xs text-gray-500 mb-4">将永久删除回收站内的全部文件和文件夹，此操作无法撤销。</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-gray-500" :disabled="emptyTrashSubmitting" @click="emptyTrashConfirm = false">取消</button>
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-white bg-red-500 rounded-lg disabled:opacity-60" :disabled="emptyTrashSubmitting" @click="submitEmptyTrash">
+            {{ emptyTrashSubmitting ? '清空中…' : '确认清空' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>

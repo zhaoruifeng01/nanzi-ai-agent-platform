@@ -112,6 +112,7 @@ def test_admin_can_access_full_data_tree(tmp_path, monkeypatch):
 def test_writable_only_within_own_workspace(tmp_path, monkeypatch):
     base = str(tmp_path / "data")
     own_file = os.path.join(base, "agent_workspaces", "alice__1", "conv-1", "note.txt")
+    own_root = os.path.join(base, "agent_workspaces", "alice__1")
     own_upload = os.path.join(base, "agent_workspaces", "alice__1", "uploads", "pic.png")
     legacy_uploads_file = os.path.join(base, "uploads", "note.txt")
     other_file = os.path.join(base, "agent_workspaces", "bob__2", "conv-1", "note.txt")
@@ -133,8 +134,9 @@ def test_writable_only_within_own_workspace(tmp_path, monkeypatch):
     assert is_path_allowed(own_upload, user_info)
     assert not is_path_writable(own_upload, user_info)
     assert is_path_writable(own_file, user_info)
+    assert is_path_writable(own_root, user_info)
     assert not is_path_writable(other_file, user_info)
-    assert not is_path_writable(os.path.join(base, "agent_workspaces", "alice__1"), user_info)
+    assert not is_path_writable(os.path.join(base, "agent_workspaces", "bob__2"), user_info)
 
 
 def test_get_user_uploads_dir(tmp_path, monkeypatch):
