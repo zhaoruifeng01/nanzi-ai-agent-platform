@@ -3,6 +3,7 @@ import os
 import pytest
 
 from app.services.ai.runtime.agentscope.workspace import (
+    USER_SESSIONS_DIR_NAME,
     WORKSPACE_USER_KEY_SEP,
     USER_DOCS_DIR_NAME,
     clear_workspace_cache,
@@ -44,6 +45,7 @@ async def test_resolve_session_workdir_isolates_user_and_conversation(tmp_path, 
     )
     assert path.startswith(str(tmp_path))
     assert f"alice{WORKSPACE_USER_KEY_SEP}1" in path
+    assert USER_SESSIONS_DIR_NAME in path
     assert "conv_abc" in path
 
 
@@ -114,8 +116,7 @@ async def test_delete_workspace_for_session_removes_files(tmp_path, monkeypatch)
         user_name="carol",
         conversation_id="c2",
     )
-    marker = os.path.join(workdir, "sessions", "marker.txt")
-    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    marker = os.path.join(workdir, "marker.txt")
     with open(marker, "w", encoding="utf-8") as handle:
         handle.write("x")
 

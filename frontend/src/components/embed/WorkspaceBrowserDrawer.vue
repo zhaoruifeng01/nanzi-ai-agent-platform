@@ -591,9 +591,10 @@ const formatTrashItemName = (name: string) => {
   return match?.[1] || name
 }
 
-const resolveItemDisplayName = (item: { name: string; path: string; is_dir: boolean }) => (
-  isTrashView.value ? formatTrashItemName(item.name) : displayItemName(item)
-)
+const resolveItemDisplayName = (item: { name: string; path: string; is_dir: boolean }) => {
+  if (isUserSessionsContainerItem(item)) return '会话目录'
+  return isTrashView.value ? formatTrashItemName(item.name) : displayItemName(item)
+}
 
 const isTrashRootItem = (item: { path: string; name: string; is_dir: boolean }) => {
   if (!item.is_dir || !trashDirPath.value) return false
@@ -604,23 +605,41 @@ const isTrashListItem = (item: { path: string; name: string; is_dir: boolean }) 
   isTrashPath(item.path) && !isTrashRootItem(item)
 )
 
-const USER_WORKSPACE_RESERVED_DIRS = new Set(['docs', 'uploads', 'sandbox', '.trash', 'skills'])
+const USER_WORKSPACE_RESERVED_DIRS = new Set(['docs', 'uploads', 'sandbox', '.trash', 'skills', 'sessions'])
 const SESSION_DIR_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const isDirectChildOfUserWorkspace = (itemPath: string) => {
+const isSessionDirName = (name: string) => (
+  SESSION_DIR_NAME_RE.test(name) || name.startsWith('conv_')
+)
+
+const isUserSessionsContainerItem = (item: { name: string; path: string; is_dir: boolean }) => {
+  if (!item.is_dir || item.name !== 'sessions') return false
   const root = userWorkspaceRoot.value
-  if (!root || !itemPath) return false
-  const norm = normalizeFsPathForCompare(itemPath)
+  if (!root || !item.path) return false
+  const norm = normalizeFsPathForCompare(item.path)
   const rootNorm = normalizeFsPathForCompare(root)
   if (!norm.startsWith(`${rootNorm}/`)) return false
   const relative = norm.slice(rootNorm.length + 1)
-  return relative.length > 0 && !relative.includes('/')
+  return relative === 'sessions'
 }
 
 const isSessionDirItem = (item: { name: string; path: string; is_dir: boolean }) => {
-  if (!item.is_dir || USER_WORKSPACE_RESERVED_DIRS.has(item.name)) return false
-  if (!isDirectChildOfUserWorkspace(item.path)) return false
-  return SESSION_DIR_NAME_RE.test(item.name) || item.name.startsWith('conv_')
+  if (!item.is_dir) return false
+  if (isUserSessionsContainerItem(item)) return true
+  const root = userWorkspaceRoot.value
+  if (!root || !item.path) return false
+  const norm = normalizeFsPathForCompare(item.path)
+  const rootNorm = normalizeFsPathForCompare(root)
+  if (!norm.startsWith(`${rootNorm}/`)) return false
+  const relative = norm.slice(rootNorm.length + 1)
+  const parts = relative.split('/')
+  if (parts.length === 2 && parts[0] === 'sessions' && isSessionDirName(parts[1])) {
+    return true
+  }
+  if (parts.length === 1 && !USER_WORKSPACE_RESERVED_DIRS.has(item.name)) {
+    return isSessionDirName(item.name)
+  }
+  return false
 }
 
 const isPathInUserWorkspace = (path: string) => {
@@ -1115,7 +1134,7 @@ const quickNavLinks = computed(() => {
       links.push({
         key: 'session',
         label: '本会话目录',
-        path: `${userWorkspaceRoot.value}/${props.conversationId}`,
+        path: `${userWorkspaceRoot.value}/sessions/${props.conversationId}`,
         icon: '💬',
         disabled: !props.sessionStarted,
         disabledTitle: '发送首条消息后会话目录才会创建',

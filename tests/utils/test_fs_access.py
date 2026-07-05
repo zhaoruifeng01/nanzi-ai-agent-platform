@@ -5,12 +5,14 @@ import pytest
 from app.utils.fs_access import (
     get_allowed_fs_roots,
     get_user_docs_dir,
+    get_user_sessions_dir,
     get_user_sandbox_dir,
     get_user_uploads_dir,
     is_fs_virtual_root,
     is_path_allowed,
     is_path_writable,
     is_session_dir_name,
+    is_session_workdir_path,
     normalize_fs_path,
 )
 from app.utils.fs_paths import get_data_base_dir
@@ -167,12 +169,36 @@ def test_get_user_docs_dir(tmp_path, monkeypatch):
     assert get_user_docs_dir(user_info) == expected
 
 
+def test_get_user_sessions_dir(tmp_path, monkeypatch):
+    base = str(tmp_path / "data")
+    monkeypatch.setattr("app.utils.fs_access.get_data_base_dir", lambda: base)
+    monkeypatch.setattr("app.utils.fs_paths.get_data_base_dir", lambda: base)
+    monkeypatch.setattr(
+        "app.services.ai.runtime.agentscope.workspace.default_workspace_root",
+        lambda: os.path.join(base, "agent_workspaces"),
+    )
+    user_info = {"user_id": 1, "user_name": "alice", "role": "user"}
+    expected = os.path.normpath(os.path.join(base, "agent_workspaces", "alice__1", "sessions"))
+    assert get_user_sessions_dir(user_info) == expected
+
+
 def test_is_session_dir_name():
     assert is_session_dir_name("f50e7890-8882-4dd7-b97f-598cd324826f") is True
     assert is_session_dir_name("conv_abc") is True
     assert is_session_dir_name("docs") is False
     assert is_session_dir_name("uploads") is False
+    assert is_session_dir_name("sessions") is False
     assert is_session_dir_name("test") is False
+
+
+def test_is_session_workdir_path(tmp_path):
+    user_root = os.path.join(tmp_path, "alice__1")
+    new_session = os.path.join(user_root, "sessions", "f50e7890-8882-4dd7-b97f-598cd324826f")
+    legacy_session = os.path.join(user_root, "f50e7890-8882-4dd7-b97f-598cd324826f")
+    assert is_session_workdir_path(user_root, new_session) is True
+    assert is_session_workdir_path(user_root, legacy_session) is True
+    assert is_session_workdir_path(user_root, os.path.join(user_root, "docs")) is False
+    assert is_session_workdir_path(user_root, os.path.join(user_root, "sessions", "test")) is False
 
 
 def test_get_user_sandbox_dir(tmp_path, monkeypatch):

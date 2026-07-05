@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 
 PUBLIC_DATA_SUBDIRS: tuple[str, ...] = ("branding", "skills")
-USER_WORKSPACE_RESERVED_DIR_NAMES = frozenset({"docs", "uploads", "sandbox", ".trash", "skills"})
+USER_WORKSPACE_RESERVED_DIR_NAMES = frozenset({"docs", "uploads", "sandbox", ".trash", "skills", "sessions"})
 SESSION_DIR_NAME_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -90,12 +90,35 @@ def get_user_docs_dir(user_info: dict[str, Any] | None) -> str | None:
     return os.path.normpath(os.path.join(private_root, "docs"))
 
 
+def get_user_sessions_dir(user_info: dict[str, Any] | None) -> str | None:
+    """用户会话目录容器：agent_workspaces/{user_key}/sessions。"""
+    private_root = get_user_private_workspace_root(user_info)
+    if not private_root:
+        return None
+    return os.path.normpath(os.path.join(private_root, "sessions"))
+
+
 def is_session_dir_name(name: str) -> bool:
-    """判断用户工作区下的直接子目录名是否为会话目录。"""
+    """判断目录名是否为会话 ID（sessions/ 下或旧版用户根下的直接子目录）。"""
     cleaned = str(name or "").strip()
     if not cleaned or cleaned in USER_WORKSPACE_RESERVED_DIR_NAMES:
         return False
     return bool(SESSION_DIR_NAME_RE.match(cleaned)) or cleaned.startswith("conv_")
+
+
+def is_session_workdir_path(user_root: str, target_path: str) -> bool:
+    """判断目标路径是否为可自动创建的会话工作目录（含旧版平铺路径）。"""
+    norm_target = os.path.normpath(target_path)
+    norm_root = os.path.normpath(user_root)
+    if not norm_target.startswith(norm_root + os.sep):
+        return False
+    rel = os.path.relpath(norm_target, norm_root)
+    parts = rel.split(os.sep)
+    if len(parts) == 2 and parts[0] == "sessions" and is_session_dir_name(parts[1]):
+        return True
+    if len(parts) == 1 and is_session_dir_name(parts[0]):
+        return True
+    return False
 
 
 def get_user_sandbox_dir(user_info: dict[str, Any] | None) -> str | None:

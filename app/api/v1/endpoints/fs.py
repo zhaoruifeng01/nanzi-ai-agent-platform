@@ -20,8 +20,9 @@ from app.utils.fs_access import (
     get_allowed_fs_roots,
     get_user_docs_dir,
     get_user_private_workspace_root,
+    get_user_sessions_dir,
     get_user_uploads_dir,
-    is_session_dir_name,
+    is_session_workdir_path,
     is_fs_admin,
     is_fs_virtual_root,
     is_path_allowed,
@@ -281,13 +282,12 @@ async def list_files(
     docs_path = get_user_docs_dir(user_info)
     if docs_path and os.path.normpath(target_path) == os.path.normpath(docs_path):
         os.makedirs(docs_path, mode=0o700, exist_ok=True)
+    sessions_path = get_user_sessions_dir(user_info)
+    if sessions_path and os.path.normpath(target_path) == os.path.normpath(sessions_path):
+        os.makedirs(sessions_path, mode=0o700, exist_ok=True)
     if not os.path.exists(target_path) and private_root:
-        norm_target = os.path.normpath(target_path)
-        norm_root = os.path.normpath(private_root)
-        if norm_target.startswith(norm_root + os.sep):
-            rel = os.path.relpath(norm_target, norm_root)
-            if "/" not in rel and is_session_dir_name(rel):
-                os.makedirs(norm_target, mode=0o700, exist_ok=True)
+        if is_session_workdir_path(private_root, target_path):
+            os.makedirs(target_path, mode=0o700, exist_ok=True)
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="请求的路径不存在。")
     if not os.path.isdir(target_path):
@@ -364,6 +364,7 @@ def _resolve_fs_file_path(
     must_exist: bool = True,
 ) -> str:
     from app.services.ai.runtime.agentscope.workspace import (
+        resolve_legacy_session_workdir,
         resolve_session_workdir,
         resolve_user_docs_dir,
         resolve_user_workspace_root,
@@ -394,6 +395,19 @@ def _resolve_fs_file_path(
             )
             if os.path.isdir(session_workdir):
                 candidate = normalize_under_base(path, session_workdir)
+                if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
+                    safe_path = candidate
+
+        if not safe_path:
+            legacy_session_workdir = resolve_legacy_session_workdir(
+                root=root,
+                user_id=user_info.get("user_id") or user_info.get("id"),
+                user_name=user_info.get("user_name") or user_info.get("username"),
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+            if legacy_session_workdir != session_workdir and os.path.isdir(legacy_session_workdir):
+                candidate = normalize_under_base(path, legacy_session_workdir)
                 if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
                     safe_path = candidate
 

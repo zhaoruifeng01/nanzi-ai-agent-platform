@@ -29,6 +29,7 @@ _workspace_cache: dict[str, Any] = {}
 
 WORKSPACE_USER_KEY_SEP = "__"
 USER_DOCS_DIR_NAME = "docs"
+USER_SESSIONS_DIR_NAME = "sessions"
 
 
 def _clean_key_part(value: str | None, fallback_prefix: str) -> str:
@@ -127,6 +128,48 @@ async def resolve_workspace_root() -> str:
     return root
 
 
+def resolve_user_sessions_dir(
+    *,
+    root: str,
+    user_id: str | int | None,
+    user_name: str | None = None,
+    user_info: dict[str, Any] | None = None,
+) -> str:
+    """用户级会话目录容器：agent_workspaces/{user_key}/sessions。"""
+    resolved_user_id, resolved_user_name = extract_workspace_identity(
+        user_id=user_id,
+        user_name=user_name,
+        user_info=user_info,
+    )
+    uid = resolve_workspace_user_key(
+        user_id=resolved_user_id,
+        user_name=resolved_user_name,
+    )
+    return os.path.join(os.path.abspath(root), uid, USER_SESSIONS_DIR_NAME)
+
+
+def resolve_legacy_session_workdir(
+    *,
+    root: str,
+    user_id: str | int | None,
+    conversation_id: str,
+    user_name: str | None = None,
+    user_info: dict[str, Any] | None = None,
+) -> str:
+    """旧版会话目录：agent_workspaces/{user_key}/{conversation_id}（兼容历史数据）。"""
+    resolved_user_id, resolved_user_name = extract_workspace_identity(
+        user_id=user_id,
+        user_name=user_name,
+        user_info=user_info,
+    )
+    uid = resolve_workspace_user_key(
+        user_id=resolved_user_id,
+        user_name=resolved_user_name,
+    )
+    cid = _clean_key_part(conversation_id, "conversation")
+    return os.path.join(os.path.abspath(root), uid, cid)
+
+
 def resolve_session_workdir(
     *,
     root: str,
@@ -145,7 +188,7 @@ def resolve_session_workdir(
         user_name=resolved_user_name,
     )
     cid = _clean_key_part(conversation_id, "conversation")
-    return os.path.join(os.path.abspath(root), uid, cid)
+    return os.path.join(os.path.abspath(root), uid, USER_SESSIONS_DIR_NAME, cid)
 
 
 def resolve_user_docs_dir(

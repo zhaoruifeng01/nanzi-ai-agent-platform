@@ -134,9 +134,21 @@ async def resolve_document_input_path(
             user_name=user_name,
         )
     ).resolve()
-    if not _path_under(candidate, session_workdir):
-        raise DocumentPathError("文件不在当前会话允许访问的目录中")
-    return candidate
+    if _path_under(candidate, session_workdir):
+        return candidate
+    from app.services.ai.runtime.agentscope.workspace import resolve_legacy_session_workdir
+
+    legacy_workdir = Path(
+        resolve_legacy_session_workdir(
+            root=str(workspace_root),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_name=user_name,
+        )
+    ).resolve()
+    if legacy_workdir != session_workdir and _path_under(candidate, legacy_workdir):
+        return candidate
+    raise DocumentPathError("文件不在当前会话允许访问的目录中")
 
 
 def sanitize_output_filename(filename: str, allowed_extensions: Iterable[str]) -> str:
