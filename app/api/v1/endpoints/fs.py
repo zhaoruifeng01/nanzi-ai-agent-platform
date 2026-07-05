@@ -1,4 +1,6 @@
 import fnmatch
+import json
+import logging
 import os
 import re
 import shutil
@@ -10,13 +12,17 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.schemas.response import StandardResponse
 from app.core.dependencies import require_api_key
+from app.core.redis import get_redis
 from app.utils.fs_paths import get_data_base_dir, normalize_under_base
 from app.utils.fs_access import (
     assert_path_allowed,
     assert_path_writable,
     get_allowed_fs_roots,
+    get_user_docs_dir,
     get_user_private_workspace_root,
+    get_user_sessions_dir,
     get_user_uploads_dir,
+    is_session_workdir_path,
     is_fs_admin,
     is_fs_virtual_root,
     is_path_allowed,
@@ -27,7 +33,27 @@ from app.utils.fs_access import (
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 TRASH_DIR_NAME = ".trash"
+WORKSPACE_RECENT_FILES_MAX = 20
+WORKSPACE_RECENT_REDIS_PREFIX = "agent:workspace_recent_files:"
+WORKSPACE_BROWSER_PREFS_REDIS_PREFIX = "agent:workspace_browser_prefs:"
+WORKSPACE_BROWSER_TYPE_FILTERS = frozenset({
+    "all",
+    "folder",
+    "image",
+    "markdown",
+    "document",
+    "html",
+    "code",
+    "spreadsheet",
+    "presentation",
+    "archive",
+    "video",
+    "audio",
+    "data",
+})
 
 IMAGE_PREVIEW_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 IMAGE_MEDIA_TYPES = {
@@ -253,6 +279,15 @@ async def list_files(
     uploads_path = get_user_uploads_dir(user_info)
     if uploads_path and os.path.normpath(target_path) == os.path.normpath(uploads_path):
         os.makedirs(uploads_path, mode=0o700, exist_ok=True)
+    docs_path = get_user_docs_dir(user_info)
+    if docs_path and os.path.normpath(target_path) == os.path.normpath(docs_path):
+        os.makedirs(docs_path, mode=0o700, exist_ok=True)
+    sessions_path = get_user_sessions_dir(user_info)
+    if sessions_path and os.path.normpath(target_path) == os.path.normpath(sessions_path):
+        os.makedirs(sessions_path, mode=0o700, exist_ok=True)
+    if not os.path.exists(target_path) and private_root:
+        if is_session_workdir_path(private_root, target_path):
+            os.makedirs(target_path, mode=0o700, exist_ok=True)
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="请求的路径不存在。")
     if not os.path.isdir(target_path):
@@ -329,7 +364,9 @@ def _resolve_fs_file_path(
     must_exist: bool = True,
 ) -> str:
     from app.services.ai.runtime.agentscope.workspace import (
+        resolve_legacy_session_workdir,
         resolve_session_workdir,
+        resolve_user_docs_dir,
         resolve_user_workspace_root,
     )
 
@@ -337,17 +374,42 @@ def _resolve_fs_file_path(
 
     if conversation_id and not path.startswith("/") and not path.startswith("/app/data"):
         root = workspace_root
-        session_workdir = resolve_session_workdir(
+        docs_workdir = resolve_user_docs_dir(
             root=root,
             user_id=user_info.get("user_id") or user_info.get("id"),
             user_name=user_info.get("user_name") or user_info.get("username"),
             user_info=user_info,
-            conversation_id=conversation_id,
         )
-        if os.path.isdir(session_workdir):
-            candidate = normalize_under_base(path, session_workdir)
+        if os.path.isdir(docs_workdir) or not must_exist:
+            candidate = normalize_under_base(path, docs_workdir)
             if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
                 safe_path = candidate
+
+        if not safe_path:
+            session_workdir = resolve_session_workdir(
+                root=root,
+                user_id=user_info.get("user_id") or user_info.get("id"),
+                user_name=user_info.get("user_name") or user_info.get("username"),
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+            if os.path.isdir(session_workdir):
+                candidate = normalize_under_base(path, session_workdir)
+                if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
+                    safe_path = candidate
+
+        if not safe_path:
+            legacy_session_workdir = resolve_legacy_session_workdir(
+                root=root,
+                user_id=user_info.get("user_id") or user_info.get("id"),
+                user_name=user_info.get("user_name") or user_info.get("username"),
+                user_info=user_info,
+                conversation_id=conversation_id,
+            )
+            if legacy_session_workdir != session_workdir and os.path.isdir(legacy_session_workdir):
+                candidate = normalize_under_base(path, legacy_session_workdir)
+                if candidate and (not must_exist or os.path.isfile(candidate)) and is_path_allowed(candidate, user_info):
+                    safe_path = candidate
 
         if not safe_path:
             user_workspaces_root = resolve_user_workspace_root(
@@ -888,3 +950,234 @@ async def search_files(
             truncated=truncated,
         )
     )
+
+
+class WorkspaceRecentFileItem(BaseModel):
+    path: str = Field(..., description="文件绝对路径")
+    name: str = Field(..., description="展示用文件名")
+    mtime: float = Field(..., description="最后访问时间戳（秒）")
+
+
+class WorkspaceRecentFilesPayload(BaseModel):
+    items: List[WorkspaceRecentFileItem] = Field(default_factory=list)
+
+
+class WorkspaceRecentFilesResponse(BaseModel):
+    items: List[WorkspaceRecentFileItem] = Field(default_factory=list)
+
+
+def _workspace_recent_redis_key(user_id: int) -> str:
+    return f"{WORKSPACE_RECENT_REDIS_PREFIX}{user_id}"
+
+
+def _is_trash_path_segment(path: str) -> bool:
+    norm = os.path.normpath(path)
+    return f"/{TRASH_DIR_NAME}/" in f"{norm}/" or norm.endswith(f"/{TRASH_DIR_NAME}")
+
+
+def _sanitize_workspace_recent_files(
+    items: List[WorkspaceRecentFileItem],
+    user_info: Dict[str, Any],
+) -> List[WorkspaceRecentFileItem]:
+    seen: set[str] = set()
+    cleaned: List[WorkspaceRecentFileItem] = []
+    for raw in items:
+        path = str(raw.path or "").strip()
+        if not path or _is_trash_path_segment(path):
+            continue
+        normalized = normalize_fs_path(path)
+        if not normalized or not is_path_allowed(normalized, user_info):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        name = str(raw.name or os.path.basename(normalized) or normalized).strip()
+        if not name:
+            name = os.path.basename(normalized)
+        if len(name) > 255:
+            name = name[:255]
+        try:
+            mtime = float(raw.mtime)
+        except (TypeError, ValueError):
+            mtime = time.time()
+        if mtime <= 0:
+            mtime = time.time()
+        cleaned.append(WorkspaceRecentFileItem(path=normalized, name=name, mtime=mtime))
+        if len(cleaned) >= WORKSPACE_RECENT_FILES_MAX:
+            break
+    return cleaned
+
+
+@router.get(
+    "/recent-files",
+    response_model=StandardResponse[WorkspaceRecentFilesResponse],
+    summary="获取当前用户的工作空间最近访问文件",
+)
+async def get_workspace_recent_files(
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_recent_redis_key(user_id)
+    try:
+        raw = await redis.get(key)
+    except Exception as e:
+        logger.error("Failed to get workspace recent files from Redis: %s", e)
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    if not raw:
+        return StandardResponse(data=WorkspaceRecentFilesResponse(items=[]))
+
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        parsed = json.loads(decoded)
+        raw_items = parsed.get("items") if isinstance(parsed, dict) else parsed
+        if not isinstance(raw_items, list):
+            raw_items = []
+        items = _sanitize_workspace_recent_files(
+            [WorkspaceRecentFileItem.model_validate(item) for item in raw_items],
+            user_info,
+        )
+    except Exception as e:
+        logger.warning("Failed to parse workspace recent files JSON: %s", e)
+        items = []
+
+    return StandardResponse(data=WorkspaceRecentFilesResponse(items=items))
+
+
+@router.put(
+    "/recent-files",
+    response_model=StandardResponse[WorkspaceRecentFilesResponse],
+    summary="保存当前用户的工作空间最近访问文件",
+)
+async def save_workspace_recent_files(
+    body: WorkspaceRecentFilesPayload,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis 服务不可用")
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_recent_redis_key(user_id)
+    items = _sanitize_workspace_recent_files(body.items, user_info)
+    payload = WorkspaceRecentFilesResponse(items=items)
+
+    try:
+        await redis.set(key, payload.model_dump_json())
+    except Exception as e:
+        logger.error("Failed to save workspace recent files to Redis: %s", e)
+        raise HTTPException(status_code=500, detail="保存最近文件记录失败")
+
+    return StandardResponse(data=payload, message="最近文件记录已保存")
+
+
+class WorkspaceBrowserPrefs(BaseModel):
+    include_subdirs: bool = Field(True, description="搜索时是否包含子目录")
+    type_filter: str = Field("all", description="文件类型筛选")
+
+
+class WorkspaceBrowserPrefsPayload(BaseModel):
+    include_subdirs: Optional[bool] = Field(None, description="搜索时是否包含子目录")
+    type_filter: Optional[str] = Field(None, description="文件类型筛选")
+
+
+def _workspace_browser_prefs_redis_key(user_id: int) -> str:
+    return f"{WORKSPACE_BROWSER_PREFS_REDIS_PREFIX}{user_id}"
+
+
+def _sanitize_workspace_browser_prefs(
+    raw: WorkspaceBrowserPrefsPayload | WorkspaceBrowserPrefs | Dict[str, Any] | None,
+) -> WorkspaceBrowserPrefs:
+    include_subdirs = True
+    type_filter = "all"
+    if raw is not None:
+        if isinstance(raw, dict):
+            include_subdirs = raw.get("include_subdirs", True)
+            type_filter = raw.get("type_filter", "all")
+        else:
+            include_subdirs = getattr(raw, "include_subdirs", True)
+            type_filter = getattr(raw, "type_filter", "all")
+    if not isinstance(include_subdirs, bool):
+        include_subdirs = True
+    type_filter = str(type_filter or "all").strip().lower()
+    if type_filter not in WORKSPACE_BROWSER_TYPE_FILTERS:
+        type_filter = "all"
+    return WorkspaceBrowserPrefs(include_subdirs=include_subdirs, type_filter=type_filter)
+
+
+@router.get(
+    "/browser-prefs",
+    response_model=StandardResponse[WorkspaceBrowserPrefs],
+    summary="获取当前用户的工作空间浏览偏好",
+)
+async def get_workspace_browser_prefs(
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_browser_prefs_redis_key(user_id)
+    try:
+        raw = await redis.get(key)
+    except Exception as e:
+        logger.error("Failed to get workspace browser prefs from Redis: %s", e)
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    if not raw:
+        return StandardResponse(data=WorkspaceBrowserPrefs())
+
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        parsed = json.loads(decoded)
+        prefs = _sanitize_workspace_browser_prefs(parsed)
+    except Exception as e:
+        logger.warning("Failed to parse workspace browser prefs JSON: %s", e)
+        prefs = WorkspaceBrowserPrefs()
+
+    return StandardResponse(data=prefs)
+
+
+@router.put(
+    "/browser-prefs",
+    response_model=StandardResponse[WorkspaceBrowserPrefs],
+    summary="保存当前用户的工作空间浏览偏好",
+)
+async def save_workspace_browser_prefs(
+    body: WorkspaceBrowserPrefsPayload,
+    user_info: Dict[str, Any] = Depends(require_api_key),
+):
+    redis = await get_redis()
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis 服务不可用")
+
+    user_id = int(user_info["user_id"])
+    key = _workspace_browser_prefs_redis_key(user_id)
+
+    existing = WorkspaceBrowserPrefs()
+    try:
+        raw = await redis.get(key)
+        if raw:
+            decoded = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            existing = _sanitize_workspace_browser_prefs(json.loads(decoded))
+    except Exception as e:
+        logger.warning("Failed to read existing workspace browser prefs: %s", e)
+
+    merged = WorkspaceBrowserPrefs(
+        include_subdirs=body.include_subdirs if body.include_subdirs is not None else existing.include_subdirs,
+        type_filter=body.type_filter if body.type_filter is not None else existing.type_filter,
+    )
+    prefs = _sanitize_workspace_browser_prefs(merged)
+
+    try:
+        await redis.set(key, prefs.model_dump_json())
+    except Exception as e:
+        logger.error("Failed to save workspace browser prefs to Redis: %s", e)
+        raise HTTPException(status_code=500, detail="保存浏览偏好失败")
+
+    return StandardResponse(data=prefs, message="浏览偏好已保存")

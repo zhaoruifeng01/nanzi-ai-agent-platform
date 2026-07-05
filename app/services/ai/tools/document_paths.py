@@ -40,6 +40,23 @@ def resolve_session_workdir(
     )
 
 
+def resolve_user_docs_dir(
+    *,
+    root: str,
+    user_id: int | str | None,
+    user_name: str | None = None,
+    user_info: dict | None = None,
+) -> str:
+    from app.services.ai.runtime.agentscope.workspace import resolve_user_docs_dir as resolver
+
+    return resolver(
+        root=root,
+        user_id=user_id,
+        user_name=user_name,
+        user_info=user_info,
+    )
+
+
 def _path_under(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -100,6 +117,15 @@ async def resolve_document_input_path(
     if not conversation_id:
         raise DocumentPathError("当前会话缺少工作目录，无法访问该文件")
     workspace_root = Path(await resolve_workspace_root()).resolve()
+    user_docs_dir = Path(
+        resolve_user_docs_dir(
+            root=str(workspace_root),
+            user_id=user_id,
+            user_name=user_name,
+        )
+    ).resolve()
+    if _path_under(candidate, user_docs_dir):
+        return candidate
     session_workdir = Path(
         resolve_session_workdir(
             root=str(workspace_root),
@@ -108,9 +134,21 @@ async def resolve_document_input_path(
             user_name=user_name,
         )
     ).resolve()
-    if not _path_under(candidate, session_workdir):
-        raise DocumentPathError("文件不在当前会话允许访问的目录中")
-    return candidate
+    if _path_under(candidate, session_workdir):
+        return candidate
+    from app.services.ai.runtime.agentscope.workspace import resolve_legacy_session_workdir
+
+    legacy_workdir = Path(
+        resolve_legacy_session_workdir(
+            root=str(workspace_root),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            user_name=user_name,
+        )
+    ).resolve()
+    if legacy_workdir != session_workdir and _path_under(candidate, legacy_workdir):
+        return candidate
+    raise DocumentPathError("文件不在当前会话允许访问的目录中")
 
 
 def sanitize_output_filename(filename: str, allowed_extensions: Iterable[str]) -> str:
@@ -134,16 +172,15 @@ async def resolve_document_output_path(
         raise DocumentPathError("当前会话缺少工作目录，无法生成文件")
     clean_name = sanitize_output_filename(filename, allowed_extensions)
     workspace_root = Path(await resolve_workspace_root()).resolve()
-    session_workdir = Path(
-        resolve_session_workdir(
+    docs_dir = Path(
+        resolve_user_docs_dir(
             root=str(workspace_root),
             user_id=user_id,
-            conversation_id=conversation_id,
             user_name=user_name,
         )
     ).resolve()
-    session_workdir.mkdir(parents=True, exist_ok=True)
-    output_path = (session_workdir / clean_name).resolve()
-    if not _path_under(output_path, session_workdir):
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    output_path = (docs_dir / clean_name).resolve()
+    if not _path_under(output_path, docs_dir):
         raise DocumentPathError("输出文件路径不安全")
     return output_path
