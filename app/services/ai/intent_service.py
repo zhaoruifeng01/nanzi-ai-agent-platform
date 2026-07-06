@@ -167,13 +167,6 @@ _DATA_QUERY_STRONG_SIGNALS = [
 ]
 
 
-def looks_like_business_data_request(user_question: str) -> bool:
-    """轻量启发式：用户是否在请求结构化业务数据（供通用助手反幻觉门控兜底）。"""
-    q = (user_question or "").strip().lower()
-    if not q:
-        return False
-    return any(sig in q for sig in _DATA_QUERY_SIGNALS)
-
 
 def looks_like_strong_business_data_request(user_question: str) -> bool:
     """低置信度兜底用：只有明确业务数据对象/指标/记录信号才算强查数。"""
@@ -527,13 +520,13 @@ def resolve_intent_source(
     semantic_confidence: Any = None,
     turn_intent: Any = None,
 ) -> IntentSourceFrame:
-    """Resolve the request source before routing to a specialized agent/tool.
+    """在将请求路由至专属智能体/工具前，仲裁本轮请求的来源类型。
 
-    A semantic DATA_QUERY label is useful evidence, but public profile lookups
-    must be carved out first: generic requests such as "查一下 X 公司信息" may
-    look like "querying data" while their source is actually public search.
-    Strong record/metric/list signals and data-result follow-ups are accepted
-    immediately; otherwise high-confidence DATA_QUERY evidence is still allowed.
+    语义模型输出的 DATA_QUERY 标签只是证据，不能直接等同于"来自内部业务库"：
+    - "查一下 X 公司信息"等公开主体查询可能被误判为 DATA_QUERY，但来源实为公网搜索，
+      需要通过 looks_like_public_profile_lookup 提前拦截；
+    - 强业务数据词（列表/记录/统计/明细等）或数据追问信号则直接采信为内部结构化数据；
+    - 其余情况在语义置信度 >= 0.65 时才接受 DATA_QUERY 判定，不足时回落为 UNKNOWN。
     """
     query = (query or "").strip()
     if looks_like_web_search_query(query):
