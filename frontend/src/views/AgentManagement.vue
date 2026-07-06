@@ -17,6 +17,7 @@ import RagFlowResourceSelector from "../components/RagFlowResourceSelector.vue";
 import ToolRuntimeConfigModal from "../components/agent/ToolRuntimeConfigModal.vue";
 import DingTalkConfigModal from "../components/agent/DingTalkConfigModal.vue";
 import EmailConfigModal from "../components/agent/EmailConfigModal.vue";
+import WeChatWorkConfigModal from "../components/agent/WeChatWorkConfigModal.vue";
 import MarkdownEditor from "../components/MarkdownEditor.vue";
 import axios from "@/utils/axios";
 
@@ -27,6 +28,7 @@ const selectedAgent = ref<AIAgent | null>(null);
 const showToolRuntimeModal = ref(false);
 const showDingTalkModal = ref(false);
 const showEmailModal = ref(false);
+const showWeChatWorkModal = ref(false);
 const currentConfiguringTool = ref("");
 const currentToolConfig = ref<any>({});
 
@@ -520,7 +522,7 @@ const allAvailableTools = computed(() => {
   return combined;
 });
 
-type ToolGroupKey = 'chatbi' | 'knowledge' | 'system' | 'office' | 'memory' | 'other';
+type ToolGroupKey = 'chatbi' | 'knowledge' | 'system' | 'office' | 'notification' | 'memory' | 'other';
 type ToolGroup = { label: string; icon: string; tools: any[] };
 
 const groupedTools = computed(() => {
@@ -528,7 +530,8 @@ const groupedTools = computed(() => {
     chatbi: { label: 'ChatBI 数据分析', icon: '📊', tools: [] },
     knowledge: { label: '知识库检索 (RAG)', icon: '📖', tools: [] },
     system: { label: '系统自治工具', icon: '💻', tools: [] },
-    office: { label: '办公协作与消息通知', icon: '💬', tools: [] },
+    office: { label: '办公协作', icon: '💼', tools: [] },
+    notification: { label: '消息通知', icon: '💬', tools: [] },
     memory: { label: '长期事实与记忆引擎', icon: '🧠', tools: [] },
     other: { label: '其他扩展工具', icon: '🔧', tools: [] }
   };
@@ -571,11 +574,14 @@ const groupedTools = computed(() => {
     } else if (
       name.includes('dingtalk') ||
       name.includes('email') ||
-      name.includes('jira') ||
-      name.includes('feishu') ||
       name.includes('wechat') ||
       name.includes('message') ||
       name.includes('mail')
+    ) {
+      groups.notification.tools.push(tool);
+    } else if (
+      name.includes('jira') ||
+      name.includes('feishu')
     ) {
       groups.office.tools.push(tool);
     } else if (name.includes('preference') || name.includes('memory') || name.includes('fact')) {
@@ -987,6 +993,21 @@ const openEmailConfig = (toolName: string) => {
   }
   showEmailModal.value = true;
 };
+
+const openWeChatWorkConfig = (toolName: string) => {
+  currentConfiguringTool.value = toolName;
+  const existing = versionForm.value.tools?.find(t =>
+    (typeof t === 'string' ? t === toolName : (t as any).name === toolName)
+  );
+
+  if (existing && typeof existing === 'object') {
+    currentToolConfig.value = { ...(existing as any) };
+  } else {
+    currentToolConfig.value = { name: toolName };
+  }
+  showWeChatWorkModal.value = true;
+};
+
 
 const handleToolConfigSave = (newConfig: any) => {
   const tools = [...(versionForm.value.tools || [])];
@@ -2467,6 +2488,18 @@ const formatDate = (dateStr: string) => {
                           </svg>
                         </button>
 
+                        <!-- WeChat Work Config Button -->
+                        <button
+                          v-if="tool.name === 'send_wechat_work_message'"
+                          @click.stop="openWeChatWorkConfig('send_wechat_work_message')"
+                          class="p-1 rounded text-gray-400 hover:text-emerald-500 hover:bg-white border border-transparent hover:border-gray-100 transition-colors"
+                          title="配置企业微信"
+                        >
+                          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                          </svg>
+                        </button>
+
                         <!-- Knowledge Base Config Button for search_knowledge_base -->
                         <button
                           v-if="tool.name === 'search_knowledge_base' && selectedAgent?.engine_type === 'LOCAL'"
@@ -2888,6 +2921,13 @@ const formatDate = (dateStr: string) => {
 
     <EmailConfigModal
       v-model:model="showEmailModal"
+      :config="currentToolConfig"
+      :readonly="!canEditVersion"
+      @save="handleToolConfigSave"
+    />
+
+    <WeChatWorkConfigModal
+      v-model:model="showWeChatWorkModal"
       :config="currentToolConfig"
       :readonly="!canEditVersion"
       @save="handleToolConfigSave"

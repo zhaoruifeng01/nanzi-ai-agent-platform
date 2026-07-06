@@ -24,19 +24,33 @@ class send_dingtalk_message(BaseTool):
 
     async def _arun(self, title: str, content: str) -> str:
         """Use the tool asynchronously."""
-        # Retrieve configuration from runtime context
-        runtime_cfg = getattr(self, "_runtime_config", None)
-        
         webhook_url = None
         secret = None
         
-        if runtime_cfg and hasattr(runtime_cfg, 'engine_config_override') and runtime_cfg.engine_config_override:
-            webhook_url = runtime_cfg.engine_config_override.get("webhook_url")
-            secret = runtime_cfg.engine_config_override.get("secret")
+        # Directly retrieve from user's personal notification config
+        from app.core.context import get_current_agent_context
+        from app.core.orm import AsyncSessionLocal
+        from app.services.notification_service import NotificationService
+        
+        agent_ctx = get_current_agent_context()
+        if agent_ctx and agent_ctx.user_id:
+            try:
+                async with AsyncSessionLocal() as db:
+                    db_record = await NotificationService.get_config_by_type_raw(db, agent_ctx.user_id, "dingtalk")
+                    if db_record and db_record.config_json:
+                        user_cfg = json.loads(db_record.config_json)
+                        if user_cfg.get("is_enabled"):
+                            webhook_url = user_cfg.get("webhook_url")
+                            secret = user_cfg.get("secret")
+                        else:
+                            return "Error: DingTalk notification is disabled. Please enable it in Personal Center -> Message Notifications."
+            except Exception as e:
+                logger.error(f"Failed to load user personal DingTalk config: {e}", exc_info=True)
 
         if not webhook_url:
-            logger.warning(f"DingTalk Tool: Webhook URL missing in runtime config.")
-            return "Error: DingTalk Webhook URL not configured. Please go to Agent Tool Settings and set it."
+            logger.warning(f"DingTalk Tool: Webhook URL missing in user personal settings.")
+            return "Error: DingTalk Webhook URL not configured. Please go to Personal Center -> Message Notifications and set it."
+
 
         try:
             target_url = webhook_url
@@ -89,20 +103,39 @@ class send_email(BaseTool):
         from email.mime.multipart import MIMEMultipart
         from email.utils import formataddr
 
-        # 1. Retrieve Config
-        runtime_cfg = getattr(self, "_runtime_config", None)
-        cfg = {}
-        if runtime_cfg and hasattr(runtime_cfg, 'engine_config_override') and runtime_cfg.engine_config_override:
-            cfg = runtime_cfg.engine_config_override
-
-        smtp_host = cfg.get("smtp_host")
-        smtp_port = int(cfg.get("smtp_port") or 465)
-        smtp_user = cfg.get("smtp_user")
-        smtp_password = cfg.get("smtp_password")
-        sender_name = cfg.get("sender_name", "AI Agent")
+        smtp_host = None
+        smtp_port = 465
+        smtp_user = None
+        smtp_password = None
+        sender_name = "AI Agent"
         
+        # Directly retrieve from user's personal notification config
+        from app.core.context import get_current_agent_context
+        from app.core.orm import AsyncSessionLocal
+        from app.services.notification_service import NotificationService
+        
+        agent_ctx = get_current_agent_context()
+        if agent_ctx and agent_ctx.user_id:
+            try:
+                async with AsyncSessionLocal() as db:
+                    db_record = await NotificationService.get_config_by_type_raw(db, agent_ctx.user_id, "email")
+                    if db_record and db_record.config_json:
+                        user_cfg = json.loads(db_record.config_json)
+                        if user_cfg.get("is_enabled"):
+                            smtp_host = user_cfg.get("smtp_host")
+                            smtp_port = int(user_cfg.get("smtp_port") or 465)
+                            smtp_user = user_cfg.get("smtp_user")
+                            smtp_password = user_cfg.get("smtp_password")
+                            sender_name = user_cfg.get("sender_name") or "AI Agent"
+                        else:
+                            return "Error: Email notification is disabled. Please enable it in Personal Center -> Message Notifications."
+            except Exception as e:
+                logger.error(f"Failed to load user personal email config: {e}", exc_info=True)
+
         if not smtp_host or not smtp_user or not smtp_password:
-            return "Error: SMTP configuration (host, user, password) is missing. Please configure it in Agent Tool Settings."
+            return "Error: SMTP configuration (host, user, password) is missing. Please configure it in Personal Center -> Message Notifications."
+
+
 
         def send_sync():
             try:
@@ -139,3 +172,63 @@ class send_email(BaseTool):
 
     def _run(self, to_email: str, subject: str, content: str) -> str:
         raise NotImplementedError("Use _arun instead")
+
+class WeChatWorkInput(BaseModel):
+    content: str = Field(description="The main body of the message in Markdown format")
+
+class send_wechat_work_message(BaseTool):
+    name: str = "send_wechat_work_message"
+    description: str = "Send a Markdown message to a WeChat Work group chat via robot webhook."
+    args_schema: Type[BaseModel] = WeChatWorkInput
+
+    async def _arun(self, content: str) -> str:
+        """Use the tool asynchronously."""
+        webhook_url = None
+        
+        # Directly retrieve from user's personal notification config
+        from app.core.context import get_current_agent_context
+        from app.core.orm import AsyncSessionLocal
+        from app.services.notification_service import NotificationService
+        
+        agent_ctx = get_current_agent_context()
+        if agent_ctx and agent_ctx.user_id:
+            try:
+                async with AsyncSessionLocal() as db:
+                    db_record = await NotificationService.get_config_by_type_raw(db, agent_ctx.user_id, "wechat_work")
+                    if db_record and db_record.config_json:
+                        user_cfg = json.loads(db_record.config_json)
+                        if user_cfg.get("is_enabled"):
+                            webhook_url = user_cfg.get("webhook_url")
+                        else:
+                            return "Error: WeChat Work notification is disabled. Please enable it in Personal Center -> Message Notifications."
+            except Exception as e:
+                logger.error(f"Failed to load user personal WeChat Work config: {e}", exc_info=True)
+
+        if not webhook_url:
+            logger.warning(f"WeChat Work Tool: Webhook URL missing in user personal settings.")
+            return "Error: WeChat Work Webhook URL not configured. Please go to Personal Center -> Message Notifications and set it."
+
+        try:
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": content
+                }
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(webhook_url, json=payload)
+                resp_data = response.json()
+                
+                if resp_data.get("errcode") == 0:
+                    return f"Successfully sent WeChat Work message."
+                else:
+                    return f"Failed to send WeChat Work message: {resp_data.get('errmsg')} (Code: {resp_data.get('errcode')})"
+
+        except Exception as e:
+            logger.error(f"WeChat Work Tool Error: {e}", exc_info=True)
+            return f"Error executing WeChat Work tool: {str(e)}"
+
+    def _run(self, content: str) -> str:
+        raise NotImplementedError("Use _arun instead")
+

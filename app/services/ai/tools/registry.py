@@ -12,7 +12,7 @@ from app.services.ai.tools.task_manager_tools import (
     create_recurring_task, get_my_tasks, cancel_task, 
     start_task, pause_task, run_task_manually
 )
-from app.services.ai.tools.notification_tools import send_dingtalk_message, send_email
+from app.services.ai.tools.notification_tools import send_dingtalk_message, send_email, send_wechat_work_message
 # Import Jira Tools
 from app.services.ai.tools.jira_tools import JiraSearchTool, JiraCreateIssueTool, JiraGetProjectsTool
 from app.services.ai.tools.system_executive_tools import (
@@ -82,6 +82,7 @@ class ToolRegistry:
     _jira_get_projects = JiraGetProjectsTool()
     _dingtalk_tool = send_dingtalk_message()
     _email_tool = send_email()
+    _wechat_work_tool = send_wechat_work_message()
 
     _registry: Dict[str, Any] = {
         "get_dataset_schema": get_dataset_schema,
@@ -98,6 +99,7 @@ class ToolRegistry:
         "run_task_manually": run_task_manually,
         "send_dingtalk_message": _dingtalk_tool,
         "send_email": _email_tool,
+        "send_wechat_work_message": _wechat_work_tool,
         # Register Jira Tools
         "jira_search": _jira_search,
         "jira_create_issue": _jira_create,
@@ -219,12 +221,13 @@ class ToolRegistry:
         if data_tool_spec is not None:
             return data_tool_spec
 
-        if name in OFFICE_TOOL_PERMISSION_SCOPES:
+        if name in cls._registry:
             tool = cls._registry[name]
+            perm_scope = OFFICE_TOOL_PERMISSION_SCOPES.get(name)
             return runtime_tool_spec_from_legacy_tool(
                 tool,
                 source_type="static",
-                permission_scope=OFFICE_TOOL_PERMISSION_SCOPES[name],
+                permission_scope=perm_scope,
             )
 
         db_tool = await cls._load_db_tool_with_source(name)

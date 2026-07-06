@@ -102,8 +102,9 @@ import { watch } from 'vue'
 import Modal from '../components/Modal.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import PersonalTokenUsage from '../components/personal/PersonalTokenUsage.vue'
+import NotificationConfigs from '../components/personal/NotificationConfigs.vue'
 
-const activeTab = ref<'info' | 'permissions' | 'memory' | 'tokens'>('info')
+const activeTab = ref<'info' | 'permissions' | 'memory' | 'tokens' | 'notifications'>('info')
 const permissionsSubTab = ref<'list' | 'about'>('list')
 const showAboutTab = computed(() => !!branding.value.contact_markdown?.trim())
 const contactHtml = computed(() => renderMarkdown(branding.value.contact_markdown || ''))
@@ -569,6 +570,17 @@ onMounted(() => {
                     ]"
                 >
                     我的 Token 消耗
+                </button>
+                <button 
+                    @click="activeTab = 'notifications'"
+                    :class="[
+                        activeTab === 'notifications'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
+                        'whitespace-nowrap py-3 sm:py-4 px-1 border-b-2 font-medium text-xs sm:text-sm transition-colors'
+                    ]"
+                >
+                    消息通知
                 </button>
             </nav>
         </div>
@@ -1136,6 +1148,11 @@ onMounted(() => {
         <!-- Token Usage Tab -->
         <div v-else-if="activeTab === 'tokens'">
             <PersonalTokenUsage />
+        </div>
+
+        <!-- Notifications Tab -->
+        <div v-else-if="activeTab === 'notifications'">
+            <NotificationConfigs @show-toast="showToast" />
         </div>
 
     </div>
