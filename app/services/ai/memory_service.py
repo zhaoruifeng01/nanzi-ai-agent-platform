@@ -206,6 +206,34 @@ class MemoryService:
             return False
         return bool(await redis.exists(self._get_key(user_id, conversation_id)))
 
+    async def get_active_conversation(self, user_id: str) -> Optional[str]:
+        redis = await get_redis()
+        if not redis:
+            return None
+        uid = str(user_id) if user_id else "anonymous"
+        key = f"conversation:{uid}:active"
+        try:
+            val = await redis.get(key)
+            if isinstance(val, bytes):
+                return val.decode("utf-8")
+            return val
+        except Exception as e:
+            logger.error(f"[MemoryService] Failed to get active conversation: {e}")
+            return None
+
+    async def set_active_conversation(self, user_id: str, conversation_id: str):
+        redis = await get_redis()
+        if not redis:
+            return
+        uid = str(user_id) if user_id else "anonymous"
+        key = f"conversation:{uid}:active"
+        try:
+            await redis.set(key, conversation_id)
+            logger.info(f"[MemoryService] Set active conversation for key {key} to {conversation_id}")
+        except Exception as e:
+            logger.error(f"[MemoryService] Failed to set active conversation: {e}")
+
+
 memory_service = MemoryService()
 
 

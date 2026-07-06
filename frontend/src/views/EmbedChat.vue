@@ -3168,6 +3168,19 @@ const finalizeConversationInBackground = (cid: string) => {
   void finalizeConversation(cid, embedAuthHeaders());
 };
 
+const updateActiveConversationOnServer = async (cid: string) => {
+  if (!config.token) return;
+  try {
+    await axios.post("/api/v1/chat/active", {
+      conversation_id: cid
+    }, {
+      headers: embedAuthHeaders()
+    });
+  } catch (e: any) {
+    console.warn("[ActiveConv] Failed to update active conversation on server:", e);
+  }
+};
+
 const generateNewConversation = () => {
   const previousId = conversationId.value;
   if (previousId) {
@@ -3175,6 +3188,7 @@ const generateNewConversation = () => {
   }
   conversationId.value = createConversationId();
   localStorage.setItem("yovole_embed_conv_id", conversationId.value);
+  updateActiveConversationOnServer(conversationId.value);
 };
 // Mention State (Moved to ChatInput)
 // const showMentionList = ref(false); // Removed
@@ -3484,6 +3498,7 @@ const handleHistoryClick = (item: any) => {
     // Switch to this conversation
     conversationId.value = item.conversation_id;
     localStorage.setItem("yovole_embed_conv_id", item.conversation_id);
+    updateActiveConversationOnServer(item.conversation_id);
 
     // Reset message list and history state
     messages.value = [];
@@ -5001,7 +5016,30 @@ const initChat = async () => {
             }
         }
     }).catch(e => console.warn("Failed to preload agents", e));
-    // 6. Load history if exists
+    // 6. Fetch active conversation from server
+    let loadedCid = false;
+    try {
+      const activeRes = await axios.get("/api/v1/chat/active", {
+        headers: embedAuthHeaders()
+      });
+      if (activeRes.data?.status === "success" && activeRes.data?.data?.conversation_id) {
+        conversationId.value = activeRes.data.data.conversation_id;
+        localStorage.setItem("yovole_embed_conv_id", conversationId.value);
+        loadedCid = true;
+      }
+    } catch (e: any) {
+      console.warn("[Init] Failed to fetch active conversation from server:", e);
+    }
+
+    if (!loadedCid) {
+      if (!conversationId.value) {
+        generateNewConversation();
+      } else {
+        updateActiveConversationOnServer(conversationId.value);
+      }
+    }
+
+    // 7. Load history if exists
     if (conversationId.value) {
       fetchConversationHistory(false).catch(e => console.error("[Init] History load failed:", e));
     }

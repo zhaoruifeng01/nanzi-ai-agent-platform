@@ -1076,3 +1076,29 @@ async def upload_chat_file(
         size=len(contents),
         ext=ext.replace(".", "")
     ))
+
+
+class ActiveConversationRequest(BaseModel):
+    conversation_id: str = Field(..., description="会话 ID")
+
+
+@router.get("/active", summary="获取当前活跃的会话 ID")
+async def get_active_conversation(
+    user_info: dict = Depends(require_api_key)
+):
+    from app.services.ai.memory_service import memory_service
+    user_id = user_info.get("user_id")
+    conv_id = await memory_service.get_active_conversation(user_id)
+    return StandardResponse(data={"conversation_id": conv_id})
+
+
+@router.post("/active", summary="设置当前活跃的会话 ID")
+async def set_active_conversation(
+    body: ActiveConversationRequest,
+    user_info: dict = Depends(require_api_key)
+):
+    from app.services.ai.memory_service import memory_service
+    user_id = user_info.get("user_id")
+    await memory_service.set_active_conversation(user_id, body.conversation_id)
+    return StandardResponse(data={"status": "success"})
+
