@@ -8,6 +8,63 @@ from app.models.task import AgentScheduledTask
 from app.services.ai.scheduler_service import scheduler_service
 from app.core.orm import AsyncSessionLocal
 from app.models.user import User
+from app.services.ai.scheduler_service import (
+    _build_scheduled_task_prompt,
+    _is_incomplete_task_result,
+    _new_task_run_conversation_id,
+    _task_permission_options,
+)
+
+
+@pytest.mark.no_infrastructure
+def test_task_permission_options_auto_allow_runtime_tools():
+    assert _task_permission_options() == {"approval_mode": "allow"}
+
+
+@pytest.mark.no_infrastructure
+def test_task_run_conversation_id_is_unique_child_conversation():
+    first = _new_task_run_conversation_id("task_conv_abc123")
+    second = _new_task_run_conversation_id("task_conv_abc123")
+
+    assert first.startswith("task_conv_abc123_run_")
+    assert second.startswith("task_conv_abc123_run_")
+    assert first != second
+    assert len(first) <= 50
+
+
+@pytest.mark.no_infrastructure
+def test_scheduled_task_prompt_requires_real_tool_execution():
+    prompt = _build_scheduled_task_prompt(24, "主助手(Main)", "检查机器负载并发送钉钉")
+
+    assert "【自动化指令-任务ID: 24】@主助手(Main)" in prompt
+    assert "请立即实际执行任务" in prompt
+    assert "不要只回复计划" in prompt
+    assert "必须调用对应工具完成" in prompt
+    assert "任务内容：检查机器负载并发送钉钉" in prompt
+
+
+@pytest.mark.no_infrastructure
+def test_incomplete_task_result_detects_pending_and_busy_states():
+    assert _is_incomplete_task_result({
+        "status": "awaiting_external_execution",
+        "content": "需要外部执行",
+    })
+    assert _is_incomplete_task_result({
+        "status": "awaiting_permission",
+        "content": "需要确认",
+    })
+    assert _is_incomplete_task_result({
+        "status": "error",
+        "content": "当前会话正在处理中，请稍后再试。",
+    })
+    assert _is_incomplete_task_result({
+        "status": "error",
+        "content": "自动任务未实际调用任何工具，本次只产生了模型回复。",
+    })
+    assert not _is_incomplete_task_result({
+        "status": "success",
+        "content": "执行完成",
+    })
 
 @pytest.fixture
 async def cleanup_tasks():
@@ -73,11 +130,16 @@ async def test_upsert_and_run_task(seed_data, cleanup_tasks):
                 mock_chat.assert_called_once()
                 args, kwargs = mock_chat.call_args
                 assert kwargs["agent_id"] == "test_agent"
-                # New behavior adds prefix: 【自动化指令-任务ID: {id}】@test_agent Hello world
+                assert kwargs["conversation_id"].startswith("test_conv_run_")
+                assert kwargs["conversation_id"] != "test_conv"
                 msg_content = kwargs["messages"][0]["content"]
                 assert "【自动化指令-任务ID:" in msg_content
-                assert "@test_agent Hello world" in msg_content
+                assert "@test_agent" in msg_content
+                assert "请立即实际执行任务" in msg_content
+                assert "任务内容：Hello world" in msg_content
                 assert kwargs["user_info"]["user_id"] == user.id
+                assert kwargs["user_info"]["is_scheduled_task"] is True
+                assert kwargs["user_info"]["requires_tool_execution"] is True
                 
             # Verify DB was updated - use a fresh session to avoid cache
             async with AsyncSessionLocal() as verify_session:
@@ -88,6 +150,43 @@ async def test_upsert_and_run_task(seed_data, cleanup_tasks):
                 assert updated_task.last_run_at is not None
         finally:
             await scheduler_service.stop()
+
+@pytest.mark.asyncio
+async def test_manual_task_busy_does_not_update_run_metadata(seed_data, cleanup_tasks):
+    """A busy conversation response means the task did not actually execute."""
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(User).where(User.user_name == "test_user"))
+        user = res.scalar_one()
+
+        task = AgentScheduledTask(
+            name="Busy Test",
+            user_id=user.id,
+            agent_id="test_agent",
+            conversation_id="test_conv_busy",
+            cron_expr="0 0 * * *",
+            prompt="Hello world",
+            status=1,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        with patch("app.services.ai.agent_service.agent_service.chat_completion", new_callable=AsyncMock) as mock_chat:
+            mock_chat.return_value = {
+                "trace_id": "busy-trace",
+                "status": "error",
+                "content": "当前会话正在处理中，请稍后再试。",
+            }
+
+            await scheduler_service.run_task(task.id, is_manual=True)
+
+        async with AsyncSessionLocal() as verify_session:
+            stmt = select(AgentScheduledTask).where(AgentScheduledTask.id == task.id)
+            res = await verify_session.execute(stmt)
+            updated_task = res.scalar_one()
+            assert updated_task.run_count == 0
+            assert updated_task.last_run_id is None
+            assert updated_task.last_run_at is None
 
 @pytest.mark.asyncio
 async def test_disable_task(seed_data, cleanup_tasks):

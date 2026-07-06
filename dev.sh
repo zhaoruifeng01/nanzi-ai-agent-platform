@@ -52,4 +52,11 @@ else
 fi
 
 # 前台启动 uvicorn
-$PYTHON_CMD -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+# Only watch source directories. Runtime workspaces under data/ are written during
+# agent execution and must not trigger a reload that kills in-flight tasks.
+RELOAD_ARGS=(--reload --reload-dir app)
+if [ -d "architech" ]; then
+    RELOAD_ARGS+=(--reload-dir architech)
+fi
+
+$PYTHON_CMD -m uvicorn app.main:app --host 0.0.0.0 --port 8001 "${RELOAD_ARGS[@]}"

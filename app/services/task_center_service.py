@@ -1,12 +1,12 @@
 import logging
 from typing import List, Optional, Dict, Any
-from sqlalchemy import select, update, delete, desc, func
+from sqlalchemy import select, update, delete, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 import uuid
 
 from app.models.task import AgentScheduledTask
-from app.services.ai.scheduler_service import scheduler_service
+from app.services.ai.scheduler_service import scheduler_service, _task_run_conversation_prefix
 from app.models.audit import AgentExecutionHistory
 
 logger = logging.getLogger(__name__)
@@ -126,10 +126,18 @@ class TaskCenterService:
         if not task:
             return [], 0
             
-        # Scheduled tasks reuse AgentExecutionHistory but we identify them via conversation_id
+        run_prefix = _task_run_conversation_prefix(task.conversation_id)
+
+        # Scheduled task runs use isolated run conversation IDs, but all runs keep
+        # the task's root conversation prefix so the task log drawer can aggregate them.
         stmt = (
             select(AgentExecutionHistory)
-            .where(AgentExecutionHistory.conversation_id == task.conversation_id)
+            .where(
+                or_(
+                    AgentExecutionHistory.conversation_id == task.conversation_id,
+                    AgentExecutionHistory.conversation_id.like(f"{run_prefix}_run_%"),
+                )
+            )
             .order_by(desc(AgentExecutionHistory.created_at))
         )
         

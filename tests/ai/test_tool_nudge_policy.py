@@ -104,3 +104,15 @@ def test_sub_agent_call_nudge_for_knowledge_query():
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95
     assert "knowledge-base" in nudge.message
+
+
+def test_notification_keyword_nudge_for_dingtalk_send():
+    tools = [
+        _tool("system_http_request", "发送 HTTP 请求"),
+        _tool("send_dingtalk_message", "发送钉钉群机器人消息，读取当前用户个人中心消息通知配置"),
+    ]
+    nudge = resolve_tool_nudge("整理天气早报，同时发送到钉钉中", tools)
+    assert nudge is not None
+    assert nudge.tool_name == "send_dingtalk_message"
+    assert nudge.score >= STRONG_FORCE_SCORE
+    assert nudge.recommended_force_mode() == "send_dingtalk_message"

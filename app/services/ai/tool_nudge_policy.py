@@ -128,6 +128,60 @@ def _build_message(tool_name: str, capability: str) -> str:
     )
 
 
+_NOTIFICATION_ACTION_TERMS = (
+    "发送", "推送", "通知", "发到", "发给", "发一下", "send", "push", "notify",
+)
+
+_NOTIFICATION_CHANNELS = (
+    (
+        "send_dingtalk_message",
+        ("钉钉", "dingtalk"),
+        "钉钉群机器人",
+    ),
+    (
+        "send_wechat_work_message",
+        ("企微", "企业微信", "wechat work", "wecom"),
+        "企业微信群机器人",
+    ),
+    (
+        "send_email",
+        ("邮件", "邮箱", "email", "mail"),
+        "邮件",
+    ),
+)
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term and term in text for term in terms)
+
+
+def _resolve_notification_nudge(query: str, tools: List[Any]) -> Optional[ToolNudge]:
+    normalized_query = query.lower()
+    if not _contains_any(normalized_query, _NOTIFICATION_ACTION_TERMS):
+        return None
+
+    available_tool_names = {
+        str(getattr(tool, "name", "") or "")
+        for tool in (tools or [])
+    }
+    for tool_name, channel_terms, channel_label in _NOTIFICATION_CHANNELS:
+        if tool_name not in available_tool_names:
+            continue
+        if not _contains_any(normalized_query, channel_terms):
+            continue
+        return ToolNudge(
+            tool_name=tool_name,
+            score=1.0,
+            message=(
+                f"【本轮工具优先】用户明确要求发送或推送到{channel_label}。"
+                f"请调用已绑定工具「{tool_name}」完成发送；该工具会自动读取当前用户"
+                f"在个人中心 -> 消息通知里的配置，无需用户在本轮提供 webhook、token 或服务器配置。"
+                f"只有工具返回失败时，才向用户说明配置或发送失败原因；不要在未调用工具前声称未配置。"
+            ),
+        )
+    return None
+
+
 def resolve_tool_nudge(
     user_query: str,
     tools: List[Any],
@@ -185,6 +239,10 @@ def resolve_tool_nudge(
                 score=0.95,
                 message=f"【本轮工具优先】本轮用户请求涉及内部数据、指标或资产查询。{desc}"
             )
+
+    notification_nudge = _resolve_notification_nudge(query, tools)
+    if notification_nudge is not None:
+        return notification_nudge
 
     signals = _query_signals(query)
     if len(signals) < 2:

@@ -19,6 +19,58 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+BUSY_CONVERSATION_MESSAGE = "当前会话正在处理中"
+NO_TOOL_EXECUTION_MESSAGE = "自动任务未实际调用任何工具"
+TASK_RUN_CONVERSATION_SUFFIX_LEN = len("_run_") + 12
+MAX_CONVERSATION_ID_LEN = 50
+INCOMPLETE_TASK_STATUSES = frozenset({"awaiting_permission", "awaiting_external_execution"})
+
+
+def _task_permission_options() -> Dict[str, Any]:
+    return {"approval_mode": "allow"}
+
+
+def _task_run_conversation_prefix(task_conversation_id: str) -> str:
+    base = (task_conversation_id or f"task_conv_{uuid.uuid4().hex[:12]}").strip()
+    max_base_len = MAX_CONVERSATION_ID_LEN - TASK_RUN_CONVERSATION_SUFFIX_LEN
+    return base[:max_base_len]
+
+
+def _new_task_run_conversation_id(task_conversation_id: str) -> str:
+    return f"{_task_run_conversation_prefix(task_conversation_id)}_run_{uuid.uuid4().hex[:12]}"
+
+
+def _build_scheduled_task_prompt(task_id: int, agent_display_name: str, prompt: str) -> str:
+    return (
+        f"【自动化指令-任务ID: {task_id}】@{agent_display_name}\n"
+        "这是 TaskCenter 自动任务的本次独立触发。请立即实际执行任务，不要只回复计划、准备开始或执行思路。\n"
+        "如果任务需要获取系统状态、调用工具、发送通知或写入外部系统，必须调用对应工具完成；"
+        "只有工具调用完成后，才能总结执行结果。\n"
+        f"任务内容：{prompt}"
+    )
+
+
+def _is_busy_task_result(result: Dict[str, Any]) -> bool:
+    status = str((result or {}).get("status") or "").lower()
+    content = str((result or {}).get("content") or "")
+    return status == "error" and BUSY_CONVERSATION_MESSAGE in content
+
+
+def _is_no_tool_execution_result(result: Dict[str, Any]) -> bool:
+    status = str((result or {}).get("status") or "").lower()
+    content = str((result or {}).get("content") or "")
+    return status == "error" and NO_TOOL_EXECUTION_MESSAGE in content
+
+
+def _is_incomplete_task_result(result: Dict[str, Any]) -> bool:
+    status = str((result or {}).get("status") or "").lower()
+    return (
+        status in INCOMPLETE_TASK_STATUSES
+        or _is_busy_task_result(result)
+        or _is_no_tool_execution_result(result)
+    )
+
+
 async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
     """
     Top-level wrapper function for task execution to avoid APScheduler serialization issues.
@@ -67,29 +119,48 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
             "real_name": user.real_name,
             "role": user.role,
             "is_scheduled_task": True,
-            "task_name": task.name
+            "task_name": task.name,
+            "requires_tool_execution": True,
         }
 
         # 4. Execute via Agent Service
         try:
-            # Add structured prefix with @AgentName for forced routing
-            full_prompt = f"【自动化指令-任务ID: {task_id}】@{agent_display_name} {task.prompt}"
+            # Add structured prefix with @AgentName for forced routing.
+            full_prompt = _build_scheduled_task_prompt(task_id, agent_display_name, task.prompt)
+            run_conversation_id = _new_task_run_conversation_id(task.conversation_id)
 
-            logger.info(f"🚀 Executing task {task_id} ('{task.name}') | Agent: {task.agent_id} | ConvID: {task.conversation_id}")
+            logger.info(
+                "🚀 Executing task %s ('%s') | Agent: %s | TaskConvID: %s | RunConvID: %s",
+                task_id,
+                task.name,
+                task.agent_id,
+                task.conversation_id,
+                run_conversation_id,
+            )
             
             # NOTE: We don't generate trace_id here, we let agent_service generate it 
             # and capture it from the response to ensure consistency with Audit Logs.
             result = await agent_service.chat_completion(
                 messages=[{"role": "user", "content": full_prompt}],
                 agent_id=task.agent_id,
-                conversation_id=task.conversation_id, # This MUST be the ID from DB
+                conversation_id=run_conversation_id,
                 user_info=user_info,
-                enable_multi_agent=True
+                enable_multi_agent=True,
+                permission_options=_task_permission_options(),
             )
             
             trace_id = result.get('trace_id')
             content_preview = result.get('content', '')[:100]
             logger.info(f"✅ Task {task_id} finished. Trace: {trace_id}. Response: {content_preview}...")
+
+            if _is_incomplete_task_result(result):
+                logger.warning(
+                    "⏸️ Task %s skipped run metadata update because execution did not complete. status=%s trace=%s",
+                    task_id,
+                    result.get("status"),
+                    trace_id,
+                )
+                return
             
             # 5. Update Task Metadata (Atomic update)
             await session.execute(
