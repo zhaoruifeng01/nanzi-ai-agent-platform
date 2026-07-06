@@ -34,6 +34,30 @@ def _main_runner(chat_config, **kwargs):
     )
 
 
+def test_data_query_capability_target_uses_agent_name(chat_config):
+    """工具预检应按 data_query 能力动态选择可委派智能体标识，而非固定 chat-bi。"""
+    runner = _main_runner(chat_config)
+    agents = [
+        SimpleNamespace(
+            id="agent-data-custom",
+            name="biz-data-agent",
+            display_name="业务数据专家",
+            capabilities=["data_query"],
+        ),
+        SimpleNamespace(
+            id="agent-knowledge",
+            name="knowledge-base",
+            display_name="知识库助手",
+            capabilities=["knowledge_base"],
+        ),
+    ]
+
+    assert runner._build_sub_agent_targets_by_capability(agents) == {
+        "data_query": "biz-data-agent",
+        "knowledge_base": "knowledge-base",
+    }
+
+
 @pytest.mark.asyncio
 async def test_pending_tool_attempt_skips_intercept(chat_config):
     """待确认工具调用算已尝试，弱查数词（查一下）也不应误拦。"""

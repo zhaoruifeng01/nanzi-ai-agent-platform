@@ -248,6 +248,19 @@ class AssistantAgentRunner(BaseExecutor):
         capabilities = cls._agent_field(agent, "capabilities", []) or []
         return capability in capabilities
 
+    @classmethod
+    def _build_sub_agent_targets_by_capability(cls, agents: Any) -> Dict[str, str]:
+        targets: Dict[str, str] = {}
+        for agent in agents or []:
+            agent_name = str(cls._agent_field(agent, "name", "") or "").strip()
+            if not agent_name:
+                continue
+            for capability in cls._agent_field(agent, "capabilities", []) or []:
+                capability_key = str(capability or "").strip()
+                if capability_key and capability_key not in targets:
+                    targets[capability_key] = agent_name
+        return targets
+
     async def _resolve_switch_agent_for_capability(self, capability: str) -> Optional[Dict[str, str]]:
         """Find a user-allowed agent that can satisfy the missing capability."""
         if not self.user_info:
@@ -277,9 +290,9 @@ class AssistantAgentRunner(BaseExecutor):
             return {"id": str(agent_id), "display_name": str(display_name)}
         return None
 
-    async def _resolve_available_sub_agent_names(self) -> Optional[Set[str]]:
+    async def _resolve_available_sub_agent_delegation_info(self) -> tuple[Optional[Set[str]], Dict[str, str]]:
         if not is_main_general_agent(self.config):
-            return None
+            return None, {}
         try:
             from app.services.ai.tools.agent_delegate_tool import (
                 delegable_agent_name_aliases,
@@ -300,10 +313,17 @@ class AssistantAgentRunner(BaseExecutor):
                     is_admin=is_admin,
                     current_agent_id=self.config.agent_id,
                 )
-            return delegable_agent_name_aliases(delegable_agents)
+            return (
+                delegable_agent_name_aliases(delegable_agents),
+                self._build_sub_agent_targets_by_capability(delegable_agents),
+            )
         except Exception as exc:
             logger.warning("[AssistantAgentRunner] Failed to resolve sub-agent availability: %s", exc)
-            return None
+            return None, {}
+
+    async def _resolve_available_sub_agent_names(self) -> Optional[Set[str]]:
+        names, _ = await self._resolve_available_sub_agent_delegation_info()
+        return names
 
     async def _build_data_guard_refusal_content(self) -> str:
         switch_agent = await self._resolve_switch_agent_for_capability(DATA_QUERY_SWITCH_CAPABILITY)
@@ -599,15 +619,20 @@ class AssistantAgentRunner(BaseExecutor):
                 if preflight_mode not in {"off", "false", "0", "none"}:
                     from app.services.ai.tool_nudge_policy import resolve_tool_nudge
 
+                    (
+                        available_sub_agent_names,
+                        sub_agent_targets_by_capability,
+                    ) = await self._resolve_available_sub_agent_delegation_info()
                     tool_nudge = resolve_tool_nudge(
                         self._extract_last_user_query(history),
                         tools,
-                        available_sub_agent_names=await self._resolve_available_sub_agent_names(),
+                        available_sub_agent_names=available_sub_agent_names,
+                        sub_agent_targets_by_capability=sub_agent_targets_by_capability,
                     )
                     if tool_nudge is not None:
                         native_system_content = f"{tool_nudge.message}\n\n{native_system_content}"
                         force_applied = False
-                        if preflight_mode == "hard":
+                        if preflight_mode == "hard" or tool_nudge.should_force_first_call:
                             preflight_tool_choice = self._build_preflight_tool_choice(
                                 tool_nudge.recommended_force_mode()
                             )

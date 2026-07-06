@@ -83,6 +83,24 @@ def test_sub_agent_call_nudge_for_data_query():
     assert "chat-bi" in nudge.message
 
 
+def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+    nudge = resolve_tool_nudge(
+        "帮我查一下设备资产列表",
+        tools,
+        available_sub_agent_names={"biz-data-agent", "knowledge-base"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='biz-data-agent'" in nudge.message
+    assert "agent_name='chat-bi'" not in nudge.message
+    assert nudge.should_force_first_call is True
+
+
 def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
