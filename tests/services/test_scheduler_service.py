@@ -12,6 +12,8 @@ from app.services.ai.scheduler_service import (
     _build_scheduled_task_prompt,
     _is_incomplete_task_result,
     _new_task_run_conversation_id,
+    _normalize_task_metrics,
+    _should_alert_failure,
     _task_permission_options,
 )
 
@@ -65,6 +67,27 @@ def test_incomplete_task_result_detects_pending_and_busy_states():
         "status": "success",
         "content": "执行完成",
     })
+
+
+@pytest.mark.no_infrastructure
+def test_task_metrics_normalization_and_alert_cadence():
+    metrics = _normalize_task_metrics({
+        "task_metrics": {
+            "trigger_count": "2",
+            "failure_count": "1",
+            "consecutive_failures": "3",
+            "health_status": "error",
+        }
+    })
+
+    assert metrics["trigger_count"] == 2
+    assert metrics["success_count"] == 0
+    assert metrics["failure_count"] == 1
+    assert metrics["consecutive_failures"] == 3
+    assert metrics["health_status"] == "error"
+    assert _should_alert_failure(metrics)
+    assert _should_alert_failure({"consecutive_failures": 1})
+    assert not _should_alert_failure({"consecutive_failures": 2})
 
 @pytest.fixture
 async def cleanup_tasks():

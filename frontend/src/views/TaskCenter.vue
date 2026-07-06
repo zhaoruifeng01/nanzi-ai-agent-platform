@@ -380,6 +380,25 @@ const formatDate = (d: string | undefined) => {
   return new Date(d).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+const taskHealthMeta = (task: AgentTask) => {
+  const status = task.health_status || 'unknown'
+  if (status === 'healthy') {
+    return { label: '健康', class: 'bg-green-50 text-green-700 border-green-100', dot: 'bg-green-500' }
+  }
+  if (status === 'warning') {
+    return { label: '需关注', class: 'bg-amber-50 text-amber-700 border-amber-100', dot: 'bg-amber-500' }
+  }
+  if (status === 'error') {
+    return { label: '异常', class: 'bg-red-50 text-red-700 border-red-100', dot: 'bg-red-500' }
+  }
+  if (status === 'skipped') {
+    return { label: '已跳过', class: 'bg-slate-50 text-slate-600 border-slate-100', dot: 'bg-slate-400' }
+  }
+  return { label: '未运行', class: 'bg-gray-50 text-gray-500 border-gray-100', dot: 'bg-gray-300' }
+}
+
+const metricValue = (value: number | undefined) => Number(value || 0)
+
 onMounted(() => { fetchTasks(true); fetchAgents() })
 </script>
 
@@ -501,6 +520,10 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
                   <span v-if="String(task.user_id) === String(userInfo?.user_id)" class="px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-black rounded-full border border-amber-200 flex-shrink-0">
                     我创建的
                   </span>
+                  <span class="px-2 py-0.5 text-[9px] font-black rounded-full border flex items-center flex-shrink-0" :class="taskHealthMeta(task).class">
+                    <span class="w-1.5 h-1.5 rounded-full mr-1" :class="taskHealthMeta(task).dot"></span>
+                    {{ taskHealthMeta(task).label }}
+                  </span>
                 </div>
                 <div class="flex items-center mt-1">
                   <span class="text-[10px] text-primary font-bold mr-2 bg-primary/5 px-1.5 py-0.5 rounded">{{ task.agent_name }}</span>
@@ -532,19 +555,38 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
               <p class="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-1">指令</p>
               <p class="text-xs text-gray-600 line-clamp-2 italic leading-relaxed">"{{ task.prompt }}"</p>
             </div>
-            <div class="grid grid-cols-3 gap-2 text-[10px]">
+            <div class="grid grid-cols-4 gap-2 text-[10px]">
               <div>
-                <p class="text-gray-400 mb-0.5">执行次数</p>
-                <p class="text-gray-900 font-black text-xs">{{ task.run_count }}</p>
+                <p class="text-gray-400 mb-0.5">触发</p>
+                <p class="text-gray-900 font-black text-xs">{{ metricValue(task.trigger_count) }}</p>
               </div>
               <div>
-                <p class="text-gray-400 mb-0.5">上次执行</p>
-                <p class="text-gray-700 font-medium">{{ formatDate(task.last_run_at) }}</p>
+                <p class="text-gray-400 mb-0.5">成功</p>
+                <p class="text-green-700 font-black text-xs">{{ metricValue(task.success_count || task.run_count) }}</p>
+              </div>
+              <div>
+                <p class="text-gray-400 mb-0.5">失败</p>
+                <p class="text-red-600 font-black text-xs">{{ metricValue(task.failure_count) }}</p>
+              </div>
+              <div>
+                <p class="text-gray-400 mb-0.5">跳过</p>
+                <p class="text-slate-600 font-black text-xs">{{ metricValue(task.skipped_count) }}</p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 text-[10px]">
+              <div>
+                <p class="text-gray-400 mb-0.5">上次尝试</p>
+                <p class="text-gray-700 font-medium">{{ formatDate(task.last_attempt_at || task.last_run_at) }}</p>
               </div>
               <div>
                 <p class="text-gray-400 mb-0.5">预计下次</p>
                 <p class="text-primary font-bold">{{ formatDate(task.next_run_at) }}</p>
               </div>
+            </div>
+
+            <div v-if="task.last_error" class="text-[10px] text-red-600 bg-red-50 border border-red-100 rounded-lg px-2 py-1.5 line-clamp-2">
+              {{ task.consecutive_failures ? `连续失败 ${task.consecutive_failures} 次：` : '' }}{{ task.last_error }}
             </div>
             
             <!-- Audit Info -->
@@ -618,8 +660,14 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
                     <span v-if="String(task.user_id) === String(userInfo?.user_id)" class="px-2 py-0.5 bg-amber-100 text-amber-700 text-[8px] font-black rounded-full border border-amber-200">
                       我创建的
                     </span>
+                    <span class="px-2 py-0.5 text-[8px] font-black rounded-full border flex items-center" :class="taskHealthMeta(task).class">
+                      <span class="w-1 h-1 rounded-full mr-1" :class="taskHealthMeta(task).dot"></span>
+                      {{ taskHealthMeta(task).label }}
+                    </span>
                   </div>
-                  <span class="text-[10px] text-gray-400 line-clamp-1 mt-0.5">{{ task.creator_name }} · {{ formatDate(task.created_at) }}</span>
+                  <span class="text-[10px] text-gray-400 line-clamp-1 mt-0.5">
+                    {{ task.creator_name }} · 触发 {{ metricValue(task.trigger_count) }} / 成功 {{ metricValue(task.success_count || task.run_count) }} / 失败 {{ metricValue(task.failure_count) }}
+                  </span>
                 </div>
               </div>
             </td>
@@ -627,7 +675,10 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
               <span class="text-xs text-gray-600">{{ task.agent_name }}</span>
             </td>
             <td class="px-6 py-4 text-center">
-              <span class="text-xs font-black text-gray-900">{{ task.run_count }}</span>
+              <div class="flex flex-col items-center">
+                <span class="text-xs font-black text-gray-900">{{ metricValue(task.success_count || task.run_count) }}</span>
+                <span v-if="metricValue(task.failure_count)" class="text-[9px] text-red-500 mt-0.5">失败 {{ metricValue(task.failure_count) }}</span>
+              </div>
             </td>
             <td class="px-6 py-4 hidden md:table-cell">
               <span class="text-xs font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">{{ task.cron_expr }}</span>

@@ -29,6 +29,18 @@ class TaskResponse(TaskBase):
     source: str = "web"
     status: int
     run_count: int = 0
+    trigger_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    skipped_count: int = 0
+    consecutive_failures: int = 0
+    health_status: str = "unknown"
+    last_status: Optional[str] = None
+    last_message: Optional[str] = None
+    last_error: Optional[str] = None
+    last_attempt_at: Optional[str] = None
+    last_finished_at: Optional[str] = None
+    last_alert_at: Optional[str] = None
     last_run_id: Optional[str] = None
     last_run_at: Optional[datetime] = None
     next_run_at: Optional[datetime] = None

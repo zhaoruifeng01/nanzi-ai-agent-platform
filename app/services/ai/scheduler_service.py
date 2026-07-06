@@ -24,10 +24,133 @@ NO_TOOL_EXECUTION_MESSAGE = "自动任务未实际调用任何工具"
 TASK_RUN_CONVERSATION_SUFFIX_LEN = len("_run_") + 12
 MAX_CONVERSATION_ID_LEN = 50
 INCOMPLETE_TASK_STATUSES = frozenset({"awaiting_permission", "awaiting_external_execution"})
+TASK_METRICS_KEY = "task_metrics"
+TASK_METRIC_DEFAULTS = {
+    "trigger_count": 0,
+    "success_count": 0,
+    "failure_count": 0,
+    "skipped_count": 0,
+    "consecutive_failures": 0,
+    "health_status": "unknown",
+    "last_status": None,
+    "last_message": None,
+    "last_error": None,
+    "last_trace_id": None,
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_alert_at": None,
+}
 
 
 def _task_permission_options() -> Dict[str, Any]:
     return {"approval_mode": "allow"}
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _task_config(task: AgentScheduledTask) -> Dict[str, Any]:
+    return dict(task.config or {})
+
+
+def _normalize_task_metrics(config: Dict[str, Any]) -> Dict[str, Any]:
+    raw = config.get(TASK_METRICS_KEY)
+    metrics = dict(raw) if isinstance(raw, dict) else {}
+    normalized = {**TASK_METRIC_DEFAULTS, **metrics}
+    for key in ("trigger_count", "success_count", "failure_count", "skipped_count", "consecutive_failures"):
+        try:
+            normalized[key] = int(normalized.get(key) or 0)
+        except (TypeError, ValueError):
+            normalized[key] = 0
+    return normalized
+
+
+def _task_metrics(task: AgentScheduledTask) -> Dict[str, Any]:
+    return _normalize_task_metrics(_task_config(task))
+
+
+async def _write_task_metrics(
+    session: AsyncSession,
+    task: AgentScheduledTask,
+    metrics: Dict[str, Any],
+) -> None:
+    config = _task_config(task)
+    config[TASK_METRICS_KEY] = metrics
+    await session.execute(
+        update(AgentScheduledTask)
+        .where(AgentScheduledTask.id == task.id)
+        .values(config=config)
+    )
+    await session.commit()
+    task.config = config
+
+
+async def _mark_task_attempt_started(session: AsyncSession, task: AgentScheduledTask) -> Dict[str, Any]:
+    metrics = _task_metrics(task)
+    metrics["trigger_count"] += 1
+    metrics["last_status"] = "running"
+    metrics["last_message"] = "任务已触发，正在执行"
+    metrics["last_error"] = None
+    metrics["last_started_at"] = _now_iso()
+    await _write_task_metrics(session, task, metrics)
+    return metrics
+
+
+async def _mark_task_success(
+    session: AsyncSession,
+    task: AgentScheduledTask,
+    *,
+    trace_id: Optional[str],
+    message: str,
+) -> Dict[str, Any]:
+    metrics = _task_metrics(task)
+    metrics["success_count"] += 1
+    metrics["consecutive_failures"] = 0
+    metrics["health_status"] = "healthy"
+    metrics["last_status"] = "success"
+    metrics["last_message"] = message
+    metrics["last_error"] = None
+    metrics["last_trace_id"] = trace_id
+    metrics["last_finished_at"] = _now_iso()
+    await _write_task_metrics(session, task, metrics)
+    return metrics
+
+
+async def _mark_task_failure(
+    session: AsyncSession,
+    task: AgentScheduledTask,
+    *,
+    trace_id: Optional[str],
+    error: str,
+) -> Dict[str, Any]:
+    metrics = _task_metrics(task)
+    metrics["failure_count"] += 1
+    metrics["consecutive_failures"] += 1
+    metrics["health_status"] = "error" if metrics["consecutive_failures"] >= 3 else "warning"
+    metrics["last_status"] = "failed"
+    metrics["last_message"] = "任务执行失败"
+    metrics["last_error"] = error
+    metrics["last_trace_id"] = trace_id
+    metrics["last_finished_at"] = _now_iso()
+    await _write_task_metrics(session, task, metrics)
+    return metrics
+
+
+async def _mark_task_skipped(
+    session: AsyncSession,
+    task: AgentScheduledTask,
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    metrics = _task_metrics(task)
+    metrics["skipped_count"] += 1
+    metrics["health_status"] = "skipped"
+    metrics["last_status"] = "skipped"
+    metrics["last_message"] = reason
+    metrics["last_finished_at"] = _now_iso()
+    await _write_task_metrics(session, task, metrics)
+    return metrics
 
 
 def _task_run_conversation_prefix(task_conversation_id: str) -> str:
@@ -71,6 +194,85 @@ def _is_incomplete_task_result(result: Dict[str, Any]) -> bool:
     )
 
 
+def _task_result_error(result: Dict[str, Any]) -> str:
+    status = str((result or {}).get("status") or "error")
+    content = str((result or {}).get("content") or "").strip()
+    if _is_busy_task_result(result):
+        return "当前会话正在处理中，本次触发已跳过"
+    if _is_no_tool_execution_result(result):
+        return "自动任务未实际调用任何工具"
+    if status in INCOMPLETE_TASK_STATUSES:
+        return f"任务未完成，当前状态：{status}"
+    return content[:500] or f"任务执行失败，状态：{status}"
+
+
+def _should_alert_failure(metrics: Dict[str, Any]) -> bool:
+    consecutive = int(metrics.get("consecutive_failures") or 0)
+    return consecutive == 1 or consecutive % 3 == 0
+
+
+async def _send_task_failure_alert(
+    user_id: int,
+    task: AgentScheduledTask,
+    *,
+    trace_id: Optional[str],
+    error: str,
+    metrics: Dict[str, Any],
+) -> None:
+    try:
+        from app.services.notification_service import NotificationService
+        import time
+        import hmac
+        import hashlib
+        import base64
+        import urllib.parse
+        import httpx
+
+        async with AsyncSessionLocal() as db:
+            record = await NotificationService.get_config_by_type_raw(db, user_id, "dingtalk")
+            if not record or not record.config_json:
+                return
+            cfg = json.loads(record.config_json)
+            if not cfg.get("is_enabled") or not cfg.get("webhook_url"):
+                return
+
+            webhook_url = cfg.get("webhook_url")
+            secret = cfg.get("secret")
+            target_url = webhook_url
+            if secret:
+                timestamp = str(round(time.time() * 1000))
+                string_to_sign = f"{timestamp}\n{secret}"
+                hmac_code = hmac.new(secret.encode("utf-8"), string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+                sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+                target_url = f"{webhook_url}&timestamp={timestamp}&sign={sign}"
+
+            title = f"TaskCenter 任务失败：{task.name}"
+            content = (
+                f"### {title}\n\n"
+                f"- 任务ID：{task.id}\n"
+                f"- 任务名称：{task.name}\n"
+                f"- Trace：{trace_id or '-'}\n"
+                f"- 连续失败：{metrics.get('consecutive_failures', 0)} 次\n"
+                f"- 错误原因：{error}\n"
+                f"- 时间：{_now_iso()}"
+            )
+            payload = {"msgtype": "markdown", "markdown": {"title": title, "text": content}}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(target_url, json=payload)
+                data = resp.json()
+                if data.get("errcode") != 0:
+                    logger.warning("Task failure alert failed for task %s: %s", task.id, data)
+                    return
+
+        metrics["last_alert_at"] = _now_iso()
+        async with AsyncSessionLocal() as db:
+            latest = (await db.execute(select(AgentScheduledTask).where(AgentScheduledTask.id == task.id))).scalar_one_or_none()
+            if latest:
+                await _write_task_metrics(db, latest, metrics)
+    except Exception as alert_err:
+        logger.warning("Task failure alert failed for task %s: %s", task.id, alert_err, exc_info=True)
+
+
 async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
     """
     Top-level wrapper function for task execution to avoid APScheduler serialization issues.
@@ -83,6 +285,10 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
     if not is_manual:
         if not await redis.redis_client.set(lock_key, "locked", ex=300, nx=True):
             logger.warning(f"⏩ Task {task_id} skipped: already running on another node (Locked).")
+            async with AsyncSessionLocal() as session:
+                task = (await session.execute(select(AgentScheduledTask).where(AgentScheduledTask.id == task_id))).scalar_one_or_none()
+                if task:
+                    await _mark_task_skipped(session, task, reason="同一分钟内已有节点正在执行，本次触发已跳过")
             return
 
     logger.info(f"🔔 Triggering {'MANUAL ' if is_manual else 'SCHEDULED '}task {task_id}")
@@ -105,6 +311,14 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
         
         if not user:
             logger.error(f"Task {task_id} failed: User {task.user_id} not found.")
+            metrics = await _mark_task_failure(
+                session,
+                task,
+                trace_id=None,
+                error=f"任务用户不存在：{task.user_id}",
+            )
+            if _should_alert_failure(metrics):
+                await _send_task_failure_alert(task.user_id, task, trace_id=None, error=f"任务用户不存在：{task.user_id}", metrics=metrics)
             return
 
         # 3.1 Fetch Agent Name for Forced Routing
@@ -125,6 +339,8 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
 
         # 4. Execute via Agent Service
         try:
+            await _mark_task_attempt_started(session, task)
+
             # Add structured prefix with @AgentName for forced routing.
             full_prompt = _build_scheduled_task_prompt(task_id, agent_display_name, task.prompt)
             run_conversation_id = _new_task_run_conversation_id(task.conversation_id)
@@ -154,12 +370,20 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
             logger.info(f"✅ Task {task_id} finished. Trace: {trace_id}. Response: {content_preview}...")
 
             if _is_incomplete_task_result(result):
+                error = _task_result_error(result)
                 logger.warning(
-                    "⏸️ Task %s skipped run metadata update because execution did not complete. status=%s trace=%s",
+                    "⏸️ Task %s skipped run metadata update because execution did not complete. status=%s trace=%s error=%s",
                     task_id,
                     result.get("status"),
                     trace_id,
+                    error,
                 )
+                if _is_busy_task_result(result):
+                    await _mark_task_skipped(session, task, reason=error)
+                else:
+                    metrics = await _mark_task_failure(session, task, trace_id=trace_id, error=error)
+                    if _should_alert_failure(metrics):
+                        await _send_task_failure_alert(task.user_id, task, trace_id=trace_id, error=error, metrics=metrics)
                 return
             
             # 5. Update Task Metadata (Atomic update)
@@ -173,6 +397,12 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
                 )
             )
             await session.commit()
+            await _mark_task_success(
+                session,
+                task,
+                trace_id=trace_id,
+                message="任务执行成功",
+            )
             logger.info(f"📊 Updated run_count and last_run_id for task {task_id}")
             
             # Allow logs to flush
@@ -180,6 +410,9 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
             
         except Exception as e:
             logger.error(f"❌ Task {task_id} execution failed: {e}", exc_info=True)
+            metrics = await _mark_task_failure(session, task, trace_id=None, error=str(e))
+            if _should_alert_failure(metrics):
+                await _send_task_failure_alert(task.user_id, task, trace_id=None, error=str(e), metrics=metrics)
 
 
 async def _system_audit_log_maintenance_job():
