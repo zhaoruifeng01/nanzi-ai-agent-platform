@@ -194,7 +194,9 @@ const migrateLegacyRecentFilesIfNeeded = async () => {
     localStorage.removeItem(LEGACY_RECENT_FILES_KEY)
     if (!Array.isArray(legacy) || legacy.length === 0) return
     if (recentFiles.value.length > 0) return
-    recentFiles.value = legacy.slice(0, MAX_RECENT)
+    recentFiles.value = legacy
+      .map((item) => ({ path: item.path, name: item.name, mtime: item.mtime || Date.now() / 1000 }))
+      .slice(0, MAX_RECENT)
     await persistRecentFilesNow()
   } catch {
     localStorage.removeItem(LEGACY_RECENT_FILES_KEY)
@@ -450,7 +452,6 @@ const itemMatchesTypeFilter = (item: { name: string; is_dir: boolean }) => {
   const visual = getItemVisual(item)
   if (typeFilter.value === 'folder') return item.is_dir
   if (item.is_dir) {
-    if (typeFilter.value === 'folder') return true
     if (isRecursiveListingActive.value) return false
     return false
   }
@@ -633,7 +634,8 @@ const isSessionDirItem = (item: { name: string; path: string; is_dir: boolean })
   if (!norm.startsWith(`${rootNorm}/`)) return false
   const relative = norm.slice(rootNorm.length + 1)
   const parts = relative.split('/')
-  if (parts.length === 2 && parts[0] === 'sessions' && isSessionDirName(parts[1])) {
+  const sessionName = parts[1]
+  if (parts.length === 2 && parts[0] === 'sessions' && sessionName && isSessionDirName(sessionName)) {
     return true
   }
   if (parts.length === 1 && !USER_WORKSPACE_RESERVED_DIRS.has(item.name)) {
@@ -923,9 +925,6 @@ const getRowVisual = (item: { name: string; is_dir: boolean; path: string }) => 
 }
 
 const scopedHomeCrumbName = () => '🏠 工作空间'
-const adminHomeCrumbName = () => '📁 root'
-const formatBaseCrumb = (currentScope: 'admin_all' | 'user_scoped') =>
-  currentScope === 'user_scoped' ? scopedHomeCrumbName() : adminHomeCrumbName()
 
 const userHomeCrumbLabel = () => {
   const root = userWorkspaceRoot.value
@@ -1223,7 +1222,7 @@ const submitRename = async () => {
 }
 
 const confirmDeleteEntry = (item: { path: string; name: string; is_dir: boolean }) => {
-  deleteTarget.value = item
+  deleteTarget.value = { path: item.path, name: item.name, isDir: item.is_dir }
   closeContextMenu()
 }
 
@@ -1252,7 +1251,7 @@ const restoreTrashItem = async (item: { path: string; name: string }) => {
 }
 
 const confirmPurgeEntry = (item: { path: string; name: string; is_dir: boolean }) => {
-  purgeTarget.value = item
+  purgeTarget.value = { path: item.path, name: item.name, isDir: item.is_dir }
   closeContextMenu()
 }
 

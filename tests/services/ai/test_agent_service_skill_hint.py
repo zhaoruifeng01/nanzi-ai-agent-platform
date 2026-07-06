@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -5,6 +7,7 @@ import pytest
 from app.schemas.agent import ChatConfig
 from app.services.ai.context_compaction import COMPACTION_MARKER
 from app.services.ai.agent_service import AgentService
+from app.services.ai.turn_classifier import TurnClassification, TurnType
 
 
 class _NoopExecutor:
@@ -24,6 +27,20 @@ class _ExternalPendingExecutor:
 
 async def _noop_audit(*args, **kwargs):
     return None
+
+
+@asynccontextmanager
+async def _noop_lane_hold(*args, **kwargs):
+    yield False
+
+
+@pytest.fixture(autouse=True)
+def _disable_quota_block_message():
+    with patch(
+        "app.services.ai.agent_service.AgentService._quota_block_message",
+        AsyncMock(return_value=None),
+    ):
+        yield
 
 
 @pytest.mark.asyncio
@@ -64,8 +81,24 @@ async def test_chat_stream_injects_skill_discovery_hint_into_system_prompt():
             AsyncMock(return_value=None),
         ),
         patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
             "app.services.config_service.ConfigService.get",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
         ),
         patch(
             "app.services.ai.agent_service.AgentDispatcher.dispatch",
@@ -156,6 +189,101 @@ async def test_chatbi_agent_defers_turn_classification_to_data_executor():
 
 @pytest.mark.asyncio
 @pytest.mark.no_infrastructure
+async def test_chat_stream_awaits_audit_before_completion():
+    service = AgentService()
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        agent_display_name="Helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+    audit_calls: list[tuple] = []
+
+    async def capture_audit(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+
+    async def fake_dispatch(config, *args, **kwargs):
+        return _NoopExecutor()
+
+    with (
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.resolve_agent_config",
+            AsyncMock(return_value=(agent_config, None)),
+        ),
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.setup_context",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.memory_config_service.MemoryConfigService.get_bool",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.services.ai.memory_service.ltm_service.fetch_memory",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.config_service.ConfigService.get",
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
+        ),
+        patch(
+            "app.services.ai.agent_service.AgentDispatcher.dispatch",
+            side_effect=fake_dispatch,
+        ),
+        patch(
+            "app.services.ai.agent_service.AgentService._quota_block_message",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.services.ai.agent_service.conversation_run_lane.hold",
+            _noop_lane_hold,
+        ),
+        patch(
+            "app.services.ai.agent_service.AuditManager.log_transaction",
+            side_effect=capture_audit,
+        ),
+        patch(
+            "app.services.ai.session_summary_service.SessionSummaryService.merge_session_summary",
+            AsyncMock(),
+        ),
+        patch("app.core.config.Settings.SKILLS_DIR", "/app/data/skills"),
+    ):
+        chunks = []
+        async for chunk in service.chat_completion_stream(
+            [{"role": "user", "content": "记录审计"}],
+            user_info={"user_id": "1", "role": "admin", "user_name": "admin"},
+            conversation_id="conv-audit",
+            enable_multi_agent=False,
+        ):
+            chunks.append(chunk)
+
+    assert any(chunk.get("content") == "ok" for chunk in chunks)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][0][3] == "ok"
+    assert audit_calls[0][1]["conversation_id"] == "conv-audit"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
 async def test_chat_stream_skips_audit_on_external_execution_required():
     service = AgentService()
     agent_config = ChatConfig(
@@ -193,8 +321,28 @@ async def test_chat_stream_skips_audit_on_external_execution_required():
             AsyncMock(return_value=None),
         ),
         patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
             "app.services.config_service.ConfigService.get",
-            AsyncMock(return_value=None),
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
+        ),
+        patch(
+            "app.services.ai.agent_service.conversation_run_lane.hold",
+            _noop_lane_hold,
         ),
         patch(
             "app.services.ai.agent_service.AgentDispatcher.dispatch",
@@ -216,6 +364,342 @@ async def test_chat_stream_skips_audit_on_external_execution_required():
 
     assert any(chunk.get("type") == "external_execution_required" for chunk in chunks)
     assert audit_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_scheduled_chat_stream_audits_external_execution_required():
+    service = AgentService()
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        agent_display_name="Helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+    audit_calls: list[tuple] = []
+
+    async def capture_audit(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+
+    async def fake_dispatch(config, *args, **kwargs):
+        return _ExternalPendingExecutor()
+
+    with (
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.resolve_agent_config",
+            AsyncMock(return_value=(agent_config, None)),
+        ),
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.setup_context",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.memory_config_service.MemoryConfigService.get_bool",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.services.ai.memory_service.ltm_service.fetch_memory",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.config_service.ConfigService.get",
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
+        ),
+        patch(
+            "app.services.ai.agent_service.conversation_run_lane.hold",
+            _noop_lane_hold,
+        ),
+        patch(
+            "app.services.ai.agent_service.AgentDispatcher.dispatch",
+            side_effect=fake_dispatch,
+        ),
+        patch(
+            "app.services.ai.agent_service.AuditManager.log_transaction",
+            side_effect=capture_audit,
+        ),
+        patch("app.core.config.Settings.SKILLS_DIR", "/app/data/skills"),
+    ):
+        chunks = []
+        async for chunk in service.chat_completion_stream(
+            [{"role": "user", "content": "运行外部工具"}],
+            user_info={
+                "user_id": "1",
+                "role": "admin",
+                "user_name": "admin",
+                "is_scheduled_task": True,
+            },
+            conversation_id="task-conv",
+            enable_multi_agent=False,
+        ):
+            chunks.append(chunk)
+
+    assert any(chunk.get("type") == "external_execution_required" for chunk in chunks)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][0][5] == "awaiting_external_execution"
+    assert audit_calls[0][1]["conversation_id"] == "task-conv"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_scheduled_chat_stream_marks_no_tool_execution_as_error():
+    service = AgentService()
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        agent_display_name="Helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+    audit_calls: list[tuple] = []
+
+    async def capture_audit(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+
+    async def fake_dispatch(config, *args, **kwargs):
+        return _NoopExecutor()
+
+    with (
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.resolve_agent_config",
+            AsyncMock(return_value=(agent_config, None)),
+        ),
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.setup_context",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.memory_config_service.MemoryConfigService.get_bool",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.services.ai.memory_service.ltm_service.fetch_memory",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.config_service.ConfigService.get",
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
+        ),
+        patch(
+            "app.services.ai.agent_service.conversation_run_lane.hold",
+            _noop_lane_hold,
+        ),
+        patch(
+            "app.services.ai.agent_service.AgentDispatcher.dispatch",
+            side_effect=fake_dispatch,
+        ),
+        patch(
+            "app.services.ai.agent_service.AuditManager.log_transaction",
+            side_effect=capture_audit,
+        ),
+        patch("app.core.config.Settings.SKILLS_DIR", "/app/data/skills"),
+    ):
+        chunks = []
+        async for chunk in service.chat_completion_stream(
+            [{"role": "user", "content": "运行自动任务"}],
+            user_info={
+                "user_id": "1",
+                "role": "admin",
+                "user_name": "admin",
+                "is_scheduled_task": True,
+                "requires_tool_execution": True,
+            },
+            conversation_id="task-conv",
+            enable_multi_agent=False,
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [chunk for chunk in chunks if chunk.get("type") == "error"]
+    assert error_chunks
+    assert "自动任务未实际调用任何工具" in error_chunks[-1]["content"]
+    assert len(audit_calls) == 1
+    assert audit_calls[0][0][5] == "no_tool_execution"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_scheduled_multi_agent_stream_audits_external_execution_status():
+    service = AgentService()
+    agent_config = ChatConfig(
+        agent_id="agent-1",
+        agent_name="helper",
+        agent_display_name="Helper",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+    )
+    route_details = SimpleNamespace(
+        secondary_agents=["agent-2"],
+        reasoning="multi agent route",
+        confidence=1.0,
+        agent_id="agent-1",
+        turn_labels=[],
+        relation_to_previous="new_task",
+        user_action_type="task",
+        intent_info=None,
+    )
+    audit_calls: list[tuple] = []
+
+    async def capture_audit(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+
+    async def fake_execute_multi_agent(*args, **kwargs):
+        yield {
+            "type": "external_execution_required",
+            "status": "pending",
+            "content": "需要外部执行",
+        }
+
+    with (
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.resolve_agent_config",
+            AsyncMock(return_value=(agent_config, route_details)),
+        ),
+        patch(
+            "app.services.ai.context_manager.AgentContextManager.setup_context",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.memory_config_service.MemoryConfigService.get_bool",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.services.ai.memory_service.ltm_service.fetch_memory",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.get_history",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.ai.agent_service.memory_service.add_message",
+            AsyncMock(),
+        ),
+        patch(
+            "app.services.config_service.ConfigService.get",
+            AsyncMock(return_value="20"),
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
+        ),
+        patch(
+            "app.services.ai.agent_service.conversation_run_lane.hold",
+            _noop_lane_hold,
+        ),
+        patch.object(service, "_execute_multi_agent", fake_execute_multi_agent),
+        patch(
+            "app.services.ai.agent_service.AuditManager.log_transaction",
+            side_effect=capture_audit,
+        ),
+        patch("app.core.config.Settings.SKILLS_DIR", "/app/data/skills"),
+    ):
+        chunks = []
+        async for chunk in service.chat_completion_stream(
+            [{"role": "user", "content": "运行外部工具"}],
+            user_info={
+                "user_id": "1",
+                "role": "admin",
+                "user_name": "admin",
+                "is_scheduled_task": True,
+            },
+            conversation_id="task-conv",
+            enable_multi_agent=True,
+        ):
+            chunks.append(chunk)
+
+    assert any(chunk.get("type") == "external_execution_required" for chunk in chunks)
+    assert len(audit_calls) == 1
+    assert audit_calls[0][0][5] == "awaiting_external_execution"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chat_completion_preserves_error_status_from_stream():
+    service = AgentService()
+
+    async def fake_stream(*args, **kwargs):
+        yield {"trace_id": "trace-error", "status": "init"}
+        yield {
+            "type": "error",
+            "status": "error",
+            "content": "当前会话正在处理中，请稍后再试。",
+        }
+
+    with patch.object(service, "chat_completion_stream", side_effect=fake_stream):
+        result = await service.chat_completion(
+            [{"role": "user", "content": "run"}],
+            user_info={"user_id": "1", "role": "admin", "user_name": "admin"},
+        )
+
+    assert result["trace_id"] == "trace-error"
+    assert result["status"] == "error"
+    assert result["content"] == "当前会话正在处理中，请稍后再试。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_chat_completion_preserves_external_execution_status_from_stream():
+    service = AgentService()
+
+    async def fake_stream(*args, **kwargs):
+        yield {"trace_id": "trace-external", "status": "init"}
+        yield {
+            "type": "external_execution_required",
+            "status": "pending",
+            "content": "需要外部执行",
+        }
+
+    with patch.object(service, "chat_completion_stream", side_effect=fake_stream):
+        result = await service.chat_completion(
+            [{"role": "user", "content": "run"}],
+            user_info={"user_id": "1", "role": "admin", "user_name": "admin"},
+        )
+
+    assert result["trace_id"] == "trace-external"
+    assert result["status"] == "awaiting_external_execution"
+    assert result["content"] == "需要外部执行"
 
 
 @pytest.mark.asyncio
@@ -277,6 +761,14 @@ async def test_chat_stream_injects_compacted_overflow_without_persisting_digest(
         patch(
             "app.services.config_service.ConfigService.get",
             side_effect=fake_config_get,
+        ),
+        patch(
+            "app.services.ai.turn_classifier.resolve_turn_for_session",
+            AsyncMock(return_value=(
+                TurnClassification(turn_type=TurnType.GENERAL, reasoning="test"),
+                None,
+                0.0,
+            )),
         ),
         patch(
             "app.services.ai.memory_service.memory_service.get_history",

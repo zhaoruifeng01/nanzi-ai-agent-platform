@@ -30,6 +30,7 @@ from app.core.orm import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 AWAITING_RESUME_STATUSES = frozenset({"awaiting_permission", "awaiting_external_execution"})
+NO_TOOL_EXECUTION_MESSAGE = "自动任务未实际调用任何工具"
 
 
 def _accumulate_stream_content(full: str, chunk: Dict[str, Any]) -> str:
@@ -39,6 +40,10 @@ def _accumulate_stream_content(full: str, chunk: Dict[str, Any]) -> str:
     if "content" in chunk:
         return full + str(chunk["content"])
     return full
+
+
+def _trace_has_tool_call(trace_buffer: Optional[List[AgentExecutionStep]]) -> bool:
+    return any(getattr(step, "event_type", None) == "tool_call" for step in (trace_buffer or []))
 
 
 class AgentService:
@@ -117,6 +122,12 @@ class AgentService:
         trace_id = str(uuid.uuid4())
         trace_buffer: List[AgentExecutionStep] = []
         agent_config = None
+        user_query = ""
+        full_response_content = ""
+        shared_state = {
+            "agent_config": None,
+            "execution_status": "success"
+        }
 
         # 1. Initial Identity Chunk
         yield {"trace_id": trace_id, "status": "init"}
@@ -203,7 +214,7 @@ class AgentService:
                     yield {"content": AgentServicePrompts.EMPTY_REQUEST}
                     return
 
-                async for chunk in self._run_chat_turn_stream(
+                gen = self._run_chat_turn_stream(
                     messages=messages,
                     user_query=user_query,
                     agent_id=agent_id,
@@ -219,8 +230,17 @@ class AgentService:
                     trace_id=trace_id,
                     trace_buffer=trace_buffer,
                     start_time=asyncio.get_running_loop().time(),
-                ):
-                    yield chunk
+                    shared_state=shared_state,
+                )
+                try:
+                    async for chunk in gen:
+                        if isinstance(chunk, dict) and "content" in chunk:
+                            full_response_content += chunk["content"]
+                        yield chunk
+                finally:
+                    await gen.aclose()
+                agent_config = shared_state["agent_config"]
+                execution_status = shared_state["execution_status"]
         except ConversationRunBusyError:
             yield {
                 "type": "error",
@@ -656,6 +676,7 @@ class AgentService:
         trace_id: str,
         trace_buffer: List[AgentExecutionStep],
         start_time: float,
+        shared_state: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Internal turn runner; must be called inside conversation run lane when enabled."""
         agent_config = None
@@ -676,6 +697,9 @@ class AgentService:
                 trace_buffer=trace_buffer,
                 user_query=user_query,
             )
+
+            if agent_config and shared_state is not None:
+                shared_state["agent_config"] = agent_config
 
             if not agent_config:
                 yield {"content": AgentServicePrompts.NO_AGENT_CONFIG}
@@ -1012,6 +1036,12 @@ class AgentService:
                     route_hints,
                 ):
                     full_response_content = _accumulate_stream_content(full_response_content, chunk)
+                    if chunk.get("type") == "permission_required":
+                        execution_status = "awaiting_permission"
+                    elif chunk.get("type") == "external_execution_required":
+                        execution_status = "awaiting_external_execution"
+                    elif chunk.get("type") == "error" or chunk.get("status") == "error":
+                        execution_status = "error"
                     yield chunk
             else:
                 executor = await self._dispatch_executor(
@@ -1062,6 +1092,32 @@ class AgentService:
                     full_response_content = fallback_text
                     yield {"content": fallback_text, "status": "success"}
 
+            requires_tool_execution = bool(
+                user_info
+                and user_info.get("is_scheduled_task")
+                and user_info.get("requires_tool_execution")
+            )
+            if (
+                requires_tool_execution
+                and execution_status == "success"
+                and not _trace_has_tool_call(trace_buffer)
+            ):
+                execution_status = "no_tool_execution"
+                no_tool_message = (
+                    f"{NO_TOOL_EXECUTION_MESSAGE}，本次只产生了模型回复，没有产生工具调用；"
+                    "已按未完成处理，请检查任务指令或智能体工具配置。"
+                )
+                full_response_content = (
+                    f"{full_response_content}\n\n{no_tool_message}"
+                    if full_response_content
+                    else no_tool_message
+                )
+                yield {
+                    "type": "error",
+                    "status": "error",
+                    "content": no_tool_message,
+                }
+
             p_tokens, c_tokens, t_tokens = 0, 0, 0
             try:
                 from app.services.ai.audit import aggregate_tokens_from_trace_buffer
@@ -1106,17 +1162,17 @@ class AgentService:
                 "content": format_execution_error(str(e), model_name=model_name),
                 "status": "error",
             }
-
         finally:
             end_time = asyncio.get_running_loop().time()
             duration = (end_time - start_time) * 1000
 
-            if execution_status not in AWAITING_RESUME_STATUSES:
-                asyncio.create_task(AuditManager.log_transaction(
+            is_scheduled_task = bool(user_info and user_info.get("is_scheduled_task"))
+            if execution_status not in AWAITING_RESUME_STATUSES or is_scheduled_task:
+                await AuditManager.log_transaction(
                      trace_id, agent_config, user_query, full_response_content,
                      user_info, execution_status, duration, trace_buffer,
                      conversation_id=conversation_id
-                ))
+                )
 
             if (
                 conversation_id
@@ -1155,6 +1211,7 @@ class AgentService:
         full_content = ""
         trace_id = ""
         agent_name_resp = ""
+        final_status = "success"
 
         async for chunk in self.chat_completion_stream(
             messages,
@@ -1170,6 +1227,13 @@ class AgentService:
         ):
             if "trace_id" in chunk and chunk.get("status") == "init":
                 trace_id = chunk["trace_id"]
+            chunk_type = chunk.get("type")
+            if chunk_type == "permission_required":
+                final_status = "awaiting_permission"
+            elif chunk_type == "external_execution_required":
+                final_status = "awaiting_external_execution"
+            elif chunk_type == "error" or chunk.get("status") == "error":
+                final_status = "error"
             if "content" in chunk:
                 full_content += chunk["content"]
             if "agent_name" in chunk:
@@ -1179,7 +1243,8 @@ class AgentService:
             "content": full_content,
             "intent": "general_chat", # Simplified, real intent is in stream but not easily exposed here without refactor
             "trace_id": trace_id,
-            "agent_name": agent_name_resp
+            "agent_name": agent_name_resp,
+            "status": final_status,
         }
 
     async def resume_agentscope_permission_stream(

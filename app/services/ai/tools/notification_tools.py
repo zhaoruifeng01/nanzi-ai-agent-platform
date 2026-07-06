@@ -19,7 +19,11 @@ class DingTalkInput(BaseModel):
 class send_dingtalk_message(BaseTool):
     # Pydantic v2 requires type annotations for field overrides
     name: str = "send_dingtalk_message"
-    description: str = "Send a Markdown message to a DingTalk group chat via robot webhook."
+    description: str = (
+        "发送钉钉群机器人 Markdown 消息。Send a Markdown message to DingTalk. "
+        "本工具会自动读取当前用户在个人中心 -> 消息通知里的钉钉 Webhook/加签配置，"
+        "无需用户在本轮对话中提供 webhook、access_token 或群聊目标。"
+    )
     args_schema: Type[BaseModel] = DingTalkInput
 
     async def _arun(self, title: str, content: str) -> str:
@@ -92,7 +96,11 @@ class EmailInput(BaseModel):
 
 class send_email(BaseTool):
     name: str = "send_email"
-    description: str = "Send an email via SMTP. Requires SMTP configuration in agent settings."
+    description: str = (
+        "发送邮件通知。Send an email via SMTP. "
+        "本工具会自动读取当前用户在个人中心 -> 消息通知里的 SMTP 配置，"
+        "无需用户在本轮对话中提供 SMTP 服务器或密码。"
+    )
     args_schema: Type[BaseModel] = EmailInput
 
     async def _arun(self, to_email: str, subject: str, content: str) -> str:
@@ -178,7 +186,11 @@ class WeChatWorkInput(BaseModel):
 
 class send_wechat_work_message(BaseTool):
     name: str = "send_wechat_work_message"
-    description: str = "Send a Markdown message to a WeChat Work group chat via robot webhook."
+    description: str = (
+        "发送企业微信群机器人 Markdown 消息。Send a Markdown message to WeChat Work. "
+        "本工具会自动读取当前用户在个人中心 -> 消息通知里的企微 Webhook 配置，"
+        "无需用户在本轮对话中提供 webhook 或群聊目标。"
+    )
     args_schema: Type[BaseModel] = WeChatWorkInput
 
     async def _arun(self, content: str) -> str:
@@ -231,4 +243,3 @@ class send_wechat_work_message(BaseTool):
 
     def _run(self, content: str) -> str:
         raise NotImplementedError("Use _arun instead")
-

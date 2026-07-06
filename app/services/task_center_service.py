@@ -1,15 +1,33 @@
 import logging
 from typing import List, Optional, Dict, Any
-from sqlalchemy import select, update, delete, desc, func
+from sqlalchemy import select, update, delete, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 import uuid
 
 from app.models.task import AgentScheduledTask
-from app.services.ai.scheduler_service import scheduler_service
+from app.services.ai.scheduler_service import scheduler_service, _task_run_conversation_prefix
 from app.models.audit import AgentExecutionHistory
 
 logger = logging.getLogger(__name__)
+
+
+def attach_task_metrics(task: AgentScheduledTask) -> AgentScheduledTask:
+    cfg = task.config if isinstance(task.config, dict) else {}
+    metrics = cfg.get("task_metrics") if isinstance(cfg.get("task_metrics"), dict) else {}
+    task.trigger_count = int(metrics.get("trigger_count") or 0)
+    task.success_count = int(metrics.get("success_count") or task.run_count or 0)
+    task.failure_count = int(metrics.get("failure_count") or 0)
+    task.skipped_count = int(metrics.get("skipped_count") or 0)
+    task.consecutive_failures = int(metrics.get("consecutive_failures") or 0)
+    task.health_status = metrics.get("health_status") or ("healthy" if task.run_count else "unknown")
+    task.last_status = metrics.get("last_status")
+    task.last_message = metrics.get("last_message")
+    task.last_error = metrics.get("last_error")
+    task.last_attempt_at = metrics.get("last_started_at") or metrics.get("last_finished_at")
+    task.last_finished_at = metrics.get("last_finished_at")
+    task.last_alert_at = metrics.get("last_alert_at")
+    return task
 
 class TaskCenterService:
     @staticmethod
@@ -75,6 +93,7 @@ class TaskCenterService:
             task_obj.creator_name = real_name or user_name or f"User:{task_obj.user_id}"
             task_obj.agent_name = agent_name or task_obj.agent_id or "Unknown Agent"
             task_obj.next_run_at = scheduler_service.get_next_run_time(task_obj.id)
+            attach_task_metrics(task_obj)
             tasks.append(task_obj)
             
         return tasks
@@ -86,6 +105,7 @@ class TaskCenterService:
         task = result.scalar_one_or_none()
         if task:
             task.next_run_at = scheduler_service.get_next_run_time(task.id)
+            attach_task_metrics(task)
         return task
 
     @staticmethod
@@ -126,10 +146,18 @@ class TaskCenterService:
         if not task:
             return [], 0
             
-        # Scheduled tasks reuse AgentExecutionHistory but we identify them via conversation_id
+        run_prefix = _task_run_conversation_prefix(task.conversation_id)
+
+        # Scheduled task runs use isolated run conversation IDs, but all runs keep
+        # the task's root conversation prefix so the task log drawer can aggregate them.
         stmt = (
             select(AgentExecutionHistory)
-            .where(AgentExecutionHistory.conversation_id == task.conversation_id)
+            .where(
+                or_(
+                    AgentExecutionHistory.conversation_id == task.conversation_id,
+                    AgentExecutionHistory.conversation_id.like(f"{run_prefix}_run_%"),
+                )
+            )
             .order_by(desc(AgentExecutionHistory.created_at))
         )
         

@@ -34,6 +34,10 @@ async def test_dingtalk_tool_description_preservation():
     assert target_tool.description is not None
     assert isinstance(target_tool.description, str)
     assert len(target_tool.description) > 0
+    assert "个人中心" in target_tool.description
+    assert "当前用户" in target_tool.description
+    assert "无需" in target_tool.description
+    assert "webhook" in target_tool.description.lower()
 
     # 4. Simulate the conversion to OpenAI function (which LLMs use)
     # This is where the 400 error usually happens during validation

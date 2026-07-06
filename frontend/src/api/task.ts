@@ -14,6 +14,18 @@ export interface AgentTask {
   prompt: string
   status: number // 0-Stopped, 1-Running, 2-Error
   run_count: number
+  trigger_count: number
+  success_count: number
+  failure_count: number
+  skipped_count: number
+  consecutive_failures: number
+  health_status: 'unknown' | 'healthy' | 'warning' | 'error' | 'skipped' | string
+  last_status?: string
+  last_message?: string
+  last_error?: string
+  last_attempt_at?: string
+  last_finished_at?: string
+  last_alert_at?: string
   config?: any
   last_run_id?: string
   last_run_at?: string

@@ -380,18 +380,22 @@ const onCropperMouseUp = () => {
 
 const onCropperTouchStart = (e: TouchEvent) => {
   if (e.touches.length !== 1) return
+  const touch = e.touches[0]
+  if (!touch) return
   isDraggingCropper.value = true
   cropperDragStart.value = {
-    x: e.touches[0].clientX - cropperOffset.value.x,
-    y: e.touches[0].clientY - cropperOffset.value.y
+    x: touch.clientX - cropperOffset.value.x,
+    y: touch.clientY - cropperOffset.value.y
   }
 }
 
 const onCropperTouchMove = (e: TouchEvent) => {
   if (!isDraggingCropper.value || e.touches.length !== 1) return
+  const touch = e.touches[0]
+  if (!touch) return
   cropperOffset.value = {
-    x: e.touches[0].clientX - cropperDragStart.value.x,
-    y: e.touches[0].clientY - cropperDragStart.value.y
+    x: touch.clientX - cropperDragStart.value.x,
+    y: touch.clientY - cropperDragStart.value.y
   }
 }
 

@@ -83,6 +83,24 @@ def test_sub_agent_call_nudge_for_data_query():
     assert "chat-bi" in nudge.message
 
 
+def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+    nudge = resolve_tool_nudge(
+        "帮我查一下设备资产列表",
+        tools,
+        available_sub_agent_names={"biz-data-agent", "knowledge-base"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='biz-data-agent'" in nudge.message
+    assert "agent_name='chat-bi'" not in nudge.message
+    assert nudge.should_force_first_call is True
+
+
 def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
@@ -104,3 +122,15 @@ def test_sub_agent_call_nudge_for_knowledge_query():
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95
     assert "knowledge-base" in nudge.message
+
+
+def test_notification_keyword_nudge_for_dingtalk_send():
+    tools = [
+        _tool("system_http_request", "发送 HTTP 请求"),
+        _tool("send_dingtalk_message", "发送钉钉群机器人消息，读取当前用户个人中心消息通知配置"),
+    ]
+    nudge = resolve_tool_nudge("整理天气早报，同时发送到钉钉中", tools)
+    assert nudge is not None
+    assert nudge.tool_name == "send_dingtalk_message"
+    assert nudge.score >= STRONG_FORCE_SCORE
+    assert nudge.recommended_force_mode() == "send_dingtalk_message"

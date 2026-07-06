@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional, Set
+from typing import Any, List, Mapping, Optional, Set
 
 # 不主动促发的工具（写入/管理/记忆维护类）：避免推动模型产生副作用或与专门机制重复。
 _NUDGE_EXCLUDED_TOOLS = frozenset({
@@ -101,12 +101,17 @@ class ToolNudge:
     tool_name: str
     score: float
     message: str
+    force_first_call: bool = False
 
     def recommended_force_mode(self) -> str:
         """hard 模式下推荐 of ToolChoice.mode：高相关度锁定具体工具，否则 required。"""
         if self.score >= STRONG_FORCE_SCORE:
             return self.tool_name
         return "required"
+
+    @property
+    def should_force_first_call(self) -> bool:
+        return self.force_first_call
 
 
 def _short_capability(tool: Any) -> str:
@@ -128,6 +133,60 @@ def _build_message(tool_name: str, capability: str) -> str:
     )
 
 
+_NOTIFICATION_ACTION_TERMS = (
+    "发送", "推送", "通知", "发到", "发给", "发一下", "send", "push", "notify",
+)
+
+_NOTIFICATION_CHANNELS = (
+    (
+        "send_dingtalk_message",
+        ("钉钉", "dingtalk"),
+        "钉钉群机器人",
+    ),
+    (
+        "send_wechat_work_message",
+        ("企微", "企业微信", "wechat work", "wecom"),
+        "企业微信群机器人",
+    ),
+    (
+        "send_email",
+        ("邮件", "邮箱", "email", "mail"),
+        "邮件",
+    ),
+)
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term and term in text for term in terms)
+
+
+def _resolve_notification_nudge(query: str, tools: List[Any]) -> Optional[ToolNudge]:
+    normalized_query = query.lower()
+    if not _contains_any(normalized_query, _NOTIFICATION_ACTION_TERMS):
+        return None
+
+    available_tool_names = {
+        str(getattr(tool, "name", "") or "")
+        for tool in (tools or [])
+    }
+    for tool_name, channel_terms, channel_label in _NOTIFICATION_CHANNELS:
+        if tool_name not in available_tool_names:
+            continue
+        if not _contains_any(normalized_query, channel_terms):
+            continue
+        return ToolNudge(
+            tool_name=tool_name,
+            score=1.0,
+            message=(
+                f"【本轮工具优先】用户明确要求发送或推送到{channel_label}。"
+                f"请调用已绑定工具「{tool_name}」完成发送；该工具会自动读取当前用户"
+                f"在个人中心 -> 消息通知里的配置，无需用户在本轮提供 webhook、token 或服务器配置。"
+                f"只有工具返回失败时，才向用户说明配置或发送失败原因；不要在未调用工具前声称未配置。"
+            ),
+        )
+    return None
+
+
 def resolve_tool_nudge(
     user_query: str,
     tools: List[Any],
@@ -135,6 +194,7 @@ def resolve_tool_nudge(
     min_score: float = 0.34,
     exclude_tools: Optional[Set[str]] = None,
     available_sub_agent_names: Optional[Set[str]] = None,
+    sub_agent_targets_by_capability: Optional[Mapping[str, str]] = None,
 ) -> Optional[ToolNudge]:
     """解析本轮是否需要工具促发；返回相关度最高的一条便签或 None。
 
@@ -158,33 +218,49 @@ def resolve_tool_nudge(
             aliases = {name, name.replace("_", "-"), name.replace("-", "_")}
             return bool(aliases & available_sub_agent_names)
 
+        def _target_for_capability(capability: str, fallback_name: str) -> Optional[str]:
+            target = ""
+            if sub_agent_targets_by_capability:
+                target = str(sub_agent_targets_by_capability.get(capability) or "").strip()
+            if target:
+                return target if _sub_agent_available(target) else None
+            return fallback_name if _sub_agent_available(fallback_name) else None
+
         # 优先判断更具体的知识库检索意图
         if looks_like_knowledge_query(query):
-            if not _sub_agent_available("knowledge-base"):
+            target_agent_name = _target_for_capability("knowledge_base", "knowledge-base")
+            if not target_agent_name:
                 return None
             desc = (
                 "用户问题涉及内部制度、SOP或操作规程查询。主助手没有直接读取知识库能力，"
-                "你必须优先调用 sub_agent_call(agent_name='knowledge-base', query='用户的问题') 委派给知识库助手 'knowledge-base' 检索文档，拿到结果再回答；"
+                f"你必须优先调用 sub_agent_call(agent_name='{target_agent_name}', query='用户的问题') 委派给知识库助手 '{target_agent_name}' 检索文档，拿到结果再回答；"
                 "严禁凭记忆直接编造任何文档或规范；若工具返回为空或失败，如实说明，不要编造。"
             )
             return ToolNudge(
                 tool_name="sub_agent_call",
                 score=0.95,
-                message=f"【本轮工具优先】本轮用户请求涉及制度、SOP或规范文档检索。{desc}"
+                message=f"【本轮工具优先】本轮用户请求涉及制度、SOP或规范文档检索。{desc}",
+                force_first_call=True,
             )
         elif looks_like_business_data_request(query):
-            if not _sub_agent_available("chat-bi"):
+            target_agent_name = _target_for_capability("data_query", "chat-bi")
+            if not target_agent_name:
                 return None
             desc = (
                 "用户问题涉及内部数据、指标或资产查询。主助手没有直接连接数据库能力，"
-                "你必须优先调用 sub_agent_call(agent_name='chat-bi', query='用户的问题') 委派给数据智能助手 'chat-bi' 获取真实数据，拿到结果再回答；"
+                f"你必须优先调用 sub_agent_call(agent_name='{target_agent_name}', query='用户的问题') 委派给数据智能助手 '{target_agent_name}' 获取真实数据，拿到结果再回答；"
                 "严禁凭记忆直接编造任何表格、数据或字段；若工具返回为空或失败，如实说明，不要编造。"
             )
             return ToolNudge(
                 tool_name="sub_agent_call",
                 score=0.95,
-                message=f"【本轮工具优先】本轮用户请求涉及内部数据、指标或资产查询。{desc}"
+                message=f"【本轮工具优先】本轮用户请求涉及内部数据、指标或资产查询。{desc}",
+                force_first_call=True,
             )
+
+    notification_nudge = _resolve_notification_nudge(query, tools)
+    if notification_nudge is not None:
+        return notification_nudge
 
     signals = _query_signals(query)
     if len(signals) < 2:
