@@ -57,25 +57,56 @@ class RagFlowClient:
         """List datasets, optionally filtering by name (Client-side filtering due to API permission issues)"""
         await self._ensure_config()
         url = f"{self.base_url}/api/v1/datasets"
-        # Removed 'name' param from API call to avoid "lacks permission" error on non-existent names
-        params = {"page": page, "page_size": page_size}
-            
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=self._get_headers(), params=params)
-            data = await self._handle_response(resp, "List Datasets")
-            
-            if isinstance(data, list):
-                datasets = data
-            elif isinstance(data, dict):
-                datasets = data.get("datasets") or data.get("items") or data.get("data") or []
-            else:
-                datasets = []
-            
-            # Client-side filtering
-            if name:
-                datasets = [d for d in datasets if d.get("name") == name]
+        
+        # RAGFlow limits page_size to <= 100. If larger, we fetch multiple pages of max size 100
+        if page_size <= 100:
+            params = {"page": page, "page_size": page_size}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=self._get_headers(), params=params)
+                data = await self._handle_response(resp, "List Datasets")
                 
-            return datasets
+                if isinstance(data, list):
+                    datasets = data
+                elif isinstance(data, dict):
+                    datasets = data.get("datasets") or data.get("items") or data.get("data") or []
+                else:
+                    datasets = []
+        else:
+            datasets = []
+            start_offset = (page - 1) * page_size
+            end_offset = start_offset + page_size
+            
+            ragflow_page_size = 100
+            start_page = (start_offset // ragflow_page_size) + 1
+            end_page = ((end_offset - 1) // ragflow_page_size) + 1
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for p in range(start_page, end_page + 1):
+                    params = {"page": p, "page_size": ragflow_page_size}
+                    resp = await client.get(url, headers=self._get_headers(), params=params)
+                    data = await self._handle_response(resp, f"List Datasets Page {p}")
+                    if isinstance(data, list):
+                        page_data = data
+                    elif isinstance(data, dict):
+                        page_data = data.get("datasets") or data.get("items") or data.get("data") or []
+                    else:
+                        page_data = []
+                    
+                    if not page_data:
+                        break
+                    datasets.extend(page_data)
+                    if len(page_data) < ragflow_page_size:
+                        break
+            
+            slice_start = start_offset - (start_page - 1) * ragflow_page_size
+            slice_end = slice_start + page_size
+            datasets = datasets[slice_start:slice_end]
+
+        # Client-side filtering
+        if name:
+            datasets = [d for d in datasets if d.get("name") == name]
+            
+        return datasets
 
     async def create_dataset(self, name: str, description: str = "", chunk_method: str = "naive") -> Dict[str, Any]:
         """Create a new dataset (Knowledge Base)"""
@@ -116,18 +147,53 @@ class RagFlowClient:
         """List documents in a dataset"""
         await self._ensure_config()
         url = f"{self.base_url}/api/v1/datasets/{dataset_id}/documents"
-        params = {"page": page, "page_size": page_size}
-        if name:
-            params["name"] = name
+        
+        # RAGFlow limits page_size to <= 100. If larger, we fetch multiple pages of max size 100
+        if page_size <= 100:
+            params = {"page": page, "page_size": page_size}
+            if name:
+                params["name"] = name
+                
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=self._get_headers(), params=params)
+                data = await self._handle_response(resp, "List Documents")
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("docs") or data.get("documents") or data.get("data") or []
+                return []
+        else:
+            documents = []
+            start_offset = (page - 1) * page_size
+            end_offset = start_offset + page_size
             
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=self._get_headers(), params=params)
-            data = await self._handle_response(resp, "List Documents")
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get("docs") or data.get("documents") or data.get("data") or []
-            return []
+            ragflow_page_size = 100
+            start_page = (start_offset // ragflow_page_size) + 1
+            end_page = ((end_offset - 1) // ragflow_page_size) + 1
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for p in range(start_page, end_page + 1):
+                    params = {"page": p, "page_size": ragflow_page_size}
+                    if name:
+                        params["name"] = name
+                    resp = await client.get(url, headers=self._get_headers(), params=params)
+                    data = await self._handle_response(resp, f"List Documents Page {p}")
+                    if isinstance(data, list):
+                        page_data = data
+                    elif isinstance(data, dict):
+                        page_data = data.get("docs") or data.get("documents") or data.get("data") or []
+                    else:
+                        page_data = []
+                        
+                    if not page_data:
+                        break
+                    documents.extend(page_data)
+                    if len(page_data) < ragflow_page_size:
+                        break
+            
+            slice_start = start_offset - (start_page - 1) * ragflow_page_size
+            slice_end = slice_start + page_size
+            return documents[slice_start:slice_end]
 
     async def upload_document(
         self,
