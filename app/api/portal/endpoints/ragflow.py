@@ -235,7 +235,7 @@ async def list_ragflow_datasets(
     """
     Proxy to list RAGFlow datasets (knowledge bases) with permission filtering.
     """
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
 
     # 1. Check Permissions
@@ -271,7 +271,7 @@ async def sync_ragflow_datasets(
 ):
     started = time.time()
     await require_element_permission(user, db, "element:knowledge:edit")
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
         datasets = await client.list_datasets(page=1, page_size=500)
@@ -313,7 +313,7 @@ async def create_ragflow_dataset(
 ):
     started = time.time()
     await require_element_permission(user, db, "element:knowledge:create")
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
         created = await client.create_dataset(
@@ -392,7 +392,7 @@ async def delete_ragflow_datasets(
     if not payload.ids:
         raise HTTPException(status_code=400, detail="No dataset ids provided")
     await require_dataset_write_access(user, db, payload.ids)
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
         await client.delete_datasets(payload.ids)
@@ -420,7 +420,7 @@ async def list_dataset_documents(
     db: AsyncSession = Depends(get_db_session),
 ):
     await require_dataset_access(user, db, [dataset_id])
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         docs = await client.list_documents(dataset_id, name=name, page=page, page_size=page_size)
         return {"code": 0, "data": docs, "total": len(docs)}
@@ -438,7 +438,7 @@ async def list_document_chunks(
     db: AsyncSession = Depends(get_db_session)
 ):
     await require_dataset_write_access(user, db, [dataset_id])
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         data = await client.list_document_chunks(dataset_id, document_id, page=page, page_size=page_size)
         return {"code": 0, "data": data}
@@ -457,7 +457,7 @@ async def upload_dataset_document(
     started = time.time()
     await require_element_permission(user, db, "element:knowledge:upload_document")
     await require_dataset_write_access(user, db, [dataset_id])
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         blob = await file.read()
         uploaded = await client.upload_document(
@@ -496,7 +496,7 @@ async def delete_dataset_documents(
     await require_dataset_write_access(user, db, [dataset_id])
     if not payload.ids:
         raise HTTPException(status_code=400, detail="No document ids provided")
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         await client.delete_documents(dataset_id, payload.ids)
         await record_knowledge_audit(request, user, "documents:delete", 200, {
@@ -527,7 +527,7 @@ async def parse_dataset_documents(
     await require_dataset_write_access(user, db, [dataset_id])
     if not payload.ids:
         raise HTTPException(status_code=400, detail="No document ids provided")
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         await client.parse_documents(dataset_id, payload.ids)
         await record_knowledge_audit(request, user, "documents:parse", 200, {
@@ -555,7 +555,7 @@ async def retrieval_test(
     started = time.time()
     await require_element_permission(user, db, "element:knowledge:test_retrieval")
     await require_dataset_access(user, db, payload.dataset_ids)
-    client = RagFlowClient()
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
         chunks = await client.retrieve(
             payload.query,
