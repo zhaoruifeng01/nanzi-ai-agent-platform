@@ -149,6 +149,6 @@ async def search_knowledge_base(query: str, dataset_ids: Optional[str] = None) -
     except Exception as e:
         err_msg = str(e)
         logger.error(f"Knowledge Search Failed: {e}", exc_info=True)
-        if MetadataRagService._is_service_unavailable(err_msg):
+        if MetadataRagService._is_service_unavailable(e):
             return MetadataRagService.knowledge_unavailable_hint(err_msg)
         return f"[Tool Error] Failed to search knowledge base: {err_msg}"

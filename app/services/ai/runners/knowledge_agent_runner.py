@@ -161,7 +161,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         except Exception as exc:
             logger.error("[KnowledgeAgentRunner] Auto search_knowledge_base failed: %s", exc)
             err_msg = str(exc)
-            if MetadataRagService._is_service_unavailable(err_msg):
+            if MetadataRagService._is_service_unavailable(exc):
                 output = MetadataRagService.knowledge_unavailable_hint(err_msg)
             else:
                 output = f"[TOOL_ERROR] 自动检索知识库失败: {exc}"
