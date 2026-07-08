@@ -5755,6 +5755,9 @@ watch(showKnowledgePortal, (val) => {
       config.expertAgentId = null;
       saveRoutingSettings();
       showAutoRoutingHint.value = true;
+      setTimeout(() => {
+        showAutoRoutingHint.value = false;
+      }, 3000);
     }
   }
 });
