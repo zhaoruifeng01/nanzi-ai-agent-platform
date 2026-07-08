@@ -497,8 +497,15 @@
                         class="mt-1.5 border border-gray-150 dark:border-gray-800/80 bg-white dark:bg-gray-900 rounded-lg overflow-y-auto max-h-[250px] p-2 space-y-1.5 scrollbar-thin"
                         @click.stop
                       >
-                        <div v-if="datasetDocuments[ds.id]?.loading" class="flex justify-center py-4">
-                          <div class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-gray-300 border-t-green-500" />
+                        <div v-if="datasetDocuments[ds.id]?.loading" class="space-y-2 py-2">
+                          <div
+                            v-for="i in 3"
+                            :key="i"
+                            class="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-gray-100 dark:border-gray-800"
+                          >
+                            <div class="kp-skeleton-shimmer w-3.5 h-3.5 rounded flex-shrink-0" />
+                            <div class="kp-skeleton-shimmer h-2.5 rounded flex-1" :style="{ maxWidth: i === 1 ? '70%' : '85%' }" />
+                          </div>
                         </div>
                         <template v-else-if="(datasetDocuments[ds.id]?.docs?.length || 0) > 0">
                           <div
@@ -548,8 +555,20 @@
                                   <span class="text-green-500 font-bold">💡</span> 针对该文件的专属提问：
                                 </div>
                                 
-                                <div v-if="documentRecommendations[doc.id]?.loading" class="flex justify-center py-2">
-                                  <div class="animate-spin rounded-full h-3 w-3 border border-gray-300 border-t-green-500" />
+                                <div v-if="documentRecommendations[doc.id]?.loading" class="space-y-2 py-1">
+                                  <div class="flex flex-wrap gap-1.5 kp-question-skeleton-wrap">
+                                    <div
+                                      v-for="(width, i) in ['6.5rem', '5.75rem']"
+                                      :key="i"
+                                      class="inline-flex items-center h-7 rounded-md border border-green-500/10 dark:border-green-500/15 bg-green-50/25 dark:bg-green-950/10 overflow-hidden"
+                                      :style="{ width }"
+                                    >
+                                      <div class="kp-skeleton-shimmer h-2 rounded mx-2 w-[calc(100%-1rem)]" />
+                                    </div>
+                                  </div>
+                                  <p class="text-[9px] text-center text-gray-400 dark:text-gray-500 select-none">
+                                    生成专属提问中<span class="kp-loading-dots" aria-hidden="true">...</span>
+                                  </p>
                                 </div>
                                 
                                 <div v-else-if="(documentRecommendations[doc.id]?.questions?.length || 0) > 0" class="space-y-1">
@@ -621,9 +640,33 @@
                       </button>
                     </div>
 
-                    <!-- loading spinner -->
-                    <div v-if="recommendations[ds.id]?.loading" class="flex justify-center py-4">
-                      <div class="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-green-500" />
+                    <!-- loading skeleton -->
+                    <div v-if="recommendations[ds.id]?.loading" class="space-y-2.5">
+                      <div class="flex flex-wrap gap-2 kp-question-skeleton-wrap">
+                        <div
+                          v-for="(width, i) in ['8.75rem', '10.25rem', '7.5rem']"
+                          :key="i"
+                          class="inline-flex items-center h-[34px] rounded-lg border border-green-500/15 dark:border-green-500/20 bg-green-50/30 dark:bg-green-950/15 overflow-hidden shadow-sm"
+                          :style="{ width }"
+                        >
+                          <div class="flex items-center gap-2 px-3 w-full">
+                            <div class="kp-skeleton-shimmer w-3.5 h-3.5 rounded-full flex-shrink-0" />
+                            <div
+                              class="kp-skeleton-shimmer h-2.5 rounded flex-1"
+                              :style="{ maxWidth: i === 0 ? '72%' : i === 1 ? '88%' : '64%' }"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-center gap-2 py-0.5">
+                        <span class="relative flex h-1.5 w-1.5">
+                          <span class="kp-loading-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-50" />
+                          <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                        </span>
+                        <span class="text-[10px] font-medium text-gray-400 dark:text-gray-500 select-none">
+                          正在生成推荐提问<span class="kp-loading-dots" aria-hidden="true">...</span>
+                        </span>
+                      </div>
                     </div>
 
                     <!-- horizontal flex-wrap layout matching data portal -->
@@ -810,5 +853,49 @@ const handleQuestionClick = (query: string, dsId: string, action: "send" | "fill
 }
 .scrollbar-thin::-webkit-scrollbar-track {
   background-color: transparent;
+}
+
+@keyframes kp-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.kp-skeleton-shimmer {
+  background: linear-gradient(90deg, rgb(229 231 235) 20%, rgb(209 250 229) 45%, rgb(229 231 235) 80%);
+  background-size: 200% 100%;
+  animation: kp-shimmer 1.5s ease-in-out infinite;
+}
+
+:global(.dark) .kp-skeleton-shimmer {
+  background: linear-gradient(90deg, rgb(31 41 55) 20%, rgb(6 78 59 / 0.45) 45%, rgb(31 41 55) 80%);
+  background-size: 200% 100%;
+}
+
+.kp-question-skeleton-wrap {
+  animation: kp-skeleton-fade 0.35s ease-out;
+}
+
+@keyframes kp-skeleton-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kp-loading-ping {
+  animation: kp-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes kp-ping {
+  0% { transform: scale(1); opacity: 0.55; }
+  75%, 100% { transform: scale(2.2); opacity: 0; }
+}
+
+.kp-loading-dots {
+  display: inline-block;
+  animation: kp-dots 1.2s ease-in-out infinite;
+}
+
+@keyframes kp-dots {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
 }
 </style>
