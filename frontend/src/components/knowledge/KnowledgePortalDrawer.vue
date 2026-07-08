@@ -542,8 +542,29 @@
 
                   <!-- Badges list matching pl-11.5 indentation -->
                   <div class="flex flex-wrap gap-1.5 pl-11.5 min-w-0">
-                    <span class="inline-block max-w-full rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight bg-gray-50 border-gray-200 text-gray-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400">
-                      📄 {{ ds.document_count ?? ds.doc_count ?? 0 }} 个文件
+                    <template v-if="ds.tags && ds.tags.length">
+                      <span
+                        v-for="tag in ds.tags.slice(0, 3)"
+                        :key="tag"
+                        class="inline-block max-w-full rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/20 dark:border-blue-800 dark:text-blue-400"
+                      >
+                        🏷️ {{ tag }}
+                      </span>
+                      <button
+                        v-if="ds.tags.length > 3"
+                        type="button"
+                        class="inline-flex items-center justify-center rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight bg-gray-100 hover:bg-gray-200 border-gray-250 text-gray-600 dark:bg-gray-850 dark:hover:bg-gray-750 dark:border-gray-700 dark:text-gray-300 transition-all cursor-pointer active:scale-90"
+                        @click.stop="openAllTagsModal(ds.platform_name || ds.name, ds.tags)"
+                        title="查看全部标签"
+                      >
+                        +{{ ds.tags.length - 3 }}
+                      </button>
+                    </template>
+                    <span
+                      v-else
+                      class="inline-block max-w-full rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight bg-gray-50 border-gray-200 text-gray-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400"
+                    >
+                      🏷️ 未分类
                     </span>
                     <span
                       class="inline-block max-w-full rounded-full border px-2 py-0.5 text-[9px] font-bold leading-tight"
@@ -883,6 +904,60 @@
         </transition>
       </div>
     </div>
+
+    <!-- 标签全部展示弹窗 -->
+    <transition
+      enter-active-class="ease-out duration-300"
+      enter-from-class="opacity-0 scale-95"
+      enter-to-class="opacity-100 scale-100"
+      leave-active-class="ease-in duration-200"
+      leave-from-class="opacity-100 scale-100"
+      leave-to-class="opacity-0 scale-95"
+    >
+      <div 
+        v-if="showAllTagsModal" 
+        class="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-gray-500/40 backdrop-blur-xs"
+        @click="showAllTagsModal = false"
+      >
+        <div 
+          class="bg-white dark:bg-gray-800 rounded-xl border border-gray-150 dark:border-gray-700 max-w-sm w-full p-4 shadow-xl transform transition-all space-y-4"
+          @click.stop
+        >
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-gray-800 dark:text-gray-100 select-none">
+              🏷️ {{ activeModalDatasetName }} 的所有标签
+            </h4>
+            <button
+              type="button"
+              class="text-gray-400 hover:text-gray-550 dark:hover:text-gray-250 cursor-pointer p-0.5 rounded-lg transition-colors"
+              @click="showAllTagsModal = false"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="flex flex-wrap gap-2 pt-1 max-h-[200px] overflow-y-auto pr-1 scrollbar-thin">
+            <span
+              v-for="tag in activeModalTags"
+              :key="tag"
+              class="inline-block rounded-full border px-2.5 py-0.5 text-[10px] font-bold bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/20 dark:border-blue-800 dark:text-blue-400 select-none"
+            >
+              {{ tag }}
+            </span>
+          </div>
+          <div class="flex justify-end pt-1">
+            <button
+              type="button"
+              class="px-3.5 py-1.5 text-[10px] font-bold rounded-lg border border-gray-200 dark:border-gray-750 bg-gray-50 dark:bg-gray-800 text-gray-750 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer select-none"
+              @click="showAllTagsModal = false"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
   </teleport>
 </template>
 
@@ -929,6 +1004,16 @@ const emit = defineEmits<{
 const expandedDocId = ref<string | null>(null);
 const expandedDocRecsId = ref<string | null>(null);
 const showAdvancedConfig = ref(false);
+
+// 标签全部展示弹窗状态
+const showAllTagsModal = ref(false);
+const activeModalTags = ref<string[]>([]);
+const activeModalDatasetName = ref("");
+const openAllTagsModal = (datasetName: string, tags: string[]) => {
+  activeModalDatasetName.value = datasetName;
+  activeModalTags.value = tags;
+  showAllTagsModal.value = true;
+};
 
 const isMyCreated = (ds: any) => {
   try {
