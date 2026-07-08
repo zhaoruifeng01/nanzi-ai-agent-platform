@@ -14,6 +14,24 @@ class KnowledgeMetricsService:
     Service to process and persist RAG citation and search metrics.
     """
 
+    @staticmethod
+    def _fill_trend_gaps(trend: list, start_date: str, end_date: str) -> list:
+        """补全日期范围内无数据的日期，确保前端折线图能连续渲染。"""
+        start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        by_date = {item["date"]: item for item in trend}
+        filled = []
+        current = start
+        while current <= end:
+            date_str = current.strftime("%Y-%m-%d")
+            filled.append(by_date.get(date_str, {
+                "date": date_str,
+                "search_count": 0,
+                "citation_count": 0,
+            }))
+            current += datetime.timedelta(days=1)
+        return filled
+
     @classmethod
     async def sync_redis_metrics_to_db(cls):
         """
@@ -157,13 +175,22 @@ class KnowledgeMetricsService:
                 LIMIT 10
             """
             
-            # 3. Aggregated daily trends line
+            # 3. 按日趋势（仅统计 document 维度，避免与 dataset 重复计数）
             trend_sql = """
                 SELECT metric_date, SUM(search_count) as total_search, SUM(citation_count) as total_citation
                 FROM knowledge_base_metrics
-                WHERE metric_date BETWEEN :start_date AND :end_date
+                WHERE target_type = 'document' AND metric_date BETWEEN :start_date AND :end_date
                 GROUP BY metric_date
                 ORDER BY metric_date ASC
+            """
+
+            # 4. 活跃文献源总数（不限 Top 10）
+            active_docs_sql = """
+                SELECT COUNT(DISTINCT target_id)
+                FROM knowledge_base_metrics
+                WHERE target_type = 'document'
+                  AND metric_date BETWEEN :start_date AND :end_date
+                  AND search_count > 0
             """
             
             try:
@@ -183,12 +210,17 @@ class KnowledgeMetricsService:
                     "search_count": int(r[1]),
                     "citation_count": int(r[2])
                 } for r in res_trend.fetchall()]
+                trend = cls._fill_trend_gaps(trend, start_date, end_date)
+
+                res_active = await session.execute(text(active_docs_sql), {"start_date": start_date, "end_date": end_date})
+                active_docs = int(res_active.scalar() or 0)
                 
                 return {
                     "datasets": datasets,
                     "documents": documents,
-                    "trend": trend
+                    "trend": trend,
+                    "active_docs": active_docs,
                 }
             except Exception as e:
                 logger.error(f"[KnowledgeMetricsService] Query metrics summary failed: {e}", exc_info=True)
-                return {"datasets": [], "documents": [], "trend": []}
+                return {"datasets": [], "documents": [], "trend": [], "active_docs": 0}

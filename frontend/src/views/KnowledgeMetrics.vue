@@ -107,7 +107,7 @@
         <p class="text-xs text-gray-500 mt-1">展示每日知识库检索量与大模型最终采纳引用量的动态趋势对比</p>
       </div>
       <div class="h-72 w-full">
-        <div v-if="trendData.length === 0" class="h-full w-full flex items-center justify-center text-sm text-gray-400">
+        <div v-if="!hasTrendActivity" class="h-full w-full flex items-center justify-center text-sm text-gray-400">
           暂无趋势数据
         </div>
         <v-chart v-else class="h-full w-full" :option="trendChartOption" autoresize />
@@ -122,11 +122,17 @@
           <h2 class="text-lg font-bold text-gray-900">知识库引用排行榜 (Top 10)</h2>
           <p class="text-xs text-gray-500 mt-1">基于各知识库被引用的累计次数排行</p>
         </div>
-        <div class="h-80 w-full flex-1">
+        <div class="h-80 w-full min-h-[320px]">
           <div v-if="datasetsData.length === 0" class="h-full w-full flex items-center justify-center text-sm text-gray-400">
             暂无知识库统计
           </div>
-          <v-chart v-else class="h-full w-full" :option="datasetChartOption" autoresize />
+          <v-chart
+            v-else
+            :key="`dataset-${chartRenderKey}`"
+            class="h-full w-full"
+            :option="datasetChartOption"
+            autoresize
+          />
         </div>
       </div>
 
@@ -136,11 +142,17 @@
           <h2 class="text-lg font-bold text-gray-900">核心文档引用排行榜 (Top 10)</h2>
           <p class="text-xs text-gray-500 mt-1">基于被引用的具体物理文件名排行</p>
         </div>
-        <div class="h-80 w-full flex-1">
+        <div class="h-80 w-full min-h-[320px]">
           <div v-if="documentsData.length === 0" class="h-full w-full flex items-center justify-center text-sm text-gray-400">
             暂无文档统计
           </div>
-          <v-chart v-else class="h-full w-full" :option="documentChartOption" autoresize />
+          <v-chart
+            v-else
+            :key="`document-${chartRenderKey}`"
+            class="h-full w-full"
+            :option="documentChartOption"
+            autoresize
+          />
         </div>
       </div>
     </div>
@@ -148,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import axios from "axios";
 import { useToast } from "@/composables/useToast";
 import VChart from "vue-echarts";
@@ -180,6 +192,7 @@ const { showToast } = useToast();
 const trendData = ref<any[]>([]);
 const datasetsData = ref<any[]>([]);
 const documentsData = ref<any[]>([]);
+const chartRenderKey = ref(0);
 
 // 聚合数据卡片
 const summary = ref({
@@ -192,6 +205,10 @@ const citationRate = computed(() => {
   if (summary.value.totalSearch === 0) return "0.0";
   return ((summary.value.totalCitation / summary.value.totalSearch) * 100).toFixed(1);
 });
+
+const hasTrendActivity = computed(() =>
+  trendData.value.some((d) => (d.search_count || 0) > 0 || (d.citation_count || 0) > 0)
+);
 
 const onPeriodChange = () => {
   fetchMetrics();
@@ -246,8 +263,11 @@ const fetchMetrics = async () => {
       summary.value = {
         totalSearch: totSearch,
         totalCitation: totCitation,
-        activeDocs: documentsData.value.length,
+        activeDocs: data.active_docs ?? documentsData.value.length,
       };
+      chartRenderKey.value += 1;
+      await nextTick();
+      window.dispatchEvent(new Event("resize"));
     }
     showToast("数据已刷新", "success");
   } catch (e: any) {
@@ -262,11 +282,99 @@ const formatNumber = (num: number) => {
   return new Intl.NumberFormat().format(num);
 };
 
+const shortenLabel = (name: string, maxLen = 10) => {
+  const label = name || "未知";
+  return label.length > maxLen ? `${label.slice(0, maxLen)}…` : label;
+};
+
+const buildRankingBarOption = (
+  items: Array<{ name?: string; id?: string; search_count?: number; citation_count?: number }>,
+  options: { labelMaxLen?: number; searchColor?: string; citationColor?: string } = {},
+) => {
+  const { labelMaxLen = 10, searchColor = "#93c5fd", citationColor = "#3b82f6" } = options;
+  const sortedData = items.slice(0, 10);
+  const fullNames = sortedData.map((d) => d.name || d.id || "未知");
+  const labels = fullNames.map((name) => shortenLabel(name, labelMaxLen));
+  const searchCounts = sortedData.map((d) => d.search_count || 0);
+  const citationCounts = sortedData.map((d) => d.citation_count || 0);
+
+  return {
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "rgba(255, 255, 255, 0.95)",
+      borderColor: "#e5e7eb",
+      borderWidth: 1,
+      textStyle: { color: "#1f2937", fontSize: 12 },
+      formatter: (params: any) => {
+        const entries = Array.isArray(params) ? params : [params];
+        const idx = entries[0]?.dataIndex ?? 0;
+        const title = fullNames[idx] || labels[idx];
+        const lines = entries.map((item: any) => `${item.marker}${item.seriesName}: ${item.value}`);
+        return [title, ...lines].join("<br/>");
+      },
+    },
+    legend: {
+      data: ["检索量", "引用量"],
+      top: 0,
+      right: 0,
+      icon: "circle",
+      textStyle: { color: "#4b5563", fontSize: 11 },
+    },
+    grid: {
+      left: 12,
+      right: 12,
+      bottom: labels.length > 4 ? 56 : 32,
+      top: 36,
+      containLabel: true,
+    },
+    xAxis: {
+      type: "category",
+      data: labels,
+      axisLine: { lineStyle: { color: "#d1d5db" } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#6b7280",
+        fontSize: 10,
+        interval: 0,
+        rotate: labels.length > 4 ? 32 : 0,
+      },
+    },
+    yAxis: {
+      type: "value",
+      minInterval: 1,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { type: "dashed", color: "#f3f4f6" } },
+      axisLabel: { color: "#6b7280" },
+    },
+    series: [
+      {
+        name: "检索量",
+        type: "bar",
+        data: searchCounts,
+        barMaxWidth: 28,
+        itemStyle: { color: searchColor, borderRadius: [4, 4, 0, 0] },
+      },
+      {
+        name: "引用量",
+        type: "bar",
+        data: citationCounts,
+        barMaxWidth: 28,
+        itemStyle: { color: citationColor, borderRadius: [4, 4, 0, 0] },
+      },
+    ],
+  };
+};
+
 // 趋势线图表配置
 const trendChartOption = computed(() => {
   const dates = trendData.value.map((d) => d.date);
   const searchCounts = trendData.value.map((d) => d.search_count);
   const citationCounts = trendData.value.map((d) => d.citation_count);
+  const nonZeroDays = trendData.value.filter(
+    (d) => (d.search_count || 0) > 0 || (d.citation_count || 0) > 0
+  ).length;
+  const showPoint = nonZeroDays <= 2;
 
   return {
     tooltip: {
@@ -309,7 +417,8 @@ const trendChartOption = computed(() => {
         name: "检索量 (RAG)",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: showPoint,
+        symbolSize: 8,
         data: searchCounts,
         itemStyle: { color: "#3b82f6" },
         areaStyle: {
@@ -327,7 +436,8 @@ const trendChartOption = computed(() => {
         name: "引用量",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: showPoint,
+        symbolSize: 8,
         data: citationCounts,
         itemStyle: { color: "#6366f1" },
         areaStyle: {
@@ -346,118 +456,18 @@ const trendChartOption = computed(() => {
 });
 
 // 知识库 Top 10 图表配置
-const datasetChartOption = computed(() => {
-  const sortedData = [...datasetsData.value].reverse().slice(0, 10);
-  const names = sortedData.map((d) => d.name || d.id);
-  const searchCounts = sortedData.map((d) => d.search_count);
-  const citationCounts = sortedData.map((d) => d.citation_count);
-
-  return {
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "rgba(255, 255, 255, 0.95)",
-      borderColor: "#e5e7eb",
-      borderWidth: 1,
-      textStyle: { color: "#1f2937", fontSize: 12 },
-    },
-    legend: {
-      data: ["检索量", "引用量"],
-      top: "0%",
-      right: "0%",
-      icon: "circle",
-      textStyle: { color: "#4b5563" },
-    },
-    grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "3%",
-      top: "12%",
-      containLabel: true,
-    },
-    xAxis: {
-      type: "value",
-      axisLine: { show: false },
-      axisTick: { show: false },
-      splitLine: { lineStyle: { type: "dashed", color: "#f3f4f6" } },
-      axisLabel: { color: "#6b7280" },
-    },
-    yAxis: {
-      type: "category",
-      data: names,
-      axisLine: { lineStyle: { color: "#d1d5db" } },
-      axisLabel: {
-        color: "#6b7280",
-        formatter: (val: string) => {
-          return val.length > 8 ? val.substring(0, 8) + "..." : val;
-        },
-      },
-    },
-    series: [
-      {
-        name: "检索量",
-        type: "bar",
-        data: searchCounts,
-        itemStyle: { color: "#93c5fd", borderRadius: [0, 4, 4, 0] },
-      },
-      {
-        name: "引用量",
-        type: "bar",
-        data: citationCounts,
-        itemStyle: { color: "#3b82f6", borderRadius: [0, 4, 4, 0] },
-      },
-    ],
-  };
-});
+const datasetChartOption = computed(() =>
+  buildRankingBarOption(datasetsData.value, { labelMaxLen: 12 })
+);
 
 // 文档 Top 10 图表配置
-const documentChartOption = computed(() => {
-  const sortedData = [...documentsData.value].reverse().slice(0, 10);
-  const names = sortedData.map((d) => d.name || d.id);
-  const citationCounts = sortedData.map((d) => d.citation_count);
-
-  return {
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "rgba(255, 255, 255, 0.95)",
-      borderColor: "#e5e7eb",
-      borderWidth: 1,
-      textStyle: { color: "#1f2937", fontSize: 12 },
-    },
-    grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "3%",
-      top: "5%",
-      containLabel: true,
-    },
-    xAxis: {
-      type: "value",
-      axisLine: { show: false },
-      axisTick: { show: false },
-      splitLine: { lineStyle: { type: "dashed", color: "#f3f4f6" } },
-      axisLabel: { color: "#6b7280" },
-    },
-    yAxis: {
-      type: "category",
-      data: names,
-      axisLine: { lineStyle: { color: "#d1d5db" } },
-      axisLabel: {
-        color: "#6b7280",
-        formatter: (val: string) => {
-          return val.length > 12 ? val.substring(0, 12) + "..." : val;
-        },
-      },
-    },
-    series: [
-      {
-        name: "引用量",
-        type: "bar",
-        data: citationCounts,
-        itemStyle: { color: "#6366f1", borderRadius: [0, 4, 4, 0] },
-      },
-    ],
-  };
-});
+const documentChartOption = computed(() =>
+  buildRankingBarOption(documentsData.value, {
+    labelMaxLen: 10,
+    searchColor: "#c7d2fe",
+    citationColor: "#6366f1",
+  })
+);
 
 onMounted(() => {
   fetchMetrics();
