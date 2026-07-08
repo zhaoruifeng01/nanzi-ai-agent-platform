@@ -150,6 +150,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import axios from "axios";
+import { useToast } from "@/composables/useToast";
 import VChart from "vue-echarts";
 import { use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
@@ -173,6 +174,7 @@ use([
 
 const loading = ref(false);
 const period = ref("week");
+const { showToast } = useToast();
 
 // 数据存储
 const trendData = ref<any[]>([]);
@@ -247,8 +249,10 @@ const fetchMetrics = async () => {
         activeDocs: documentsData.value.length,
       };
     }
+    showToast("数据已刷新", "success");
   } catch (e: any) {
     console.error("加载知识库分析数据失败", e);
+    showToast("数据加载失败，请稍后重试", "error");
   } finally {
     loading.value = false;
   }
