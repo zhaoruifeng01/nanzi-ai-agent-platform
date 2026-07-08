@@ -183,6 +183,34 @@ async def _grant_dataset_to_creator(db: AsyncSession, user: dict, dataset_id: st
     await service._invalidate_user_cache(int(user["user_id"]))
 
 
+async def _collect_affected_dataset_permission_user_ids(
+    db: AsyncSession,
+    dataset_ids: List[str],
+) -> set[int]:
+    from app.models.permission import ResourcePermission, UserRoleRelation
+    from sqlalchemy import select
+
+    if not dataset_ids:
+        return set()
+
+    stmt = select(ResourcePermission).where(
+        ResourcePermission.resource_type == "dataset",
+        ResourcePermission.resource_id.in_(dataset_ids),
+        ResourcePermission.enabled == True,
+    )
+    result = await db.execute(stmt)
+    perms = result.scalars().all()
+
+    affected_user_ids = {int(p.user_id) for p in perms if p.user_id is not None}
+    role_ids = [int(p.role_id) for p in perms if p.role_id is not None]
+    if role_ids:
+        role_users_stmt = select(UserRoleRelation.user_id).where(UserRoleRelation.role_id.in_(role_ids))
+        role_users_res = await db.execute(role_users_stmt)
+        affected_user_ids.update(int(uid) for uid in role_users_res.scalars().all())
+
+    return affected_user_ids
+
+
 @router.get("/config")
 async def get_ragflow_config_summary():
     from app.services.ai.knowledge_utils import is_knowledge_base_enabled
@@ -205,11 +233,28 @@ async def get_ragflow_config_summary():
 
 
 @router.get("/agents", dependencies=[Depends(require_admin)])
-async def list_ragflow_agents(page: int = 1, page_size: int = 100):
+async def list_ragflow_agents(
+    page: int = 1, 
+    page_size: int = 100,
+    override_url: Optional[str] = None,
+    override_key: Optional[str] = None
+):
     """
     Proxy to list RAGFlow agents (assistants).
     """
-    base_url, api_key = await get_ragflow_client()
+    # 过滤打码的 key 或是空值
+    real_url = override_url if override_url else None
+    real_key = override_key if override_key and "****" not in override_key else None
+    
+    if real_url and real_key:
+        base_url = real_url
+        api_key = real_key
+    else:
+        db_url, db_key = await get_ragflow_client()
+        base_url = real_url or db_url
+        api_key = real_key or db_key
+    
+    base_url = base_url.rstrip("/")
     url = f"{base_url}/api/v1/agents"
     
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -229,32 +274,52 @@ async def list_ragflow_agents(page: int = 1, page_size: int = 100):
 async def list_ragflow_datasets(
     page: int = 1, 
     page_size: int = 100,
+    override_url: Optional[str] = None,
+    override_key: Optional[str] = None,
+    include_missing: bool = True,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session)
 ):
     """
     Proxy to list RAGFlow datasets (knowledge bases) with permission filtering.
     """
-    client = RagFlowClient(config_prefix="knowledge_ragflow")
-    metadata_service = KnowledgeBaseMetadataService(db)
-
-    # 1. Check Permissions
     service = PermissionService(db)
     access = await service.get_knowledge_base_access(
         int(user["user_id"]),
         user.get("user_name"),
     )
     is_admin = access["is_admin"]
+    if (override_url or override_key) and not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required for temporary RAGFlow overrides")
+
+    real_url = override_url if override_url else None
+    real_key = override_key if override_key and "****" not in override_key else None
+
+    client = RagFlowClient(
+        config_prefix="knowledge_ragflow",
+        override_url=real_url,
+        override_key=real_key
+    )
+    metadata_service = KnowledgeBaseMetadataService(db)
 
     try:
         items = await client.list_datasets(page=page, page_size=page_size)
-        items = [item for item in items if not item.get("name", "").startswith("meta-")]
+        items = [
+            item for item in items 
+            if not item.get("name", "").startswith("meta-")
+            and "chatbi-example" not in item.get("name", "").lower()
+        ]
 
         if not is_admin:
             allowed = access["accessible_ids"] or set()
             items = [item for item in items if item.get("id") in allowed]
 
-        merged = await metadata_service.merge_with_ragflow(items, include_missing=is_admin)
+        # 结合参数决定是否包含失联知识库（如果临时覆写了 RAGFlow 地址则不包含）
+        real_include_missing = include_missing and is_admin
+        if override_url:
+            real_include_missing = False
+
+        merged = await metadata_service.merge_with_ragflow(items, include_missing=real_include_missing)
         _apply_knowledge_permission_flags(merged, access)
         return {"code": 0, "data": merged, "total": len(merged)}
     except httpx.RequestError as e:
@@ -395,6 +460,8 @@ async def delete_ragflow_datasets(
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     metadata_service = KnowledgeBaseMetadataService(db)
     try:
+        affected_user_ids = await _collect_affected_dataset_permission_user_ids(db, payload.ids)
+
         # 获取当前 RAGFlow 侧的所有有效数据集，以防删除已不存在的知识库时报错
         try:
             ragflow_datasets = await client.list_datasets(page=1, page_size=500)
@@ -417,6 +484,8 @@ async def delete_ragflow_datasets(
                 ResourcePermission.resource_id.in_(payload.ids)
             )
         )
+        if affected_user_ids:
+            await PermissionService(db).invalidate_cached_permissions_for_users(affected_user_ids)
 
         await metadata_service.mark_deleted(payload.ids, user_name=user.get("user_name"))
         await record_knowledge_audit(request, user, "datasets:delete", 200, {
@@ -618,6 +687,8 @@ async def get_dataset_permissions(
     from app.models.user import User
     from sqlalchemy import select
 
+    await require_dataset_write_access(user, db, [dataset_id])
+
     stmt = select(ResourcePermission).where(
         ResourcePermission.resource_type == "dataset",
         ResourcePermission.resource_id == dataset_id,
@@ -649,3 +720,283 @@ async def get_dataset_permissions(
             "roles": granted_roles
         }
     }
+
+
+@router.get("/metrics/summary")
+async def get_ragflow_metrics_summary(
+    start_date: str,
+    end_date: str,
+    user: dict = Depends(get_current_user)
+):
+    """
+    获取指定日期范围内知识库与文档的统计指标汇总。
+    查询前先触发一次 Redis → DB 归并同步，确保当日实时数据已落库；
+    同步操作由分钟级 Redis 锁保护，重复调用不会造成数据重复写入。
+    """
+    from app.services.knowledge_metrics_service import KnowledgeMetricsService
+    await KnowledgeMetricsService.sync_redis_metrics_to_db()
+    data = await KnowledgeMetricsService.get_metrics_summary(start_date, end_date)
+    return {"code": 0, "data": data}
+
+
+async def _build_ragflow_document_file_response(document_id: str):
+    from fastapi.responses import Response
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    try:
+        content, filename, content_type = await client.download_document(document_id)
+        
+        # 强力纠正 Content-Type 防止未知流触发下载
+        import mimetypes
+        guess_type, _ = mimetypes.guess_type(filename)
+        if guess_type:
+            content_type = guess_type
+        if filename.lower().endswith(".pdf"):
+            content_type = "application/pdf"
+            
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(filename)
+        headers = {
+            "Content-Disposition": f'inline; filename="{encoded_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        }
+        return Response(content=content, media_type=content_type, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch document file: {str(e)}")
+
+
+@router.get("/datasets/{dataset_id}/documents/{document_id}/file")
+async def get_ragflow_dataset_document_file(
+    dataset_id: str,
+    document_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    获取文档文件二进制流以供前端 iframe 原地预览；必须具备对应知识库读取权限。
+    """
+    await require_dataset_access(user, db, [dataset_id])
+    return await _build_ragflow_document_file_response(document_id)
+
+
+@router.get("/documents/{document_id}/file", dependencies=[Depends(require_admin)])
+async def get_ragflow_document_file(
+    document_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    旧版无 dataset 上下文的下载入口仅保留给管理员，避免普通用户绕过知识库授权。
+    """
+    return await _build_ragflow_document_file_response(document_id)
+
+
+@router.get("/datasets/{dataset_id}/portal")
+async def get_dataset_portal_recommendations(
+    dataset_id: str,
+    exclude: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    获取指定知识库数据集的侧边栏推荐提问与扩展概要，支持换一批
+    """
+    await require_dataset_access(user, db, [dataset_id])
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    try:
+        # 1. 尝试获取数据集基本信息与文档列表（获取较多文件以支持换一批抽样）
+        docs = await client.list_documents(dataset_id, page_size=100)
+        doc_names = [d.get("name", "") for d in docs if d.get("name")]
+        
+        # 2. 默认快捷兜底问题
+        default_questions = [
+            {"label": "总结该知识库核心内容", "query": "请帮我梳理并总结一下当前选中的知识库里的核心要点 and 背景信息。"},
+            {"label": "列出包含的所有文件", "query": "这个知识库里一共有哪些文档？分别介绍下它们的主题是什么。"},
+            {"label": "检索使用说明", "query": "我想知道当前选中的这些文档里有哪些值得注意的关键条款或常见问题？"}
+        ]
+        
+        # 3. 如果包含文档，尝试调用大模型动态生成更有针对性的问题
+        if doc_names:
+            try:
+                from app.core.llm.client import get_llm_async
+                from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+                from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+                import json
+                import re
+                import random
+                
+                # 随机抽取前 10 个文件名进行推断，使得“换一批”有不同的提示内容
+                sampled_names = list(doc_names)
+                random.shuffle(sampled_names)
+                sampled_names = sampled_names[:10]
+                
+                llm = await get_llm_async(streaming=False, temperature=0.7)
+                if llm:
+                    chat_client = chat_client_from_handle(llm)
+                    doc_names_str = ", ".join(sampled_names)
+                    exclude_instructions = ""
+                    if exclude:
+                        exclude_list = [q.strip() for q in exclude.split(",") if q.strip()]
+                        if exclude_list:
+                            exclude_instructions = f"\n请不要生成与以下已存在问题相近或重复的问题：{json.dumps(exclude_list, ensure_ascii=False)}。"
+                            
+                    prompt = (
+                        f"你是一个专业的知识库导航助手。当前知识库包含以下文档列表：[{doc_names_str}]。\n"
+                        f"请根据这些文件的名字所反映的业务内容，生成 3 个用户最有可能向 AI 提问的高频、专业且具体的问题。\n"
+                        f"要求：\n"
+                        f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“介绍下XX项目的设计架构”而不是“关于架构的设计”）；\n"
+                        f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一内容\", \"问题二内容\", \"问题三内容\"]\n"
+                        f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。{exclude_instructions}"
+                    )
+                    messages = [
+                        RuntimeMessage(
+                            role="system",
+                            content=[RuntimeContentBlock(type="text", text="你是一个严谨 of JSON 问答生成器。")]
+                        ),
+                        RuntimeMessage(
+                            role="user",
+                            content=[RuntimeContentBlock(type="text", text=prompt)]
+                        )
+                    ]
+                    raw_text = await chat_client.generate_text(messages)
+                    raw_text = str(raw_text or "").strip()
+                    match = re.search(r"\[[\s\S]*\]", raw_text)
+                    if match:
+                        parsed_questions = json.loads(match.group())
+                        if isinstance(parsed_questions, list) and len(parsed_questions) >= 3:
+                            # 转换为前端要求的 label + query 格式
+                            dynamic_questions = []
+                            for q in parsed_questions[:3]:
+                                q_str = str(q).strip()
+                                # label 适当截短用于按钮展示
+                                label = q_str[:15] + "..." if len(q_str) > 16 else q_str
+                                dynamic_questions.append({
+                                    "label": label,
+                                    "query": q_str
+                                })
+                            return {"code": 0, "data": {"questions": dynamic_questions}}
+            except Exception as llm_err:
+                # LLM 生成失败时，安静退避到默认问题，不影响 API 的正常可用
+                import logging
+                logging.exception("Failed to generate dynamic questions via LLM in knowledge portal")
+                pass
+                
+        return {"code": 0, "data": {"questions": default_questions}}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate dataset portal info: {str(e)}")
+
+
+@router.get("/datasets/{dataset_id}/documents/{document_id}/portal")
+async def get_document_portal_recommendations(
+    dataset_id: str,
+    document_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    获取指定单个文档的专属推荐提问，支持 Redis 缓存（7天）与首尾切片大纲推断
+    """
+    await require_dataset_access(user, db, [dataset_id])
+    
+    # 1. 尝试从 Redis 缓存中获取
+    from app.core.redis import get_redis
+    redis_client = await get_redis()
+    cache_key = f"ragflow:doc_recommendations:{document_id}"
+    
+    try:
+        cached_data = None
+        if redis_client:
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
+                import json
+                return {"code": 0, "data": json.loads(cached_data)}
+    except Exception as redis_err:
+        import logging
+        logging.warning(f"Failed to read Redis cache for document portal: {str(redis_err)}")
+        
+    client = RagFlowClient(config_prefix="knowledge_ragflow")
+    
+    # 2. 默认兜底提问
+    default_questions = [
+        {"label": "总结文档核心要点", "query": "根据选中的文档，请帮我梳理并详细总结一下它的核心内容与背景信息。"},
+        {"label": "列出核心概念", "query": "这篇文档里有哪些值得注意的关键术语或核心概念？分别代表什么含义？"},
+        {"label": "常见问题解答", "query": "我想知道这篇文档中可能包含的常见问题以及它们对应的解答。"}
+    ]
+    
+    try:
+        # 3. 异步获取文件前 3 个分块内容以作为大纲提取
+        chunks_res = await client.list_document_chunks(dataset_id, document_id, page=1, page_size=3)
+        chunks = chunks_res.get("chunks") or []
+        doc_info = chunks_res.get("doc") or {}
+        filename = doc_info.get("name") or "当前文档"
+        
+        # 4. 如果有分块文本，则结合大模型生成专属问题
+        if chunks:
+            text_snippets = []
+            for c in chunks:
+                content = c.get("content_with_weight") or c.get("content") or ""
+                if content.strip():
+                    text_snippets.append(content.strip()[:400]) # 限制每个片段字数，防止过大
+                    
+            if text_snippets:
+                try:
+                    from app.core.llm.client import get_llm_async
+                    from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
+                    from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
+                    import json
+                    import re
+                    
+                    llm = await get_llm_async(streaming=False, temperature=0.7)
+                    if llm:
+                        chat_client = chat_client_from_handle(llm)
+                        snippets_str = "\n---\n".join(text_snippets)
+                        prompt = (
+                            f"你是一个专业的文档分析助手。当前文件名为《{filename}》，它的核心大纲及前言片段如下：\n"
+                            f"\"\"\"\n{snippets_str}\n\"\"\"\n\n"
+                            f"请根据以上文件片段及文件名，策划生成 3 个针对该文件的、高频、专业且极为具体的提问。\n"
+                            f"要求：\n"
+                            f"1. 每个问题必须是一句完整、具体的提问，不要宽泛（如“如何配置ERP组织架构”而不是“关于配置问题”）；\n"
+                            f"2. 输出格式必须是一个合法的 JSON 数组，如：[\"问题一\", \"问题二\", \"问题三\"]\n"
+                            f"3. 只输出 JSON 数组本身，严禁任何 Markdown 标记包围或多余解释。"
+                        )
+                        messages = [
+                            RuntimeMessage(
+                                role="system",
+                                content=[RuntimeContentBlock(type="text", text="你是一个严谨的 JSON 提问生成器。")]
+                            ),
+                            RuntimeMessage(
+                                role="user",
+                                content=[RuntimeContentBlock(type="text", text=prompt)]
+                            )
+                        ]
+                        raw_text = await chat_client.generate_text(messages)
+                        raw_text = str(raw_text or "").strip()
+                        match = re.search(r"\[[\s\S]*\]", raw_text)
+                        if match:
+                            parsed_questions = json.loads(match.group())
+                            if isinstance(parsed_questions, list) and len(parsed_questions) >= 3:
+                                dynamic_questions = []
+                                for q in parsed_questions[:3]:
+                                    q_str = str(q).strip()
+                                    label = q_str[:30] + "..." if len(q_str) > 31 else q_str
+                                    dynamic_questions.append({
+                                        "label": label,
+                                        "query": q_str
+                                    })
+                                res_payload = {"questions": dynamic_questions}
+                                
+                                # 写入 Redis 缓存（有效期 7 天：604800 秒）
+                                try:
+                                    await redis_client.setex(cache_key, 604800, json.dumps(res_payload, ensure_ascii=False))
+                                except Exception as cache_err:
+                                    import logging
+                                    logging.warning(f"Failed to write Redis cache for document portal: {str(cache_err)}")
+                                    
+                                return {"code": 0, "data": res_payload}
+                except Exception as llm_err:
+                    import logging
+                    logging.exception("Failed to generate dynamic questions for document via LLM")
+                    
+        # 兜底返回
+        return {"code": 0, "data": {"questions": default_questions}}
+    except Exception as e:
+        import logging
+        logging.exception(f"Failed to fetch document recommendations: {str(e)}")
+        return {"code": 0, "data": {"questions": default_questions}}

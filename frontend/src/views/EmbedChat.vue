@@ -324,7 +324,7 @@
         :slash-commands="slashCommands"
         @quick-question="handleQuickQuestion"
         @open-data-portal="openPortalDrawer"
-        @select-knowledge-base="showKnowledgeBaseSelector = true"
+        @select-knowledge-base="openKnowledgePortal"
         @open-workspace="showWorkspaceDrawer = true"
       />
       <!-- Start of Conversation Indicator -->
@@ -1238,7 +1238,87 @@
       :anchor-el="citationPopover.anchorEl"
       @close="closeCitationPopover"
       @copy="(content) => copyToClipboard(content)"
+      @view-original="handleViewOriginal"
     />
+
+    <teleport to="body">
+      <!-- Canvas RAG 原地物理高亮预览抽屉 -->
+      <div
+        class="fixed top-0 right-0 h-full w-[45%] bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 shadow-2xl z-[260] flex flex-col transition-transform duration-300 ease-in-out transform"
+        :class="ragPreviewVisible ? 'translate-x-0' : 'translate-x-full'"
+      >
+        <!-- Header -->
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0 bg-gray-50/50 dark:bg-gray-800/40">
+          <div class="min-w-0">
+            <h3 class="text-sm font-bold text-gray-800 dark:text-gray-100 truncate" :title="ragPreviewDocName">
+              {{ ragPreviewDocName }}
+            </h3>
+            <p class="text-[11px] text-gray-400 mt-0.5">
+              第 {{ ragPreviewPageNo }} 页 RAG 关联原档智能高亮预览
+            </p>
+          </div>
+          <button
+            @click="ragPreviewVisible = false"
+            class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
+            title="关闭预览"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- Content Area -->
+        <div class="flex-1 min-h-0 flex flex-col divide-y divide-gray-100 dark:divide-gray-800">
+          <!-- Top: High fidelity PDF/iframe viewer -->
+          <div class="flex-1 min-h-0 bg-gray-100/30 relative flex flex-col items-center justify-center">
+            <!-- Friendly Tip for Office Documents -->
+            <div v-if="isOfficeDocument" class="p-8 text-center max-w-sm space-y-4 flex flex-col items-center">
+              <div class="inline-flex p-4 bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 rounded-full">
+                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-gray-800 dark:text-gray-100">Office 文档暂不支持在线预览</h4>
+                <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                  由于您的文件是 Word/Excel 类型，系统已自动拉起浏览器进行本地下载。若未开始，可点击下方按钮重新发起下载。
+                </p>
+              </div>
+              <button
+                @click="downloadOriginalFile"
+                class="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-blue-700 active:scale-95 transition-all"
+              >
+                重新下载原档
+              </button>
+            </div>
+
+            <iframe
+              v-else-if="ragPreviewVisible && ragPreviewFileUrl"
+              :src="`${ragPreviewFileUrl}#page=${ragPreviewPageNo}`"
+              class="w-full h-full border-none"
+            />
+            <div v-else class="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
+              正在加载文档预览...
+            </div>
+          </div>
+
+          <!-- Bottom: Referenced citation snippet card -->
+          <div class="h-44 flex-shrink-0 flex flex-col bg-white dark:bg-gray-900 p-4 border-t border-gray-100 dark:divide-gray-800">
+            <h4 class="text-xs font-bold text-gray-700 dark:text-gray-200 tracking-wider uppercase mb-2 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              被引用原文段落
+            </h4>
+            <div
+              class="flex-1 min-h-0 overflow-y-auto p-3 bg-blue-50/30 dark:bg-blue-900/5 border border-blue-100/50 dark:border-blue-900/10 rounded-xl text-xs text-gray-600 dark:text-gray-300 leading-relaxed custom-table-render scrollbar-thin"
+              v-html="ragPreviewContent"
+            />
+          </div>
+        </div>
+      </div>
+    </teleport>
 
     <!-- Input Area -->
     <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 relative z-20">
@@ -1274,7 +1354,7 @@
         @switch-mode="handleSwitchMode"
         @reorder-commands="handleReorderCommands"
         @select-skill="openSkillSelector"
-        @select-knowledge-base="showKnowledgeBaseSelector = true"
+        @select-knowledge-base="openKnowledgePortal"
         @select-local-fs="showWorkspaceDrawer = true"
         @select-memory="openMemorySelector"
         @system-command="handleSystemCommand"
@@ -1296,11 +1376,29 @@
     />
     </div> <!-- Closing div for .flex-1.flex.flex-col -->
 
-    <RagFlowResourceSelector
-      v-model="showKnowledgeBaseSelector"
-      type="dataset"
-      :initial-selected="getSelectedKnowledgeBaseIds()"
-      @select="handleSelectKnowledgeBase"
+    <KnowledgePortalDrawer
+      v-model="showKnowledgePortal"
+      v-model:pinned="knowledgePinned"
+      v-model:keep-open-on-question="knowledgeKeepOpenOnQuestion"
+      v-model:hallucination-check="hallucinationCheckEnabled"
+      v-model:similarity-threshold="knowledgeSimilarityThreshold"
+      v-model:vector-weight="knowledgeVectorWeight"
+      v-model:metadata-top-k="knowledgeMetadataTopK"
+      :generated-at="knowledgeGeneratedAt"
+      :datasets="knowledgeDatasets"
+      :active-dataset-ids="activeDatasetIds"
+      :recommendations="datasetRecommendations"
+      :pinned-dataset-ids="pinnedDatasetIds"
+      :dataset-documents="datasetDocuments"
+      :document-recommendations="documentRecommendations"
+      :loading="loadingKnowledgeDatasets"
+      @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
+      @load-recommendations="fetchRecommendations"
+      @quick-question="handleQuickQuestion"
+      @refresh="fetchDatasets"
+      @toggle-pin="toggleDatasetPinned"
+      @load-documents="fetchDatasetDocuments"
+      @load-document-recommendations="fetchDocumentRecommendations"
     />
 
     <WorkspaceBrowserDrawer
@@ -2343,6 +2441,9 @@ import {
   DATASET_PORTAL_SLASH_COMMAND,
   DATASET_PORTAL_SYSTEM_COMMAND_ID,
   isDatasetPortalSlashCommand,
+  KNOWLEDGE_PORTAL_SLASH_COMMAND,
+  KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID,
+  isKnowledgePortalSlashCommand,
 } from "@/constants/datasetPortalCommand";
 import {
   WORKSPACE_SLASH_COMMAND,
@@ -2365,6 +2466,8 @@ const showToast = toast.showToast;
 import MessageRenderer from "@/components/MessageRenderer.vue";
 import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
+import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
+import { useKnowledgePortal } from "@/composables/useKnowledgePortal";
 import CitationPopover from "@/components/CitationPopover.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
 import ConfirmModal from "@/components/ConfirmModal.vue";
@@ -2373,7 +2476,6 @@ import ChatSettings from "@/components/embed/ChatSettings.vue";
 import ChatCanvas from "@/components/embed/ChatCanvas.vue";
 import ChatInput from "@/components/embed/ChatInput.vue";
 import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
-import RagFlowResourceSelector from "@/components/RagFlowResourceSelector.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
 import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
@@ -2702,7 +2804,6 @@ const hideEmbedLikeDislike = computed(() => {
 });
 const chatInputRef = ref<any>(null);
 const userInput = ref("");
-const showKnowledgeBaseSelector = ref(false);
 const showWorkspaceDrawer = ref(false);
 const workspaceDrawerRef = ref<{ refreshDirectory: (path?: string) => Promise<void> } | null>(null);
 
@@ -2820,11 +2921,6 @@ const statsSummary = computed(() => {
   };
 });
 
-const getSelectedKnowledgeBaseIds = () => {
-  const attached = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "knowledge_base");
-  return attached?.url ? String(attached.url).split(",").filter(Boolean) : [];
-};
-
 /** 知识库问答专家（与路由 agent_name=knowledge-base 对齐） */
 const resolveKnowledgeExpertAgent = () => {
   return allowedAgents.value.find((a) => {
@@ -2861,41 +2957,6 @@ const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
     : `本次为知识库查询，须优先选择知识库专家（agent_name: knowledge-base）；自动路由时不得分发给 ChatBI、运维或其他专家。`;
 
   return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
-};
-
-const handleSelectKnowledgeBase = async (val: string | string[]) => {
-  const ids = (Array.isArray(val) ? val : [val]).map((id) => String(id).trim()).filter(Boolean);
-  if (!chatInputRef.value) {
-    showKnowledgeBaseSelector.value = false;
-    return;
-  }
-
-  const files = chatInputRef.value.uploadedFiles || [];
-  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "knowledge_base");
-
-  if (ids.length > 0) {
-    if (!hasFetchedAgents.value) {
-      await fetchAllowedAgents(true);
-    }
-    const kbExpert = resolveKnowledgeExpertAgent();
-    if (kbExpert) {
-      config.expertAgentId = kbExpert.id;
-      config.routingMode = "expert";
-      saveRoutingSettings();
-      config.overrideAgentId = "";
-      showAutoRoutingHint.value = false;
-    }
-
-    chatInputRef.value.uploadedFiles.push({
-      type: "knowledge_base",
-      url: ids.join(","),
-      filename: `已选择 ${ids.length} 个知识库`,
-      size: 0,
-      ext: "knowledge_base",
-    });
-  }
-
-  showKnowledgeBaseSelector.value = false;
 };
 
 const handleSelectLocalFs = (payload: { type: 'local_file' | 'local_dir'; path: string; name: string; size: number; ext: string }) => {
@@ -3345,7 +3406,8 @@ const resetStallTimer = () => {
 const SYSTEM_SLASH_COMMANDS = [
   { id: "sys_clear", command: "/new", label: "💬 新会话", sort_order: -40 },
   { id: "sys_history", command: "/history", label: "🕒 历史", sort_order: -39 },
-  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📚 数据门户", sort_order: -35 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "📊 数据门户", sort_order: -35 },
+  { id: KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID, command: KNOWLEDGE_PORTAL_SLASH_COMMAND, label: "📚 知识库中心", sort_order: -34.5 },
   { id: WORKSPACE_SYSTEM_COMMAND_ID, command: WORKSPACE_SLASH_COMMAND, label: "💻 工作空间", sort_order: -34 },
   { id: "sys_quota", command: "/quota", label: "📊 我的额度", sort_order: -18 },
   { id: "sys_settings", command: "/settings", label: "⚙️ 设置", sort_order: -15 },
@@ -5206,6 +5268,11 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     showWorkspaceDrawer.value = true;
     return true;
   }
+  if (isKnowledgePortalSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    await openKnowledgePortal();
+    return true;
+  }
   if (normalizedCmd === "/switch_to_auto" || normalizedCmd === "/switch_agent_auto") {
     userInput.value = "";
     switchToAuto();
@@ -5482,6 +5549,54 @@ const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLEle
   }
 };
 
+const ragPreviewVisible = ref(false);
+const ragPreviewDatasetId = ref("");
+const ragPreviewDocId = ref("");
+const ragPreviewDocName = ref("");
+const ragPreviewPageNo = ref<string | number>(1);
+const ragPreviewContent = ref("");
+
+const ragPreviewFileUrl = computed(() => {
+  if (!ragPreviewDatasetId.value || !ragPreviewDocId.value) return "";
+  const datasetId = encodeURIComponent(ragPreviewDatasetId.value);
+  const docId = encodeURIComponent(ragPreviewDocId.value);
+  return `/api/portal/ragflow/datasets/${datasetId}/documents/${docId}/file`;
+});
+
+const isOfficeDocument = computed(() => {
+  const name = ragPreviewDocName.value.toLowerCase();
+  return name.endsWith(".doc") || name.endsWith(".docx") || 
+         name.endsWith(".xls") || name.endsWith(".xlsx") || 
+         name.endsWith(".ppt") || name.endsWith(".pptx");
+});
+
+const downloadOriginalFile = () => {
+  if (ragPreviewFileUrl.value) {
+    const link = document.createElement("a");
+    link.href = ragPreviewFileUrl.value;
+    link.download = ragPreviewDocName.value;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+};
+
+const handleViewOriginal = (citation: any) => {
+  closeCitationPopover();
+  if (citation.source_type === "web") {
+    if (citation.link) {
+      window.open(citation.link, "_blank");
+    }
+  } else {
+    ragPreviewDatasetId.value = citation.dataset_id || "";
+    ragPreviewDocId.value = citation.doc_id || "";
+    ragPreviewDocName.value = citation.doc_name || "文件预览";
+    ragPreviewPageNo.value = citation.page_no || 1;
+    ragPreviewContent.value = citation.content || "";
+    ragPreviewVisible.value = Boolean(ragPreviewDatasetId.value && ragPreviewDocId.value);
+  }
+};
+
 const handleQuickQuestion = async (content: string, action: "send" | "fill" = "send") => {
   if (!content) return;
   if (action === "send" && isProcessing.value) return;
@@ -5550,9 +5665,88 @@ const {
   },
 });
 
-const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill") => {
+const {
+  showKnowledgePortal,
+  knowledgePinned,
+  knowledgeKeepOpenOnQuestion,
+  hallucinationCheckEnabled,
+  knowledgeSimilarityThreshold,
+  knowledgeVectorWeight,
+  knowledgeMetadataTopK,
+  knowledgeGeneratedAt,
+  datasets: knowledgeDatasets,
+  loadingDatasets: loadingKnowledgeDatasets,
+  activeDatasetIds,
+  datasetRecommendations,
+  pinnedDatasetIds,
+  datasetDocuments,
+  documentRecommendations,
+  toggleDatasetPinned,
+  fetchDatasetDocuments,
+  fetchDocumentRecommendations,
+  fetchDatasets,
+  fetchRecommendations,
+  syncActiveDatasetsFromInput,
+  toggleDatasetActive,
+  openKnowledgePortal: rawOpenKnowledgePortal,
+  closeKnowledgePortal
+} = useKnowledgePortal({
+  showToast,
+  onOpenAnotherPortal: () => {
+    closePortalDrawer();
+  }
+});
+
+const openKnowledgePortal = async () => {
+  await rawOpenKnowledgePortal();
+  const kbExpert = resolveKnowledgeExpertAgent();
+  if (kbExpert) {
+    config.expertAgentId = kbExpert.id;
+    config.routingMode = "expert";
+    saveRoutingSettings();
+    config.overrideAgentId = "";
+    showAutoRoutingHint.value = false;
+  }
+};
+
+watch(showPortalDrawer, (val) => {
+  if (val) {
+    closeKnowledgePortal();
+  } else {
+    stopPortalLoadingTips();
+  }
+});
+
+watch(showKnowledgePortal, (val) => {
+  if (!val) {
+    // 只有在未打开数据门户的情况下，关闭知识库中心才退回到自动路由
+    if (!showPortalDrawer.value) {
+      config.routingMode = "auto";
+      config.expertAgentId = "";
+      saveRoutingSettings();
+      showAutoRoutingHint.value = true;
+      setTimeout(() => {
+        showAutoRoutingHint.value = false;
+      }, 3000);
+    }
+  }
+});
+
+// 监听上传文件的变更，保持知识库激活状态在抽屉卡片里是最新同步的
+watch(
+  () => chatInputRef.value?.uploadedFiles,
+  () => {
+    syncActiveDatasetsFromInput(chatInputRef.value);
+  },
+  { deep: true }
+);
+
+
+
+const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill" | "knowledge") => {
   let rem = 0;
   if (exclude !== "portal" && showPortalDrawer.value && portalPinned.value) rem += 28;
+  if (exclude !== "knowledge" && showKnowledgePortal.value && knowledgePinned.value) rem += 28;
   if (exclude !== "workspace" && showWorkspaceDrawer.value && workspacePinned.value) rem += 28;
   if (exclude !== "memory" && showMemoryDrawer.value && memoryPinned.value) rem += 28;
   if (exclude !== "skill" && showSkillDrawer.value && skillPinned.value) rem += 28;
@@ -5568,9 +5762,10 @@ const saveReportModalOverlayStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;
   return { right: rem > 0 ? `${rem}rem` : "0" };
 });
-const saveReportModalOverlayClass = computed(() =>
-  showPortalDrawer.value && portalPinned.value ? 'right-[28rem]' : 'right-0'
-);
+const saveReportModalOverlayClass = computed(() => {
+  const isPinned = (showPortalDrawer.value && portalPinned.value) || (showKnowledgePortal.value && knowledgePinned.value);
+  return isPinned ? 'right-[28rem]' : 'right-0';
+});
 
 const pinnedDrawerMarginStyle = computed(() => {
   const rem = pinnedDrawerRightRem.value;
@@ -5590,10 +5785,6 @@ const memoryPinnedDockClass = computed(() => {
 const skillPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("skill");
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
-});
-
-watch(showPortalDrawer, (val) => {
-  if (!val) stopPortalLoadingTips();
 });
 
 const refreshDatasetMenuNavigation = async (msg: Message) => {
@@ -6045,6 +6236,10 @@ const sendMessage = async () => {
         model: config.overrideModel || undefined,
         enable_sql_plan: config.enableSqlPlan,
         ignore_ltm: ltmIgnoredVal,
+        hallucination_check: hallucinationCheckEnabled.value || undefined,
+        knowledge_ragflow_similarity_threshold: knowledgeSimilarityThreshold.value,
+        knowledge_ragflow_vector_weight: knowledgeVectorWeight.value,
+        knowledge_ragflow_metadata_top_k: knowledgeMetadataTopK.value,
       },
       permission_options: {
         approval_mode: config.approvalMode || "ask",
@@ -6777,5 +6972,57 @@ onUnmounted(() => {
   100% {
     transform: translateX(100%);
   }
+}
+
+.custom-table-render :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  background-color: #ffffff;
+}
+.dark .custom-table-render :deep(table) {
+  background-color: #1f2937;
+}
+.custom-table-render :deep(th),
+.custom-table-render :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  text-align: left;
+  word-break: break-all;
+}
+.dark .custom-table-render :deep(th),
+.dark .custom-table-render :deep(td) {
+  border-color: #374151;
+}
+.custom-table-render :deep(th) {
+  background-color: #f3f4f6;
+  font-weight: 700;
+  color: #1f2937;
+}
+.dark .custom-table-render :deep(th) {
+  background-color: #374151;
+  color: #f9fafb;
+}
+.custom-table-render :deep(tr:nth-child(even)) {
+  background-color: #f9fafb;
+}
+.dark .custom-table-render :deep(tr:nth-child(even)) {
+  background-color: rgba(31, 41, 55, 0.4);
+}
+.custom-table-render :deep(caption) {
+  font-size: 10px;
+  color: #6b7280;
+  padding: 6px 4px;
+  font-weight: 700;
+  text-align: left;
+  background-color: rgba(243, 244, 246, 0.5);
+  border-bottom: 2px solid #e5e7eb;
+}
+.dark .custom-table-render :deep(caption) {
+  color: #9ca3af;
+  background-color: rgba(55, 65, 81, 0.5);
+  border-color: #4b5563;
 }
 </style>

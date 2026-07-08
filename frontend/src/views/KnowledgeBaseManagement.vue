@@ -271,6 +271,13 @@ const fetchDocumentsForDataset = async (dsId: string) => {
     const docs = apiData(response)
     documentsMap.value[dsId] = docs
 
+    // 更新对应知识库的文档数量计数
+    const dataset = datasets.value.find(d => (d.ragflow_dataset_id || d.id) === dsId)
+    if (dataset) {
+      dataset.doc_count = docs.length
+      dataset.document_count = docs.length
+    }
+
     // 自动更新并同步清理 parsingDocIds
     const nextParsing = { ...parsingDocIds.value }
     let updated = false

@@ -40,23 +40,23 @@ class MetadataRagService:
     """
 
     @staticmethod
-    def _is_service_unavailable(e: Exception) -> bool:
+    def _is_service_unavailable(e: Exception | str) -> bool:
         """判断错误是否属于「服务级不可用」（应立即终止，而非重试/剔除坏 ID）。
 
-        通过 httpx 强类型异常与状态码做精准拦截，并用字符串做模糊匹配兜底。
+        支持传入 Exception 实例或 String 报错文本。通过 httpx 强类型异常与状态码做精准拦截，并用字符串做模糊匹配兜底。
         """
-        # 1. 强类型判定：如果属于底层网络连接、断连或超时错误，直接判定不可用
-        if isinstance(e, (httpx.TimeoutException, httpx.NetworkError)):
-            return True
-
-        # 2. 如果是带状态码的 HTTP 错误，判断是否为 5xx 故障
-        if isinstance(e, httpx.HTTPStatusError):
-            if e.response.status_code in (502, 503, 504):
+        # 1. 强类型判定（仅对异常实例有效）
+        if isinstance(e, Exception):
+            if isinstance(e, (httpx.TimeoutException, httpx.NetworkError)):
                 return True
 
-        # 3. 兜底字串模糊匹配
-        err_msg = str(e)
-        m = (err_msg or "").lower()
+            if isinstance(e, httpx.HTTPStatusError):
+                if e.response.status_code in (502, 503, 504):
+                    return True
+
+        # 2. 兜底字串模糊匹配
+        err_msg = str(e) if isinstance(e, Exception) else str(e or "")
+        m = err_msg.lower()
         return any(hint in m for hint in _SERVICE_UNAVAILABLE_HINTS)
 
     @staticmethod
