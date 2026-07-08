@@ -1590,10 +1590,17 @@ onMounted(async () => {
                             <span v-else class="truncate text-xs font-semibold text-gray-700">{{ fName }}</span>
                           </div>
 
+                          <!-- 文件夹文件数量计数徽章 -->
+                          <span 
+                            class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 font-mono scale-90 group-hover/folder:hidden shrink-0"
+                          >
+                            {{ dataset.local_metadata?.extra_config?.folder_structure?.[fName]?.length || 0 }}
+                          </span>
+
                           <!-- 文件夹重命名/删除按钮 -->
                           <div 
                             v-if="!isReadOnlyDataset(dataset)"
-                            class="hidden group-hover/folder:flex items-center gap-1 bg-inherit pl-2 absolute right-2 top-1/2 -translate-y-1/2"
+                            class="hidden group-hover/folder:flex items-center gap-1 bg-inherit pl-2 z-30"
                             @click.stop
                           >
                             <button 
@@ -1653,7 +1660,7 @@ onMounted(async () => {
                                   }"
                                 ></span>
                                 
-                                <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 absolute right-0 top-1/2 -translate-y-1/2 gap-1 z-30">
+                                <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 gap-1 z-30">
                                   <!-- 移动到文件夹按钮 -->
                                   <div class="relative">
                                     <button 
@@ -1744,7 +1751,7 @@ onMounted(async () => {
                           }"
                         ></span>
 
-                        <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 absolute right-0 top-1/2 -translate-y-1/2 gap-1 z-30">
+                        <div class="hidden group-hover/doc:flex items-center bg-inherit pl-2 gap-1 z-30">
                           <!-- 移动至文件夹按钮 -->
                           <div 
                             v-if="dataset.local_metadata?.extra_config?.folder_structure && Object.keys(dataset.local_metadata.extra_config.folder_structure).length"
