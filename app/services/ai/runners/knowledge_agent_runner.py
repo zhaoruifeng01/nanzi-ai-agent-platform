@@ -598,37 +598,41 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                     if redis:
                         stripped = prefetched_knowledge_output.strip()
                         if not stripped.startswith("{"):
-                            raise ValueError("Output is not a valid JSON string, skip metrics")
-                        parsed = json.loads(stripped)
-                        citations = parsed.get("citations", [])
-                        citation_ids = set(re.findall(r"\[ID:\s*(\d+)\]", full_text))
-                        
-                        current_date = time.strftime("%Y-%m-%d")
-                        key_prefix = f"kb:citation:stats:{current_date}"
-                        
-                        for idx, c in enumerate(citations, 1):
-                            ref_id = str(idx)
-                            source_type = c.get("source_type", "knowledge")
-                            is_cited = ref_id in citation_ids
+                            # 非 JSON 格式（如纯文本错误信息），跳过埋点，不记错误
+                            logger.debug(
+                                "[KnowledgeAgentRunner] Knowledge output is not JSON, skipping metrics."
+                            )
+                        else:
+                            parsed = json.loads(stripped)
+                            citations = parsed.get("citations", [])
+                            citation_ids = set(re.findall(r"\[ID:\s*(\d+)\]", full_text))
                             
-                            # 1. 统计知识库维度
-                            if source_type == "knowledge":
-                                ds_id = c.get("dataset_id") or "default"
-                                await redis.hincrby(f"{key_prefix}:dataset:search", ds_id, 1)
-                                if is_cited:
-                                    await redis.hincrby(f"{key_prefix}:dataset:citation", ds_id, 1)
-                                    
-                                # 2. 统计文档维度
-                                doc_id = c.get("doc_id")
-                                doc_name = c.get("doc_name") or "Unknown Document"
-                                if doc_id:
-                                    # 缓存 doc_id 到 doc_name 映射供同步归并落库使用
-                                    await redis.hset("kb:citation:doc_names", doc_id, doc_name)
-                                    await redis.hincrby(f"{key_prefix}:document:search", doc_id, 1)
+                            current_date = time.strftime("%Y-%m-%d")
+                            key_prefix = f"kb:citation:stats:{current_date}"
+                            
+                            for idx, c in enumerate(citations, 1):
+                                ref_id = str(idx)
+                                source_type = c.get("source_type", "knowledge")
+                                is_cited = ref_id in citation_ids
+                                
+                                # 1. 统计知识库维度
+                                if source_type == "knowledge":
+                                    ds_id = c.get("dataset_id") or "default"
+                                    await redis.hincrby(f"{key_prefix}:dataset:search", ds_id, 1)
                                     if is_cited:
-                                        await redis.hincrby(f"{key_prefix}:document:citation", doc_id, 1)
+                                        await redis.hincrby(f"{key_prefix}:dataset:citation", ds_id, 1)
+                                        
+                                    # 2. 统计文档维度
+                                    doc_id = c.get("doc_id")
+                                    doc_name = c.get("doc_name") or "Unknown Document"
+                                    if doc_id:
+                                        # 缓存 doc_id 到 doc_name 映射供同步归并落库使用
+                                        await redis.hset("kb:citation:doc_names", doc_id, doc_name)
+                                        await redis.hincrby(f"{key_prefix}:document:search", doc_id, 1)
+                                        if is_cited:
+                                            await redis.hincrby(f"{key_prefix}:document:citation", doc_id, 1)
                 except Exception as metric_err:
-                    logger.error(f"[KnowledgeAgentRunner] Redis metrics recording failed: {metric_err}", exc_info=True)
+                    logger.warning(f"[KnowledgeAgentRunner] Redis metrics recording failed: {metric_err}")
 
             for chunk in chunks_buffer:
                 yield chunk
