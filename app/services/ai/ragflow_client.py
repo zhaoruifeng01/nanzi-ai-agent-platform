@@ -38,17 +38,33 @@ class RagFlowClient:
         if not self.base_url or not self.api_key:
             raise ValueError(f"RAGFlow configuration ({self.config_prefix}_api_url, {self.config_prefix}_api_key) is missing.")
 
+    def _translate_error(self, error_msg: str, action: str) -> str:
+        """Translate raw RAGFlow error messages into friendly Chinese tips"""
+        msg = (error_msg or "").strip()
+        if "lacks permission for datasets" in msg:
+            return "RAGFlow 权限拒绝：当前配置的 API Key 无权操作该知识库。该知识库可能属于其他用户或团队空间，请联系管理员确认授权状态，或直接在 RAGFlow 控制台操作。"
+        if "lacks permission for documents" in msg:
+            return "RAGFlow 权限拒绝：当前配置的 API Key 无权操作该文档。该文档可能属于其他用户，请确认权限。"
+        if "Dataset not found" in msg or "dataset not found" in msg:
+            return "RAGFlow 侧未找到该知识库，可能已被物理删除。"
+        if "Document not found" in msg or "document not found" in msg:
+            return "RAGFlow 侧未找到该文档，可能已被物理删除。"
+        return f"RAGFlow {action} 错误: {msg}"
+
     async def _handle_response(self, response: httpx.Response, action: str) -> Dict[str, Any]:
         """Centralized response handling"""
         if response.status_code != 200:
             detail = response.text.strip() or f"HTTP {response.status_code} {response.reason_phrase}"
             logger.error(f"[RAGFlow] {action} Failed ({response.status_code}): {detail}")
-            raise Exception(f"RAGFlow {action} failed: {detail}")
+            friendly_detail = self._translate_error(detail, action)
+            raise Exception(friendly_detail)
         
         res_json = response.json()
         if res_json.get("code") != 0:
-            logger.error(f"[RAGFlow] {action} Service Error: {res_json.get('message')}")
-            raise Exception(f"RAGFlow {action} error: {res_json.get('message')}")
+            msg = res_json.get('message') or ""
+            logger.error(f"[RAGFlow] {action} Service Error: {msg}")
+            friendly_detail = self._translate_error(msg, action)
+            raise Exception(friendly_detail)
         
         return res_json.get("data", {})
 

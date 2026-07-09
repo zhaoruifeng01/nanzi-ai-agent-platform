@@ -131,3 +131,32 @@ async def test_handle_response_includes_status_when_error_body_empty(ragflow_cli
 
     with pytest.raises(Exception, match="HTTP 502"):
         await ragflow_client._handle_response(response, "List Datasets")
+
+
+@pytest.mark.asyncio
+async def test_handle_response_error_translation_permission_denied(ragflow_client):
+    """测试 _handle_response 正确翻译 RAGFlow 的缺乏权限错误"""
+    response = httpx.Response(200, json={
+        "code": 100,
+        "message": "User '3e7c726dead811f0bbc70242ac120006' lacks permission for datasets: '188b62a2eb7611f093130242ac120006'"
+    })
+
+    with pytest.raises(Exception) as excinfo:
+        await ragflow_client._handle_response(response, "Delete Datasets")
+    
+    assert "RAGFlow 权限拒绝" in str(excinfo.value)
+    assert "无权操作该知识库" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_handle_response_error_translation_not_found(ragflow_client):
+    """测试 _handle_response 正确翻译 RAGFlow 的数据集未找到错误"""
+    response = httpx.Response(200, json={
+        "code": 404,
+        "message": "Dataset not found: 'ds_123'"
+    })
+
+    with pytest.raises(Exception) as excinfo:
+        await ragflow_client._handle_response(response, "Delete Datasets")
+    
+    assert "RAGFlow 侧未找到该知识库" in str(excinfo.value)
