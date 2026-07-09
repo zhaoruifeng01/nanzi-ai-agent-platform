@@ -507,6 +507,9 @@ class AgentService:
             r_relation = getattr(route_details, "relation_to_previous", "unknown")
             r_action_type = getattr(route_details, "user_action_type", "unknown")
             r_intent_info = getattr(route_details, "intent_info", None)
+            r_request_source = getattr(route_details, "request_source", None)
+            r_request_capability = getattr(route_details, "request_capability", None)
+            r_request_reasoning = getattr(route_details, "request_reasoning", None)
 
             trace_buffer.append(AgentExecutionStep(
                 step_number=0,
@@ -525,6 +528,9 @@ class AgentService:
                     "semantic_intent": getattr(r_intent_info, "intent", None),
                     "semantic_confidence": getattr(r_intent_info, "confidence", None),
                     "semantic_reasoning": getattr(r_intent_info, "reasoning", None),
+                    "request_source": r_request_source,
+                    "request_capability": r_request_capability,
+                    "request_reasoning": r_request_reasoning,
                 },
                 status="success",
                 execution_time_ms=route_elapsed_ms
@@ -976,6 +982,9 @@ class AgentService:
                 r_relation = getattr(route_details, "relation_to_previous", "unknown")
                 r_action_type = getattr(route_details, "user_action_type", "unknown")
                 route_intent_evidence = getattr(route_details, "intent_info", None)
+                r_request_source = getattr(route_details, "request_source", None)
+                r_request_capability = getattr(route_details, "request_capability", None)
+                r_request_reasoning = getattr(route_details, "request_reasoning", None)
                 route_hints = {
                     "turn_labels": r_turn_labels,
                     "relation_to_previous": r_relation,
@@ -983,6 +992,9 @@ class AgentService:
                     "semantic_intent": getattr(route_intent_evidence, "intent", None),
                     "semantic_confidence": getattr(route_intent_evidence, "confidence", None),
                     "semantic_reasoning": getattr(route_intent_evidence, "reasoning", None),
+                    "request_source": r_request_source,
+                    "request_capability": r_request_capability,
+                    "request_reasoning": r_request_reasoning,
                 }
                 yield {
                     "type": "router_log",
@@ -995,6 +1007,9 @@ class AgentService:
                     "semantic_intent": getattr(route_intent_evidence, "intent", None),
                     "semantic_confidence": getattr(route_intent_evidence, "confidence", None),
                     "semantic_reasoning": getattr(route_intent_evidence, "reasoning", None),
+                    "request_source": r_request_source,
+                    "request_capability": r_request_capability,
+                    "request_reasoning": r_request_reasoning,
                     "status": "success",
                     "execution_time_ms": route_elapsed_ms
                 }

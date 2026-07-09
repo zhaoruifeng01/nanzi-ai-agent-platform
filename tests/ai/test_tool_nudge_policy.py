@@ -77,11 +77,26 @@ def test_sub_agent_call_nudge_for_data_query():
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
         _tool("exec_command", "在服务器上执行 shell 命令")
     ]
-    nudge = resolve_tool_nudge("帮我查一下设备资产列表", tools)
+    nudge = resolve_tool_nudge(
+        "帮我查一下设备资产列表",
+        tools,
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.94,
+    )
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95
     assert "chat-bi" in nudge.message
+
+
+def test_sub_agent_call_is_not_selected_by_generic_tool_relevance_without_intent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge("帮我查一下设备资产列表", tools)
+
+    assert nudge is None
 
 
 @pytest.mark.parametrize(
@@ -167,6 +182,8 @@ def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
         tools,
         available_sub_agent_names={"biz-data-agent", "knowledge-base"},
         sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.94,
     )
 
     assert nudge is not None
@@ -320,6 +337,91 @@ def test_generic_data_intent_without_business_signal_does_not_force_data_sub_age
     assert nudge is None
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "苹果手机销量趋势",
+        "帮我统计一下这段文本字数",
+        "Python list 是什么意思",
+    ],
+)
+def test_general_semantic_query_does_not_delegate_by_keywords_only(query):
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        query,
+        tools,
+        available_sub_agent_names={"chat-bi", "knowledge-base"},
+        sub_agent_targets_by_capability={
+            "data_query": "chat-bi",
+            "knowledge_base": "knowledge-base",
+        },
+        semantic_intent=IntentType.GENERAL,
+        semantic_confidence=0.95,
+    )
+
+    assert nudge is None
+
+
+def test_knowledge_base_semantic_query_still_forces_knowledge_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查一下设备运维规范",
+        tools,
+        available_sub_agent_names={"knowledge-base"},
+        sub_agent_targets_by_capability={"knowledge_base": "knowledge-base"},
+        semantic_intent=IntentType.KNOWLEDGE_BASE,
+        semantic_confidence=0.92,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='knowledge-base'" in nudge.message
+    assert nudge.should_force_first_call is True
+
+
+def test_general_previous_web_info_visualization_does_not_force_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "能不能把刚刚的信息可视化一下呢",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.GENERAL,
+        semantic_confidence=0.95,
+    )
+
+    assert nudge is None
+
+
+def test_data_query_previous_result_visualization_still_forces_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "把刚才的结果画成柱状图",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.93,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='biz-data-agent'" in nudge.message
+    assert nudge.should_force_first_call is True
+
+
 def test_runtime_diagnostic_data_intent_prefers_shell_tool():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
@@ -347,6 +449,8 @@ def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():
         "帮我查一下设备资产列表",
         tools,
         available_sub_agent_names={"knowledge-base"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.94,
     )
     assert nudge is None
 
@@ -355,7 +459,12 @@ def test_sub_agent_call_nudge_for_knowledge_query():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
     ]
-    nudge = resolve_tool_nudge("我想查一下设备运维规范和操作指引", tools)
+    nudge = resolve_tool_nudge(
+        "我想查一下设备运维规范和操作指引",
+        tools,
+        semantic_intent=IntentType.KNOWLEDGE_BASE,
+        semantic_confidence=0.92,
+    )
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95

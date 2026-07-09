@@ -93,6 +93,19 @@ def test_general_boundary_queries_short_circuit_to_general(query):
     assert result.intent == IntentType.GENERAL
 
 
+def test_platform_self_service_query_stays_general_even_with_knowledge_binding():
+    result = classify_turn_heuristic(
+        "那如何安装 skills 技能呢",
+        can_do_data=False,
+        has_last_data_result=False,
+        knowledge_dataset_ids=["4525d66cec7111f0a3d00242ac120006"],
+        agent_has_knowledge_binding=True,
+    )
+    assert result is not None
+    assert result.turn_type == TurnType.GENERAL
+    assert result.intent == IntentType.GENERAL
+
+
 def test_internal_sop_still_classified_as_knowledge():
     result = classify_turn_heuristic(
         "高温告警的标准处理流程是什么",
@@ -134,7 +147,7 @@ def test_classify_turn_from_intent_web_search_overrides_knowledge_without_bindin
     assert result.intent == IntentType.GENERAL
 
 
-def test_classify_turn_from_intent_keeps_knowledge_when_bound():
+def test_classify_turn_from_intent_web_search_overrides_knowledge_even_when_bound():
     intent = IntentResponse(
         intent=IntentType.KNOWLEDGE_BASE,
         confidence=0.8,
@@ -147,7 +160,25 @@ def test_classify_turn_from_intent_keeps_knowledge_when_bound():
         user_query="搜索一下最新信息",
         has_knowledge_binding=True,
     )
-    assert result.turn_type == TurnType.KNOWLEDGE
+    assert result.turn_type == TurnType.GENERAL
+    assert result.intent == IntentType.GENERAL
+
+
+def test_classify_turn_from_intent_platform_self_service_overrides_knowledge():
+    intent = IntentResponse(
+        intent=IntentType.KNOWLEDGE_BASE,
+        confidence=0.88,
+        reasoning="用户询问安装技能的操作流程或方法",
+        entities=["skills"],
+    )
+    result = classify_turn_from_intent(
+        intent,
+        can_do_data=False,
+        user_query="那如何安装 skills 技能呢",
+        has_knowledge_binding=True,
+    )
+    assert result.turn_type == TurnType.GENERAL
+    assert result.intent == IntentType.GENERAL
 
 
 @pytest.mark.parametrize(

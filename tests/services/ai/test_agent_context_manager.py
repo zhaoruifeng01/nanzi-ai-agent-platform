@@ -15,6 +15,52 @@ ID_USER_PERM_2 = "cccccccccccccccccccccccccccccccc"
 ID_DB_ALL_1 = "dddddddddddddddddddddddddddddddd"
 ID_DB_ALL_2 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
+
+@pytest.mark.asyncio
+async def test_enrich_for_knowledge_turn_does_not_merge_fallback_agent_tools():
+    config = ChatConfig(
+        agent_id="sys-agent-chat",
+        agent_name="Main",
+        model_name="DeepSeek",
+        temperature=0.7,
+        system_prompt="prompt",
+        tools=[],
+        capabilities=["chat"],
+        engine_config={},
+    )
+    fallback_config = ChatConfig(
+        agent_id="knowledge-base",
+        agent_name="KnowledgeBase",
+        model_name="DeepSeek",
+        temperature=0.7,
+        system_prompt="kb prompt",
+        tools=["search_knowledge_base"],
+        capabilities=["knowledge_base"],
+        engine_config={"dataset_ids": [ID_AGENT_BOUND_1]},
+    )
+
+    mock_session = AsyncMock()
+    mock_session_context = MagicMock()
+    mock_session_context.__aenter__.return_value = mock_session
+
+    with patch("app.services.ai.context_manager.AsyncSessionLocal", return_value=mock_session_context), \
+         patch(
+             "app.services.ai.context_manager.AgentManagerService.get_active_agent_config",
+             new_callable=AsyncMock,
+         ) as mock_get_config:
+        mock_get_config.return_value = fallback_config
+
+        enriched = await AgentContextManager.enrich_for_knowledge_turn(
+            config,
+            user_query="如何安装 skills 技能呢",
+        )
+
+    mock_get_config.assert_not_called()
+    assert enriched.tools == []
+    assert enriched.capabilities == ["chat"]
+    assert enriched.engine_config == {}
+
+
 @pytest.mark.asyncio
 async def test_setup_context_frontend_specified():
     # 测试前端指定了知识库，只使用前端指定的

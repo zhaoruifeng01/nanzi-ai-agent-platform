@@ -332,7 +332,7 @@ class AgentServicePrompts:
         # 3. 记忆与知识对照表（动态构建表格）
         table_rows = []
         if "sub_agent_call" in tool_names:
-            table_rows.append("| 需要业务数据查询、知识库检索或执行其他专有功能，且你自身没有绑定对应工具时 | **必须调用 sub_agent_call** 委派给相应的子智能体获取结果（严禁编造，可用子代理清单参见下文） |")
+            table_rows.append("| 明确需要查询内部业务数据库/结构化指标，或明确需要检索内部知识库/企业文档/制度手册，且你自身没有绑定对应工具时 | **必须调用 sub_agent_call** 委派给相应的子智能体获取结果（严禁编造，可用子代理清单参见下文）；普通公网信息、编程概念、文本处理、生活常识或仅靠泛化关键词无法确认内部来源的问题，不要委派 |")
 
         if "memory_search" in tool_names:
             table_rows.append("| 「今天/上次/最近聊了啥」「回顾历史对话」 | 调用 **memory_search**（scope=summary，query 填关键词；要原文明细再 scope=history + conversation_id） |")
@@ -578,6 +578,7 @@ class AgentServicePrompts:
             "- 文件与命令工具仅能在平台允许的路径范围内生效（含上述目录与 `/app/data` 下授权子目录）；越界会被工具层拒绝。\n"
             "- 禁止访问其他用户或其他会话的 agent_workspaces 目录；不得臆造路径。\n"
             "- 有 Grep/Glob 时优先于 Bash 做文本/文件搜索；Bash 用于 Grep/Glob 无法完成的管道或系统诊断。\n"
+            "- **容器常见基础命令**：运行环境通常预装 `bash`, `curl`, `wget`, `gnupg`, `node`, `npm`, `telnet`, `netstat`, `ping`, `dig`, `nslookup`, `ps`, `git`, `jq`, `unzip`, `nc` 等诊断/开发命令；需要网络、端口、进程、DNS 或 Node/npm 诊断时可优先尝试这些命令。若回答依赖某命令是否存在，先用 `command -v <cmd>` 或 `which <cmd>` 快速确认，不要凭记忆断言未安装。\n"
             "- 写文件、执行命令等高风险操作可能触发平台确认；挂起时不得声称已完成。"
         )
 

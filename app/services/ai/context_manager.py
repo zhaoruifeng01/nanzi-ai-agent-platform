@@ -9,8 +9,6 @@ from app.services.ai.agent_prompts import ContextManagerPrompts
 
 logger = logging.getLogger(__name__)
 
-KNOWLEDGE_AGENT_FALLBACK_NAMES = ("knowledge-base",)
-
 
 def _normalize_rag_params(engine_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """将 engine_config 中的扁平 RAG 字段归一化到 rag_params。"""
@@ -132,8 +130,8 @@ class AgentContextManager:
         user_query: str = "",
     ) -> ChatConfig:
         """
-        KNOWLEDGE 轮次：补齐 dataset_ids / RAG 参数 / 知识库工具。
-        当前智能体未绑定知识库时，回退到 knowledge-base 系统智能体配置。
+        KNOWLEDGE 轮次：只补齐当前智能体/本轮显式携带的 dataset_ids。
+        不从其他系统智能体回退合并工具或知识库配置，避免 Main 隐式获得未配置能力。
         """
         from app.services.ai.knowledge_utils import (
             extract_dataset_ids_from_message,
@@ -148,44 +146,6 @@ class AgentContextManager:
 
         capabilities = list(config.capabilities or [])
         tools = list(config.tools or [])
-        has_kb_binding = bool(dataset_ids) or "knowledge_base" in capabilities
-
-        if not has_kb_binding:
-            async with AsyncSessionLocal() as session:
-                for fallback_name in KNOWLEDGE_AGENT_FALLBACK_NAMES:
-                    kb_config = await AgentManagerService.get_active_agent_config(
-                        session, agent_name=fallback_name
-                    )
-                    if kb_config:
-                        kb_ec = kb_config.engine_config or {}
-                        dataset_ids = merge_dataset_id_sources(
-                            dataset_ids,
-                            kb_ec.get("dataset_ids"),
-                        )
-                        for key in (
-                            "ragflow_similarity_threshold",
-                            "ragflow_vector_weight",
-                            "top_k",
-                            "rag_params",
-                        ):
-                            if kb_ec.get(key) not in (None, "") and key not in engine_config:
-                                engine_config[key] = kb_ec[key]
-                        if kb_config.system_prompt and not config.system_prompt:
-                            config = config.model_copy(
-                                update={"system_prompt": kb_config.system_prompt}
-                            )
-                        for cap in kb_config.capabilities or []:
-                            if cap not in capabilities:
-                                capabilities.append(cap)
-                        for tool_name in kb_config.tools or []:
-                            if tool_name not in tools:
-                                tools.append(tool_name)
-                        logger.info(
-                            "[AgentContextManager] KNOWLEDGE turn enriched from fallback agent: %s",
-                            fallback_name,
-                        )
-                        break
-
 
         if dataset_ids:
             engine_config["dataset_ids"] = dataset_ids

@@ -8,7 +8,11 @@ from app.services.ai.intent_service import (
     IntentSourceFrame,
     IntentType,
     intent_service,
-    resolve_intent_source,
+)
+from app.services.ai.request_decision import (
+    RequestDecision,
+    RequestSource,
+    resolve_request_decision,
 )
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
@@ -26,6 +30,11 @@ class RouteResult(BaseModel):
     turn_labels: List[str] = []
     relation_to_previous: str = "unknown"
     user_action_type: str = "unknown"
+    request_source: Optional[str] = None
+    request_capability: Optional[str] = None
+    request_should_delegate: bool = False
+    request_delegate_capability: Optional[str] = None
+    request_reasoning: Optional[str] = None
 
 class LLMRouterResponse(BaseModel):
     """Internal structure for LLM output."""
@@ -256,13 +265,14 @@ class RouterService:
                 )
 
         intent_info = await self._resolve_intent_evidence(user_input, history)
-        source_frame = resolve_intent_source(
+        request_decision = resolve_request_decision(
             user_input,
             semantic_intent=getattr(intent_info, "intent", None),
             semantic_confidence=getattr(intent_info, "confidence", None),
         )
+        source_frame = self._source_frame_from_request_decision(request_decision)
         data_route_allowed = (
-            source_frame.source == IntentSource.INTERNAL_STRUCTURED_DATA
+            request_decision.allows_data_route
             or (
                 last_agent_name
                 and self._is_data_query_agent(agents_metadata, last_agent_name)
@@ -326,6 +336,7 @@ class RouterService:
                     fallback_agents_metadata=agents_metadata,
                     intent_info=intent_info,
                     source_frame=source_frame,
+                    request_decision=request_decision,
                     data_route_allowed=bool(data_route_allowed),
                 )
                 if route_result is not None:
@@ -534,6 +545,20 @@ class RouterService:
         cap_set = {str(cap).strip().lower() for cap in caps}
         return bool(cap_set & self._DATA_QUERY_CAPABILITY_KEYS)
 
+    @staticmethod
+    def _source_frame_from_request_decision(decision: RequestDecision) -> IntentSourceFrame:
+        source_map = {
+            RequestSource.INTERNAL_STRUCTURED_DATA: IntentSource.INTERNAL_STRUCTURED_DATA,
+            RequestSource.INTERNAL_DOCS: IntentSource.INTERNAL_DOCS,
+            RequestSource.PUBLIC_WEB: IntentSource.PUBLIC_WEB,
+            RequestSource.RUNTIME_DIAGNOSTIC: IntentSource.RUNTIME_DIAGNOSTIC,
+        }
+        return IntentSourceFrame(
+            source=source_map.get(decision.source, IntentSource.UNKNOWN),
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+        )
+
     def _build_route_result(
         self,
         result_json: dict,
@@ -543,6 +568,7 @@ class RouterService:
         fallback_agents_metadata: Optional[List[dict]] = None,
         intent_info: Optional[IntentResponse] = None,
         source_frame: Optional[IntentSourceFrame] = None,
+        request_decision: Optional[RequestDecision] = None,
         data_route_allowed: bool = True,
     ) -> Optional[RouteResult]:
         confidence = result_json.get("confidence", 0.5)
@@ -568,6 +594,7 @@ class RouterService:
                 agents_metadata,
                 f"Low confidence ({confidence}) for agent selection. Reason: {reasoning}",
                 intent_info=intent_info,
+                request_decision=request_decision,
             )
 
         target_agent = self._match_agent(target_name, agents_metadata)
@@ -577,6 +604,7 @@ class RouterService:
                 fallback_agents_metadata or agents_metadata,
                 f"Router returned unknown agent: {target_name}",
                 intent_info=intent_info,
+                request_decision=request_decision,
             )
 
         if self._is_data_query_agent(agents_metadata, target_agent.get("name")) and not data_route_allowed:
@@ -592,6 +620,7 @@ class RouterService:
                     fallback_agents,
                     f"Router selected data agent without internal structured-data source: {source_reason}",
                     intent_info=intent_info,
+                    request_decision=request_decision,
                 )
             logger.info(
                 "Router selected data agent %s without internal structured-data source (%s), "
@@ -616,6 +645,13 @@ class RouterService:
             turn_labels=turn_labels,
             relation_to_previous=relation_to_previous,
             user_action_type=user_action_type,
+            request_source=(request_decision.source.value if request_decision else None),
+            request_capability=(request_decision.capability.value if request_decision else None),
+            request_should_delegate=bool(request_decision.should_delegate) if request_decision else False,
+            request_delegate_capability=(
+                request_decision.delegate_capability if request_decision else None
+            ),
+            request_reasoning=(request_decision.reasoning if request_decision else None),
         )
 
     def _normalize_turn_labels(self, value) -> List[str]:
@@ -714,6 +750,7 @@ class RouterService:
         reason: str,
         *,
         intent_info: Optional[IntentResponse] = None,
+        request_decision: Optional[RequestDecision] = None,
     ) -> Optional[RouteResult]:
         fallback_agent = self._find_fallback_agent(agents)
         if fallback_agent:
@@ -725,6 +762,13 @@ class RouterService:
                 turn_labels=["ambiguous"],
                 relation_to_previous="unknown",
                 user_action_type="unknown",
+                request_source=(request_decision.source.value if request_decision else None),
+                request_capability=(request_decision.capability.value if request_decision else None),
+                request_should_delegate=bool(request_decision.should_delegate) if request_decision else False,
+                request_delegate_capability=(
+                    request_decision.delegate_capability if request_decision else None
+                ),
+                request_reasoning=(request_decision.reasoning if request_decision else None),
             )
         return None
 

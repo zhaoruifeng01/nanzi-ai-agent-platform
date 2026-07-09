@@ -102,11 +102,18 @@ async def test_route_query_high_confidence(mock_agents_metadata):
     mock_chat = _mock_chat_client(llm_resp_content)
     
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory, \
          patch("app.services.config_service.ConfigService.get", new_callable=AsyncMock) as mock_config:
          
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.92,
+            reasoning="用户请求内部结构化数据计数",
+            entities=["user count"],
+        )
         mock_get_llm.return_value = mock_llm
         mock_chat_factory.return_value = mock_chat
         mock_config.return_value = "System Prompt"
@@ -141,14 +148,21 @@ async def test_route_query_returns_generic_turn_hints(mock_agents_metadata):
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="用户查询内部机房基础数据列表",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = mock_llm
         mock_chat_factory.return_value = mock_chat
 
-        result = await service.route_query("把上面的结果画成柱状图")
+        result = await service.route_query("把上面的结果画成柱状图", last_agent_name="ChatBI")
 
     assert result.agent_id == "agent-chatbi"
     assert result.turn_labels == ["continuation_followup", "business_related", "same_topic"]
@@ -170,10 +184,17 @@ async def test_route_prompt_guides_local_machine_load_to_general(mock_agents_met
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.91,
+            reasoning="用户查询业务机房负载趋势指标",
+            entities=["上海机房", "负载趋势"],
+        )
         mock_get_llm.return_value = mock_llm
         mock_chat_factory.return_value = mock_chat
 
@@ -201,10 +222,17 @@ async def test_route_query_business_load_metric_still_uses_llm(mock_agents_metad
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="用户查询内部机房基础数据列表",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = mock_llm
         mock_chat_factory.return_value = mock_chat
 
@@ -430,10 +458,17 @@ async def test_route_query_datacenter_list_uses_chatbi(mock_agents_metadata):
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="用户查询内部机房基础数据列表",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = mock_llm
         mock_chat_factory.return_value = mock_chat
 
@@ -558,10 +593,17 @@ async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
     mock_chat = _mock_chat_client("{}")
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="问候后提出内部机房列表查询",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 
@@ -584,10 +626,17 @@ async def test_route_query_open_source_stars_shortcut_to_general(mock_agents_met
     mock_chat = _mock_chat_client("{}")
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="问候后提出内部机房列表查询",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 
@@ -616,10 +665,17 @@ async def test_route_query_data_followup_after_chatbi_still_uses_llm(mock_agents
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="问候后提出内部机房列表查询",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 
@@ -645,10 +701,17 @@ async def test_route_query_greeting_compound_still_calls_llm(mock_agents_metadat
     mock_chat = _mock_chat_client(llm_resp_content)
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
 
         mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="问候后提出内部机房列表查询",
+            entities=["机房列表"],
+        )
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 

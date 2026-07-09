@@ -22,6 +22,12 @@ from app.services.ai.intent_service import (
     looks_like_skill_execution,
     looks_like_web_search_query,
 )
+from app.services.ai.request_decision import (
+    RequestCapability,
+    RequestDecision,
+    RequestSource,
+    resolve_request_decision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +112,7 @@ def classify_turn_heuristic(
     has_last_data_result: bool = False,
     knowledge_dataset_ids: Optional[List[str]] = None,
     agent_has_knowledge_binding: bool = False,
+    request_decision: Optional[RequestDecision] = None,
 ) -> Optional[TurnClassification]:
     """启发式分类；若无法确定则返回 None，需再调用意图 LLM。"""
     q = (user_query or "").strip()
@@ -152,6 +159,25 @@ def classify_turn_heuristic(
             intent=IntentType.DATA_QUERY,
         )
 
+    if request_decision is None:
+        request_decision = resolve_request_decision(
+            q,
+            has_last_data_result=has_last_data_result,
+            has_knowledge_binding=bool(knowledge_dataset_ids or agent_has_knowledge_binding),
+        )
+    if request_decision.source in {
+        RequestSource.PLATFORM_SELF_HELP,
+        RequestSource.PUBLIC_WEB,
+        RequestSource.RUNTIME_DIAGNOSTIC,
+        RequestSource.GENERAL,
+    }:
+        return TurnClassification(
+            turn_type=TurnType.GENERAL,
+            reasoning=f"{request_decision.reasoning}（统一请求决策：按通用助手处理）",
+            skip_intent_llm=True,
+            intent=IntentType.GENERAL,
+        )
+
     if can_do_data and looks_like_pure_result_followup(q) and has_last_data_result:
         return TurnClassification(
             turn_type=TurnType.DATA_QUERY_REQUEST,
@@ -160,16 +186,14 @@ def classify_turn_heuristic(
             intent=IntentType.DATA_QUERY,
         )
 
-    if knowledge_dataset_ids or agent_has_knowledge_binding:
+    if request_decision.capability == RequestCapability.KNOWLEDGE_SEARCH:
         return TurnClassification(
             turn_type=TurnType.KNOWLEDGE,
-            reasoning=(
-                "会话已绑定知识库（dataset_ids 或智能体知识库配置），按知识库问答处理"
-            ),
+            reasoning=f"{request_decision.reasoning}（统一请求决策：按知识库问答处理）",
             requires_knowledge_search=True,
             skip_intent_llm=True,
             intent=IntentType.KNOWLEDGE_BASE,
-            knowledge_preemption_allowed=True,
+            knowledge_preemption_allowed=bool(knowledge_dataset_ids or agent_has_knowledge_binding),
         )
 
     # 联网/外部搜索：未绑定内部知识库时，交给通用助手（含 web_search 工具），
@@ -209,8 +233,65 @@ def classify_turn_from_intent(
     user_query: str = "",
     has_last_data_result: bool = False,
     has_knowledge_binding: bool = False,
+    request_decision: Optional[RequestDecision] = None,
 ) -> TurnClassification:
-    """将意图 LLM 结果映射为统一轮次分类。"""
+    """将意图 LLM 结果映射为统一轮次分类。
+
+    ``request_decision`` 为可选参数：若调用方（如 ``resolve_turn_classification``）已经
+    计算过本轮的 ``RequestDecision``，可直接传入以避免重复调用 ``resolve_request_decision``。
+    若不传则在此函数内部自行计算。
+    """
+    if request_decision is None:
+        request_decision = resolve_request_decision(
+            user_query,
+            semantic_intent=intent_info.intent,
+            semantic_confidence=intent_info.confidence,
+            has_last_data_result=has_last_data_result,
+            has_knowledge_binding=has_knowledge_binding,
+        )
+    else:
+        # 调用方已传入决策对象（通常在启发式阶段计算），但此时语义意图尚未确定；
+        # 此处仅当 semantic_intent 能使 UNKNOWN 转向更明确结论时才重新计算。
+        semantic_name = getattr(intent_info.intent, "value", str(intent_info.intent or "")).upper()
+        if (
+            request_decision.source == RequestSource.UNKNOWN
+            and semantic_name not in {"", "UNKNOWN"}
+        ):
+            request_decision = resolve_request_decision(
+                user_query,
+                semantic_intent=intent_info.intent,
+                semantic_confidence=intent_info.confidence,
+                has_last_data_result=has_last_data_result,
+                has_knowledge_binding=has_knowledge_binding,
+            )
+    if (
+        request_decision.source in {
+            RequestSource.PLATFORM_SELF_HELP,
+            RequestSource.PUBLIC_WEB,
+            RequestSource.RUNTIME_DIAGNOSTIC,
+            RequestSource.GENERAL,
+        }
+        and not looks_like_skill_execution(user_query)
+    ):
+        return TurnClassification(
+            turn_type=TurnType.GENERAL,
+            reasoning=(
+                f"{intent_info.reasoning}（{request_decision.reasoning}，改由通用助手处理）"
+            ),
+            skip_intent_llm=False,
+            intent=IntentType.GENERAL,
+        )
+
+    if request_decision.capability == RequestCapability.KNOWLEDGE_SEARCH:
+        return TurnClassification(
+            turn_type=TurnType.KNOWLEDGE,
+            reasoning=request_decision.reasoning or intent_info.reasoning,
+            requires_knowledge_search=True,
+            skip_intent_llm=False,
+            intent=IntentType.KNOWLEDGE_BASE,
+            knowledge_preemption_allowed=has_knowledge_binding,
+        )
+
     if can_do_data and intent_info.intent == IntentType.DATA_QUERY:
         if (
             intent_info.confidence < AMBIGUOUS_INTENT_CONFIDENCE_THRESHOLD
@@ -367,12 +448,20 @@ async def resolve_turn_classification(
     if conversation_id and can_do_data:
         has_last_data_result = await load_last_data_result(user_info, conversation_id) is not None
 
+    # 提前计算 RequestDecision，供 classify_turn_heuristic 与后续 classify_turn_from_intent 复用（避免重复调用）
+    heuristic_request_decision = resolve_request_decision(
+        user_query,
+        has_last_data_result=has_last_data_result,
+        has_knowledge_binding=bool(knowledge_dataset_ids or agent_has_knowledge_binding),
+    )
+
     classification = classify_turn_heuristic(
         user_query,
         can_do_data=can_do_data,
         has_last_data_result=has_last_data_result,
         knowledge_dataset_ids=knowledge_dataset_ids,
         agent_has_knowledge_binding=agent_has_knowledge_binding,
+        request_decision=heuristic_request_decision,
     )
 
     intent_info = None
@@ -392,6 +481,7 @@ async def resolve_turn_classification(
             user_query=user_query,
             has_last_data_result=has_last_data_result,
             has_knowledge_binding=has_knowledge_binding,
+            request_decision=heuristic_request_decision,
         )
 
     return classification, intent_info, intent_elapsed_ms
