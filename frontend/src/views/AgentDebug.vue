@@ -45,6 +45,12 @@ import { useToast } from "../composables/useToast";
 import { useTokenQuota } from "@/composables/useTokenQuota";
 import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
 import { isActiveThoughtStep, isDimmedThoughtStep } from "@/utils/turnLogDisplay";
+import {
+  buildSkillFlowBadges,
+  skillFlowNoticeLabel,
+  summarizeSkillFlowBadges,
+  type SkillFlowBadge,
+} from "@/utils/skillFlowBadges";
 
 import ChatInput from "@/components/embed/ChatInput.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
@@ -452,17 +458,19 @@ const displayMessages = computed(() => {
   return filtered;
 });
 
-function getSkillsForMessage(msg: Message, allMessages: Message[]): ChatFile[] {
+function getSkillFlowBadgesForMessage(msg: Message, allMessages: Message[]): SkillFlowBadge[] {
   if (msg.role !== 'agent') return [];
   const idx = allMessages.findIndex(m => m.id === msg.id);
   if (idx <= 0) return [];
+  let files: ChatFile[] = [];
   for (let i = idx - 1; i >= 0; i--) {
     const prev = allMessages[i];
     if (prev.role === 'user') {
-      return (prev.files || []).filter(f => f.type === 'skill');
+      files = prev.files || [];
+      break;
     }
   }
-  return [];
+  return buildSkillFlowBadges(files, msg.logs || []);
 }
 const conversationId = ref("");
 
@@ -4187,8 +4195,8 @@ onUnmounted(() => {
                       >
                         {{ msg.logs.length }} 步骤
                       </span>
-                      <span v-if="getSkillsForMessage(msg, messages).length > 0" class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400 font-semibold border border-purple-100 dark:border-purple-900/30 flex items-center gap-0.5">
-                        ⚡ {{ getSkillsForMessage(msg, messages).length }}个技能已加载
+                      <span v-if="getSkillFlowBadgesForMessage(msg, messages).length > 0" class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400 font-semibold border border-purple-100 dark:border-purple-900/30 flex items-center gap-0.5">
+                        ⚡ {{ summarizeSkillFlowBadges(getSkillFlowBadgesForMessage(msg, messages)) }}
                       </span>
                     </div>
                     <span class="text-[10px] text-gray-400 font-mono ml-2 flex-shrink-0">
@@ -4220,18 +4228,18 @@ onUnmounted(() => {
                     class="overflow-hidden"
                   >
                     <!-- Ecosystem Skills Notice -->
-                    <div v-if="getSkillsForMessage(msg, messages).length > 0" class="mt-2 ml-2 pl-4 flex flex-col gap-1.5">
+                    <div v-if="getSkillFlowBadgesForMessage(msg, messages).length > 0" class="mt-2 ml-2 pl-4 flex flex-col gap-1.5">
                       <div class="flex items-center space-x-1.5 text-xs text-purple-700 dark:text-purple-400 font-semibold bg-purple-50/50 dark:bg-purple-950/10 border border-purple-100/60 dark:border-purple-900/20 rounded-lg px-3 py-2">
                         <span class="text-[14px]">⚡</span>
-                        <span>本轮已加载生态技能：</span>
+                        <span>{{ skillFlowNoticeLabel(getSkillFlowBadgesForMessage(msg, messages)) }}</span>
                         <div class="flex flex-wrap gap-1">
-                          <span 
-                            v-for="skill in getSkillsForMessage(msg, messages)" 
-                            :key="skill.filename" 
+                          <span
+                            v-for="skill in getSkillFlowBadgesForMessage(msg, messages)"
+                            :key="skill.key"
                             class="px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-[10px] font-bold border border-purple-200/50 dark:border-purple-800/30"
-                            :title="skill.skillMeta?.description"
+                            :title="skill.description"
                           >
-                            {{ skill.filename.replace(" (技能)", "") }}
+                            {{ skill.label }}
                           </span>
                         </div>
                       </div>
