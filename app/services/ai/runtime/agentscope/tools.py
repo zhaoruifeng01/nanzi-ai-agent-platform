@@ -118,6 +118,7 @@ class RuntimeToolSpec:
                         producer=self.name,
                         evidence_types=self.evidence_types,
                         result=result,
+                        policy=self.evidence_policy,
                     )
             return result
         except TimeoutError as exc:

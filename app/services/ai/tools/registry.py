@@ -93,6 +93,25 @@ TOOL_EVIDENCE_TYPES = {
     "fetch_user_long_term_memory": frozenset({EvidenceType.CONVERSATION_MEMORY}),
 }
 
+# 工具取证策略：
+# "non_empty"（默认）：仅在工具返回非空结果时记录凭证。
+# "any"：即使返回空结果也记录凭证，适用于"查无结果"本身即为合法事实依据的场景
+#        （记忆检索、知识库搜索、文件读取 —— 未找到也应允许模型如实回答）。
+TOOL_EVIDENCE_POLICY: dict[str, str] = {
+    # 数据查询：查询成功但返回空行 = "暂无数据"，属于合法事实依据
+    "execute_sql_query": "any",
+    "get_dataset_schema": "any",
+    # 记忆/知识/文件检索：查无结果 = "未找到"，属于合法事实依据
+    "memory_search": "any",
+    "fetch_user_long_term_memory": "any",
+    "search_knowledge_base": "any",
+    "jira_search": "any",
+    "read_file": "any",
+    "search_text": "any",
+    "excel_document_read": "any",
+    "word_document_read": "any",
+}
+
 
 def resolve_tool_evidence_types(*names: str) -> frozenset[EvidenceType]:
     """Resolve abstract evidence types for a configured or runtime tool name.
@@ -305,16 +324,27 @@ class ToolRegistry:
 
     @staticmethod
     def _attach_evidence_metadata(name: str, spec: Any) -> Any:
+        spec_name = str(getattr(spec, "name", "") or "")
         existing = frozenset(getattr(spec, "evidence_types", None) or ())
+        existing_policy = getattr(spec, "evidence_policy", "non_empty") or "non_empty"
+
+        # 从静态表中查询 policy（name 优先，其次 spec.name）
+        policy = TOOL_EVIDENCE_POLICY.get(name) or TOOL_EVIDENCE_POLICY.get(spec_name)
+
         if existing:
+            # evidence_types 已由工具自身声明；若 policy 需升级则单独注入
+            if policy and policy != existing_policy:
+                return replace(spec, evidence_policy=policy)
             return spec
-        evidence_types = resolve_tool_evidence_types(
-            name,
-            str(getattr(spec, "name", "") or ""),
-        )
+
+        evidence_types = resolve_tool_evidence_types(name, spec_name)
         if not evidence_types:
             return spec
-        return replace(spec, evidence_types=evidence_types)
+        return replace(
+            spec,
+            evidence_types=evidence_types,
+            evidence_policy=policy or "non_empty",
+        )
 
     @classmethod
     async def get_tools(cls, tool_configs: List[Any]) -> list[Any]:

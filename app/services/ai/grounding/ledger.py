@@ -76,9 +76,19 @@ class EvidenceLedger:
         producer: str,
         evidence_types: Iterable[EvidenceType],
         result: Any,
+        policy: str = "non_empty",
     ) -> EvidenceReceipt | None:
+        """记录工具调用取证收据。
+
+        Args:
+            policy: ``"non_empty"``（默认）—— 仅在结果非空时记录；
+                    ``"any"`` —— 无论结果是否为空都记录，适用于"查无结果"本身即为
+                    合法事实依据的场景（如记忆检索、知识库搜索、文件读取）。
+        """
         normalized_types = frozenset(evidence_types)
-        if not normalized_types or not _is_non_empty_success_result(result):
+        if not normalized_types:
+            return None
+        if policy != "any" and not _is_non_empty_success_result(result):
             return None
         serialized = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
         receipt = EvidenceReceipt.create(
@@ -97,3 +107,4 @@ class EvidenceLedger:
         if not required:
             return bool(self._receipts)
         return any(receipt.evidence_types & required for receipt in self._receipts)
+
