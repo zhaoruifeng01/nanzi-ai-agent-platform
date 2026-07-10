@@ -47,6 +47,7 @@ const creating = ref(false)
 // 统计相关
 import * as echarts from 'echarts'
 const showStatsModal = ref(false)
+const activeTab = ref('distribution')
 const loadingStats = ref(false)
 const statsData = ref<any>(null)
 const distributionChartRef = ref<HTMLElement | null>(null)
@@ -393,18 +394,20 @@ const openStatsModal = async () => {
   try {
     const res = await axios.get('/api/portal/skills/stats')
     statsData.value = res.data
-    nextTick(() => {
-      initCharts()
-    })
   } catch (e: any) {
     showToast(e.response?.data?.detail || '获取统计数据失败', 'error')
   } finally {
     loadingStats.value = false
   }
+  
+  nextTick(() => {
+    initCharts()
+  })
 }
 
 const closeStatsModal = () => {
   showStatsModal.value = false
+  activeTab.value = 'distribution'
   if (distChartInstance) {
     distChartInstance.dispose()
     distChartInstance = null
@@ -415,97 +418,114 @@ const closeStatsModal = () => {
   }
 }
 
+const switchTab = (tab: string) => {
+  activeTab.value = tab
+  nextTick(() => {
+    initCharts()
+  })
+}
+
 const initCharts = () => {
   if (!hasStatsData.value) return
   
-  // 1. 分布饼图
-  if (distributionChartRef.value) {
-    distChartInstance = echarts.init(distributionChartRef.value)
-    const chartData = Object.entries(statsData.value.total).map(([name, value]) => ({
-      name,
-      value
-    }))
-    
-    distChartInstance.setOption({
-      tooltip: {
-        trigger: 'item',
-        formatter: '{b}: {c} 次 ({d}%)'
-      },
-      legend: {
-        orient: 'horizontal',
-        bottom: 0,
-        type: 'scroll'
-      },
-      series: [
-        {
-          name: '激活次数',
-          type: 'pie',
-          radius: ['40%', '70%'],
-          avoidLabelOverlap: true,
-          itemStyle: {
-            borderRadius: 8,
-            borderColor: '#fff',
-            borderWidth: 2
+  if (activeTab.value === 'distribution') {
+    // 1. 分布饼图
+    if (distributionChartRef.value) {
+      if (!distChartInstance) {
+        distChartInstance = echarts.init(distributionChartRef.value)
+        const chartData = Object.entries(statsData.value.total).map(([name, value]) => ({
+          name,
+          value
+        }))
+        
+        distChartInstance.setOption({
+          tooltip: {
+            trigger: 'item',
+            formatter: '{b}: {c} 次 ({d}%)'
           },
-          label: {
-            show: false,
-            position: 'center'
+          legend: {
+            orient: 'horizontal',
+            bottom: 0,
+            type: 'scroll'
           },
-          emphasis: {
-            label: {
-              show: true,
-              fontSize: 14,
-              fontWeight: 'bold'
+          series: [
+            {
+              name: '激活次数',
+              type: 'pie',
+              radius: ['45%', '70%'],
+              avoidLabelOverlap: true,
+              itemStyle: {
+                borderRadius: 8,
+                borderColor: '#fff',
+                borderWidth: 2
+              },
+              label: {
+                show: false,
+                position: 'center'
+              },
+              emphasis: {
+                label: {
+                  show: true,
+                  fontSize: 14,
+                  fontWeight: 'bold'
+                }
+              },
+              data: chartData
             }
-          },
-          data: chartData
-        }
-      ]
-    })
-  }
-  
-  // 2. 趋势折线图
-  if (trendChartRef.value) {
-    trendChartInstance = echarts.init(trendChartRef.value)
-    const dates = Object.keys(statsData.value.trend).sort()
-    const skillIds = Object.keys(statsData.value.total)
-    
-    const series = skillIds.map(skillId => {
-      const data = dates.map(date => statsData.value.trend[date][skillId] || 0)
-      return {
-        name: skillId,
-        type: 'line',
-        smooth: true,
-        data
+          ]
+        })
+      } else {
+        distChartInstance.resize()
       }
-    })
-    
-    trendChartInstance.setOption({
-      tooltip: {
-        trigger: 'axis'
-      },
-      legend: {
-        data: skillIds,
-        bottom: 0,
-        type: 'scroll'
-      },
-      grid: {
-        left: '4%',
-        right: '4%',
-        bottom: '12%',
-        containLabel: true
-      },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: dates.map(d => d.substring(5))
-      },
-      yAxis: {
-        type: 'value',
-        minInterval: 1
-      },
-      series
-    })
+    }
+  } else if (activeTab.value === 'trend') {
+    // 2. 趋势折线图
+    if (trendChartRef.value) {
+      if (!trendChartInstance) {
+        trendChartInstance = echarts.init(trendChartRef.value)
+        const dates = Object.keys(statsData.value.trend).sort()
+        const skillIds = Object.keys(statsData.value.total)
+        
+        const series = skillIds.map(skillId => {
+          const data = dates.map(date => statsData.value.trend[date][skillId] || 0)
+          return {
+            name: skillId,
+            type: 'line',
+            smooth: true,
+            data
+          }
+        })
+        
+        trendChartInstance.setOption({
+          tooltip: {
+            trigger: 'axis'
+          },
+          legend: {
+            data: skillIds,
+            bottom: 0,
+            type: 'scroll'
+          },
+          grid: {
+            left: '3%',
+            right: '4%',
+            bottom: '12%',
+            containLabel: true
+          },
+          xAxis: {
+            type: 'category',
+            boundaryGap: false,
+            data: dates.map(d => d.substring(5))
+          },
+          yAxis: {
+            type: 'value',
+            minInterval: 1
+          },
+          series
+        })
+      } else {
+        trendChartInstance.resize()
+      }
+    }
   }
 }
 
@@ -1085,22 +1105,42 @@ onMounted(() => {
         <p class="text-sm font-medium">暂无任何技能的激活和调用数据</p>
         <p class="text-xs text-gray-400 mt-1">在智能体对话中触发技能后，统计系统会自动开始记录</p>
       </div>
-      <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6 overflow-y-auto pr-1 flex-1 py-2 custom-scrollbar">
-        <!-- 分布图 -->
-        <div class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[350px]">
-          <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
-            <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
-            技能总调用占比与分布
-          </h3>
-          <div ref="distributionChartRef" class="w-full flex-1 min-h-[300px]"></div>
+      <div v-else class="flex-1 flex flex-col min-h-[400px] overflow-hidden">
+        <!-- Tab 切换菜单 -->
+        <div class="flex border-b border-gray-200 mb-4 shrink-0 select-none gap-2">
+          <button 
+            @click="switchTab('distribution')"
+            class="px-5 py-2.5 font-bold text-sm transition-all border-b-2 -mb-[2px]"
+            :class="activeTab === 'distribution' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'"
+          >
+            总量占比与分布
+          </button>
+          <button 
+            @click="switchTab('trend')"
+            class="px-5 py-2.5 font-bold text-sm transition-all border-b-2 -mb-[2px]"
+            :class="activeTab === 'trend' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'"
+          >
+            近30天激活趋势
+          </button>
         </div>
-        <!-- 趋势图 -->
-        <div class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[350px]">
-          <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
-            <span class="w-2 h-2 bg-indigo-500 rounded-full"></span>
-            近30天激活趋势变化
-          </h3>
-          <div ref="trendChartRef" class="w-full flex-1 min-h-[300px]"></div>
+
+        <div class="flex-1 overflow-y-auto pr-1 py-1 custom-scrollbar">
+          <!-- 分布图 -->
+          <div v-show="activeTab === 'distribution'" class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[380px]">
+            <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
+              <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
+              技能总调用占比与分布
+            </h3>
+            <div ref="distributionChartRef" class="w-full flex-1 min-h-[320px]"></div>
+          </div>
+          <!-- 趋势图 -->
+          <div v-show="activeTab === 'trend'" class="border border-gray-150 rounded-xl p-4 bg-gray-50/50 flex flex-col min-h-[380px]">
+            <h3 class="text-sm font-bold text-gray-700 mb-3 flex items-center gap-1.5 shrink-0 select-none">
+              <span class="w-2 h-2 bg-indigo-500 rounded-full"></span>
+              近30天激活趋势变化
+            </h3>
+            <div ref="trendChartRef" class="w-full flex-1 min-h-[320px]"></div>
+          </div>
         </div>
       </div>
       
