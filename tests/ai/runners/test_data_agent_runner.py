@@ -5777,12 +5777,15 @@ async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords
 
 
 @pytest.mark.asyncio
-async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data_config):
+async def test_data_agent_runner_auto_generates_plan_and_executes_high_risk_sql(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 
+    executed_args = []
+
     async def fake_sql(**kwargs):
-        raise AssertionError("SQL must be blocked before physical execution when plan is required")
+        executed_args.append(kwargs)
+        return {"columns": [{"name": "room"}, {"name": "ratio"}], "items": [["A", 0.8]]}
 
     spec = RuntimeToolSpec(
         name="execute_sql_query",
@@ -5804,6 +5807,7 @@ async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data
         trace_buffer=[],
         debug_options={"enable_sql_plan": True},
     )
+    runner._standalone_query = "按机房统计利用率"
     wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
 
     output = await wrapped.invoke(
@@ -5814,10 +5818,62 @@ async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data
         }
     )
 
-    assert output.startswith("[SQL_PLAN_GATE]")
-    assert state.sql_plan_missing is True
-    assert runner._current_repair_kind(state) == "sql_plan_missing"
-    assert "<sql_plan>" in runner._build_repair_message(state)
+    assert executed_args == [
+        {
+            "sql": "SELECT room, SUM(used) / SUM(total) AS ratio FROM demo GROUP BY room",
+            "data_source": "mysql_aiagent",
+            "dataset_name": "demo",
+        }
+    ]
+    assert output == {"columns": [{"name": "room"}, {"name": "ratio"}], "items": [["A", 0.8]]}
+    assert state.sql_plan_seen is True
+    assert state.sql_plan_missing is False
+    assert state.sql_plan_auto_generated is True
+    assert state.sql_plan_payload["goal"] == "按机房统计利用率"
+    assert state.sql_plan_payload["tables"] == ["demo"]
+    assert state.sql_plan_payload["grain"] == "按 room 聚合"
+    details = runner._format_tool_details("execute_sql_query", output, state, executed_args[0])
+    assert "[平台自动 SQL Plan]" in details
+    assert '"goal": "按机房统计利用率"' in details
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_refreshes_auto_plan_when_repair_changes_sql(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    async def fake_sql(**kwargs):
+        return {"rows": [{"value": 1}]}
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="Execute SQL",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        schema_completed=True,
+        requires_sql_plan=True,
+        schema_table_columns={"demo": ["room", "day", "used"]},
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-plan-refresh",
+        trace_buffer=[],
+        debug_options={"enable_sql_plan": True},
+    )
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    first_sql = "SELECT room, SUM(used) FROM demo GROUP BY room"
+    second_sql = "SELECT day, SUM(used) FROM demo GROUP BY day"
+    await wrapped.invoke({"sql": first_sql, "dataset_name": "demo", "data_source": "mysql"})
+    assert state.sql_plan_payload["grain"] == "按 room 聚合"
+
+    await wrapped.invoke({"sql": second_sql, "dataset_name": "demo", "data_source": "mysql"})
+
+    assert state.sql_plan_payload["grain"] == "按 day 聚合"
 
 
 def test_sql_error_repair_message_includes_error_taxonomy(data_config):
