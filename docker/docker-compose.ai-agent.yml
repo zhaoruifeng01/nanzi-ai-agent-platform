@@ -9,7 +9,7 @@ services:
     volumes:
       # 请将下面的 /path/to/your/oracle/instantclient 替换为您宿主机上实际的 Oracle 客户端路径
       - /app/yunshu-aiagent/lib/instantclient_19_30:/opt/oracle/instantclient
-      - ./data/uploads:/app/data/uploads
+      - ./data:/app/data
       - ~/.agents/skills:/app/data/skills
 
     environment:
