@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple
 import asyncio
-from .base import DataSourceAdapter, SQLSafetyError, standardize_items
+from .base import DataSourceAdapter, SQLSafetyError, materialize_db_value, standardize_items
 from .models import LogicalQuery, ResultSet
 import logging
 import inspect
@@ -53,7 +53,11 @@ class OracleAdapter(DataSourceAdapter):
                     logger.debug(f"[Oracle Thin/Async] 执行 SQL: {sql[:200]}...")
                     await cursor.execute(sql, params)
                     rows = await cursor.fetchall() if fetch_all else []
-                    return rows, cursor.description
+                    materialized = [
+                        [materialize_db_value(v) for v in row]
+                        for row in rows
+                    ]
+                    return materialized, cursor.description
         else:
             def sync_execute():
                 with pool.acquire() as conn:
@@ -62,7 +66,11 @@ class OracleAdapter(DataSourceAdapter):
                         cursor.execute(sql, params)
                         rows = cursor.fetchall() if fetch_all else []
                         desc = [list(d) for d in cursor.description] if cursor.description else None
-                        return rows, desc
+                        materialized = [
+                            [materialize_db_value(v) for v in row]
+                            for row in rows
+                        ]
+                        return materialized, desc
 
             return await asyncio.to_thread(sync_execute)
 

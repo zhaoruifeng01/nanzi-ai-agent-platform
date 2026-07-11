@@ -206,12 +206,32 @@ export const metadataApi = {
     axios.post<any>(`${API_BASE}/db/connection-configs/${id}/preview`, { sql, limit }),
 
   // DB Table Profiling APIs
-  triggerDbProfiling: (configId: number) =>
-    axios.post<any>(`${API_BASE}/db/connection-configs/${configId}/profile`),
+  triggerDbProfiling: (configId: number, full = false) =>
+    axios.post<any>(`${API_BASE}/db/connection-configs/${configId}/profile`, null, {
+      params: full ? { full: true } : undefined,
+    }),
+  cancelDbProfiling: (configId: number) =>
+    axios.post<any>(`${API_BASE}/db/connection-configs/${configId}/profile/cancel`),
   getDbProfilingTask: (configId: number) =>
     axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/profile-task`),
-  listDbTableProfiles: (configId: number) =>
-    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles`),
+  getDbTableProfileStats: (configId: number) =>
+    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles/stats`),
+  listDbTableProfiles: (
+    configId: number,
+    params?: {
+      page?: number
+      page_size?: number
+      q?: string
+      tag?: string
+      is_ignored?: number
+      status?: number
+    }
+  ) =>
+    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles`, { params }),
+  getDbTableProfileDetail: (configId: number, tableName: string) =>
+    axios.get<any>(
+      `${API_BASE}/db/connection-configs/${configId}/table-profiles/${encodeURIComponent(tableName)}`
+    ),
   toggleDbTableProfileIgnore: (configId: number, tableName: string, isIgnored: number) =>
     axios.put<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles/ignore`, { table_name: tableName, is_ignored: isIgnored }),
 };

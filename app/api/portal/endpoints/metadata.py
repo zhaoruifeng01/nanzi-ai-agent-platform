@@ -618,7 +618,14 @@ async def get_db_ddl(request: DDLRequest):
 
 # --- DB Connection Config APIs ---
 
-from app.schemas.db_connection import DbConnectionConfigCreate, DbConnectionConfigSafeResponse, DbProfileTaskResponse, DbTableProfileResponse
+from app.schemas.db_connection import (
+    DbConnectionConfigCreate,
+    DbConnectionConfigSafeResponse,
+    DbProfileTaskResponse,
+    DbTableProfileResponse,
+    DbTableProfileStatsResponse,
+    DbTableProfilePageResponse,
+)
 from app.services.db_connection_service import DbConnectionService
 
 @router.get("/db/connection-configs", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
@@ -723,17 +730,36 @@ from typing import Optional
 async def trigger_db_table_profiling(
     config_id: int,
     background_tasks: BackgroundTasks,
+    full: bool = False,
     conn: AsyncSession = Depends(get_db_session)
 ):
-    """触发外部数据库的智能摸排分析后台任务"""
+    """触发外部数据库的智能摸排分析后台任务。full=true 时全量重跑，否则断点续跑未完成表。"""
     try:
-        task = await DbProfileService.trigger_profiling_task(conn, config_id, background_tasks)
+        task = await DbProfileService.trigger_profiling_task(
+            conn, config_id, background_tasks, full_reset=full
+        )
         return task
     except ValueError as val_err:
         raise HTTPException(status_code=400, detail=str(val_err))
     except Exception as e:
         logger.exception("Failed to trigger db table profiling task")
         raise HTTPException(status_code=500, detail=f"触发任务失败: {str(e)}")
+
+
+@router.post("/db/connection-configs/{config_id}/profile/cancel", response_model=DbProfileTaskResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def cancel_db_table_profiling(
+    config_id: int,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """中断进行中的摸排任务，已完成的表画像保留。"""
+    try:
+        task = await DbProfileService.cancel_profiling_task(conn, config_id)
+        return task
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        logger.exception("Failed to cancel db table profiling task")
+        raise HTTPException(status_code=500, detail=f"中断任务失败: {str(e)}")
 
 
 @router.get("/db/connection-configs/{config_id}/profile-task", response_model=Optional[DbProfileTaskResponse], dependencies=[Depends(require_permission("element", "element:metadata:import"))])
@@ -746,14 +772,50 @@ async def get_db_table_profiling_task(
     return task
 
 
-@router.get("/db/connection-configs/{config_id}/table-profiles", response_model=List[DbTableProfileResponse], dependencies=[Depends(require_permission("element", "element:metadata:import"))])
-async def list_db_table_profiles(
+@router.get("/db/connection-configs/{config_id}/table-profiles/stats", response_model=DbTableProfileStatsResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def get_db_table_profile_stats(
     config_id: int,
     conn: AsyncSession = Depends(get_db_session)
 ):
-    """获取外部数据库已分析/摸排的表画像列表 (含有AI备注名与标签)"""
-    profiles = await DbProfileService.list_table_profiles(conn, config_id)
-    return profiles
+    """获取数据源表画像聚合统计与标签分布"""
+    return await DbProfileService.get_table_profile_stats(conn, config_id)
+
+
+@router.get("/db/connection-configs/{config_id}/table-profiles", response_model=DbTableProfilePageResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def list_db_table_profiles(
+    config_id: int,
+    page: int = 1,
+    page_size: int = 200,
+    q: Optional[str] = None,
+    tag: Optional[str] = None,
+    is_ignored: Optional[int] = None,
+    status: Optional[int] = None,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """分页获取表画像摘要列表（不含 ddl / sample_data）"""
+    return await DbProfileService.list_table_profiles_page(
+        conn,
+        config_id,
+        page=page,
+        page_size=page_size,
+        q=q,
+        tag=tag,
+        is_ignored=is_ignored,
+        status=status,
+    )
+
+
+@router.get("/db/connection-configs/{config_id}/table-profiles/{table_name}", response_model=DbTableProfileResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def get_db_table_profile_detail(
+    config_id: int,
+    table_name: str,
+    conn: AsyncSession = Depends(get_db_session)
+):
+    """获取单表完整画像详情（含 ddl、样例、字段画像）"""
+    profile = await DbProfileService.get_table_profile_detail(conn, config_id, table_name)
+    if not profile:
+        raise HTTPException(status_code=404, detail="表画像不存在")
+    return profile
 
 
 class ToggleIgnoreRequest(BaseModel):

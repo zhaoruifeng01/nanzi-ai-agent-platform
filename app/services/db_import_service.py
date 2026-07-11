@@ -468,3 +468,203 @@ class DBImportService:
         except Exception as e:
             logger.error(f"Failed to get SQL Server DDL: {e}")
             raise Exception(f"获取 SQL Server DDL 失败: {str(e)}")
+
+
+class DbDdlSession:
+    """摸排任务期间复用单连接批量抓取 DDL，避免大库逐表建连。"""
+
+    def __init__(self, db_type: str, config: Dict[str, Any]):
+        self.db_type = db_type.strip().lower()
+        self.config = config
+        self._conn: Any = None
+        self._oracle_table_types: Dict[str, str] = {}
+        self._use_oracle_thick = os.environ.get("USE_ORACLE_THICK_MODE") == "1"
+
+    async def __aenter__(self) -> "DbDdlSession":
+        if self.db_type == "mysql":
+            self._conn = await aiomysql.connect(
+                host=self.config.get("host"),
+                port=int(self.config.get("port", 3306)),
+                user=self.config.get("user"),
+                password=self.config.get("password"),
+                db=self.config.get("database"),
+            )
+        elif self.db_type == "clickhouse":
+            port = int(self.config.get("port", 9000))
+            self._conn = asynch.Connection(
+                host=self.config.get("host"),
+                port=port,
+                user=self.config.get("user"),
+                password=self.config.get("password"),
+                database=self.config.get("database"),
+                connect_timeout=10,
+            )
+            await self._conn.connect()
+        elif self.db_type == "oracle":
+            dsn = await DBImportService._get_oracle_dsn(self.config)
+            user = self.config.get("user")
+            password = self.config.get("password")
+            if self._use_oracle_thick:
+                def open_conn():
+                    conn = oracledb.connect(user=user, password=password, dsn=dsn)
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT TABLE_NAME, TABLE_TYPE FROM USER_TAB_COMMENTS "
+                            "WHERE TABLE_TYPE IN ('TABLE', 'VIEW')"
+                        )
+                        type_map = {row[0].upper(): row[1] for row in cur.fetchall()}
+                    return conn, type_map
+
+                self._conn, self._oracle_table_types = await asyncio.to_thread(open_conn)
+            else:
+                self._conn = await oracledb.connect_async(user=user, password=password, dsn=dsn)
+                async with self._conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT TABLE_NAME, TABLE_TYPE FROM USER_TAB_COMMENTS "
+                        "WHERE TABLE_TYPE IN ('TABLE', 'VIEW')"
+                    )
+                    rows = await cur.fetchall()
+                    self._oracle_table_types = {row[0].upper(): row[1] for row in rows}
+        elif self.db_type in DBImportService._sqlserver_type_aliases():
+            import aioodbc
+            from app.services.data_adapter.sqlserver import build_sqlserver_odbc_dsn
+
+            dsn = build_sqlserver_odbc_dsn(self.config)
+            self._conn = await aioodbc.connect(dsn=dsn, timeout=10)
+        else:
+            raise ValueError(f"不支持的数据库类型: {self.db_type}")
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if not self._conn:
+            return
+        try:
+            if self.db_type == "mysql":
+                self._conn.close()
+            elif self.db_type == "clickhouse":
+                await self._conn.close()
+            elif self.db_type == "oracle":
+                if self._use_oracle_thick:
+                    await asyncio.to_thread(self._conn.close)
+                else:
+                    await self._conn.close()
+            elif self.db_type in DBImportService._sqlserver_type_aliases():
+                await self._conn.close()
+        except Exception as close_err:
+            logger.warning(f"[DbDdlSession] close connection failed: {close_err}")
+        finally:
+            self._conn = None
+
+    async def get_table_ddl(self, table_name: str, table_type: str = "table") -> str:
+        if self.db_type == "mysql":
+            async with self._conn.cursor() as cur:
+                await cur.execute(f"SHOW CREATE TABLE `{table_name}`")
+                res = await cur.fetchone()
+                return (res[1] + ";") if res else ""
+
+        if self.db_type == "clickhouse":
+            async with self._conn.cursor() as cur:
+                await cur.execute(f"SHOW CREATE TABLE `{table_name}`")
+                res = await cur.fetchone()
+                return (res[0] + ";") if res else ""
+
+        if self.db_type == "oracle":
+            obj_type = self._oracle_table_types.get(table_name.upper(), "TABLE" if table_type != "view" else "VIEW")
+            if obj_type not in ("TABLE", "VIEW"):
+                obj_type = "VIEW" if table_type == "view" else "TABLE"
+
+            if self._use_oracle_thick:
+                def fetch_ddl():
+                    with self._conn.cursor() as cur:
+                        cur.execute(
+                            "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                            "DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', false); END;"
+                        )
+                        cur.execute(
+                            "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                            "DBMS_METADATA.SESSION_TRANSFORM, 'STORAGE', false); END;"
+                        )
+                        cur.execute(
+                            "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                            "DBMS_METADATA.SESSION_TRANSFORM, 'SQLTERMINATOR', true); END;"
+                        )
+                        cur.execute(
+                            "SELECT DBMS_METADATA.GET_DDL(:1, :2) FROM DUAL",
+                            [obj_type, table_name.upper()],
+                        )
+                        res = cur.fetchone()
+                        return str(res[0]).strip() if res else ""
+
+                return await asyncio.to_thread(fetch_ddl)
+
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                    "DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', false); END;"
+                )
+                await cur.execute(
+                    "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                    "DBMS_METADATA.SESSION_TRANSFORM, 'STORAGE', false); END;"
+                )
+                await cur.execute(
+                    "BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM("
+                    "DBMS_METADATA.SESSION_TRANSFORM, 'SQLTERMINATOR', true); END;"
+                )
+                await cur.execute(
+                    "SELECT DBMS_METADATA.GET_DDL(:1, :2) FROM DUAL",
+                    [obj_type, table_name.upper()],
+                )
+                res = await cur.fetchone()
+                return str(res[0]).strip() if res else ""
+
+        if self.db_type in DBImportService._sqlserver_type_aliases():
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT TABLE_TYPE
+                    FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_NAME = ? AND TABLE_CATALOG = DB_NAME()
+                    """,
+                    (table_name,),
+                )
+                type_row = await cur.fetchone()
+                if not type_row:
+                    return ""
+
+                if type_row[0] == "VIEW":
+                    await cur.execute(
+                        """
+                        SELECT m.definition
+                        FROM sys.sql_modules m
+                        INNER JOIN sys.objects o ON m.object_id = o.object_id
+                        WHERE o.name = ? AND o.type = 'V'
+                        """,
+                        (table_name,),
+                    )
+                    view_row = await cur.fetchone()
+                    return str(view_row[0]).strip() if view_row and view_row[0] else ""
+
+                await cur.execute(
+                    """
+                    SELECT
+                        COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
+                        NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE, COLUMN_DEFAULT
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = ? AND TABLE_CATALOG = DB_NAME()
+                    ORDER BY ORDINAL_POSITION
+                    """,
+                    (table_name,),
+                )
+                columns = await cur.fetchall()
+                if not columns:
+                    return ""
+
+                col_defs = []
+                for col in columns:
+                    col_type = DBImportService._format_sqlserver_column_type(col)
+                    nullable = "" if col[5] == "NO" else " NULL"
+                    default = f" DEFAULT {col[6]}" if col[6] else ""
+                    col_defs.append(f"    [{col[0]}] {col_type}{nullable}{default}")
+                return f"CREATE TABLE [{table_name}] (\n" + ",\n".join(col_defs) + "\n);"
+
+        raise ValueError(f"不支持的数据库类型: {self.db_type}")

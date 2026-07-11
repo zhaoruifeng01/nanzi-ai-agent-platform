@@ -81,9 +81,28 @@ class DataSourceAdapter(ABC):
             raise SQLSafetyError(f"安全策略异常，无法审计该 SQL 的安全性: {str(e)}")
 
 
+def materialize_db_value(val: Any) -> Any:
+    """在数据库连接关闭前将 LOB/二进制等延迟读取类型转为 Python 原生值。"""
+    if val is None:
+        return None
+    read_fn = getattr(val, "read", None)
+    if callable(read_fn):
+        try:
+            content = read_fn()
+            if isinstance(content, bytes):
+                return f"<binary {len(content)} bytes>"
+            return content
+        except Exception:
+            return str(val)
+    if isinstance(val, (bytes, bytearray, memoryview)):
+        return f"<binary {len(val)} bytes>"
+    return val
+
+
 def standardize_value(val: Any) -> Any:
     import datetime
     from decimal import Decimal
+    val = materialize_db_value(val)
     if isinstance(val, (datetime.datetime, datetime.date, datetime.time)):
         return val.isoformat()
     if isinstance(val, Decimal):

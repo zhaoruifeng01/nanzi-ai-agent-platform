@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from datetime import datetime
 
@@ -78,4 +78,49 @@ class DbTableProfileResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DbTableProfileSummaryResponse(BaseModel):
+    """列表摘要：不含 ddl / sample_data / columns_profile，适合大库分页浏览。"""
+    id: int
+    connection_id: int
+    table_name: str
+    table_type: str
+    engine: Optional[str] = None
+    ai_term: Optional[str] = None
+    ai_description: Optional[str] = None
+    ai_tags: Optional[list[str]] = None
+    columns_count: int = 0
+    status: int
+    confidence_score: int
+    is_temporary: int
+    is_ignored: int
+    confidence_reason: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DbTableProfileTagStat(BaseModel):
+    name: str
+    count: int
+
+
+class DbTableProfileStatsResponse(BaseModel):
+    total: int = 0
+    table_count: int = 0
+    view_count: int = 0
+    field_count: int = 0
+    success_count: int = 0
+    tags: list[DbTableProfileTagStat] = Field(default_factory=list)
+
+
+class DbTableProfilePageResponse(BaseModel):
+    items: list[DbTableProfileSummaryResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 

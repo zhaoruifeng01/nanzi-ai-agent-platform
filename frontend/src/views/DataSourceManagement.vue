@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { metadataApi, type DbConnectionConfig } from '../api/metadata'
 import { useToast } from '../composables/useToast'
 import ConfirmModal from '../components/ConfirmModal.vue'
@@ -350,8 +350,11 @@ const startPolling = (configId: number) => {
         if (res.data.status !== 1) {
           clearInterval(pollingIntervals[configId])
           delete pollingIntervals[configId]
-          // 重新拉取一次表画像，以确保界面同步
-          showToast(`数据源摸排完成！`, 'success')
+          if (res.data.status === 2) {
+            showToast(`数据源摸排完成！`, 'success')
+          } else if (res.data.status === 4) {
+            showToast(`摸排已中断，已完成 ${res.data.processed_tables}/${res.data.total_tables} 张表`, 'info')
+          }
         }
       } else {
         clearInterval(pollingIntervals[configId])
@@ -365,26 +368,37 @@ const startPolling = (configId: number) => {
 }
 
 const profileTarget = ref<DbConnectionConfig | null>(null)
+const profileFullReset = ref(false)
+const cancellingProfilingId = ref<number | null>(null)
 
-const requestProfiling = (item: DbConnectionConfig) => {
+const requestProfiling = (item: DbConnectionConfig, full = false) => {
   profileTarget.value = item
+  profileFullReset.value = full
 }
 
 const cancelProfiling = () => {
   profileTarget.value = null
+  profileFullReset.value = false
 }
 
 const confirmProfiling = async () => {
   if (!profileTarget.value) return
   const item = profileTarget.value
+  const full = profileFullReset.value
   profileTarget.value = null
-  await triggerProfiling(item)
+  profileFullReset.value = false
+  await triggerProfiling(item, full)
 }
 
-const triggerProfiling = async (item: DbConnectionConfig) => {
+const triggerProfiling = async (item: DbConnectionConfig, full = false) => {
   try {
-    const res = await metadataApi.triggerDbProfiling(item.id)
-    showToast('已提交后台分析摸排任务，串行处理大模型分析中', 'success')
+    const res = await metadataApi.triggerDbProfiling(item.id, full)
+    showToast(
+      full
+        ? '已提交强制全量摸排，将重新分析所有表'
+        : '已提交摸排任务，将处理未完成及新增表',
+      'success'
+    )
     profilingTasks.value[item.id] = res.data
     startPolling(item.id)
   } catch (e: any) {
@@ -392,28 +406,135 @@ const triggerProfiling = async (item: DbConnectionConfig) => {
   }
 }
 
+const cancelRunningProfiling = async (item: DbConnectionConfig) => {
+  if (cancellingProfilingId.value === item.id) return
+  cancellingProfilingId.value = item.id
+  try {
+    const res = await metadataApi.cancelDbProfiling(item.id)
+    profilingTasks.value[item.id] = res.data
+    showToast('已发送中断请求，当前表处理完成后停止', 'info')
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '中断失败', 'error')
+  } finally {
+    cancellingProfilingId.value = null
+  }
+}
+
+const profilingActionLabel = (item: DbConnectionConfig) => {
+  const task = profilingTasks.value[item.id]
+  if (!task) return '智能摸排'
+  if (task.status === 1) return '摸排中...'
+  if (task.status === 2) return '增量摸排'
+  if (task.status === 4) return '继续摸排'
+  if (task.status === 3) return '继续摸排'
+  return '智能摸排'
+}
+
+const openActionMenu = ref<'profile' | 'more' | null>(null)
+const openActionMenuId = ref<number | null>(null)
+
+const closeActionMenus = () => {
+  openActionMenu.value = null
+  openActionMenuId.value = null
+}
+
+const toggleActionMenu = (itemId: number, menu: 'profile' | 'more') => {
+  if (openActionMenuId.value === itemId && openActionMenu.value === menu) {
+    closeActionMenus()
+    return
+  }
+  openActionMenuId.value = itemId
+  openActionMenu.value = menu
+}
+
+const isActionMenuOpen = (itemId: number, menu: 'profile' | 'more') =>
+  openActionMenuId.value === itemId && openActionMenu.value === menu
+
+const handleProfileMenuAction = (
+  item: DbConnectionConfig,
+  action: 'incremental' | 'full' | 'cancel'
+) => {
+  closeActionMenus()
+  if (action === 'cancel') {
+    cancelRunningProfiling(item)
+    return
+  }
+  requestProfiling(item, action === 'full')
+}
+
+const handleMoreMenuAction = (item: DbConnectionConfig, action: string) => {
+  closeActionMenus()
+  if (action === 'test') testSavedConnection(item)
+  else if (action === 'debug') openSqlDebug(item)
+  else if (action === 'edit') editConfig(item)
+  else if (action === 'copy') copyConfig(item)
+  else if (action === 'delete') requestDeleteConfig(item)
+}
+
+const onDocumentClick = () => closeActionMenus()
+
 // 查看摸排分析结果 Modal 状态
 const showProfilesTarget = ref<DbConnectionConfig | null>(null)
 const viewTableProfiles = ref<any[]>([])
+const profileStats = ref<any>(null)
 const loadingViewProfiles = ref(false)
 const profilesSearchQuery = ref('')
 const selectedProfileTag = ref<string | null>(null)
 const isTagsExpanded = ref(false)
 const expandedTables = ref<Record<string, boolean>>({})
+const profileDetailsCache = ref<Record<string, any>>({})
+const loadingProfileDetails = ref<Record<string, boolean>>({})
+const profilesPage = ref(1)
+const profilesPageSize = ref(200)
+const profilesTotal = ref(0)
+const profilesPages = ref(0)
+let profilesSearchDebounce: ReturnType<typeof setTimeout> | null = null
+
+const loadProfileStats = async (configId: number) => {
+  try {
+    const res = await metadataApi.getDbTableProfileStats(configId)
+    profileStats.value = res.data
+  } catch {
+    profileStats.value = null
+  }
+}
+
+const loadProfilePage = async () => {
+  if (!showProfilesTarget.value) return
+  loadingViewProfiles.value = true
+  try {
+    const res = await metadataApi.listDbTableProfiles(showProfilesTarget.value.id, {
+      page: profilesPage.value,
+      page_size: profilesPageSize.value,
+      q: profilesSearchQuery.value.trim() || undefined,
+      tag: selectedProfileTag.value || undefined,
+    })
+    const data = res.data || {}
+    viewTableProfiles.value = data.items || []
+    profilesTotal.value = data.total || 0
+    profilesPages.value = data.pages || 0
+    profilesPage.value = data.page || profilesPage.value
+  } catch {
+    showToast('获取摸排结果失败', 'error')
+    viewTableProfiles.value = []
+  } finally {
+    loadingViewProfiles.value = false
+  }
+}
 
 const openTableProfiles = async (item: DbConnectionConfig) => {
   showProfilesTarget.value = item
-  loadingViewProfiles.value = true
   viewTableProfiles.value = []
+  profileStats.value = null
   profilesSearchQuery.value = ''
   selectedProfileTag.value = null
   isTagsExpanded.value = false
   expandedTables.value = {}
+  profileDetailsCache.value = {}
+  profilesPage.value = 1
+  loadingViewProfiles.value = true
   try {
-    const res = await metadataApi.listDbTableProfiles(item.id)
-    viewTableProfiles.value = res.data || []
-  } catch {
-    showToast('获取摸排结果失败', 'error')
+    await Promise.all([loadProfileStats(item.id), loadProfilePage()])
   } finally {
     loadingViewProfiles.value = false
   }
@@ -422,56 +543,62 @@ const openTableProfiles = async (item: DbConnectionConfig) => {
 const closeTableProfiles = () => {
   showProfilesTarget.value = null
   viewTableProfiles.value = []
+  profileStats.value = null
+  profileDetailsCache.value = {}
 }
 
-const toggleTableExpand = (tableName: string) => {
-  expandedTables.value[tableName] = !expandedTables.value[tableName]
+const goProfilePage = async (page: number) => {
+  if (page < 1 || (profilesPages.value > 0 && page > profilesPages.value)) return
+  profilesPage.value = page
+  await loadProfilePage()
 }
 
-const toggleProfileTag = (tag: string) => {
+const toggleTableExpand = async (tableName: string) => {
+  const next = !expandedTables.value[tableName]
+  expandedTables.value[tableName] = next
+  if (!next || profileDetailsCache.value[tableName] || !showProfilesTarget.value) return
+
+  loadingProfileDetails.value[tableName] = true
+  try {
+    const res = await metadataApi.getDbTableProfileDetail(showProfilesTarget.value.id, tableName)
+    profileDetailsCache.value[tableName] = res.data
+  } catch {
+    showToast('加载字段详情失败', 'error')
+    expandedTables.value[tableName] = false
+  } finally {
+    loadingProfileDetails.value[tableName] = false
+  }
+}
+
+const getProfileColumns = (profile: any) => {
+  const detail = profileDetailsCache.value[profile.table_name]
+  if (detail?.columns_profile) return detail.columns_profile
+  return []
+}
+
+const toggleProfileTag = async (tag: string) => {
   if (selectedProfileTag.value === tag) {
     selectedProfileTag.value = null
   } else {
     selectedProfileTag.value = tag
-    const idx = availableTags.value.findIndex(t => t.name === tag)
+    const idx = availableTags.value.findIndex((t) => t.name === tag)
     if (idx >= 8) {
       isTagsExpanded.value = true
     }
   }
+  profilesPage.value = 1
+  await loadProfilePage()
 }
 
-const availableTags = computed(() => {
-  const counts: Record<string, number> = {}
-  viewTableProfiles.value.forEach((p) => {
-    if (p.ai_tags && Array.isArray(p.ai_tags)) {
-      p.ai_tags.forEach((t) => {
-        if (t && t.trim()) {
-          const cleanTag = t.trim()
-          counts[cleanTag] = (counts[cleanTag] || 0) + 1
-        }
-      })
-    }
-  })
-  return Object.entries(counts)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-})
+const availableTags = computed(() => profileStats.value?.tags || [])
 
-const filteredViewProfiles = computed(() => {
-  let list = viewTableProfiles.value
-
-  if (selectedProfileTag.value) {
-    list = list.filter((p) => p.ai_tags && p.ai_tags.includes(selectedProfileTag.value))
-  }
-
-  if (!profilesSearchQuery.value.trim()) return list
-  const q = profilesSearchQuery.value.trim().toLowerCase()
-  return list.filter((p) =>
-    p.table_name.toLowerCase().includes(q) ||
-    (p.ai_term && p.ai_term.toLowerCase().includes(q)) ||
-    (p.ai_description && p.ai_description.toLowerCase().includes(q)) ||
-    (p.ai_tags && p.ai_tags.some((tag: string) => tag.toLowerCase().includes(q)))
-  )
+watch(profilesSearchQuery, () => {
+  if (!showProfilesTarget.value) return
+  if (profilesSearchDebounce) clearTimeout(profilesSearchDebounce)
+  profilesSearchDebounce = setTimeout(async () => {
+    profilesPage.value = 1
+    await loadProfilePage()
+  }, 350)
 })
 
 const togglingIgnore = ref<Record<string, boolean>>({})
@@ -494,15 +621,15 @@ const toggleProfileIgnore = async (profile: any) => {
   }
 }
 
-
-import { onUnmounted } from 'vue'
-onUnmounted(() => {
-  Object.values(pollingIntervals).forEach((interval) => clearInterval(interval))
-})
-
 onMounted(async () => {
+  document.addEventListener('click', onDocumentClick)
   await loadConfigs()
   await loadTaskStatuses()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+  Object.values(pollingIntervals).forEach((interval) => clearInterval(interval))
 })
 </script>
 
@@ -639,7 +766,7 @@ onMounted(async () => {
     </div>
 
     <div class="w-full">
-      <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <section class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-visible">
         <div class="px-5 py-4 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h2 class="text-base font-black text-gray-900">已保存数据源</h2>
@@ -667,12 +794,15 @@ onMounted(async () => {
           <p class="text-sm font-bold text-gray-600">暂无数据源</p>
           <p class="text-xs text-gray-400 mt-1">先在左侧添加并测试连接。</p>
         </div>
-        <div v-else class="divide-y divide-gray-100">
+        <div v-else class="divide-y divide-gray-100 overflow-visible">
           <div
             v-for="item in filteredConfigs"
             :key="item.id"
-            class="p-4 hover:bg-gray-50 transition-colors"
-            :class="editingId === item.id ? 'bg-primary/5' : ''"
+            class="p-4 hover:bg-gray-50 transition-colors relative"
+            :class="[
+              editingId === item.id ? 'bg-primary/5' : '',
+              openActionMenuId === item.id ? 'z-40' : 'z-0',
+            ]"
           >
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <!-- 左侧基本信息与状态说明 -->
@@ -696,6 +826,15 @@ onMounted(async () => {
                   >
                     <span>⚠️</span>
                     <span>分析中断</span>
+                  </span>
+                  <!-- 用户主动中断 -->
+                  <span
+                    v-if="profilingTasks[item.id] && profilingTasks[item.id].status === 4"
+                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100 text-[10px] font-bold shrink-0"
+                    :title="profilingTasks[item.id].error_message"
+                  >
+                    <span>⏸</span>
+                    <span>已中断 {{ profilingTasks[item.id].processed_tables }}/{{ profilingTasks[item.id].total_tables }}</span>
                   </span>
                 </div>
                 <p class="text-xs font-mono text-gray-500 truncate">{{ item.host }}:{{ item.port }} / {{ item.database_name }}</p>
@@ -724,50 +863,98 @@ onMounted(async () => {
                         :style="{ width: `${(profilingTasks[item.id].processed_tables / profilingTasks[item.id].total_tables) * 100}%` }"
                       ></div>
                     </div>
-                    <span v-if="profilingTasks[item.id].current_table" class="text-[10px] text-gray-400 truncate max-w-[150px]">
+                    <span v-if="profilingTasks[item.id].current_table" class="text-[10px] text-gray-400 truncate max-w-[200px]">
                       分析中: {{ profilingTasks[item.id].current_table }}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <!-- 右侧按钮操作组 -->
-              <div class="flex flex-wrap items-center justify-start sm:justify-end gap-2 flex-shrink-0">
-                <!-- 关键主按钮：查看表资产画像 (与整体淡彩风格保持一致) -->
+              <!-- 右侧操作：主按钮 + 摸排菜单 + 更多 -->
+              <div class="flex items-center gap-1.5 flex-shrink-0">
                 <button
                   v-if="profilingTasks[item.id]?.status === 2"
                   @click="openTableProfiles(item)"
-                  class="px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 hover:bg-indigo-100 hover:text-indigo-700 text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
+                  class="px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 text-xs font-bold transition-all flex items-center gap-1"
                 >
-                  <svg class="w-3.5 h-3.5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                   </svg>
-                  <span>查看表资产画像</span>
+                  <span>查看画像</span>
                 </button>
 
-                <button
-                  @click="requestProfiling(item)"
-                  :disabled="profilingTasks[item.id]?.status === 1"
-                  class="px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50 transition-all border shadow-sm"
-                  :class="profilingTasks[item.id]?.status === 1 
-                    ? 'bg-gray-100 text-gray-400 border-gray-200' 
-                    : profilingTasks[item.id]?.status === 2
-                      ? 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                      : 'bg-primary/5 border-primary/10 text-primary hover:bg-primary/10'"
-                >
-                  {{ profilingTasks[item.id]?.status === 1 ? '摸排中...' : profilingTasks[item.id]?.status === 2 ? '重新摸排' : '智能摸排' }}
-                </button>
-                <button @click="editConfig(item)" class="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 text-xs font-bold shadow-sm transition-all">编辑</button>
-                <button @click="copyConfig(item)" class="px-3 py-1.5 rounded-lg bg-violet-50 border border-violet-100 text-violet-600 hover:bg-violet-100 text-xs font-bold shadow-sm transition-all">复制</button>
-                <button @click="testSavedConnection(item)" class="px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-100 text-xs font-bold shadow-sm transition-all">测试</button>
-                <button @click="openSqlDebug(item)" class="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-100 text-emerald-600 hover:bg-emerald-100 text-xs font-bold shadow-sm transition-all">调试</button>
-                <button
-                  @click="requestDeleteConfig(item)"
-                  :disabled="deletingId === item.id"
-                  class="px-3 py-1.5 rounded-lg bg-red-50 border border-red-100 text-red-500 hover:bg-red-100 text-xs font-bold disabled:opacity-50 shadow-sm transition-all"
-                >
-                  {{ deletingId === item.id ? '删除中' : '删除' }}
-                </button>
+                <div class="relative">
+                  <button
+                    @click.stop="toggleActionMenu(item.id, 'profile')"
+                    class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 text-xs font-bold transition-all flex items-center gap-1 disabled:opacity-50"
+                    :disabled="profilingTasks[item.id]?.status === 1 && cancellingProfilingId === item.id"
+                  >
+                    <span>{{ profilingTasks[item.id]?.status === 1 ? '摸排中' : '摸排' }}</span>
+                    <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                  </button>
+                  <div
+                    v-if="isActionMenuOpen(item.id, 'profile')"
+                    class="absolute right-0 bottom-full mb-1 w-48 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
+                    @click.stop
+                  >
+                    <template v-if="profilingTasks[item.id]?.status === 1">
+                      <button
+                        @click="handleProfileMenuAction(item, 'cancel')"
+                        :disabled="cancellingProfilingId === item.id"
+                        class="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 font-bold disabled:opacity-50"
+                      >
+                        {{ cancellingProfilingId === item.id ? '中断中...' : '中断摸排' }}
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        @click="handleProfileMenuAction(item, 'incremental')"
+                        class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50"
+                      >
+                        <div class="font-bold">{{ profilingActionLabel(item) }}</div>
+                        <div class="text-[10px] text-gray-400 mt-0.5">仅处理未完成及新增表</div>
+                      </button>
+                      <button
+                        v-if="profilingTasks[item.id] && [2, 3, 4].includes(profilingTasks[item.id].status)"
+                        @click="handleProfileMenuAction(item, 'full')"
+                        class="w-full text-left px-3 py-2 text-orange-600 hover:bg-orange-50 font-bold border-t border-gray-100"
+                      >
+                        强制全量
+                        <div class="text-[10px] text-orange-400 font-normal mt-0.5">覆盖已有画像，重新分析</div>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="relative">
+                  <button
+                    @click.stop="toggleActionMenu(item.id, 'more')"
+                    class="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-700 text-base font-bold transition-all flex items-center justify-center"
+                    title="更多操作"
+                  >
+                    ⋯
+                  </button>
+                  <div
+                    v-if="isActionMenuOpen(item.id, 'more')"
+                    class="absolute right-0 bottom-full mb-1 w-36 rounded-xl border border-gray-200 bg-white shadow-lg z-50 py-1 text-xs"
+                    @click.stop
+                  >
+                    <button @click="handleMoreMenuAction(item, 'test')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">测试连接</button>
+                    <button @click="handleMoreMenuAction(item, 'debug')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">SQL 调试</button>
+                    <button @click="handleMoreMenuAction(item, 'edit')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">编辑</button>
+                    <button @click="handleMoreMenuAction(item, 'copy')" class="w-full text-left px-3 py-2 text-gray-700 hover:bg-gray-50">复制</button>
+                    <div class="border-t border-gray-100 my-1"></div>
+                    <button
+                      @click="handleMoreMenuAction(item, 'delete')"
+                      :disabled="deletingId === item.id"
+                      class="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 font-bold disabled:opacity-50"
+                    >
+                      {{ deletingId === item.id ? '删除中' : '删除' }}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -913,12 +1100,12 @@ onMounted(async () => {
 
           <div class="p-6 space-y-4 max-h-[65vh] overflow-y-auto custom-scrollbar">
             <!-- 资产分析概览面板 (Overview stats) -->
-            <div v-if="!loadingViewProfiles && viewTableProfiles.length > 0" class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 shrink-0">
+            <div v-if="!loadingViewProfiles && profileStats" class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-gray-50/50 p-4 rounded-2xl border border-gray-100 shrink-0">
               <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
                 <span class="text-xl p-2 bg-primary/10 rounded-lg text-primary select-none">📊</span>
                 <div class="min-w-0">
                   <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">摸排资产总数</div>
-                  <div class="text-base font-black text-gray-800">{{ viewTableProfiles.length }} <span class="text-[10px] text-gray-400 font-normal">个</span></div>
+                  <div class="text-base font-black text-gray-800">{{ profileStats.total }} <span class="text-[10px] text-gray-400 font-normal">个</span></div>
                 </div>
               </div>
               <div class="bg-white p-3 rounded-xl border border-gray-200/60 shadow-sm flex items-center gap-3">
@@ -926,7 +1113,7 @@ onMounted(async () => {
                 <div class="min-w-0">
                   <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">物理表</div>
                   <div class="text-base font-black text-gray-800">
-                    {{ viewTableProfiles.filter(p => p.table_type !== 'view').length }}
+                    {{ profileStats.table_count }}
                     <span class="text-[10px] text-gray-400 font-normal">张</span>
                   </div>
                 </div>
@@ -936,7 +1123,7 @@ onMounted(async () => {
                 <div class="min-w-0">
                   <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">虚拟视图</div>
                   <div class="text-base font-black text-gray-800">
-                    {{ viewTableProfiles.filter(p => p.table_type === 'view').length }}
+                    {{ profileStats.view_count }}
                     <span class="text-[10px] text-gray-400 font-normal">个</span>
                   </div>
                 </div>
@@ -946,7 +1133,7 @@ onMounted(async () => {
                 <div class="min-w-0">
                   <div class="text-[10px] text-gray-400 font-bold uppercase tracking-wider truncate">字段画像总数</div>
                   <div class="text-base font-black text-gray-800">
-                    {{ viewTableProfiles.reduce((acc, p) => acc + (p.columns_profile?.length || 0), 0) }}
+                    {{ profileStats.field_count }}
                     <span class="text-[10px] text-gray-400 font-normal">个</span>
                   </div>
                 </div>
@@ -973,7 +1160,7 @@ onMounted(async () => {
                 :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
               >
                 <span>全部</span>
-                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ viewTableProfiles.length }}</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profileStats?.total || profilesTotal }}</span>
               </button>
               <button
                 v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
@@ -996,12 +1183,12 @@ onMounted(async () => {
             <div v-if="loadingViewProfiles" class="py-12 text-center text-sm text-gray-400">
               正在读取摸排资产结果...
             </div>
-            <div v-else-if="filteredViewProfiles.length === 0" class="py-12 text-center text-gray-400 text-sm italic bg-gray-50 rounded-xl">
+            <div v-else-if="viewTableProfiles.length === 0" class="py-12 text-center text-gray-400 text-sm italic bg-gray-50 rounded-xl">
               暂无匹配的摸排表记录。
             </div>
             <div v-else class="space-y-3">
               <div 
-                v-for="profile in filteredViewProfiles" 
+                v-for="profile in viewTableProfiles" 
                 :key="profile.table_name"
                 class="border border-gray-200/80 rounded-xl overflow-hidden shadow-sm hover:border-gray-300 transition-all"
                 :class="profile.is_ignored === 1 ? 'opacity-70 bg-gray-50/40' : 'bg-white'"
@@ -1089,9 +1276,15 @@ onMounted(async () => {
 
                 <!-- 展开的字段列表 -->
                 <div v-if="expandedTables[profile.table_name]" class="border-t border-gray-100 p-4 bg-white space-y-2">
-                  <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">字段画像定义 (Columns Profile)</div>
-                  
-                  <div v-if="!profile.columns_profile || profile.columns_profile.length === 0" class="text-xs text-gray-400 italic">
+                  <div class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                    字段画像定义 (Columns Profile)
+                    <span v-if="profile.columns_count" class="text-gray-300 font-normal ml-1">· {{ profile.columns_count }} 个字段</span>
+                  </div>
+
+                  <div v-if="loadingProfileDetails[profile.table_name]" class="text-xs text-gray-400 italic py-4 text-center">
+                    正在加载字段详情...
+                  </div>
+                  <div v-else-if="getProfileColumns(profile).length === 0" class="text-xs text-gray-400 italic">
                     暂无字段分析信息
                   </div>
                   <div v-else class="border border-gray-100 rounded-xl overflow-hidden">
@@ -1104,7 +1297,7 @@ onMounted(async () => {
                         </tr>
                       </thead>
                       <tbody class="divide-y divide-gray-100 text-gray-700">
-                        <tr v-for="col in profile.columns_profile" :key="col.name" class="hover:bg-gray-50 bg-white">
+                        <tr v-for="col in getProfileColumns(profile)" :key="col.name" class="hover:bg-gray-50 bg-white">
                           <td class="px-4 py-2 border-r border-gray-100 font-mono font-bold">{{ col.name }}</td>
                           <td class="px-4 py-2 border-r border-gray-100 text-primary font-medium">{{ col.term || '-' }}</td>
                           <td class="px-4 py-2 text-gray-500 leading-normal">{{ col.desc || '-' }}</td>
@@ -1112,6 +1305,29 @@ onMounted(async () => {
                       </tbody>
                     </table>
                   </div>
+                </div>
+              </div>
+
+              <!-- 分页 -->
+              <div v-if="profilesPages > 1" class="flex items-center justify-between pt-2 px-1">
+                <span class="text-xs text-gray-400">
+                  第 {{ profilesPage }} / {{ profilesPages }} 页，共 {{ profilesTotal }} 条
+                </span>
+                <div class="flex items-center gap-2">
+                  <button
+                    @click="goProfilePage(profilesPage - 1)"
+                    :disabled="profilesPage <= 1 || loadingViewProfiles"
+                    class="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-bold text-gray-600 disabled:opacity-40 hover:bg-gray-50"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    @click="goProfilePage(profilesPage + 1)"
+                    :disabled="profilesPage >= profilesPages || loadingViewProfiles"
+                    class="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-bold text-gray-600 disabled:opacity-40 hover:bg-gray-50"
+                  >
+                    下一页
+                  </button>
                 </div>
               </div>
             </div>
@@ -1129,9 +1345,11 @@ onMounted(async () => {
     <!-- 智能摸排确认 Modal -->
     <ConfirmModal
       v-if="profileTarget"
-      title="确认启动智能摸排"
-      :message="`智能摸排功能将对数据源 “${profileTarget.name}” 下所有的表和视图进行结构分析与数据采样，并调用大模型生成中文业务备注名、表用途和分类标签以辅助元数据导入。注意：逐表处理可能需要一些时间，且每个表的分析都需要消耗大模型的 Token。您确认启动吗？`"
-      confirm-text="确认启动"
+      :title="profileFullReset ? '确认强制全量摸排' : '确认启动智能摸排'"
+      :message="profileFullReset
+        ? `将对数据源 “${profileTarget.name}” 下所有表和视图强制重新进行 AI 分析，已有成功画像将被覆盖。大库可能耗时较长且消耗大量 Token，运行中可随时点击「中断」停止。确认强制全量吗？`
+        : `将对数据源 “${profileTarget.name}” 下未完成、失败及新增的表/视图进行摸排分析，已有成功画像将保留。大库可能耗时较长，运行中可随时点击「中断」停止。确认启动吗？`"
+      :confirm-text="profileFullReset ? '确认强制全量' : '确认启动'"
       cancel-text="取消"
       type="warning"
       @confirm="confirmProfiling"

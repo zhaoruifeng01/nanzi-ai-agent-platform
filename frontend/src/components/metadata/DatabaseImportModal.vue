@@ -109,72 +109,77 @@ const handleTestConnection = async () => {
 const activeTab = ref<'system' | 'profile'>('system')
 const tables = ref<{name: string, comment: string, type?: 'table' | 'view'}[]>([])
 const tableProfiles = ref<any[]>([])
+const profileStats = ref<any>(null)
 const loadingProfiles = ref(false)
+const profilesPage = ref(1)
+const profilesPageSize = ref(200)
+const profilesTotal = ref(0)
+const profilesPages = ref(0)
 const searchQuery = ref('')
 const importFilter = ref<'all' | 'unimported'>('unimported')
 const selectedTables = ref<string[]>([])
+let profileSearchDebounce: ReturnType<typeof setTimeout> | null = null
 
 const loadTableProfiles = async () => {
   if (!selectedConfigId.value) return
   loadingProfiles.value = true
   try {
-    const res = await metadataApi.listDbTableProfiles(selectedConfigId.value)
-    tableProfiles.value = res.data || []
+    const [statsRes, pageRes] = await Promise.all([
+      metadataApi.getDbTableProfileStats(selectedConfigId.value),
+      metadataApi.listDbTableProfiles(selectedConfigId.value, {
+        page: profilesPage.value,
+        page_size: profilesPageSize.value,
+        q: searchQuery.value.trim() || undefined,
+        tag: selectedProfileTag.value || undefined,
+        status: 2,
+        is_ignored: 0,
+      }),
+    ])
+    profileStats.value = statsRes.data
+    const data = pageRes.data || {}
+    tableProfiles.value = data.items || []
+    profilesTotal.value = data.total || 0
+    profilesPages.value = data.pages || 0
+    profilesPage.value = data.page || profilesPage.value
   } catch {
     tableProfiles.value = []
+    profileStats.value = null
   } finally {
     loadingProfiles.value = false
   }
 }
 
+const goImportProfilePage = async (page: number) => {
+  if (page < 1 || (profilesPages.value > 0 && page > profilesPages.value)) return
+  profilesPage.value = page
+  await loadTableProfiles()
+}
+
 const selectedProfileTag = ref<string | null>(null)
 const isTagsExpanded = ref(false)
 
-const toggleProfileTag = (tag: string) => {
+const toggleProfileTag = async (tag: string) => {
   if (selectedProfileTag.value === tag) {
     selectedProfileTag.value = null
   } else {
     selectedProfileTag.value = tag
-    const idx = availableTags.value.findIndex(t => t.name === tag)
+    const idx = availableTags.value.findIndex((t) => t.name === tag)
     if (idx >= 8) {
       isTagsExpanded.value = true
     }
   }
+  profilesPage.value = 1
+  await loadTableProfiles()
 }
 
-const availableTags = computed(() => {
-  const counts: Record<string, number> = {}
-  tableProfiles.value.forEach((p) => {
-    if (p.ai_tags && Array.isArray(p.ai_tags)) {
-      p.ai_tags.forEach((t) => {
-        if (t && t.trim()) {
-          const cleanTag = t.trim()
-          counts[cleanTag] = (counts[cleanTag] || 0) + 1
-        }
-      })
-    }
-  })
-  return Object.entries(counts)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-})
+const availableTags = computed(() => profileStats.value?.tags || [])
 
 const filteredTableProfiles = computed(() => {
   let list = tableProfiles.value
   if (importFilter.value === 'unimported') {
     list = list.filter((t) => !isTableImported(t.table_name))
   }
-  if (selectedProfileTag.value) {
-    list = list.filter((t) => t.ai_tags && t.ai_tags.includes(selectedProfileTag.value))
-  }
-  if (!searchQuery.value) return list
-  const q = searchQuery.value.toLowerCase()
-  return list.filter(t =>
-    t.table_name.toLowerCase().includes(q) ||
-    (t.ai_term && t.ai_term.toLowerCase().includes(q)) ||
-    (t.ai_description && t.ai_description.toLowerCase().includes(q)) ||
-    (t.ai_tags && t.ai_tags.some((tag: string) => tag.toLowerCase().includes(q)))
-  )
+  return list
 })
 
 const selectableFilteredProfiles = computed(() =>
@@ -218,6 +223,23 @@ const importedCountInRemote = computed(() =>
   tables.value.filter((t) => isTableImported(t.name)).length,
 )
 
+watch(searchQuery, () => {
+  if (activeTab.value !== 'profile' || !selectedConfigId.value || step.value !== 2) return
+  if (profileSearchDebounce) clearTimeout(profileSearchDebounce)
+  profileSearchDebounce = setTimeout(async () => {
+    profilesPage.value = 1
+    await loadTableProfiles()
+  }, 350)
+})
+
+watch(activeTab, async (tab) => {
+  if (tab === 'profile' && selectedConfigId.value && step.value === 2) {
+    profilesPage.value = 1
+    selectedProfileTag.value = null
+    await loadTableProfiles()
+  }
+})
+
 const handleNext = async () => {
   loading.value = true
   connError.value = ''
@@ -230,9 +252,9 @@ const handleNext = async () => {
     // 预加载已摸排的表结构草稿
     selectedProfileTag.value = null
     isTagsExpanded.value = false
+    profilesPage.value = 1
     await loadTableProfiles()
-    // 如果有智能摸排的表草稿，默认显示摸排 Tab 辅助选表
-    activeTab.value = tableProfiles.value.length > 0 ? 'profile' : 'system'
+    activeTab.value = (profileStats.value?.success_count || 0) > 0 ? 'profile' : 'system'
 
     step.value = 2
   } catch (e: any) {
@@ -435,8 +457,8 @@ const dbTypeColor = (type: string) => {
               @click="activeTab = 'profile'"
             >
               <span>🤖 智能摸排浏览</span>
-              <span v-if="tableProfiles.length > 0" class="px-1.5 py-0.5 text-[10px] bg-primary/10 text-primary rounded-full font-bold">
-                {{ tableProfiles.length }}
+              <span v-if="(profileStats?.success_count || 0) > 0" class="px-1.5 py-0.5 text-[10px] bg-primary/10 text-primary rounded-full font-bold">
+                {{ profileStats.success_count }}
               </span>
             </button>
           </div>
@@ -472,7 +494,7 @@ const dbTypeColor = (type: string) => {
               :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
             >
               <span>全部</span>
-              <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ tableProfiles.length }}</span>
+              <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profileStats?.success_count || profilesTotal }}</span>
             </button>
             <button
               v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
@@ -543,7 +565,7 @@ const dbTypeColor = (type: string) => {
                <div v-if="loadingProfiles" class="py-12 text-center text-sm text-gray-400">
                  加载智能摸排数据中...
                </div>
-               <div v-else-if="tableProfiles.length === 0" class="py-12 px-6 text-center text-gray-400 text-sm leading-relaxed">
+               <div v-else-if="profilesTotal === 0" class="py-12 px-6 text-center text-gray-400 text-sm leading-relaxed">
                  <p class="font-bold text-gray-500 mb-1">暂无智能摸排分析数据</p>
                  <p class="text-xs">请先前往数据源管理对该配置执行“智能摸排”，</p>
                  <p class="text-xs">分析完成后即可在此 Tab 快速浏览有中文业务释义的表资产。</p>
@@ -588,6 +610,37 @@ const dbTypeColor = (type: string) => {
                     <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
                       💡 备注名：{{ profile.ai_term }}
                     </div>
+                    <div
+                      v-if="profile.confidence_score != null"
+                      class="flex items-center gap-2 text-[11px] flex-wrap"
+                    >
+                      <div class="flex items-center gap-1 font-bold shrink-0">
+                        <span class="text-gray-400">业务可信度:</span>
+                        <span
+                          class="px-1 py-0.5 rounded text-[9px] font-black"
+                          :class="profile.confidence_score >= 80
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50'
+                            : profile.confidence_score >= 60
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200/50'
+                              : 'bg-red-50 text-red-700 border border-red-200/50'"
+                        >
+                          {{ profile.confidence_score }} 分
+                        </span>
+                        <span
+                          v-if="profile.is_temporary === 1"
+                          class="px-1.5 py-0.5 rounded text-[9px] bg-amber-100 text-amber-800 font-bold border border-amber-200/40"
+                        >
+                          低价值临时表
+                        </span>
+                      </div>
+                      <span
+                        v-if="profile.confidence_reason"
+                        class="text-gray-400 line-clamp-1"
+                        :title="profile.confidence_reason"
+                      >
+                        原因: {{ profile.confidence_reason }}
+                      </span>
+                    </div>
                     <p v-if="profile.ai_description" class="text-[11px] text-gray-500 leading-normal line-clamp-2">
                       用途：{{ profile.ai_description }}
                     </p>
@@ -603,8 +656,27 @@ const dbTypeColor = (type: string) => {
                     </div>
                   </div>
                </div>
-               <div v-if="tableProfiles.length > 0 && filteredTableProfiles.length === 0" class="p-12 text-center text-gray-400 text-sm italic">
-                 {{ importFilter === 'unimported' ? '暂无可导入的新表' : '未找到匹配的表' }}
+               <div v-if="profilesTotal > 0 && filteredTableProfiles.length === 0" class="p-12 text-center text-gray-400 text-sm italic">
+                 {{ importFilter === 'unimported' ? '当前页暂无可导入的新表，请翻页或调整筛选' : '未找到匹配的表' }}
+               </div>
+               <div v-if="profilesPages > 1" class="p-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
+                 <span class="text-xs text-gray-400">第 {{ profilesPage }} / {{ profilesPages }} 页</span>
+                 <div class="flex items-center gap-2">
+                   <button
+                     @click="goImportProfilePage(profilesPage - 1)"
+                     :disabled="profilesPage <= 1 || loadingProfiles"
+                     class="px-2.5 py-1 rounded-lg border border-gray-200 text-xs font-bold text-gray-600 disabled:opacity-40"
+                   >
+                     上一页
+                   </button>
+                   <button
+                     @click="goImportProfilePage(profilesPage + 1)"
+                     :disabled="profilesPage >= profilesPages || loadingProfiles"
+                     class="px-2.5 py-1 rounded-lg border border-gray-200 text-xs font-bold text-gray-600 disabled:opacity-40"
+                   >
+                     下一页
+                   </button>
+                 </div>
                </div>
              </template>
           </div>
@@ -612,7 +684,8 @@ const dbTypeColor = (type: string) => {
           <div class="text-xs text-gray-400 font-medium px-2 space-y-0.5 shrink-0">
             <div>
               已选择 <span class="text-primary font-bold">{{ selectedTables.length }}</span>
-              / 可导入 {{ activeTab === 'system' ? importableTables.length : tableProfiles.filter((t) => !isTableImported(t.table_name)).length }} 个表
+              / 可导入 {{ activeTab === 'system' ? importableTables.length : (profileStats?.success_count || profilesTotal) }} 个表
+              <span v-if="activeTab === 'profile' && profilesPages > 1" class="text-gray-300">（分页浏览）</span>
             </div>
             <div v-if="importedCountInRemote > 0" class="text-[11px] text-gray-400">
               当前数据集已有 {{ importedCountInRemote }} 张表，已自动禁用重复导入
