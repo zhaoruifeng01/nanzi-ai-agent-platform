@@ -642,6 +642,26 @@ const profileRemainingCount = computed(() => {
   return Math.max((task.total_tables || 0) - profileSuccessCount.value, 0)
 })
 
+const formatProfileTime = (iso?: string | null) => {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const lastProfiledAtLabel = computed(() => {
+  const at = profileStats.value?.last_profiled_at
+  if (!at) return ''
+  if (activeProfileTask.value?.status === 1) {
+    return `最近更新：${formatProfileTime(at)}`
+  }
+  return `上次摸排：${formatProfileTime(at)}`
+})
+
 watch(profilesSearchQuery, () => {
   if (!showProfilesTarget.value) return
   if (profilesSearchDebounce) clearTimeout(profilesSearchDebounce)
@@ -1146,6 +1166,10 @@ onUnmounted(() => {
                   <span v-if="activeProfileTask?.status === 1" class="text-blue-600 font-bold">
                     · 摸排进行中 {{ activeProfileTask.processed_tables }}/{{ activeProfileTask.total_tables }}，列表自动刷新
                   </span>
+                </p>
+                <p v-if="lastProfiledAtLabel" class="text-[11px] text-gray-400 mt-1 flex items-center gap-1">
+                  <span>🕐</span>
+                  <span>{{ lastProfiledAtLabel }}</span>
                 </p>
               </div>
             </div>

@@ -625,6 +625,7 @@ from app.schemas.db_connection import (
     DbTableProfileResponse,
     DbTableProfileStatsResponse,
     DbTableProfilePageResponse,
+    ProfileImportPreviewRequest,
 )
 from app.services.db_connection_service import DbConnectionService
 
@@ -816,6 +817,25 @@ async def get_db_table_profile_detail(
     if not profile:
         raise HTTPException(status_code=404, detail="表画像不存在")
     return profile
+
+
+@router.post("/db/connection-configs/{config_id}/import-preview-from-profiles", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def import_preview_from_profiles(
+    config_id: int,
+    payload: ProfileImportPreviewRequest,
+    conn: AsyncSession = Depends(get_db_session),
+):
+    """基于已摸排画像生成元数据导入预览，跳过重复 LLM 分析。"""
+    try:
+        result = await DbProfileService.build_import_preview_from_profiles(
+            conn, config_id, payload.table_names
+        )
+        return {"code": 200, "message": "success", "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to build import preview from profiles")
+        raise HTTPException(status_code=500, detail=f"生成导入预览失败: {str(e)}")
 
 
 class ToggleIgnoreRequest(BaseModel):

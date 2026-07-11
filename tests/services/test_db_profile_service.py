@@ -101,6 +101,40 @@ async def test_should_stop_when_task_cancelled():
         assert await DbProfileService._should_stop_profiling(1) is True
 
 
+def test_parse_column_types_from_ddl():
+    ddl = """
+    CREATE TABLE orders (
+      id INT PRIMARY KEY,
+      `user_name` VARCHAR(100),
+      created_at DATETIME
+    );
+    """
+    types = DbProfileService._parse_column_types_from_ddl(ddl)
+    assert types["id"] == "INT"
+    assert types["user_name"] == "VARCHAR(100)"
+    assert types["created_at"] == "DATETIME"
+
+
+def test_profile_to_import_table_maps_columns():
+    profile = MagicMock()
+    profile.table_name = "orders"
+    profile.ai_term = "订单表"
+    profile.ai_description = "存储订单"
+    profile.ai_tags = ["交易"]
+    profile.ddl = "CREATE TABLE orders (id INT, amount DECIMAL(10,2));"
+    profile.columns_profile = [
+        {"name": "id", "term": "订单ID", "desc": "主键"},
+        {"name": "amount", "term": "金额", "desc": "订单金额"},
+    ]
+
+    table = DbProfileService._profile_to_import_table(profile)
+    assert table["physical_name"] == "orders"
+    assert table["term"] == "订单表"
+    assert len(table["columns"]) == 2
+    assert table["columns"][0]["type"] == "INT"
+    assert table["columns"][1]["type"] == "DECIMAL(10,2)"
+
+
 def test_normalize_page_clamps_values():
     page, size = DbProfileService._normalize_page(0, 9999)
     assert page == 1

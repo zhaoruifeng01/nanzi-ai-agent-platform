@@ -357,6 +357,20 @@ class DbProfileService:
         )
         success_count = int(success_res.scalar() or 0)
 
+        importable_res = await db.execute(
+            select(func.count())
+            .select_from(DbTableProfile)
+            .where(base_filter, DbTableProfile.status == 2, DbTableProfile.is_ignored == 0)
+        )
+        importable_success_count = int(importable_res.scalar() or 0)
+
+        ignored_res = await db.execute(
+            select(func.count())
+            .select_from(DbTableProfile)
+            .where(base_filter, DbTableProfile.status == 2, DbTableProfile.is_ignored == 1)
+        )
+        ignored_count = int(ignored_res.scalar() or 0)
+
         field_res = await db.execute(
             select(func.coalesce(func.sum(func.json_length(DbTableProfile.columns_profile)), 0))
             .select_from(DbTableProfile)
@@ -382,12 +396,27 @@ class DbProfileService:
             for name, count in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
         ]
 
+        last_profiled_at = None
+        if success_count > 0:
+            last_res = await db.execute(
+                select(func.max(DbTableProfile.updated_at)).where(
+                    base_filter, DbTableProfile.status == 2
+                )
+            )
+            last_profiled_at = last_res.scalar()
+            task = await DbProfileService.get_task_status(db, config_id)
+            if task and task.status == TASK_STATUS_DONE and task.updated_at:
+                last_profiled_at = task.updated_at
+
         return DbTableProfileStatsResponse(
             total=total,
             table_count=table_count,
             view_count=view_count,
             field_count=field_count,
             success_count=success_count,
+            importable_success_count=importable_success_count,
+            ignored_count=ignored_count,
+            last_profiled_at=last_profiled_at,
             tags=tags,
         )
 
@@ -915,6 +944,150 @@ class DbProfileService:
             if not match:
                 raise ValueError(f"大模型返回内容无法解析为JSON: {raw}")
             return json.loads(match.group())
+
+    @staticmethod
+    def _parse_column_types_from_ddl(ddl: Optional[str]) -> Dict[str, str]:
+        """从建表 DDL 粗解析列名与类型，供导入预览补全字段类型。"""
+        if not ddl:
+            return {}
+        types: Dict[str, str] = {}
+        skip_prefixes = (
+            "PRIMARY", "KEY", "UNIQUE", "CONSTRAINT", "INDEX", "FOREIGN", "COMMENT", "--", "/*",
+        )
+
+        def _split_ddl_segments(body: str) -> List[str]:
+            segments: List[str] = []
+            current: List[str] = []
+            depth = 0
+            for ch in body:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth = max(depth - 1, 0)
+                if ch == "," and depth == 0:
+                    segment = "".join(current).strip()
+                    if segment:
+                        segments.append(segment)
+                    current = []
+                else:
+                    current.append(ch)
+            tail = "".join(current).strip()
+            if tail:
+                segments.append(tail)
+            return segments
+
+        def _extract_from_segment(segment: str):
+            line = segment.strip().rstrip(",")
+            if not line or line.upper().startswith(skip_prefixes):
+                return
+            match = re.match(
+                r'^[`"\[]?(\w+)[`"\]]?\s+([A-Za-z]+(?:\s*\([^)]*\))?)',
+                line,
+            )
+            if match:
+                types[match.group(1).lower()] = match.group(2).strip()
+
+        body_match = re.search(
+            r"CREATE\s+TABLE\s+[`\"\[]?\w+[`\"\]]?\s*\((.*)\)",
+            ddl,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if body_match:
+            for segment in _split_ddl_segments(body_match.group(1)):
+                _extract_from_segment(segment)
+            return types
+
+        for raw_line in ddl.splitlines():
+            line = raw_line.strip().rstrip(",")
+            if not line or line.upper().startswith(("CREATE", ")", *skip_prefixes)):
+                continue
+            _extract_from_segment(line)
+        return types
+
+    @staticmethod
+    def _profile_to_import_table(profile: DbTableProfile) -> Dict[str, Any]:
+        ddl_types = DbProfileService._parse_column_types_from_ddl(profile.ddl)
+        columns: List[Dict[str, Any]] = []
+        for col in profile.columns_profile or []:
+            if not isinstance(col, dict):
+                continue
+            physical_name = str(col.get("name") or "").strip()
+            if not physical_name:
+                continue
+            columns.append(
+                {
+                    "physical_name": physical_name,
+                    "term": str(col.get("term") or physical_name).strip(),
+                    "type": ddl_types.get(physical_name.lower(), "varchar"),
+                    "description": str(col.get("desc") or "").strip(),
+                    "enums": [],
+                    "synonyms": [],
+                }
+            )
+
+        synonyms = list(profile.ai_tags or []) if isinstance(profile.ai_tags, list) else []
+        return {
+            "physical_name": profile.table_name,
+            "term": (profile.ai_term or profile.table_name or "").strip(),
+            "description": (profile.ai_description or "").strip(),
+            "synonyms": synonyms,
+            "columns": columns,
+        }
+
+    @staticmethod
+    async def build_import_preview_from_profiles(
+        db: AsyncSession,
+        config_id: int,
+        table_names: List[str],
+    ) -> Dict[str, Any]:
+        """
+        将已摸排成功的表画像转换为元数据导入预览结构，避免导入时重复调用 LLM 分析。
+        """
+        if not table_names:
+            raise ValueError("请至少选择一张表")
+
+        normalized = []
+        seen = set()
+        for name in table_names:
+            key = str(name or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(key)
+
+        stmt = select(DbTableProfile).where(
+            DbTableProfile.connection_id == config_id,
+            DbTableProfile.table_name.in_(normalized),
+        )
+        res = await db.execute(stmt)
+        profiles = {p.table_name: p for p in res.scalars().all()}
+
+        missing = [name for name in normalized if name not in profiles]
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = f" 等 {len(missing)} 张" if len(missing) > 5 else ""
+            raise ValueError(f"以下表尚无摸排画像，请先在数据源管理中完成摸排：{preview}{suffix}")
+
+        not_ready = [
+            name
+            for name in normalized
+            if profiles[name].status != 2 or not profiles[name].columns_profile
+        ]
+        if not_ready:
+            preview = ", ".join(not_ready[:5])
+            suffix = f" 等 {len(not_ready)} 张" if len(not_ready) > 5 else ""
+            raise ValueError(f"以下表摸排未完成或缺少字段画像：{preview}{suffix}")
+
+        tables = [
+            DbProfileService._profile_to_import_table(profiles[name])
+            for name in normalized
+        ]
+        return {
+            "tables": tables,
+            "metrics": [],
+            "relationships": [],
+            "_source": "db_table_profiles",
+        }
 
     @staticmethod
     async def toggle_ignore(

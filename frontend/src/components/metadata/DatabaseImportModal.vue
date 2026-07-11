@@ -12,7 +12,7 @@ const props = withDefaults(defineProps<{
   importedTableNames: () => [],
 })
 
-const emit = defineEmits(['close', 'confirm'])
+const emit = defineEmits(['close', 'confirm', 'confirm-profile'])
 
 const { showToast } = useToast()
 const router = useRouter()
@@ -132,7 +132,6 @@ const loadTableProfiles = async () => {
         q: searchQuery.value.trim() || undefined,
         tag: selectedProfileTag.value || undefined,
         status: 2,
-        is_ignored: 0,
       }),
     ])
     profileStats.value = statsRes.data
@@ -174,6 +173,23 @@ const toggleProfileTag = async (tag: string) => {
 
 const availableTags = computed(() => profileStats.value?.tags || [])
 
+const formatProfileTime = (iso?: string | null) => {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const lastProfiledAtText = computed(() => {
+  const at = profileStats.value?.last_profiled_at
+  if (!at) return ''
+  return `上次摸排：${formatProfileTime(at)}`
+})
+
 const filteredTableProfiles = computed(() => {
   let list = tableProfiles.value
   if (importFilter.value === 'unimported') {
@@ -195,6 +211,9 @@ const importedTableSet = computed(() => {
   }
   return set
 })
+
+/** 仅向已有数据集追加表时为 true；新建数据集导入时不应出现「已在本数据集」 */
+const hasDatasetContext = computed(() => importedTableSet.value.size > 0)
 
 const isTableImported = (tableName: string) => {
   return importedTableSet.value.has(String(tableName || '').trim().toLowerCase())
@@ -219,9 +238,39 @@ const selectableFilteredTables = computed(() =>
   filteredTables.value.filter((t) => !isTableImported(t.name)),
 )
 
-const importedCountInRemote = computed(() =>
-  tables.value.filter((t) => isTableImported(t.name)).length,
+const importedCountInRemote = computed(() => {
+  if (!hasDatasetContext.value) return 0
+  return tables.value.filter((t) => isTableImported(t.name)).length
+})
+
+const profileSuccessTotal = computed(() => {
+  const stats = profileStats.value
+  if (!stats) return 0
+  if (stats.success_count) return stats.success_count
+  return (stats.importable_success_count ?? 0) + (stats.ignored_count ?? 0)
+})
+
+/** 摸排 Tab：当前还可勾选的画像表数（含摸排建议忽略的表，由用户自行决定） */
+const profileImportableTotal = computed(() => {
+  const pool = profileStats.value?.success_count ?? profilesTotal.value ?? 0
+  if (!hasDatasetContext.value) return pool
+  return Math.max(0, pool - importedCountInRemote.value)
+})
+
+const profileSkippedImportedCount = computed(() =>
+  hasDatasetContext.value ? importedCountInRemote.value : 0
 )
+
+const profileSuggestedIgnoreCount = computed(() => profileStats.value?.ignored_count ?? 0)
+
+const profileTabBadgeText = computed(() => {
+  const importable = profileImportableTotal.value
+  const total = profileSuccessTotal.value
+  if (hasDatasetContext.value && total > 0 && importable !== total) {
+    return `${importable}/${total}`
+  }
+  return String(importable || total || '')
+})
 
 watch(searchQuery, () => {
   if (activeTab.value !== 'profile' || !selectedConfigId.value || step.value !== 2) return
@@ -247,7 +296,7 @@ const handleNext = async () => {
     const res = await metadataApi.listDbTables(config.value)
     tables.value = res.data.data
     selectedTables.value = selectedTables.value.filter((name) => !isTableImported(name))
-    importFilter.value = importedCountInRemote.value > 0 ? 'unimported' : 'all'
+    importFilter.value = hasDatasetContext.value && importedCountInRemote.value > 0 ? 'unimported' : 'all'
 
     // 预加载已摸排的表结构草稿
     selectedProfileTag.value = null
@@ -272,11 +321,26 @@ const handleConfirm = async () => {
   }
   loading.value = true
   try {
+    if (activeTab.value === 'profile') {
+      if (!selectedConfigId.value) {
+        showToast('请先选择数据源', 'warning')
+        return
+      }
+      const res = await metadataApi.importPreviewFromProfiles(
+        selectedConfigId.value,
+        selectedTables.value
+      )
+      emit('confirm-profile', res.data.data)
+      showToast('已复用摸排画像，将跳过重复 AI 分析', 'success')
+      handleClose()
+      return
+    }
+
     const res = await metadataApi.getDbDdl(config.value, selectedTables.value)
     emit('confirm', res.data.data)
     handleClose()
-  } catch {
-    showToast('抓取 DDL 失败', 'error')
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || (activeTab.value === 'profile' ? '复用摸排画像失败' : '抓取 DDL 失败'), 'error')
   } finally {
     loading.value = false
   }
@@ -333,7 +397,7 @@ const dbTypeColor = (type: string) => {
 
 <template>
   <div v-if="show" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-100 flex flex-col max-h-[92vh] animate-fade-in-up">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden border border-gray-100 flex flex-col max-h-[92vh] animate-fade-in-up">
 
       <!-- Header -->
       <div class="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
@@ -447,20 +511,51 @@ const dbTypeColor = (type: string) => {
           <!-- 双 Tab 切换 -->
           <div class="flex border-b border-gray-100 shrink-0 text-sm">
             <button
-              :class="['px-4 py-2 font-bold transition-all border-b-2', activeTab === 'system' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700']"
+              :class="['px-4 py-2 font-bold transition-all border-b-2 flex items-center gap-1.5', activeTab === 'system' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700']"
               @click="activeTab = 'system'"
             >
-              系统表直连 (实时)
+              <span>系统表直连 (实时)</span>
+              <span v-if="tables.length > 0" class="px-1.5 py-0.5 text-[10px] bg-primary/10 text-primary rounded-full font-bold">
+                {{ tables.length }}
+              </span>
             </button>
             <button
               :class="['px-4 py-2 font-bold transition-all border-b-2 flex items-center gap-1.5', activeTab === 'profile' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700']"
               @click="activeTab = 'profile'"
             >
               <span>🤖 智能摸排浏览</span>
-              <span v-if="(profileStats?.success_count || 0) > 0" class="px-1.5 py-0.5 text-[10px] bg-primary/10 text-primary rounded-full font-bold">
-                {{ profileStats.success_count }}
+              <span
+                v-if="profileTabBadgeText"
+                class="px-1.5 py-0.5 text-[10px] bg-primary/10 text-primary rounded-full font-bold"
+                :title="profileSuccessTotal > profileImportableTotal ? `可导入 ${profileImportableTotal} / 摸排成功 ${profileSuccessTotal}` : undefined"
+              >
+                {{ profileTabBadgeText }}
               </span>
             </button>
+          </div>
+
+          <div
+            v-if="activeTab === 'profile'"
+            class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-gray-500 px-1 shrink-0"
+          >
+            <template v-if="lastProfiledAtText">
+              <span>🕐</span>
+              <span>{{ lastProfiledAtText }}</span>
+              <span class="text-gray-300">·</span>
+            </template>
+            <span v-if="profileSuccessTotal > 0">
+              摸排成功 <strong class="text-gray-700">{{ profileSuccessTotal }}</strong> 张
+            </span>
+            <span v-if="profileImportableTotal > 0" class="text-gray-400">
+              · 可勾选导入 <strong class="text-primary">{{ profileImportableTotal }}</strong> 张
+            </span>
+            <span v-if="profileSuggestedIgnoreCount > 0" class="text-amber-600">
+              · 其中 {{ profileSuggestedIgnoreCount }} 张摸排建议忽略（仍可导入）
+            </span>
+            <span v-if="profileSkippedImportedCount > 0" class="text-amber-600">
+              · 本数据集已有 {{ profileSkippedImportedCount }} 张（不可重复导入）
+            </span>
+            <span class="text-emerald-600 font-bold">· 导入时直接复用画像，无需重复 AI 分析</span>
           </div>
 
           <div class="flex items-center gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200 shrink-0">
@@ -470,8 +565,8 @@ const dbTypeColor = (type: string) => {
               v-model="importFilter"
               class="text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20 shrink-0"
             >
-              <option value="unimported">未导入</option>
-              <option value="all">全部</option>
+              <option value="unimported">{{ activeTab === 'profile' ? '仅可选' : '未导入' }}</option>
+              <option value="all">{{ activeTab === 'profile' ? '全部可选' : '全部' }}</option>
             </select>
             <button
               @click="toggleAll"
@@ -494,7 +589,7 @@ const dbTypeColor = (type: string) => {
               :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
             >
               <span>全部</span>
-              <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profileStats?.success_count || profilesTotal }}</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profilesTotal }}</span>
             </button>
             <button
               v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
@@ -632,6 +727,12 @@ const dbTypeColor = (type: string) => {
                         >
                           低价值临时表
                         </span>
+                        <span
+                          v-if="profile.is_ignored === 1"
+                          class="px-1.5 py-0.5 rounded text-[9px] bg-orange-50 text-orange-700 font-bold border border-orange-200/60"
+                        >
+                          摸排建议忽略
+                        </span>
                       </div>
                       <span
                         v-if="profile.confidence_reason"
@@ -684,10 +785,13 @@ const dbTypeColor = (type: string) => {
           <div class="text-xs text-gray-400 font-medium px-2 space-y-0.5 shrink-0">
             <div>
               已选择 <span class="text-primary font-bold">{{ selectedTables.length }}</span>
-              / 可导入 {{ activeTab === 'system' ? importableTables.length : (profileStats?.success_count || profilesTotal) }} 个表
-              <span v-if="activeTab === 'profile' && profilesPages > 1" class="text-gray-300">（分页浏览）</span>
+              / 可导入 {{ activeTab === 'system' ? importableTables.length : profileImportableTotal }} 个表
+              <span v-if="activeTab === 'profile' && profilesPages > 1" class="text-gray-300">（当前页浏览）</span>
             </div>
-            <div v-if="importedCountInRemote > 0" class="text-[11px] text-gray-400">
+            <div v-if="activeTab === 'profile' && profileSkippedImportedCount > 0" class="text-[11px] text-amber-600">
+              全选仅包含可新导入的表，{{ profileSkippedImportedCount }} 张已在本数据集不可重复勾选
+            </div>
+            <div v-else-if="activeTab === 'system' && importedCountInRemote > 0" class="text-[11px] text-gray-400">
               当前数据集已有 {{ importedCountInRemote }} 张表，已自动禁用重复导入
             </div>
           </div>
@@ -735,7 +839,7 @@ const dbTypeColor = (type: string) => {
             class="px-8 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-bold shadow-lg shadow-green-500/20 transition-all flex items-center gap-2 disabled:opacity-50"
           >
             <svg v-if="loading" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-            <span>确认导入 ({{ selectedTables.length }})</span>
+            <span>{{ activeTab === 'profile' ? '使用摸排画像导入' : '确认导入' }} ({{ selectedTables.length }})</span>
           </button>
         </div>
       </div>

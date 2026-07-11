@@ -232,6 +232,11 @@ export const metadataApi = {
     axios.get<any>(
       `${API_BASE}/db/connection-configs/${configId}/table-profiles/${encodeURIComponent(tableName)}`
     ),
+  importPreviewFromProfiles: (configId: number, tableNames: string[]) =>
+    axios.post<any>(
+      `${API_BASE}/db/connection-configs/${configId}/import-preview-from-profiles`,
+      { table_names: tableNames }
+    ),
   toggleDbTableProfileIgnore: (configId: number, tableName: string, isIgnored: number) =>
     axios.put<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles/ignore`, { table_name: tableName, is_ignored: isIgnored }),
 };

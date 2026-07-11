@@ -114,6 +114,9 @@ class DbTableProfileStatsResponse(BaseModel):
     view_count: int = 0
     field_count: int = 0
     success_count: int = 0
+    importable_success_count: int = 0
+    ignored_count: int = 0
+    last_profiled_at: Optional[datetime] = None
     tags: list[DbTableProfileTagStat] = Field(default_factory=list)
 
 
@@ -123,4 +126,8 @@ class DbTableProfilePageResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class ProfileImportPreviewRequest(BaseModel):
+    table_names: list[str] = Field(min_length=1)
 

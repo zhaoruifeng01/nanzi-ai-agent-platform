@@ -100,6 +100,46 @@ const previewData = ref<{
   relationships: []
 })
 
+const applyImportPreview = (data: any) => {
+  let tables: any[] = []
+  let metrics: any[] = []
+  let relationships: any[] = []
+
+  if (data.tables) {
+    tables = data.tables || []
+    metrics = data.metrics || []
+    relationships = data.relationships || []
+  } else {
+    tables = [data]
+    metrics = (data.metrics || []).map((m: any) => ({
+      ...m,
+      calculation_logic: m.calculation || m.calculation_logic || '',
+    }))
+    relationships = []
+  }
+
+  tables.forEach((t: any) => {
+    if (t.columns) {
+      t.columns.forEach((c: any) => {
+        c.type = normalizeType(c.type)
+      })
+    }
+  })
+
+  previewData.value = { tables, metrics, relationships }
+
+  if (previewData.value.tables.length > 0) {
+    const firstTable = previewData.value.tables[0]
+    datasetName.value = firstTable.physical_name + '_ds'
+    datasetDisplayName.value = (firstTable.term || firstTable.physical_name) + '数据集'
+  } else {
+    datasetName.value = `import_ds_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`
+    datasetDisplayName.value = '新数据集_' + new Date().toISOString().slice(0, 10)
+  }
+
+  step.value = 2
+}
+
 const handleAnalyze = async () => {
   if (!ddlText.value.trim()) return
   
@@ -121,54 +161,7 @@ const handleAnalyze = async () => {
     
     // Slight delay to let user see 100%
     setTimeout(() => {
-      // Support both single table dict or new ImportResult structure
-      const data = res.data.data
-      
-      let tables: any[] = []
-      let metrics: any[] = []
-      let relationships: any[] = []
-
-      if (data.tables) {
-         // New structure
-         tables = data.tables || []
-         metrics = data.metrics || []
-         relationships = data.relationships || []
-      } else {
-         // Fallback for single table legacy
-         tables = [data]
-         metrics = (data.metrics || []).map((m: any) => ({
-            ...m,
-            calculation_logic: m.calculation || m.calculation_logic || ''
-         }))
-         relationships = []
-      }
-
-      // Ensure all columns have a standardized type
-      tables.forEach((t: any) => {
-        if (t.columns) {
-          t.columns.forEach((c: any) => {
-            c.type = normalizeType(c.type)
-          })
-        }
-      })
-
-      previewData.value = {
-        tables,
-        metrics,
-        relationships
-      }
-      
-      // Auto-generate dataset name and display name
-      if (previewData.value.tables.length > 0) {
-          const firstTable = previewData.value.tables[0]
-          datasetName.value = firstTable.physical_name + '_ds'
-          datasetDisplayName.value = (firstTable.term || firstTable.physical_name) + '数据集'
-      } else {
-          datasetName.value = `import_ds_${new Date().toISOString().slice(0,10).replace(/-/g,'')}`
-          datasetDisplayName.value = '新数据集_' + new Date().toISOString().slice(0,10)
-      }
-      
-      step.value = 2
+      applyImportPreview(res.data.data)
       stopFakeProgress()
       analyzing.value = false
       showToast('智能分析完成', 'success')
@@ -281,6 +274,11 @@ const handleDbDdlConfirm = (ddl: string) => {
   } else {
     ddlText.value = ddl
   }
+}
+
+const handleProfileImportConfirm = (preview: any) => {
+  applyImportPreview(preview)
+  showToast('已使用摸排画像直接进入预览，无需重复分析', 'success')
 }
 
 // Helpers
@@ -653,9 +651,10 @@ const normalizeType = (rawType: string): string => {
   />
   <DatabaseImportModal 
     :show="showDbImportModal"
-    :imported-table-names="importedTableNames || []"
+    :imported-table-names="props.datasetId ? (props.importedTableNames || []) : []"
     @close="showDbImportModal = false"
     @confirm="handleDbDdlConfirm"
+    @confirm-profile="handleProfileImportConfirm"
   />
 </template>
 
