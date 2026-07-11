@@ -8,8 +8,11 @@ const props = withDefaults(defineProps<{
   show: boolean
   /** 当前数据集内已存在的物理表名，用于禁用重复导入 */
   importedTableNames?: string[]
+  /** 追加导入时锁定为数据集已绑定的数据源 name，跳过选数据源步骤 */
+  lockedDataSourceName?: string
 }>(), {
   importedTableNames: () => [],
+  lockedDataSourceName: '',
 })
 
 const emit = defineEmits(['close', 'confirm', 'confirm-profile'])
@@ -23,6 +26,20 @@ const loading = ref(false)
 const testing = ref(false)
 const testPassed = ref(false)
 const connError = ref('')
+const initializingLocked = ref(false)
+
+const isDataSourceLocked = computed(() => !!props.lockedDataSourceName?.trim())
+
+const selectedConfigName = computed(() => {
+  if (!selectedConfigId.value) return ''
+  return savedConfigs.value.find((c) => c.id === selectedConfigId.value)?.name || ''
+})
+
+const lockedConfig = computed(() => {
+  const lockedName = props.lockedDataSourceName?.trim()
+  if (!lockedName) return null
+  return savedConfigs.value.find((c) => c.name === lockedName) || null
+})
 
 // ─── 当前导入连接（由已保存数据源填充） ─────────────────────────────────────────────
 const config = ref({
@@ -44,8 +61,10 @@ onMounted(async () => {
 })
 
 watch(() => props.show, async (show) => {
-  if (show) {
-    await fetchSavedConfigs()
+  if (!show) return
+  await fetchSavedConfigs()
+  if (isDataSourceLocked.value) {
+    await enterLockedDataSourceFlow()
   }
 })
 
@@ -54,7 +73,7 @@ const fetchSavedConfigs = async () => {
   try {
     const res = await metadataApi.listDbConnectionConfigs()
     savedConfigs.value = res.data.data || []
-    if (!selectedConfigId.value && savedConfigs.value.length > 0) {
+    if (!isDataSourceLocked.value && !selectedConfigId.value && savedConfigs.value.length > 0) {
       applyDataSource(savedConfigs.value[0]!)
     }
   } catch {
@@ -89,6 +108,33 @@ const applyDataSource = (c: DbConnectionConfig) => {
   connError.value = ''
 }
 
+const enterLockedDataSourceFlow = async () => {
+  const lockedName = props.lockedDataSourceName?.trim()
+  if (!lockedName) return
+
+  initializingLocked.value = true
+  connError.value = ''
+  step.value = 1
+
+  const matched = savedConfigs.value.find((c) => c.name === lockedName)
+  if (!matched) {
+    connError.value = `数据集绑定的数据源「${lockedName}」在数据源管理中不存在，请先创建同名配置或修改数据集的数据源 ID`
+    initializingLocked.value = false
+    return
+  }
+
+  applyDataSource(matched)
+  testPassed.value = true
+  try {
+    await handleNext()
+  } catch (e: any) {
+    connError.value = e.response?.data?.detail || e.message || '加载表列表失败'
+    showToast('加载表列表失败', 'error')
+  } finally {
+    initializingLocked.value = false
+  }
+}
+
 // ─── 测试连接 ─────────────────────────────────────────────────────────────────
 const handleTestConnection = async () => {
   testing.value = true
@@ -120,6 +166,39 @@ const searchQuery = ref('')
 const importFilter = ref<'all' | 'unimported'>('unimported')
 const selectedTables = ref<string[]>([])
 let profileSearchDebounce: ReturnType<typeof setTimeout> | null = null
+
+const expandedProfileTables = ref<Record<string, boolean>>({})
+const profileDetailsCache = ref<Record<string, any>>({})
+const loadingProfileDetails = ref<Record<string, boolean>>({})
+
+const toggleProfileExpand = async (tableName: string) => {
+  const next = !expandedProfileTables.value[tableName]
+  expandedProfileTables.value[tableName] = next
+  if (!next || profileDetailsCache.value[tableName] || !selectedConfigId.value) return
+
+  loadingProfileDetails.value[tableName] = true
+  try {
+    const res = await metadataApi.getDbTableProfileDetail(selectedConfigId.value, tableName)
+    profileDetailsCache.value[tableName] = res.data
+  } catch {
+    showToast('加载字段详情失败', 'error')
+    expandedProfileTables.value[tableName] = false
+  } finally {
+    loadingProfileDetails.value[tableName] = false
+  }
+}
+
+const getProfileColumns = (profile: any) => {
+  const detail = profileDetailsCache.value[profile.table_name]
+  if (detail?.columns_profile) return detail.columns_profile
+  return []
+}
+
+const getProfileColumnChips = (profile: any) => {
+  const cols = getProfileColumns(profile)
+  if (cols.length) return cols
+  return []
+}
 
 const profileSortParams = computed(() => {
   if (profilesSort.value === 'confidence_desc') {
@@ -186,6 +265,13 @@ const toggleProfileTag = async (tag: string) => {
       isTagsExpanded.value = true
     }
   }
+  profilesPage.value = 1
+  await loadTableProfiles()
+}
+
+const clearProfileTag = async () => {
+  if (!selectedProfileTag.value) return
+  selectedProfileTag.value = null
   profilesPage.value = 1
   await loadTableProfiles()
 }
@@ -350,14 +436,20 @@ const handleConfirm = async () => {
         selectedConfigId.value,
         selectedTables.value
       )
-      emit('confirm-profile', res.data.data)
+      emit('confirm-profile', {
+        preview: res.data.data,
+        dataSourceName: selectedConfigName.value,
+      })
       showToast('已复用摸排画像，将跳过重复 AI 分析', 'success')
       handleClose()
       return
     }
 
     const res = await metadataApi.getDbDdl(config.value, selectedTables.value)
-    emit('confirm', res.data.data)
+    emit('confirm', {
+      ddl: res.data.data,
+      dataSourceName: selectedConfigName.value,
+    })
     handleClose()
   } catch (e: any) {
     showToast(e.response?.data?.detail || (activeTab.value === 'profile' ? '复用摸排画像失败' : '抓取 DDL 失败'), 'error')
@@ -397,6 +489,10 @@ const handleClose = () => {
   importFilter.value = 'unimported'
   testPassed.value = false
   connError.value = ''
+  initializingLocked.value = false
+  expandedProfileTables.value = {}
+  profileDetailsCache.value = {}
+  loadingProfileDetails.value = {}
   emit('close')
 }
 
@@ -439,7 +535,7 @@ const dbTypeColor = (type: string) => {
       <div class="flex-1 overflow-y-auto p-6">
 
         <!-- Step 1: Data Source -->
-        <div v-if="step === 1" class="space-y-4">
+        <div v-if="step === 1 && !isDataSourceLocked" class="space-y-4">
 
           <div v-if="loadingConfigs" class="py-12 text-center text-sm text-gray-400">
             加载数据源中...
@@ -526,8 +622,45 @@ const dbTypeColor = (type: string) => {
           </div>
         </div>
 
+        <!-- 追加导入：锁定数据源加载中或配置缺失 -->
+        <div v-else-if="step === 1 && isDataSourceLocked" class="space-y-4">
+          <div v-if="initializingLocked" class="py-12 text-center text-sm text-gray-500">
+            <svg class="animate-spin h-8 w-8 mx-auto mb-3 text-primary" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            正在加载数据集数据源「{{ lockedDataSourceName }}」的表列表...
+          </div>
+          <div v-else-if="connError" class="py-8 px-6 text-center border border-red-100 rounded-2xl bg-red-50/60">
+            <p class="text-sm text-red-600 leading-relaxed">{{ connError }}</p>
+          </div>
+        </div>
+
         <!-- Step 2: Select Tables -->
         <div v-else class="h-full flex flex-col gap-4">
+          <div
+            v-if="isDataSourceLocked"
+            class="flex items-start gap-3 p-3.5 rounded-xl bg-blue-50 border border-blue-100 shrink-0"
+          >
+            <div class="w-9 h-9 rounded-lg bg-white border border-blue-100 flex items-center justify-center text-lg shrink-0">
+              {{ dbTypeIcon(lockedConfig?.db_type || config.type) }}
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] font-bold text-blue-800 uppercase tracking-wider">当前数据集数据源（已锁定）</div>
+              <div class="flex items-center gap-2 mt-1 flex-wrap">
+                <span class="text-sm font-bold text-blue-900 font-mono">{{ lockedDataSourceName }}</span>
+                <span
+                  v-if="lockedConfig?.db_type"
+                  class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
+                  :class="dbTypeColor(lockedConfig.db_type)"
+                >
+                  {{ lockedConfig.db_type }}
+                </span>
+              </div>
+              <p v-if="lockedConfig" class="text-[11px] text-blue-600/80 font-mono mt-1 truncate">
+                {{ lockedConfig.host }}:{{ lockedConfig.port }} / {{ lockedConfig.database_name }}
+              </p>
+              <p class="text-[11px] text-blue-600/70 mt-1">追加导入仅允许从该数据源选表，不可切换其他数据源。</p>
+            </div>
+          </div>
+
           <!-- 双 Tab 切换 -->
           <div class="flex border-b border-gray-100 shrink-0 text-sm">
             <button
@@ -615,11 +748,11 @@ const dbTypeColor = (type: string) => {
           <div v-if="activeTab === 'profile' && availableTags.length > 0" class="flex flex-wrap items-center gap-1.5 px-1 shrink-0">
             <span class="text-xs font-bold text-gray-400 mr-1.5 select-none">快速过滤:</span>
             <button
-              @click="selectedProfileTag = null"
+              @click="clearProfileTag"
               :class="['px-2.5 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer flex items-center gap-1', !selectedProfileTag ? 'bg-primary text-white border-primary shadow-sm shadow-primary/20' : 'bg-gray-100 border-gray-200/50 hover:bg-gray-200/50 text-gray-600']"
             >
               <span>全部</span>
-                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profilesTotal }}</span>
+                <span :class="['text-[9px] px-1 py-0.2 rounded-full font-bold', !selectedProfileTag ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-500']">{{ profileSuccessTotal }}</span>
             </button>
             <button
               v-for="tag in (isTagsExpanded ? availableTags : availableTags.slice(0, 8))"
@@ -639,7 +772,10 @@ const dbTypeColor = (type: string) => {
             </button>
           </div>
 
-          <div class="flex-1 overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+          <div
+            class="flex-1 overflow-y-auto border border-gray-100 rounded-xl"
+            :class="activeTab === 'profile' ? 'p-3 bg-gray-50/40' : 'divide-y divide-gray-50'"
+          >
              <!-- Tab 1: 系统表直连 -->
              <template v-if="activeTab === 'system'">
                <div
@@ -695,102 +831,175 @@ const dbTypeColor = (type: string) => {
                  <p class="text-xs">请先前往数据源管理对该配置执行“智能摸排”，</p>
                  <p class="text-xs">分析完成后即可在此 Tab 快速浏览有中文业务释义的表资产。</p>
                </div>
-               <div
-                 v-else
-                 v-for="profile in filteredTableProfiles"
-                 :key="profile.table_name"
-                 @click="toggleTable(profile.table_name)"
-                 class="p-4 flex items-start gap-4 transition-colors"
-                 :class="isTableImported(profile.table_name)
-                   ? 'bg-gray-50/80 cursor-not-allowed opacity-70'
-                   : 'hover:bg-blue-50/30 cursor-pointer'"
-               >
-                  <div class="w-5 h-5 rounded border-2 flex items-center justify-center transition-all shrink-0 mt-0.5"
+               <div v-else class="space-y-3">
+                 <div
+                   v-for="profile in filteredTableProfiles"
+                   :key="profile.table_name"
+                   class="border border-gray-200/80 rounded-xl overflow-hidden shadow-sm transition-all"
+                   :class="[
+                     isTableImported(profile.table_name) ? 'opacity-70 bg-gray-50/60' : 'bg-white hover:border-gray-300',
+                     selectedTables.includes(profile.table_name) && !isTableImported(profile.table_name) ? 'ring-2 ring-primary/20 border-primary/30' : ''
+                   ]"
+                 >
+                   <div class="p-4 bg-gray-50/30 flex items-start gap-3">
+                     <div
+                       class="w-5 h-5 rounded border-2 flex items-center justify-center transition-all shrink-0 mt-1"
                        :class="isTableImported(profile.table_name)
-                         ? 'border-gray-200 bg-gray-100'
+                         ? 'border-gray-200 bg-gray-100 cursor-not-allowed'
                          : selectedTables.includes(profile.table_name)
-                           ? 'bg-primary border-primary'
-                           : 'border-gray-200 bg-white'">
-                     <svg v-if="!isTableImported(profile.table_name) && selectedTables.includes(profile.table_name)" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
-                     <svg v-else-if="isTableImported(profile.table_name)" class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-                  </div>
-                  <div class="flex flex-col gap-1 min-w-0 flex-1">
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <span class="text-sm font-mono truncate font-bold" :class="isTableImported(profile.table_name) ? 'text-gray-400' : 'text-gray-700'">{{ profile.table_name }}</span>
-                      <span
-                        v-if="isTableImported(profile.table_name)"
-                        class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-gray-100 text-gray-500 border border-gray-200"
-                      >
-                        已导入
-                      </span>
-                      <span
-                        v-else-if="profile.table_type"
-                        class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
-                        :class="profile.table_type === 'view' ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-blue-100 text-blue-700 border border-blue-200'"
-                      >
-                        {{ profile.table_type === 'view' ? '视图' : '表' }}
-                      </span>
-                      <span v-if="profile.status === 3" class="px-1.5 py-0.5 rounded text-[9px] bg-red-50 text-red-500 border border-red-100 font-bold" :title="profile.error_message">分析失败</span>
-                    </div>
-                    <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
-                      💡 备注名：{{ profile.ai_term }}
-                    </div>
-                    <div
-                      v-if="profile.confidence_score != null"
-                      class="flex items-center gap-2 text-[11px] flex-wrap"
-                    >
-                      <div class="flex items-center gap-1 font-bold shrink-0">
-                        <span class="text-gray-400">业务可信度:</span>
-                        <span
-                          class="px-1 py-0.5 rounded text-[9px] font-black"
-                          :class="profile.confidence_score >= 80
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50'
-                            : profile.confidence_score >= 60
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200/50'
-                              : 'bg-red-50 text-red-700 border border-red-200/50'"
-                        >
-                          {{ profile.confidence_score }} 分
-                        </span>
-                        <span
-                          v-if="profile.is_temporary === 1"
-                          class="px-1.5 py-0.5 rounded text-[9px] bg-amber-100 text-amber-800 font-bold border border-amber-200/40"
-                        >
-                          低价值临时表
-                        </span>
-                        <span
-                          v-if="profile.is_ignored === 1"
-                          class="px-1.5 py-0.5 rounded text-[9px] bg-orange-50 text-orange-700 font-bold border border-orange-200/60"
-                        >
-                          摸排建议忽略
-                        </span>
-                      </div>
-                      <span
-                        v-if="profile.confidence_reason"
-                        class="text-gray-400 line-clamp-1"
-                        :title="profile.confidence_reason"
-                      >
-                        原因: {{ profile.confidence_reason }}
-                      </span>
-                    </div>
-                    <p v-if="profile.ai_description" class="text-[11px] text-gray-500 leading-normal line-clamp-2">
-                      用途：{{ profile.ai_description }}
-                    </p>
-                    <div v-if="profile.ai_tags && profile.ai_tags.length > 0" class="flex flex-wrap gap-1 mt-1">
-                      <span 
-                        v-for="tag in profile.ai_tags" 
-                        :key="tag"
-                        @click.stop="toggleProfileTag(tag)"
-                        :class="['px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors cursor-pointer', selectedProfileTag === tag ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200']"
-                      >
-                        {{ tag }}
-                      </span>
-                    </div>
-                  </div>
+                           ? 'bg-primary border-primary cursor-pointer'
+                           : 'border-gray-200 bg-white cursor-pointer hover:border-primary/40'"
+                       @click.stop="toggleTable(profile.table_name)"
+                     >
+                       <svg v-if="!isTableImported(profile.table_name) && selectedTables.includes(profile.table_name)" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+                       <svg v-else-if="isTableImported(profile.table_name)" class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+                     </div>
+
+                     <div
+                       class="min-w-0 flex-1 space-y-1.5"
+                       :class="profile.status === 2 ? 'cursor-pointer' : 'cursor-default'"
+                       @click="profile.status === 2 && toggleProfileExpand(profile.table_name)"
+                     >
+                       <div class="flex items-center gap-2 flex-wrap">
+                         <span class="font-mono text-sm font-bold text-gray-900">{{ profile.table_name }}</span>
+                         <span
+                           v-if="isTableImported(profile.table_name)"
+                           class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-gray-100 text-gray-500 border border-gray-200"
+                         >
+                           已导入
+                         </span>
+                         <span
+                           v-else-if="profile.table_type"
+                           class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider"
+                           :class="profile.table_type === 'view' ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-blue-100 text-blue-700 border border-blue-200'"
+                         >
+                           {{ profile.table_type === 'view' ? '视图' : '表' }}
+                         </span>
+                         <span v-if="profile.is_ignored === 1" class="px-1.5 py-0.5 rounded text-[9px] bg-orange-50 text-orange-700 font-bold border border-orange-200/60">
+                           摸排建议忽略
+                         </span>
+                       </div>
+
+                       <div v-if="profile.ai_term" class="text-xs text-primary font-bold">
+                         💡 业务备注：{{ profile.ai_term }}
+                       </div>
+
+                       <div v-if="profile.confidence_score != null" class="flex items-center gap-2 text-[11px] flex-wrap">
+                         <div class="flex items-center gap-1 font-bold shrink-0">
+                           <span class="text-gray-400">业务可信度:</span>
+                           <span
+                             class="px-1 py-0.5 rounded text-[9px] font-black"
+                             :class="profile.confidence_score >= 80
+                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50'
+                               : profile.confidence_score >= 60
+                                 ? 'bg-amber-50 text-amber-700 border border-amber-200/50'
+                                 : 'bg-red-50 text-red-700 border border-red-200/50'"
+                           >
+                             {{ profile.confidence_score }} 分
+                           </span>
+                           <span
+                             v-if="profile.is_temporary === 1"
+                             class="px-1.5 py-0.5 rounded text-[9px] bg-amber-100 text-amber-800 font-bold border border-amber-200/40"
+                           >
+                             低价值临时表
+                           </span>
+                         </div>
+                         <span
+                           v-if="profile.confidence_reason"
+                           class="text-gray-400 line-clamp-1"
+                           :title="profile.confidence_reason"
+                         >
+                           原因: {{ profile.confidence_reason }}
+                         </span>
+                       </div>
+
+                       <p v-if="profile.ai_description" class="text-xs text-gray-500 leading-relaxed">
+                         用途：{{ profile.ai_description }}
+                       </p>
+
+                       <div v-if="profile.ai_tags && profile.ai_tags.length > 0" class="flex flex-wrap gap-1">
+                         <span
+                           v-for="tag in profile.ai_tags"
+                           :key="tag"
+                           @click.stop="toggleProfileTag(tag)"
+                           :class="['px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors cursor-pointer', selectedProfileTag === tag ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200']"
+                         >
+                           {{ tag }}
+                         </span>
+                       </div>
+
+                       <div v-if="getProfileColumnChips(profile).length > 0" class="flex flex-wrap gap-1.5 pt-1">
+                         <div
+                           v-for="col in getProfileColumnChips(profile).slice(0, 8)"
+                           :key="col.name"
+                           class="flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-100 rounded-md text-[10px] font-mono"
+                         >
+                           <span class="text-slate-600 font-bold">{{ col.name }}</span>
+                           <span class="text-slate-300">/</span>
+                           <span class="text-blue-500">{{ col.term || '?' }}</span>
+                         </div>
+                         <div
+                           v-if="(profile.columns_count || getProfileColumnChips(profile).length) > 8"
+                           class="px-2 py-0.5 bg-gray-50 border border-gray-100 rounded-md text-[10px] text-gray-400 font-medium"
+                         >
+                           +{{ Math.max((profile.columns_count || getProfileColumnChips(profile).length) - 8, 0) }} 更多字段
+                         </div>
+                       </div>
+                       <p v-else-if="profile.columns_count" class="text-[10px] text-gray-400 pt-1">
+                         共 {{ profile.columns_count }} 个字段 · 点击右侧展开查看字段画像
+                       </p>
+                     </div>
+
+                     <button
+                       v-if="profile.status === 2"
+                       type="button"
+                       class="text-gray-400 ml-1 shrink-0 transition-transform duration-200 p-1 hover:text-gray-600"
+                       :class="expandedProfileTables[profile.table_name] ? 'rotate-90' : ''"
+                       @click.stop="toggleProfileExpand(profile.table_name)"
+                     >
+                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                       </svg>
+                     </button>
+                   </div>
+
+                   <div v-if="expandedProfileTables[profile.table_name]" class="border-t border-gray-100 p-4 bg-white space-y-2">
+                     <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                       字段画像定义 (Columns Profile)
+                       <span v-if="profile.columns_count" class="text-gray-300 font-normal ml-1">· {{ profile.columns_count }} 个字段</span>
+                     </div>
+
+                     <div v-if="loadingProfileDetails[profile.table_name]" class="text-xs text-gray-400 italic py-4 text-center">
+                       正在加载字段详情...
+                     </div>
+                     <div v-else-if="getProfileColumns(profile).length === 0" class="text-xs text-gray-400 italic">
+                       暂无字段分析信息
+                     </div>
+                     <div v-else class="border border-gray-100 rounded-xl overflow-hidden">
+                       <table class="w-full text-left border-collapse text-xs">
+                         <thead>
+                           <tr class="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase">
+                             <th class="px-4 py-2 border-r border-gray-100 w-1/4">物理字段</th>
+                             <th class="px-4 py-2 border-r border-gray-100 w-1/4">业务术语/中文名</th>
+                             <th class="px-4 py-2">业务含义说明</th>
+                           </tr>
+                         </thead>
+                         <tbody class="divide-y divide-gray-100 text-gray-700">
+                           <tr v-for="col in getProfileColumns(profile)" :key="col.name" class="hover:bg-gray-50 bg-white">
+                             <td class="px-4 py-2 border-r border-gray-100 font-mono font-bold">{{ col.name }}</td>
+                             <td class="px-4 py-2 border-r border-gray-100 text-primary font-medium">{{ col.term || '-' }}</td>
+                             <td class="px-4 py-2 text-gray-500 leading-normal">{{ col.desc || '-' }}</td>
+                           </tr>
+                         </tbody>
+                       </table>
+                     </div>
+                   </div>
+                 </div>
                </div>
                <div v-if="profilesTotal > 0 && filteredTableProfiles.length === 0" class="p-12 text-center text-gray-400 text-sm italic">
                  {{ importFilter === 'unimported' ? '当前页暂无可导入的新表，请翻页或调整筛选' : '未找到匹配的表' }}
                </div>
-               <div v-if="profilesPages > 1" class="p-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50">
+               <div v-if="profilesPages > 1" class="p-3 border-t border-gray-100 flex items-center justify-between bg-gray-50/50 rounded-xl mt-3">
                  <span class="text-xs text-gray-400">第 {{ profilesPage }} / {{ profilesPages }} 页</span>
                  <div class="flex items-center gap-2">
                    <button
@@ -841,6 +1050,10 @@ const dbTypeColor = (type: string) => {
             <svg v-else-if="testPassed" class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
             <span>{{ testing ? '正在连接...' : testPassed ? '连接成功' : '测试连接' }}</span>
           </button>
+        </div>
+        <div v-else-if="isDataSourceLocked" class="flex items-center gap-2 text-sm text-gray-500">
+          <span class="font-bold text-gray-700">数据集数据源</span>
+          <span class="px-2 py-1 rounded-lg bg-primary/10 text-primary font-mono text-xs border border-primary/20">{{ lockedDataSourceName }}</span>
         </div>
         <div v-else>
           <button @click="step = 1" class="text-sm font-bold text-gray-400 hover:text-gray-600 transition-all flex items-center gap-1">
