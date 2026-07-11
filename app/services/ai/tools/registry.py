@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional, List
+from dataclasses import replace
 import inspect
 import time
 import logging
@@ -37,6 +38,8 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
+from app.services.ai.grounding.models import EvidenceType
+
 
 AGENTSCOPE_BUILTIN_TOOL_ALIASES: Dict[str, str] = {
     "exec_command": "Bash",
@@ -65,6 +68,101 @@ OFFICE_TOOL_PERMISSION_SCOPES = {
     "word_document_read": "read",
     "word_document_write": "ask",
 }
+
+# Tool capability metadata. Grounding policy consumes abstract evidence types only;
+# adding a tool does not require changing request or response rules.
+TOOL_EVIDENCE_TYPES = {
+    "get_dataset_schema": frozenset({EvidenceType.INTERNAL_DATA}),
+    "execute_sql_query": frozenset({EvidenceType.INTERNAL_DATA}),
+    "search_knowledge_base": frozenset({EvidenceType.INTERNAL_KNOWLEDGE}),
+    "jira_search": frozenset({EvidenceType.INTERNAL_KNOWLEDGE}),
+    "jira_get_projects": frozenset({EvidenceType.INTERNAL_KNOWLEDGE}),
+    "fetch_static_web_url": frozenset({EvidenceType.PUBLIC_WEB}),
+    "web_search_baidu": frozenset({EvidenceType.PUBLIC_WEB}),
+    "system_http_request": frozenset({EvidenceType.PUBLIC_WEB}),
+    "get_current_time": frozenset({EvidenceType.RUNTIME_STATE}),
+    "get_my_tasks": frozenset({EvidenceType.RUNTIME_STATE}),
+    "list_process": frozenset({EvidenceType.RUNTIME_STATE}),
+    "manage_process": frozenset({EvidenceType.RUNTIME_STATE}),
+    "exec_command": frozenset({EvidenceType.RUNTIME_STATE}),
+    "read_file": frozenset({EvidenceType.USER_FILE}),
+    "search_text": frozenset({EvidenceType.USER_FILE}),
+    "excel_document_read": frozenset({EvidenceType.USER_FILE}),
+    "word_document_read": frozenset({EvidenceType.USER_FILE}),
+    "memory_search": frozenset({EvidenceType.CONVERSATION_MEMORY}),
+    "fetch_user_long_term_memory": frozenset({EvidenceType.CONVERSATION_MEMORY}),
+}
+
+# 工具取证策略：
+# "non_empty"（默认）：仅在工具返回非空结果时记录凭证。
+# "allow_empty_success"：成功调用即使返回空结果也记录；错误和失败始终不记录
+#        （记忆检索、知识库搜索、文件读取 —— 未找到也应允许模型如实回答）。
+TOOL_EVIDENCE_POLICY: dict[str, str] = {
+    # 数据查询：查询成功但返回空行 = "暂无数据"，属于合法事实依据
+    "execute_sql_query": "allow_empty_success",
+    "get_dataset_schema": "allow_empty_success",
+    # 记忆/知识/文件检索：查无结果 = "未找到"，属于合法事实依据
+    "memory_search": "allow_empty_success",
+    "fetch_user_long_term_memory": "allow_empty_success",
+    "search_knowledge_base": "allow_empty_success",
+    "jira_search": "allow_empty_success",
+    "read_file": "allow_empty_success",
+    "search_text": "allow_empty_success",
+    "excel_document_read": "allow_empty_success",
+    "word_document_read": "allow_empty_success",
+}
+
+
+def resolve_tool_evidence_types(*names: str) -> frozenset[EvidenceType]:
+    """Resolve abstract evidence types for a configured or runtime tool name.
+
+    Lookup order:
+    1. Direct key in ``TOOL_EVIDENCE_TYPES`` (e.g. ``exec_command``).
+    2. AgentScope builtin native name and every alias that maps to it
+       (e.g. ``bash`` / ``Bash`` -> ``exec_command`` -> ``runtime_state``).
+    """
+    collected: set[EvidenceType] = set()
+    visited: set[str] = set()
+
+    def _collect_for_key(key: str) -> None:
+        if not key or key in visited:
+            return
+        visited.add(key)
+        evidence_types = TOOL_EVIDENCE_TYPES.get(key)
+        if evidence_types:
+            collected.update(evidence_types)
+
+    for name in names:
+        if not name:
+            continue
+        _collect_for_key(name)
+        native_name = AGENTSCOPE_BUILTIN_TOOL_ALIASES.get(name, name)
+        _collect_for_key(native_name)
+        for alias, target in AGENTSCOPE_BUILTIN_TOOL_ALIASES.items():
+            if target == native_name:
+                _collect_for_key(alias)
+
+    return frozenset(collected)
+
+
+def resolve_tool_evidence_policy(*names: str) -> str:
+    """Resolve evidence policy through configured, native, and reverse aliases."""
+    candidates: list[str] = []
+    for name in names:
+        if not name:
+            continue
+        native_name = AGENTSCOPE_BUILTIN_TOOL_ALIASES.get(name, name)
+        candidates.extend((name, native_name))
+        candidates.extend(
+            alias
+            for alias, target in AGENTSCOPE_BUILTIN_TOOL_ALIASES.items()
+            if target == native_name
+        )
+    for candidate in candidates:
+        policy = TOOL_EVIDENCE_POLICY.get(candidate)
+        if policy:
+            return policy
+    return "non_empty"
 
 
 class ToolRegistry:
@@ -215,30 +313,58 @@ class ToolRegistry:
 
         native_tool = cls._create_agentscope_builtin_tool(name)
         if native_tool is not None:
-            return runtime_tool_spec_from_native_agentscope_tool(native_tool, source_type="system")
+            spec = runtime_tool_spec_from_native_agentscope_tool(native_tool, source_type="system")
+            return cls._attach_evidence_metadata(name, spec)
 
         data_tool_spec = cls._create_chatbi_runtime_tool_spec(name)
         if data_tool_spec is not None:
-            return data_tool_spec
+            return cls._attach_evidence_metadata(name, data_tool_spec)
 
         if name in cls._registry:
             tool = cls._registry[name]
             perm_scope = OFFICE_TOOL_PERMISSION_SCOPES.get(name)
-            return runtime_tool_spec_from_legacy_tool(
+            spec = runtime_tool_spec_from_legacy_tool(
                 tool,
                 source_type="static",
                 permission_scope=perm_scope,
             )
+            return cls._attach_evidence_metadata(name, spec)
 
         db_tool = await cls._load_db_tool_with_source(name)
         if db_tool:
             tool, source_type = db_tool
-            return runtime_tool_spec_from_legacy_tool(tool, source_type=source_type)
+            spec = runtime_tool_spec_from_legacy_tool(tool, source_type=source_type)
+            return cls._attach_evidence_metadata(name, spec)
 
         tool = await cls.get_tool(name)
         if not tool:
             return None
-        return runtime_tool_spec_from_legacy_tool(tool, source_type="static")
+        spec = runtime_tool_spec_from_legacy_tool(tool, source_type="static")
+        return cls._attach_evidence_metadata(name, spec)
+
+    @staticmethod
+    def _attach_evidence_metadata(name: str, spec: Any) -> Any:
+        spec_name = str(getattr(spec, "name", "") or "")
+        existing = frozenset(getattr(spec, "evidence_types", None) or ())
+        existing_policy = getattr(spec, "evidence_policy", "non_empty") or "non_empty"
+
+        # 从静态表中查询 policy（name 优先，其次 spec.name）
+        policy = resolve_tool_evidence_policy(name, spec_name)
+
+        if existing:
+            # evidence_types 已由工具自身声明；若 policy 需升级则单独注入
+            if policy != existing_policy:
+                return replace(spec, evidence_policy=policy)
+            return spec
+
+        evidence_types = resolve_tool_evidence_types(name, spec_name)
+        if not evidence_types:
+            return spec
+        return replace(
+            spec,
+            evidence_types=evidence_types,
+            evidence_policy=policy,
+        )
 
     @classmethod
     async def get_tools(cls, tool_configs: List[Any]) -> list[Any]:

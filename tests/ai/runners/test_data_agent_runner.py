@@ -744,10 +744,13 @@ async def test_data_agent_runner_system_content_replaces_dataset_menu(data_confi
 
 @pytest.mark.asyncio
 async def test_data_agent_runner_reuses_previous_result_without_native_agent(data_config, monkeypatch):
+    from app.core.context import AgentContext, agent_context
     from app.services.ai.data_query_turn_classifier import (
         DataQueryTurnClassification,
         DataQueryTurnType,
     )
+    from app.services.ai.grounding.ledger import EvidenceLedger
+    from app.services.ai.grounding.models import EvidenceType
     from app.services.ai.intent_service import IntentType
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
 
@@ -805,19 +808,116 @@ async def test_data_agent_runner_reuses_previous_result_without_native_agent(dat
     )
     monkeypatch.setattr(runner, "_build_native_agent", forbidden_build_agent)
 
-    events = []
-    async for chunk in runner.execute(
-        [
-            {"role": "assistant", "content": "上一轮返回了用户状态。"},
-            {"role": "user", "content": "分析一下"},
-        ]
-    ):
-        events.append(chunk)
+    ledger = EvidenceLedger(user_id="42", conversation_id="conv-1")
+    context_token = agent_context.set(
+        AgentContext(
+            agent_id="data-agent",
+            agent_name="ChatBI",
+            user_id=42,
+            conversation_id="conv-1",
+            grounding_evidence_ledger=ledger,
+        )
+    )
+
+    try:
+        events = []
+        async for chunk in runner.execute(
+            [
+                {"role": "assistant", "content": "上一轮返回了用户状态。"},
+                {"role": "user", "content": "分析一下"},
+            ]
+        ):
+            events.append(chunk)
+    finally:
+        agent_context.reset(context_token)
 
     assert any(chunk.get("title") == "ChatBI 请求类别分析结果" for chunk in events)
     assert any(chunk.get("title") == "复用上一轮查询结果" for chunk in events)
     assert any(chunk.get("content") == "已基于上一轮结果完成分析。" for chunk in events)
     assert runner.turn_classification is reuse_turn
+    assert ledger.has_valid_evidence({EvidenceType.INTERNAL_DATA})
+    assert ledger.receipts[0].producer == "chatbi_previous_result"
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_does_not_issue_derived_evidence_for_history_only_reuse(
+    data_config, monkeypatch
+):
+    from app.core.context import AgentContext, agent_context
+    from app.services.ai.data_query_turn_classifier import (
+        DataQueryTurnClassification,
+        DataQueryTurnType,
+    )
+    from app.services.ai.grounding.ledger import EvidenceLedger
+    from app.services.ai.grounding.models import EvidenceType
+    from app.services.ai.intent_service import IntentType
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+    from app.services.ai.runtime.agentscope.compat import AIMessage
+
+    reuse_turn = DataQueryTurnClassification(
+        turn_type=DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        reasoning="测试：只存在历史展示文本",
+        requires_fresh_data=False,
+        requires_few_shot=False,
+        skip_intent_llm=True,
+        intent=IntentType.DATA_QUERY,
+    )
+
+    async def fake_resolve(*args, **kwargs):
+        return reuse_turn, None, 0.0
+
+    class FakeSynthesisLLM:
+        model_name = "synthesis-model"
+
+        async def astream(self, messages):
+            yield AIMessage(content="根据历史内容生成的分析。")
+
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        "app.services.ai.memory_service.memory_service.get_last_data_result",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.ai.runners.data_agent_runner.AgentConfigProvider.get_synthesis_llm",
+        AsyncMock(return_value=FakeSynthesisLLM()),
+    )
+
+    ledger = EvidenceLedger(user_id="42", conversation_id="conv-1")
+    context_token = agent_context.set(
+        AgentContext(
+            agent_id="data-agent",
+            agent_name="ChatBI",
+            user_id=42,
+            conversation_id="conv-1",
+            grounding_evidence_ledger=ledger,
+        )
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-history-only-reuse",
+        trace_buffer=[],
+        user_info={"user_id": 42},
+        conversation_id="conv-1",
+    )
+
+    try:
+        async for _chunk in runner.execute(
+            [
+                {
+                    "role": "assistant",
+                    "content": "上一轮数据结果：| 状态 | 数量 |\n|---|---|\n| 启用 | 8 |",
+                },
+                {"role": "user", "content": "可视化分析一下"},
+            ]
+        ):
+            pass
+    finally:
+        agent_context.reset(context_token)
+
+    assert not ledger.has_valid_evidence({EvidenceType.INTERNAL_DATA})
 
 
 @pytest.mark.asyncio
@@ -5677,12 +5777,15 @@ async def test_data_agent_runner_overrides_schema_retry_with_controlled_keywords
 
 
 @pytest.mark.asyncio
-async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data_config):
+async def test_data_agent_runner_auto_generates_plan_and_executes_high_risk_sql(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 
+    executed_args = []
+
     async def fake_sql(**kwargs):
-        raise AssertionError("SQL must be blocked before physical execution when plan is required")
+        executed_args.append(kwargs)
+        return {"columns": [{"name": "room"}, {"name": "ratio"}], "items": [["A", 0.8]]}
 
     spec = RuntimeToolSpec(
         name="execute_sql_query",
@@ -5704,6 +5807,7 @@ async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data
         trace_buffer=[],
         debug_options={"enable_sql_plan": True},
     )
+    runner._standalone_query = "按机房统计利用率"
     wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
 
     output = await wrapped.invoke(
@@ -5714,10 +5818,62 @@ async def test_data_agent_runner_blocks_high_risk_sql_without_required_plan(data
         }
     )
 
-    assert output.startswith("[SQL_PLAN_GATE]")
-    assert state.sql_plan_missing is True
-    assert runner._current_repair_kind(state) == "sql_plan_missing"
-    assert "<sql_plan>" in runner._build_repair_message(state)
+    assert executed_args == [
+        {
+            "sql": "SELECT room, SUM(used) / SUM(total) AS ratio FROM demo GROUP BY room",
+            "data_source": "mysql_aiagent",
+            "dataset_name": "demo",
+        }
+    ]
+    assert output == {"columns": [{"name": "room"}, {"name": "ratio"}], "items": [["A", 0.8]]}
+    assert state.sql_plan_seen is True
+    assert state.sql_plan_missing is False
+    assert state.sql_plan_auto_generated is True
+    assert state.sql_plan_payload["goal"] == "按机房统计利用率"
+    assert state.sql_plan_payload["tables"] == ["demo"]
+    assert state.sql_plan_payload["grain"] == "按 room 聚合"
+    details = runner._format_tool_details("execute_sql_query", output, state, executed_args[0])
+    assert "[平台自动 SQL Plan]" in details
+    assert '"goal": "按机房统计利用率"' in details
+
+
+@pytest.mark.asyncio
+async def test_data_agent_runner_refreshes_auto_plan_when_repair_changes_sql(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    async def fake_sql(**kwargs):
+        return {"rows": [{"value": 1}]}
+
+    spec = RuntimeToolSpec(
+        name="execute_sql_query",
+        description="Execute SQL",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=fake_sql,
+        permission_scope="read",
+    )
+    state = _DataRunState(
+        schema_completed=True,
+        requires_sql_plan=True,
+        schema_table_columns={"demo": ["room", "day", "used"]},
+    )
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-plan-refresh",
+        trace_buffer=[],
+        debug_options={"enable_sql_plan": True},
+    )
+    wrapped = runner._wrap_tools_with_schema_gate([spec], state)[0]
+
+    first_sql = "SELECT room, SUM(used) FROM demo GROUP BY room"
+    second_sql = "SELECT day, SUM(used) FROM demo GROUP BY day"
+    await wrapped.invoke({"sql": first_sql, "dataset_name": "demo", "data_source": "mysql"})
+    assert state.sql_plan_payload["grain"] == "按 room 聚合"
+
+    await wrapped.invoke({"sql": second_sql, "dataset_name": "demo", "data_source": "mysql"})
+
+    assert state.sql_plan_payload["grain"] == "按 day 聚合"
 
 
 def test_sql_error_repair_message_includes_error_taxonomy(data_config):

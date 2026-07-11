@@ -160,6 +160,13 @@ def format_tool_details(
         details = f"{details}\n\n[系统检测] SQL 存在性能安全风险（超限或笛卡尔积），已被沙箱网关拦截。"
     if tool_name == "execute_sql_query" and runner._is_sql_plan_gate_block(output):
         details = f"{details}\n\n[系统检测] 高风险 SQL 缺少结构化 SQL Plan，已拦截执行。"
+    if (
+        tool_name == "execute_sql_query"
+        and state.sql_plan_auto_generated
+        and state.sql_plan_payload
+    ):
+        plan_text = json.dumps(state.sql_plan_payload, ensure_ascii=False, indent=2)
+        details = f"{details}\n\n[平台自动 SQL Plan]\n{plan_text}"
     if tool_name == "execute_sql_query" and state.empty_sql_reason:
         details = f"{details}\n\n[系统检测] {state.empty_sql_reason}"
         if state.empty_filter_diagnostic_summary:
@@ -432,4 +439,3 @@ def apply_sql_tool_result(
     state.empty_filter_diagnostics = []
     state.empty_filter_diagnostic_summary = ""
     return parsed_output, True
-

@@ -6,12 +6,10 @@ import inspect
 from dataclasses import replace
 from typing import Any
 
-from app.services.ai.executors.prompts import DataQueryPrompts
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
 from app.services.ai.runners.chatbi.constants import (
     FAILED_SQL_REPEAT_GATE_PREFIX,
     SCHEMA_GATE_PREFIX,
-    SQL_PLAN_GATE_PREFIX,
     SQL_REPEAT_GATE_PREFIX,
     SQL_STATIC_GATE_PREFIX,
 )
@@ -70,12 +68,27 @@ def wrap_tools_with_schema_gate(runner: Any, tools: list[RuntimeToolSpec], state
                 )
             current_sql = str(kwargs.get("sql") or kwargs.get("query") or "").strip()
             current_sql_normalized = runner._normalize_sql_text(current_sql)
-            if state.requires_sql_plan and not state.sql_plan_seen:
-                state.sql_plan_missing = True
-                return (
-                    f"{SQL_PLAN_GATE_PREFIX} 高风险 SQL 执行前缺少结构化 SQL Plan，已阻止执行。\n"
-                    f"{DataQueryPrompts.HIGH_RISK_REQUIRE_PLAN}"
+            should_generate_sql_plan = state.requires_sql_plan and (
+                not state.sql_plan_seen
+                or (
+                    state.sql_plan_auto_generated
+                    and state.sql_plan_sql_normalized != current_sql_normalized
                 )
+            )
+            if should_generate_sql_plan:
+                from app.services.ai.runners.chatbi.sql_plan import build_platform_sql_plan
+
+                state.sql_plan_payload = build_platform_sql_plan(
+                    runner,
+                    state,
+                    sql=current_sql,
+                    data_source=str(kwargs.get("data_source") or ""),
+                    dataset_name=str(kwargs.get("dataset_name") or ""),
+                )
+                state.sql_plan_seen = True
+                state.sql_plan_missing = False
+                state.sql_plan_auto_generated = True
+                state.sql_plan_sql_normalized = current_sql_normalized
             if current_sql_normalized:
                 prior_failures = state.failed_sql_signatures.get(current_sql_normalized, 0)
                 if prior_failures >= 1:

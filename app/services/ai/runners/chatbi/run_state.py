@@ -54,6 +54,9 @@ class DataRunState:
     requires_sql_query: bool = True
     sql_plan_seen: bool = False
     sql_plan_missing: bool = False
+    sql_plan_auto_generated: bool = False
+    sql_plan_payload: dict[str, Any] = field(default_factory=dict)
+    sql_plan_sql_normalized: str = ""
     requires_fresh_data: bool = True
     text_window: str = ""
     start_synthesis: float = field(default_factory=time.time)
