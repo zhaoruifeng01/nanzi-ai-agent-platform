@@ -1043,6 +1043,38 @@ const isToolSelected = (toolName: string) => {
   );
 };
 
+const isAllMcpSelected = (serverName: string, tools: any[]) => {
+  if (!tools || tools.length === 0) return false;
+  return tools.every(tool => isToolSelected(tool.name));
+};
+
+const toggleSelectAllMcp = (serverName: string, tools: any[]) => {
+  if (!canEditVersion.value) return;
+  const currentTools = [...(versionForm.value.tools || [])];
+  const allSelected = isAllMcpSelected(serverName, tools);
+
+  if (allSelected) {
+    tools.forEach(tool => {
+      const idx = currentTools.findIndex(t =>
+        (typeof t === 'string' ? t === tool.name : (t as any).name === tool.name)
+      );
+      if (idx > -1) {
+        currentTools.splice(idx, 1);
+      }
+    });
+  } else {
+    tools.forEach(tool => {
+      const isSelected = currentTools.some(t =>
+        (typeof t === 'string' ? t === tool.name : (t as any).name === tool.name)
+      );
+      if (!isSelected) {
+        currentTools.push(tool.name);
+      }
+    });
+  }
+  versionForm.value.tools = currentTools;
+};
+
 const getToolCustomConfig = (toolName: string) => {
   const found = versionForm.value.tools?.find(t =>
     (typeof t !== 'string' && (t as any).name === toolName)
@@ -2519,40 +2551,72 @@ const formatDate = (dateStr: string) => {
             </div>
 
             <!-- MCP Tools -->
-            <div v-else class="grid grid-cols-1 gap-4 mt-2 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-gray-200 hover:scrollbar-thumb-gray-300">
+            <div v-else class="space-y-5 mt-2 max-h-[450px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-gray-200 hover:scrollbar-thumb-gray-300">
               <div v-if="mcpTools.length === 0" class="p-8 text-center text-gray-400 text-xs italic">
                 暂无已发布的 MCP 工具，请前往系统设置配置。
               </div>
-              <div v-else v-for="(tools, serverName) in groupedMcpTools" :key="serverName" class="space-y-2">
-                <div class="flex items-center space-x-2 py-1 sticky top-0 bg-white z-10">
-                  <div class="h-px bg-gray-200 flex-1"></div>
-                  <span class="text-[10px] font-black text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+              
+              <div v-else v-for="(tools, serverName) in groupedMcpTools" :key="serverName" class="space-y-3">
+                <!-- 精致分组贴片 Header 带全选控制 -->
+                <div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-indigo-50/60 border border-indigo-100/50 sticky top-0 bg-white z-10 shadow-sm mb-2 select-none">
+                  <span class="text-[10px] font-black text-indigo-600 uppercase tracking-widest flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                    </svg>
                     {{ serverName }} ({{ tools.length }})
                   </span>
-                  <div class="h-px bg-gray-200 flex-1"></div>
+                  
+                  <button 
+                    v-if="canEditVersion"
+                    @click="toggleSelectAllMcp(serverName, tools)"
+                    class="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 active:scale-95 transition-all flex items-center gap-1"
+                  >
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path v-if="isAllMcpSelected(serverName, tools)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                      <path v-else stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {{ isAllMcpSelected(serverName, tools) ? '取消全选' : '一键全选' }}
+                  </button>
                 </div>
 
-                <div class="grid grid-cols-1 gap-2">
+                <!-- 优化为双列网格 (Two-column Grid) -->
+                <div class="grid grid-cols-2 gap-3">
                   <div
                     v-for="tool in tools"
                     :key="tool.id"
                     @click="toggleTool(tool.name)"
-                    class="flex items-center p-2 rounded-lg border transition-all cursor-pointer"
-                    :class="isToolSelected(tool.name) ? 'border-indigo-500 bg-indigo-50 shadow-sm' : 'border-gray-100 hover:border-indigo-300 bg-gray-50/30'"
+                    class="flex items-start p-2.5 rounded-lg border transition-all select-none duration-150"
+                    :class="[
+                      isToolSelected(tool.name)
+                        ? 'border-indigo-500 bg-indigo-50/70 shadow-sm'
+                        : 'border-gray-200 hover:border-indigo-400/40 hover:bg-indigo-50/10',
+                      !canEditVersion ? 'cursor-default opacity-90' : 'cursor-pointer'
+                    ]"
                   >
+                    <!-- Checkbox 复选框 -->
                     <div
-                      class="w-4 h-4 rounded-sm border mr-3 flex items-center justify-center"
-                      :class="isToolSelected(tool.name) ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-gray-300'"
+                      class="w-3.5 h-3.5 rounded border mt-0.5 mr-2.5 flex items-center justify-center flex-shrink-0"
+                      :class="[
+                        isToolSelected(tool.name)
+                          ? 'bg-indigo-600 border-indigo-600'
+                          : 'bg-white border-gray-300',
+                        !canEditVersion ? 'opacity-50' : ''
+                      ]"
                     >
-                      <svg v-if="isToolSelected(tool.name)" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                      <svg v-if="isToolSelected(tool.name)" class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M5 13l4 4L19 7" />
                       </svg>
                     </div>
+
+                    <!-- 排版主次化与弱化服务名前缀 -->
                     <div class="flex-1 min-w-0">
-                      <div class="text-xs font-bold font-mono text-indigo-900">
-                        {{ tool.name }}
+                      <div class="text-[11px] font-bold font-mono flex items-center flex-wrap leading-tight text-gray-800">
+                        <span v-if="tool.name.includes(':')" class="text-gray-400 text-[9px] font-sans font-normal mr-0.5">
+                          {{ tool.name.split(':')[0] }}:
+                        </span>
+                        <span class="text-indigo-900">{{ tool.name.includes(':') ? tool.name.split(':')[1] : tool.name }}</span>
                       </div>
-                      <div class="text-[10px] text-gray-500 truncate italic">
+                      <div class="text-[10px] text-gray-400 mt-1 leading-snug line-clamp-2" :title="tool.description">
                         {{ tool.description }}
                       </div>
                     </div>
