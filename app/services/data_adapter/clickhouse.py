@@ -140,7 +140,14 @@ class ClickHouseAdapter(DataSourceAdapter):
         wait=wait_exponential(multiplier=0.5, min=0.5, max=5),
         retry=retry_if_exception_type((InterfaceError, OSError))
     )
-    async def preview(self, sql: str, limit: int = 100, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def preview(
+        self,
+        sql: str,
+        limit: int = 100,
+        params: Dict[str, Any] = None,
+        offset: int = 0,
+        include_total: bool = False,
+    ) -> Dict[str, Any]:
         """
         供数据源管理或 SQL Lab 调试的 Preview 接口，强制最大行数、限制超时和只读拦截
         """

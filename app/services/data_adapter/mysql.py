@@ -138,7 +138,14 @@ class MySQLAdapter(DataSourceAdapter):
                     "items": standardize_items(items)
                 }
 
-    async def preview(self, sql: str, limit: int = 100, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def preview(
+        self,
+        sql: str,
+        limit: int = 100,
+        params: Dict[str, Any] = None,
+        offset: int = 0,
+        include_total: bool = False,
+    ) -> Dict[str, Any]:
         """
         供数据源管理或 SQL Lab 调试的 Preview 接口，强制最大行数和只读拦截
         """
@@ -179,8 +186,15 @@ class MySQLAdapter(DataSourceAdapter):
         from app.services.pool_manager import DataSourcePoolManager
         pool = await DataSourcePoolManager.get_pool(self.source_id)
         
+        total_count = None
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
+                if include_total and not limit_match:
+                    count_sql = f"SELECT COUNT(*) AS _cnt FROM ({clean_sql}) AS _preview_cnt"
+                    await cursor.execute(count_sql)
+                    count_row = await cursor.fetchone()
+                    total_count = int(count_row[0]) if count_row else 0
+
                 logger.info(f"[MySQL Executor] 执行预览 SQL: {final_sql}")
                 await cursor.execute(final_sql)
                 rows = await cursor.fetchall()
@@ -194,9 +208,14 @@ class MySQLAdapter(DataSourceAdapter):
                 
         execution_time = (time.perf_counter() - start_time) * 1000
         
-        return {
+        result = {
             "columns": columns,
             "rows": standardize_items(items),
             "execution_time_ms": execution_time,
-            "scanned_rows": 0
+            "scanned_rows": 0,
+            "offset": offset,
+            "limit": limit,
         }
+        if total_count is not None:
+            result["total_count"] = total_count
+        return result

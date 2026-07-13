@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { metadataApi, type DbConnectionConfig } from '../../api/metadata'
 import { useToast } from '../../composables/useToast'
@@ -186,7 +186,7 @@ const profilesPage = ref(1)
 const profilesPageSize = ref(40)
 const profilesTotal = ref(0)
 const profilesPages = ref(0)
-const profilesSort = ref<'name_asc' | 'confidence_desc' | 'confidence_asc'>('name_asc')
+const profilesSort = ref<'default' | 'relevance' | 'confidence_desc' | 'confidence_asc' | 'name_asc' | 'name_desc' | 'term_asc'>('default')
 const searchQuery = ref('')
 const importFilter = ref<'all' | 'unimported'>('unimported')
 const selectedTables = ref<string[]>([])
@@ -200,11 +200,33 @@ const profilePreviewLoading = ref(false)
 const profileExpandedDataTable = ref<string | null>(null)
 const profileDataPreviewLoading = ref(false)
 const profileDataPreviewError = ref('')
-const profileDataPreviewData = ref<{ columns: { name: string }[]; rows: any[][] } | null>(null)
+const profileDataPreviewData = ref<{ columns: { name: string }[]; rows: any[][]; total_count?: number | null } | null>(null)
+
+const profileRelatedTables = ref<{
+  table_name: string
+  ai_term?: string
+  confidence: number
+  reason?: string
+  join_hint?: string
+}[]>([])
+const profileRelatedLoading = ref(false)
+const profileRelatedMessage = ref<string | null>(null)
+
+const profileListRef = ref<HTMLElement | null>(null)
+const profileRefreshing = ref(false)
 
 const profilePreviewItem = computed(() =>
   filteredTableProfiles.value.find((i) => i.table_name === profilePreviewTable.value)
 )
+
+const profileRowSerial = (idx: number) => (profilesPage.value - 1) * profilesPageSize.value + idx + 1
+const profilePreviewRowSerial = (idx: number) => idx + 1
+
+const scrollProfileListToTop = () => {
+  nextTick(() => {
+    if (profileListRef.value) profileListRef.value.scrollTop = 0
+  })
+}
 
 const colName = (col: string | { name: string }) => (typeof col === 'string' ? col : col.name)
 
@@ -222,6 +244,23 @@ const quoteTableName = (tableName: string) => {
     return `"${tableName.replace(/"/g, '""')}"`
   }
   return `\`${tableName.replace(/`/g, '``')}\``
+}
+
+const loadProfileRelatedTables = async (tableName: string) => {
+  if (!selectedConfigId.value) return
+  profileRelatedLoading.value = true
+  profileRelatedTables.value = []
+  profileRelatedMessage.value = null
+  try {
+    const res = await metadataApi.getDbTableProfileRelated(selectedConfigId.value, tableName)
+    profileRelatedTables.value = res.data?.items || []
+    profileRelatedMessage.value = res.data?.message || null
+  } catch {
+    profileRelatedTables.value = []
+    profileRelatedMessage.value = '加载关联表推荐失败'
+  } finally {
+    profileRelatedLoading.value = false
+  }
 }
 
 const loadProfilePreviewDetail = async (tableName: string) => {
@@ -247,6 +286,38 @@ const onProfileRowClick = (profile: any) => {
   if (profile.status !== 2) return
   profilePreviewTable.value = profile.table_name
   loadProfilePreviewDetail(profile.table_name)
+  loadProfileRelatedTables(profile.table_name)
+}
+
+const focusProfileRelatedTable = (tableName: string) => {
+  const profile = filteredTableProfiles.value.find((i) => i.table_name === tableName)
+  if (profile) {
+    onProfileRowClick(profile)
+    return
+  }
+  profilePreviewTable.value = tableName
+  loadProfilePreviewDetail(tableName)
+  loadProfileRelatedTables(tableName)
+}
+
+const isRelatedTableSelected = (tableName: string) => selectedTables.value.includes(tableName)
+
+const addRelatedToSelection = (tableName: string) => {
+  if (isTableImported(tableName) || isRelatedTableSelected(tableName)) return
+  selectedTables.value.push(tableName)
+  showToast(`已加入已选：${tableName}`, 'success')
+}
+
+const addAllRelatedToSelection = () => {
+  const toAdd = profileRelatedTables.value
+    .map((r) => r.table_name)
+    .filter((t) => !isTableImported(t) && !isRelatedTableSelected(t))
+  if (!toAdd.length) {
+    showToast('关联表均已在已选列表中', 'info')
+    return
+  }
+  selectedTables.value = [...selectedTables.value, ...toAdd]
+  showToast(`已加入 ${toAdd.length} 张关联表`, 'success')
 }
 
 const toggleProfileDataPreview = async (tableName: string) => {
@@ -265,7 +336,8 @@ const toggleProfileDataPreview = async (tableName: string) => {
     const res = await metadataApi.debugDbConnectionSql(
       selectedConfigId.value,
       `SELECT * FROM ${quoteTableName(tableName)}`,
-      10
+      10,
+      true
     )
     if (res.data?.code === 200) {
       profileDataPreviewData.value = res.data.data
@@ -289,26 +361,44 @@ const syncProfilePreviewSelection = () => {
   if (profilePreviewTable.value && !list.some((i) => i.table_name === profilePreviewTable.value)) {
     profilePreviewTable.value = list[0]?.table_name || null
     profilePreviewDetail.value = null
-    if (profilePreviewTable.value) loadProfilePreviewDetail(profilePreviewTable.value)
+    if (profilePreviewTable.value) {
+      loadProfilePreviewDetail(profilePreviewTable.value)
+      loadProfileRelatedTables(profilePreviewTable.value)
+    }
   } else if (!profilePreviewTable.value && list.length) {
     profilePreviewTable.value = list[0].table_name
     loadProfilePreviewDetail(list[0].table_name)
+    loadProfileRelatedTables(list[0].table_name)
   }
 }
 
 const profileSortParams = computed(() => {
-  if (profilesSort.value === 'confidence_desc') {
-    return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+  switch (profilesSort.value) {
+    case 'relevance':
+      return { sort_by: 'relevance' as const, sort_order: 'desc' as const }
+    case 'confidence_desc':
+      return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+    case 'confidence_asc':
+      return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
+    case 'name_desc':
+      return { sort_by: 'table_name' as const, sort_order: 'desc' as const }
+    case 'term_asc':
+      return { sort_by: 'ai_term' as const, sort_order: 'asc' as const }
+    case 'name_asc':
+      return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
+    default:
+      return { sort_by: 'default' as const, sort_order: 'desc' as const }
   }
-  if (profilesSort.value === 'confidence_asc') {
-    return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
-  }
-  return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
 })
 
-const loadTableProfiles = async () => {
+const loadTableProfiles = async (opts?: { silent?: boolean }) => {
   if (!selectedConfigId.value) return
-  loadingProfiles.value = true
+  const silent = opts?.silent && tableProfiles.value.length > 0
+  if (silent) {
+    profileRefreshing.value = true
+  } else {
+    loadingProfiles.value = true
+  }
   try {
     const [statsRes, pageRes] = await Promise.all([
       metadataApi.getDbTableProfileStats(selectedConfigId.value),
@@ -329,24 +419,31 @@ const loadTableProfiles = async () => {
     profilesPage.value = data.page || profilesPage.value
     syncProfilePreviewSelection()
   } catch {
-    tableProfiles.value = []
-    profileStats.value = null
+    if (!silent) {
+      tableProfiles.value = []
+      profileStats.value = null
+    }
   } finally {
-    loadingProfiles.value = false
+    if (silent) {
+      profileRefreshing.value = false
+    } else {
+      loadingProfiles.value = false
+    }
+    scrollProfileListToTop()
   }
 }
 
 const goImportProfilePage = async (page: number) => {
   if (page < 1 || (profilesPages.value > 0 && page > profilesPages.value)) return
   profilesPage.value = page
-  await loadTableProfiles()
+  await loadTableProfiles({ silent: true })
 }
 
-const setProfilesSort = async (sort: 'name_asc' | 'confidence_desc' | 'confidence_asc') => {
+const setProfilesSort = async (sort: typeof profilesSort.value) => {
   if (profilesSort.value === sort) return
   profilesSort.value = sort
   profilesPage.value = 1
-  await loadTableProfiles()
+  await loadTableProfiles({ silent: true })
 }
 
 const selectedProfileTag = ref<string | null>(null)
@@ -358,14 +455,14 @@ const toggleProfileTag = async (tag: string) => {
     selectedProfileTag.value = tag
   }
   profilesPage.value = 1
-  await loadTableProfiles()
+  await loadTableProfiles({ silent: true })
 }
 
 const clearProfileTag = async () => {
   if (!selectedProfileTag.value) return
   selectedProfileTag.value = null
   profilesPage.value = 1
-  await loadTableProfiles()
+  await loadTableProfiles({ silent: true })
 }
 
 const availableTags = computed(() => profileStats.value?.tags || [])
@@ -474,14 +571,14 @@ watch(searchQuery, () => {
   if (profileSearchDebounce) clearTimeout(profileSearchDebounce)
   profileSearchDebounce = setTimeout(async () => {
     profilesPage.value = 1
-    await loadTableProfiles()
+    await loadTableProfiles({ silent: true })
   }, 350)
 })
 
 watch(activeTab, async (tab) => {
   if (tab === 'profile' && selectedConfigId.value && step.value === 2) {
     profilesPage.value = 1
-    profilesSort.value = 'name_asc'
+    profilesSort.value = 'default'
     selectedProfileTag.value = null
     profilePreviewTable.value = null
     profilePreviewDetail.value = null
@@ -831,6 +928,22 @@ const dbTypeColor = (type: string) => {
           <div class="flex items-center gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200 shrink-0">
             <svg class="w-5 h-5 text-gray-400 ml-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
             <input v-model="searchQuery" type="text" class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-1" placeholder="搜索表名或备注...">
+            <template v-if="activeTab === 'profile'">
+              <select
+                :value="profilesSort"
+                class="text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20 shrink-0"
+                title="排序方式"
+                @change="setProfilesSort(($event.target as HTMLSelectElement).value as typeof profilesSort)"
+              >
+                <option value="default">默认排序</option>
+                <option value="relevance">相关度优先</option>
+                <option value="confidence_desc">可信度 高→低</option>
+                <option value="confidence_asc">可信度 低→高</option>
+                <option value="name_asc">表名 A→Z</option>
+                <option value="name_desc">表名 Z→A</option>
+                <option value="term_asc">中文术语 A→Z</option>
+              </select>
+            </template>
             <template v-if="activeTab === 'system'">
               <select
                 v-model="importFilter"
@@ -906,10 +1019,10 @@ const dbTypeColor = (type: string) => {
             v-else
             class="flex flex-1 min-h-0 border border-gray-100 rounded-xl overflow-hidden bg-white"
           >
-            <div v-if="loadingProfiles" class="flex-1 flex items-center justify-center text-sm text-gray-400">
+            <div v-if="loadingProfiles && tableProfiles.length === 0" class="flex-1 flex items-center justify-center text-sm text-gray-400">
               加载智能摸排数据中...
             </div>
-            <div v-else-if="profilesTotal === 0" class="flex-1 flex items-center justify-center px-6 text-center text-gray-400 text-sm leading-relaxed">
+            <div v-else-if="profilesTotal === 0 && !profileRefreshing" class="flex-1 flex items-center justify-center px-6 text-center text-gray-400 text-sm leading-relaxed">
               <div>
                 <p class="font-bold text-gray-500 mb-1">暂无智能摸排分析数据</p>
                 <p class="text-xs">请先前往数据源管理对该配置执行「智能摸排」</p>
@@ -932,18 +1045,6 @@ const dbTypeColor = (type: string) => {
                     :class="importFilter === 'all' ? 'bg-primary text-white' : 'text-gray-600 hover:bg-white'"
                     @click="importFilter = 'all'"
                   >全部可选</button>
-                </div>
-                <div class="border-t p-2">
-                  <div class="px-1 text-[10px] font-bold text-gray-400 uppercase mb-1">排序</div>
-                  <select
-                    :value="profilesSort"
-                    class="w-full text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    @change="setProfilesSort(($event.target as HTMLSelectElement).value as 'name_asc' | 'confidence_desc' | 'confidence_asc')"
-                  >
-                    <option value="name_asc">表名 A-Z</option>
-                    <option value="confidence_desc">可信度 高→低</option>
-                    <option value="confidence_asc">可信度 低→高</option>
-                  </select>
                 </div>
                 <div v-if="availableTags.length" class="border-t p-2 flex-1 min-h-0">
                   <div class="px-1 text-[10px] font-bold text-gray-400 uppercase mb-1">标签</div>
@@ -974,12 +1075,12 @@ const dbTypeColor = (type: string) => {
                     <button type="button" class="px-2 py-0.5 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40" :disabled="profilesPage >= profilesPages || loadingProfiles" @click="goImportProfilePage(profilesPage + 1)">下一页</button>
                   </div>
                 </div>
-                <div class="flex-1 overflow-y-auto custom-scrollbar">
+                <div ref="profileListRef" class="flex-1 overflow-y-auto custom-scrollbar" :class="profileRefreshing ? 'opacity-60 pointer-events-none' : ''">
                   <div v-if="filteredTableProfiles.length === 0" class="py-16 text-center text-gray-400 text-xs px-4">
                     {{ importFilter === 'unimported' ? '当前页暂无可导入的新表' : '未找到匹配的表' }}
                   </div>
                   <div
-                    v-for="profile in filteredTableProfiles"
+                    v-for="(profile, idx) in filteredTableProfiles"
                     :key="profile.table_name"
                     class="border-b"
                     :class="[
@@ -992,6 +1093,10 @@ const dbTypeColor = (type: string) => {
                       :class="profile.status === 2 ? 'cursor-pointer' : 'cursor-default'"
                       @click="onProfileRowClick(profile)"
                     >
+                      <span
+                        class="shrink-0 w-7 text-right text-[10px] font-semibold text-gray-400 tabular-nums pt-1"
+                        :title="`第 ${profileRowSerial(idx)} 条`"
+                      >{{ profileRowSerial(idx) }}</span>
                       <div
                         class="w-5 h-5 rounded border-2 flex items-center justify-center transition-all shrink-0 mt-0.5"
                         :class="isTableImported(profile.table_name)
@@ -1039,17 +1144,24 @@ const dbTypeColor = (type: string) => {
                       <div v-else-if="profileDataPreviewData" class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
                         <div class="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between">
                           <span class="text-[10px] font-bold text-gray-400">数据预览 (最多 10 行)</span>
-                          <span class="text-[10px] text-gray-400">{{ profileDataPreviewData.rows?.length || 0 }} 行</span>
+                          <span class="text-[10px] text-gray-400">
+                            <template v-if="profileDataPreviewData.total_count != null">
+                              {{ profileDataPreviewData.rows?.length || 0 }}/{{ profileDataPreviewData.total_count }} 条
+                            </template>
+                            <template v-else>{{ profileDataPreviewData.rows?.length || 0 }} 行</template>
+                          </span>
                         </div>
                         <div class="overflow-x-auto custom-scrollbar max-h-40">
                           <table class="min-w-full divide-y divide-gray-100">
                             <thead class="bg-gray-50 sticky top-0">
                               <tr>
+                                <th class="px-2 py-1.5 text-left text-[9px] font-bold text-gray-400 uppercase whitespace-nowrap w-8">#</th>
                                 <th v-for="col in profileDataPreviewData.columns" :key="colName(col)" class="px-2 py-1.5 text-left text-[9px] font-bold text-gray-400 uppercase whitespace-nowrap">{{ colName(col) }}</th>
                               </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-50">
                               <tr v-for="(row, rIdx) in profileDataPreviewData.rows" :key="rIdx">
+                                <td class="px-2 py-1 text-[10px] text-gray-400 tabular-nums font-semibold">{{ profilePreviewRowSerial(rIdx) }}</td>
                                 <td v-for="(cell, cIdx) in row" :key="cIdx" class="px-2 py-1 text-[10px] text-gray-600 whitespace-nowrap max-w-[140px] truncate" :title="cell === null || cell === undefined ? 'NULL' : String(cell)">{{ cell === null || cell === undefined ? 'NULL' : cell }}</td>
                               </tr>
                             </tbody>
@@ -1079,6 +1191,57 @@ const dbTypeColor = (type: string) => {
                       <span v-for="tg in profilePreviewItem.ai_tags" :key="tg" class="text-[9px] px-1.5 py-0.5 bg-white border rounded-full text-gray-600">{{ tg }}</span>
                     </div>
                   </template>
+
+                  <div class="mt-2 border border-primary/20 rounded-lg bg-primary/5 overflow-hidden">
+                    <div class="px-2.5 py-1.5 border-b border-primary/10 flex items-center justify-between gap-2">
+                      <span class="text-[10px] font-bold text-primary">可能关联的表</span>
+                      <button
+                        v-if="profileRelatedTables.length"
+                        type="button"
+                        class="text-[9px] font-bold text-primary hover:text-primary/80 px-1.5 py-0.5 rounded hover:bg-primary/10"
+                        @click="addAllRelatedToSelection"
+                      >全部加入</button>
+                    </div>
+                    <div v-if="profileRelatedLoading" class="px-2.5 py-3 text-[10px] text-gray-400 italic">分析关联中...</div>
+                    <div v-else-if="!profileRelatedTables.length" class="px-2.5 py-2 text-[10px] text-gray-500 leading-relaxed">
+                      {{ profileRelatedMessage || '暂无推荐，请确认该表已完成摸排' }}
+                    </div>
+                    <ul v-else class="max-h-32 overflow-y-auto custom-scrollbar divide-y divide-primary/10">
+                      <li
+                        v-for="rel in profileRelatedTables"
+                        :key="rel.table_name"
+                        class="px-2.5 py-2 hover:bg-white/70 transition-colors"
+                      >
+                        <div class="flex items-start justify-between gap-2">
+                          <button
+                            type="button"
+                            class="min-w-0 flex-1 text-left"
+                            @click="focusProfileRelatedTable(rel.table_name)"
+                          >
+                            <div class="font-mono text-[10px] font-bold text-gray-800 truncate" :title="rel.table_name">{{ rel.table_name }}</div>
+                            <div v-if="rel.ai_term" class="text-[9px] text-primary truncate">{{ rel.ai_term }}</div>
+                            <div class="text-[9px] text-gray-500 mt-0.5 line-clamp-2" :title="rel.reason">{{ rel.reason }}</div>
+                          </button>
+                          <div class="shrink-0 flex flex-col items-end gap-1">
+                            <span class="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded">{{ Math.round(rel.confidence * 100) }}%</span>
+                            <button
+                              type="button"
+                              class="text-[9px] font-bold px-1.5 py-0.5 rounded border transition-colors"
+                              :class="isTableImported(rel.table_name)
+                                ? 'text-gray-300 border-gray-100 cursor-not-allowed'
+                                : isRelatedTableSelected(rel.table_name)
+                                  ? 'text-gray-400 border-gray-200 cursor-default'
+                                  : 'text-primary border-primary/30 hover:bg-primary/10'"
+                              :disabled="isTableImported(rel.table_name) || isRelatedTableSelected(rel.table_name)"
+                              @click.stop="addRelatedToSelection(rel.table_name)"
+                            >{{ isTableImported(rel.table_name) ? '已导入' : (isRelatedTableSelected(rel.table_name) ? '已选' : '加入') }}</button>
+                          </div>
+                        </div>
+                        <div v-if="rel.join_hint" class="mt-1 text-[8px] font-mono text-gray-400 truncate" :title="rel.join_hint">{{ rel.join_hint }}</div>
+                      </li>
+                    </ul>
+                  </div>
+
                   <div v-if="profilePreviewLoading" class="text-[11px] text-gray-400 italic py-4 text-center">加载字段画像...</div>
                   <div v-else-if="profilePreviewDetail?.columns_profile?.length" class="border border-gray-100 rounded-lg overflow-hidden bg-white">
                     <div class="px-2 py-1.5 bg-gray-50 border-b text-[10px] font-bold text-gray-400">字段 ({{ profilePreviewDetail.columns_profile.length }})</div>

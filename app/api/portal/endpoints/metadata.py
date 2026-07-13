@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Any
+from typing import List, Any, Dict, Optional
 from pydantic import BaseModel
 import logging
 
@@ -692,6 +692,7 @@ async def delete_db_connection_config(
 class DebugSqlRequest(BaseModel):
     sql: str
     limit: int = 100
+    include_total: bool = False
 
 
 @router.post("/db/connection-configs/{config_id}/preview", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
@@ -716,7 +717,11 @@ async def preview_db_connection_sql(
 
     try:
         # 执行带有 SELECT 强安全性拦截与行数截断保护的 preview 方法
-        res = await adapter.preview(payload.sql, limit=min(max(int(payload.limit or 100), 1), 1000))
+        preview_kwargs: Dict[str, Any] = {
+            "limit": min(max(int(payload.limit or 100), 1), 1000),
+            "include_total": bool(payload.include_total),
+        }
+        res = await adapter.preview(payload.sql, **preview_kwargs)
         return {"code": 200, "data": res}
     except Exception as e:
         logger.exception("Failed to execute debug SQL query")
@@ -725,7 +730,6 @@ async def preview_db_connection_sql(
 
 from fastapi import BackgroundTasks
 from app.services.db_profile_service import DbProfileService
-from typing import Optional
 
 @router.post("/db/connection-configs/{config_id}/profile", response_model=DbProfileTaskResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])
 async def trigger_db_table_profiling(
@@ -808,6 +812,17 @@ async def list_db_table_profiles(
         sort_by=sort_by,
         sort_order=sort_order,
     )
+
+
+@router.get("/db/connection-configs/{config_id}/table-profiles/related", dependencies=[Depends(require_permission("element", "element:metadata:import"))])
+async def get_db_table_profile_related(
+    config_id: int,
+    table: str,
+    limit: int = 15,
+    conn: AsyncSession = Depends(get_db_session),
+):
+    """基于摸排画像推断可能关联的表（不依赖 meta_relationships）"""
+    return await DbProfileService.get_related_tables(conn, config_id, table, limit)
 
 
 @router.get("/db/connection-configs/{config_id}/table-profiles/{table_name}", response_model=DbTableProfileResponse, dependencies=[Depends(require_permission("element", "element:metadata:import"))])

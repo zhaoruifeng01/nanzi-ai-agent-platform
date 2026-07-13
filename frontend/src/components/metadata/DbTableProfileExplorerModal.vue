@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { metadataApi, type DbConnectionConfig } from '../../api/metadata'
 import { useToast } from '../../composables/useToast'
 
@@ -29,7 +29,7 @@ const loading = ref(false)
 const searchQ = ref('')
 const selectedTag = ref<string | null>(null)
 const listMode = ref<'completed' | 'all'>('completed')
-const sortMode = ref<'name_asc' | 'confidence_desc' | 'confidence_asc'>('name_asc')
+const sortMode = ref<'default' | 'relevance' | 'confidence_desc' | 'confidence_asc' | 'name_asc' | 'name_desc' | 'term_asc'>('default')
 const page = ref(1)
 const pageSize = 40
 const total = ref(0)
@@ -42,24 +42,55 @@ const previewLoading = ref(false)
 const expandedDataTable = ref<string | null>(null)
 const dataPreviewLoading = ref(false)
 const dataPreviewError = ref('')
-const dataPreviewData = ref<{ columns: { name: string }[]; rows: any[][] } | null>(null)
+const dataPreviewData = ref<{ columns: { name: string }[]; rows: any[][]; total_count?: number | null } | null>(null)
+
+const relatedTables = ref<{
+  table_name: string
+  ai_term?: string
+  confidence: number
+  reason?: string
+  join_hint?: string
+}[]>([])
+const relatedLoading = ref(false)
+const relatedMessage = ref<string | null>(null)
+
+const resultsListRef = ref<HTMLElement | null>(null)
 
 const togglingIgnore = ref<Record<string, boolean>>({})
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const totalPages = computed(() => Math.max(1, pages.value || Math.ceil(total.value / pageSize)))
+const rowSerial = (idx: number) => (page.value - 1) * pageSize + idx + 1
+const previewRowSerial = (idx: number) => idx + 1
+
+const scrollResultsToTop = () => {
+  nextTick(() => {
+    if (resultsListRef.value) resultsListRef.value.scrollTop = 0
+  })
+}
 const previewItem = computed(() => items.value.find((i) => i.table_name === previewTable.value))
 const availableTags = computed(() => profileStats.value?.tags || [])
 
+const refreshing = ref(false)
+
 const sortParams = computed(() => {
-  if (sortMode.value === 'confidence_desc') {
-    return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+  switch (sortMode.value) {
+    case 'relevance':
+      return { sort_by: 'relevance' as const, sort_order: 'desc' as const }
+    case 'confidence_desc':
+      return { sort_by: 'confidence_score' as const, sort_order: 'desc' as const }
+    case 'confidence_asc':
+      return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
+    case 'name_desc':
+      return { sort_by: 'table_name' as const, sort_order: 'desc' as const }
+    case 'term_asc':
+      return { sort_by: 'ai_term' as const, sort_order: 'asc' as const }
+    case 'name_asc':
+      return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
+    default:
+      return { sort_by: 'default' as const, sort_order: 'desc' as const }
   }
-  if (sortMode.value === 'confidence_asc') {
-    return { sort_by: 'confidence_score' as const, sort_order: 'asc' as const }
-  }
-  return { sort_by: 'table_name' as const, sort_order: 'asc' as const }
 })
 
 const formatProfileTime = (iso?: string | null) => {
@@ -105,7 +136,12 @@ const loadStats = async () => {
 
 const loadResults = async (opts?: { silent?: boolean }) => {
   if (!props.config) return
-  if (!opts?.silent) loading.value = true
+  const silent = opts?.silent && items.value.length > 0
+  if (silent) {
+    refreshing.value = true
+  } else {
+    loading.value = true
+  }
   try {
     const res = await metadataApi.listDbTableProfiles(props.config.id, {
       page: page.value,
@@ -129,19 +165,28 @@ const loadResults = async (opts?: { silent?: boolean }) => {
     if (previewTable.value && !items.value.some((i) => i.table_name === previewTable.value)) {
       previewTable.value = items.value[0]?.table_name || null
       previewDetail.value = null
-      if (previewTable.value) loadPreviewDetail(previewTable.value)
+      if (previewTable.value) {
+        loadPreviewDetail(previewTable.value)
+        loadRelatedTables(previewTable.value)
+      }
     } else if (!previewTable.value && items.value.length) {
       previewTable.value = items.value[0].table_name
       loadPreviewDetail(previewTable.value)
+      loadRelatedTables(previewTable.value)
     }
   } catch {
-    if (!opts?.silent) {
+    if (!silent) {
       showToast('获取摸排结果失败', 'error')
       items.value = []
       total.value = 0
     }
   } finally {
-    if (!opts?.silent) loading.value = false
+    if (silent) {
+      refreshing.value = false
+    } else {
+      loading.value = false
+    }
+    scrollResultsToTop()
   }
 }
 
@@ -156,7 +201,7 @@ const resetState = () => {
   searchQ.value = ''
   selectedTag.value = null
   listMode.value = 'completed'
-  sortMode.value = 'name_asc'
+  sortMode.value = 'default'
   page.value = 1
   total.value = 0
   pages.value = 0
@@ -165,13 +210,15 @@ const resetState = () => {
   expandedDataTable.value = null
   dataPreviewData.value = null
   dataPreviewError.value = ''
+  relatedTables.value = []
+  relatedMessage.value = null
 }
 
 const scheduleSearch = () => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => {
     page.value = 1
-    loadResults()
+    loadResults({ silent: true })
   }, 300)
 }
 
@@ -180,20 +227,37 @@ const setListMode = async (mode: 'completed' | 'all') => {
   listMode.value = mode
   selectedTag.value = null
   page.value = 1
-  await loadResults()
+  await loadResults({ silent: true })
 }
 
 const setSortMode = async (sort: typeof sortMode.value) => {
   if (sortMode.value === sort) return
   sortMode.value = sort
   page.value = 1
-  await loadResults()
+  await loadResults({ silent: true })
 }
 
 const selectTag = async (tag: string | null) => {
   selectedTag.value = selectedTag.value === tag ? null : tag
   page.value = 1
-  await loadResults()
+  await loadResults({ silent: true })
+}
+
+const loadRelatedTables = async (tableName: string) => {
+  if (!props.config) return
+  relatedLoading.value = true
+  relatedTables.value = []
+  relatedMessage.value = null
+  try {
+    const res = await metadataApi.getDbTableProfileRelated(props.config.id, tableName)
+    relatedTables.value = res.data?.items || []
+    relatedMessage.value = res.data?.message || null
+  } catch {
+    relatedTables.value = []
+    relatedMessage.value = '加载关联表推荐失败'
+  } finally {
+    relatedLoading.value = false
+  }
 }
 
 const loadPreviewDetail = async (tableName: string) => {
@@ -214,6 +278,18 @@ const onRowClick = (profile: any) => {
   if (profile.status !== 2) return
   previewTable.value = profile.table_name
   loadPreviewDetail(profile.table_name)
+  loadRelatedTables(profile.table_name)
+}
+
+const focusRelatedTable = (tableName: string) => {
+  const profile = items.value.find((i) => i.table_name === tableName)
+  if (profile) {
+    onRowClick(profile)
+    return
+  }
+  previewTable.value = tableName
+  loadPreviewDetail(tableName)
+  loadRelatedTables(tableName)
 }
 
 const toggleDataPreview = async (tableName: string) => {
@@ -232,7 +308,8 @@ const toggleDataPreview = async (tableName: string) => {
     const res = await metadataApi.debugDbConnectionSql(
       props.config.id,
       `SELECT * FROM ${quoteTableName(tableName)}`,
-      10
+      10,
+      true
     )
     if (res.data?.code === 200) {
       dataPreviewData.value = res.data.data
@@ -308,7 +385,7 @@ watch(
 )
 
 watch(page, () => {
-  if (props.show) loadResults()
+  if (props.show) loadResults({ silent: true })
 })
 
 defineExpose({ refresh })
@@ -356,8 +433,8 @@ defineExpose({ refresh })
       </div>
 
       <!-- Search -->
-      <div class="px-5 py-2.5 border-b shrink-0">
-        <div class="relative">
+      <div class="px-5 py-2.5 border-b shrink-0 flex items-center gap-2">
+        <div class="relative flex-1 min-w-0">
           <svg class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
           </svg>
@@ -369,6 +446,20 @@ defineExpose({ refresh })
             @input="scheduleSearch"
           >
         </div>
+        <select
+          :value="sortMode"
+          class="shrink-0 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          title="排序方式"
+          @change="setSortMode(($event.target as HTMLSelectElement).value as typeof sortMode)"
+        >
+          <option value="default">默认排序</option>
+          <option value="relevance">相关度优先</option>
+          <option value="confidence_desc">可信度 高→低</option>
+          <option value="confidence_asc">可信度 低→高</option>
+          <option value="name_asc">表名 A→Z</option>
+          <option value="name_desc">表名 Z→A</option>
+          <option value="term_asc">中文术语 A→Z</option>
+        </select>
       </div>
 
       <div class="flex flex-1 min-h-0">
@@ -392,18 +483,6 @@ defineExpose({ refresh })
             >
               全部表 ({{ profileStats?.total ?? 0 }})
             </button>
-          </div>
-          <div class="border-t p-2">
-            <div class="px-1 text-[10px] font-bold text-gray-400 uppercase mb-1">排序</div>
-            <select
-              :value="sortMode"
-              class="w-full text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/20"
-              @change="setSortMode(($event.target as HTMLSelectElement).value as typeof sortMode)"
-            >
-              <option value="name_asc">表名 A-Z</option>
-              <option value="confidence_desc">可信度 高→低</option>
-              <option value="confidence_asc">可信度 低→高</option>
-            </select>
           </div>
           <div v-if="availableTags.length" class="border-t p-2 flex-1 min-h-0">
             <div class="px-1 text-[10px] font-bold text-gray-400 uppercase mb-1">标签</div>
@@ -440,15 +519,16 @@ defineExpose({ refresh })
             </div>
           </div>
 
-          <div class="flex-1 overflow-y-auto custom-scrollbar">
-            <div v-if="loading" class="py-16 text-center text-gray-400 text-sm">加载中...</div>
+          <div ref="resultsListRef" class="flex-1 overflow-y-auto custom-scrollbar relative">
+            <div v-if="loading && !items.length" class="py-16 text-center text-gray-400 text-sm">加载中...</div>
             <div v-else-if="!items.length" class="py-16 text-center text-gray-400 text-xs px-6">
               <template v-if="listMode === 'completed' && profilingTask?.status === 1">暂无已完成画像，请稍候…</template>
               <template v-else>暂无匹配的摸排表记录</template>
             </div>
 
+            <div v-else :class="refreshing ? 'opacity-60 pointer-events-none' : ''">
             <div
-              v-for="profile in items"
+              v-for="(profile, idx) in items"
               :key="profile.table_name"
               class="border-b"
               :class="[
@@ -461,6 +541,10 @@ defineExpose({ refresh })
                 :class="profile.status === 2 ? 'cursor-pointer' : 'cursor-default'"
                 @click="onRowClick(profile)"
               >
+                <span
+                  class="shrink-0 w-7 text-right text-[10px] font-semibold text-gray-400 tabular-nums pt-1"
+                  :title="`第 ${rowSerial(idx)} 条`"
+                >{{ rowSerial(idx) }}</span>
                 <div class="shrink-0 pt-0.5" @click.stop>
                   <button
                     type="button"
@@ -535,12 +619,18 @@ defineExpose({ refresh })
                 <div v-else-if="dataPreviewData" class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
                   <div class="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between">
                     <span class="text-[10px] font-bold text-gray-400">数据预览 (最多 10 行)</span>
-                    <span class="text-[10px] text-gray-400">{{ dataPreviewData.rows?.length || 0 }} 行</span>
+                    <span class="text-[10px] text-gray-400">
+                      <template v-if="dataPreviewData.total_count != null">
+                        {{ dataPreviewData.rows?.length || 0 }}/{{ dataPreviewData.total_count }} 条
+                      </template>
+                      <template v-else>{{ dataPreviewData.rows?.length || 0 }} 行</template>
+                    </span>
                   </div>
                   <div class="overflow-x-auto custom-scrollbar max-h-48">
                     <table class="min-w-full divide-y divide-gray-100">
                       <thead class="bg-gray-50 sticky top-0">
                         <tr>
+                          <th class="px-2 py-1.5 text-left text-[9px] font-bold text-gray-400 uppercase whitespace-nowrap w-8">#</th>
                           <th
                             v-for="col in dataPreviewData.columns"
                             :key="colName(col)"
@@ -550,6 +640,7 @@ defineExpose({ refresh })
                       </thead>
                       <tbody class="divide-y divide-gray-50">
                         <tr v-for="(row, rIdx) in dataPreviewData.rows" :key="rIdx" class="hover:bg-gray-50/80">
+                          <td class="px-2 py-1 text-[10px] text-gray-400 tabular-nums font-semibold">{{ previewRowSerial(rIdx) }}</td>
                           <td
                             v-for="(cell, cIdx) in row"
                             :key="cIdx"
@@ -563,6 +654,7 @@ defineExpose({ refresh })
                   <div v-if="!dataPreviewData.rows?.length" class="py-6 text-center text-gray-400 text-[11px] italic">表中暂无数据</div>
                 </div>
               </div>
+            </div>
             </div>
           </div>
         </div>
@@ -584,6 +676,41 @@ defineExpose({ refresh })
                 <span v-for="tg in previewItem.ai_tags" :key="tg" class="text-[9px] px-1.5 py-0.5 bg-white border rounded-full text-gray-600">{{ tg }}</span>
               </div>
             </template>
+
+            <!-- Related tables -->
+            <div class="mt-2 border border-primary/20 rounded-lg bg-primary/5 overflow-hidden">
+              <div class="px-2.5 py-1.5 border-b border-primary/10 flex items-center justify-between gap-2">
+                <span class="text-[10px] font-bold text-primary">可能关联的表</span>
+              </div>
+              <div v-if="relatedLoading" class="px-2.5 py-3 text-[10px] text-gray-400 italic">分析关联中...</div>
+              <div v-else-if="!relatedTables.length" class="px-2.5 py-2 text-[10px] text-gray-500 leading-relaxed">
+                {{ relatedMessage || '暂无推荐，请确认该表已完成摸排' }}
+              </div>
+              <ul v-else class="max-h-36 overflow-y-auto custom-scrollbar divide-y divide-primary/10">
+                <li
+                  v-for="rel in relatedTables"
+                  :key="rel.table_name"
+                  class="px-2.5 py-2 hover:bg-white/70 transition-colors"
+                >
+                  <button
+                    type="button"
+                    class="w-full text-left"
+                    @click="focusRelatedTable(rel.table_name)"
+                  >
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <div class="font-mono text-[10px] font-bold text-gray-800 truncate" :title="rel.table_name">{{ rel.table_name }}</div>
+                        <div v-if="rel.ai_term" class="text-[9px] text-primary truncate">{{ rel.ai_term }}</div>
+                        <div class="text-[9px] text-gray-500 mt-0.5 line-clamp-2" :title="rel.reason">{{ rel.reason }}</div>
+                      </div>
+                      <span class="shrink-0 text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded">{{ Math.round(rel.confidence * 100) }}%</span>
+                    </div>
+                    <div v-if="rel.join_hint" class="mt-1 text-[8px] font-mono text-gray-400 truncate" :title="rel.join_hint">{{ rel.join_hint }}</div>
+                  </button>
+                </li>
+              </ul>
+            </div>
+
             <div v-if="previewLoading" class="text-[11px] text-gray-400 italic py-4 text-center">加载字段画像...</div>
             <div v-else-if="previewDetail?.columns_profile?.length" class="mt-2 border border-gray-100 rounded-lg overflow-hidden bg-white">
               <div class="px-2 py-1.5 bg-gray-50 border-b text-[10px] font-bold text-gray-400">

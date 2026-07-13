@@ -202,8 +202,12 @@ export const metadataApi = {
   }) => axios.put(`${API_BASE}/db/connection-configs/${id}`, data),
   deleteDbConnectionConfig: (id: number) =>
     axios.delete(`${API_BASE}/db/connection-configs/${id}`),
-  debugDbConnectionSql: (id: number, sql: string, limit: number = 100) =>
-    axios.post<any>(`${API_BASE}/db/connection-configs/${id}/preview`, { sql, limit }),
+  debugDbConnectionSql: (id: number, sql: string, limit: number = 100, includeTotal = false) =>
+    axios.post<any>(`${API_BASE}/db/connection-configs/${id}/preview`, {
+      sql,
+      limit,
+      include_total: includeTotal,
+    }),
 
   // DB Table Profiling APIs
   triggerDbProfiling: (configId: number, full = false) =>
@@ -225,7 +229,7 @@ export const metadataApi = {
       tag?: string
       is_ignored?: number
       status?: number
-      sort_by?: 'table_name' | 'confidence_score'
+      sort_by?: 'default' | 'relevance' | 'table_name' | 'confidence_score' | 'ai_term'
       sort_order?: 'asc' | 'desc'
     }
   ) =>
@@ -234,6 +238,10 @@ export const metadataApi = {
     axios.get<any>(
       `${API_BASE}/db/connection-configs/${configId}/table-profiles/${encodeURIComponent(tableName)}`
     ),
+  getDbTableProfileRelated: (configId: number, table: string, limit = 15) =>
+    axios.get<any>(`${API_BASE}/db/connection-configs/${configId}/table-profiles/related`, {
+      params: { table, limit },
+    }),
   importPreviewFromProfiles: (configId: number, tableNames: string[]) =>
     axios.post<any>(
       `${API_BASE}/db/connection-configs/${configId}/import-preview-from-profiles`,

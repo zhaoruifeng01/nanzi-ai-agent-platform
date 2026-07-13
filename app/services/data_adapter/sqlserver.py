@@ -181,7 +181,14 @@ class SQLServerAdapter(DataSourceAdapter):
                 items = [list(row) for row in rows]
                 return {"columns": columns, "items": standardize_items(items)}
 
-    async def preview(self, sql: str, limit: int = 100, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def preview(
+        self,
+        sql: str,
+        limit: int = 100,
+        params: Dict[str, Any] = None,
+        offset: int = 0,
+        include_total: bool = False,
+    ) -> Dict[str, Any]:
         """供数据源管理或 SQL Lab 调试的 Preview 接口，强制最大行数和只读拦截"""
         params = params or {}
         limit = min(max(int(limit or 100), 1), 1000)
