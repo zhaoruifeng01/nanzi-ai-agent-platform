@@ -359,10 +359,35 @@ const hasUnsavedChanges = computed(() => {
   return editingContent.value !== originalContent.value
 })
 
-// 计算行数以显示在 IDE 风格编辑器中
+// 计算行数以显示在编辑器状态栏
 const lineCount = computed(() => {
   return editingContent.value.split('\n').length || 1
 })
+
+const charCount = computed(() => editingContent.value.length)
+
+const selectedFileExtension = computed(() => {
+  const parts = selectedFilePath.value.split('.')
+  return parts.length > 1 ? parts.pop()!.toLowerCase() : 'txt'
+})
+
+const editorTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const lineNumbersRef = ref<HTMLDivElement | null>(null)
+
+const syncLineNumberScroll = () => {
+  if (lineNumbersRef.value && editorTextareaRef.value) {
+    lineNumbersRef.value.scrollTop = editorTextareaRef.value.scrollTop
+  }
+}
+
+const handleEditorKeydown = (e: KeyboardEvent) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault()
+    if (hasUnsavedChanges.value && !saving.value) {
+      saveFileContent()
+    }
+  }
+}
 
 const mdParser = new MarkdownIt({
   html: true,
@@ -377,7 +402,7 @@ const isMarkdownFile = computed(() => {
 })
 
 const renderedMarkdown = computed(() => {
-  if (!editingContent.value) return '<p class="text-slate-500 italic p-4">暂无内容，请先在编辑视图中编写</p>'
+  if (!editingContent.value) return '<p class="preview-empty">暂无内容，请先在编辑视图中编写</p>'
   try {
     return mdParser.render(editingContent.value)
   } catch (e) {
@@ -1209,118 +1234,104 @@ onUnmounted(() => {
 
           <!-- 抽屉主要内容，左右分栏 -->
           <div class="flex-1 flex overflow-hidden min-h-0">
-            <!-- 左侧：在线编辑器 (占据主屏 65%) -->
-            <div class="flex-[1.8] flex flex-col border-r border-gray-150 p-6 bg-slate-50 overflow-y-auto">
-              <!-- 编辑器主体 -->
+            <!-- 左侧：在线编辑器 -->
+            <div class="flex-[1.8] flex flex-col border-r border-gray-150 p-5 bg-white overflow-hidden min-h-0">
               <div v-if="fetchingDetail" class="flex-1 flex flex-col items-center justify-center py-20">
                 <div class="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                 <p class="text-xs text-gray-400 mt-3 font-medium">载入文件内容...</p>
               </div>
 
-              <div v-else class="flex-1 flex flex-col bg-slate-950 rounded-2xl overflow-hidden border border-slate-850 shadow-2xl relative min-h-[450px] transition-all hover:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.4)]">
-                <!-- IDE-Like Tab Bar -->
-                <div class="flex items-center justify-between px-4 py-2.5 bg-slate-950/90 border-b border-slate-900/80 flex-shrink-0 select-none">
-                  <!-- macOS 控制按钮与当前 Tab 页签融合 -->
-                  <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-1.5 flex-shrink-0">
-                      <span class="w-2.5 h-2.5 rounded-full bg-red-500/80 hover:bg-red-500 transition-colors cursor-pointer"></span>
-                      <span class="w-2.5 h-2.5 rounded-full bg-yellow-500/80 hover:bg-yellow-500 transition-colors cursor-pointer"></span>
-                      <span class="w-2.5 h-2.5 rounded-full bg-green-500/80 hover:bg-green-500 transition-colors cursor-pointer"></span>
-                    </div>
-
-                    <!-- 仿 VS Code 的活跃页签 -->
-                    <div class="flex items-center bg-slate-900 border border-slate-850/80 px-3.5 py-1.5 rounded-t-lg -mb-[11px] select-none text-[11px] font-mono text-slate-200 gap-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_-2px_10px_rgba(0,0,0,0.2)]">
-                      <svg class="w-3.5 h-3.5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div v-else class="skill-editor flex-1 flex flex-col min-h-0">
+                <!-- 工具栏 -->
+                <div class="skill-editor-toolbar">
+                  <div class="skill-editor-file-info">
+                    <span class="skill-editor-file-icon" :class="`ext-${selectedFileExtension}`">
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                       </svg>
-                      <span class="font-bold tracking-tight">{{ selectedFilePath }}</span>
-                      <!-- 未保存指示圆点 -->
-                      <span v-if="hasUnsavedChanges" class="w-2 h-2 rounded-full bg-amber-500 ml-1.5 shadow-[0_0_8px_#f59e0b] animate-pulse" title="文件有未保存的修改"></span>
-                    </div>
+                    </span>
+                    <span class="skill-editor-filename" :title="selectedFilePath">{{ selectedFilePath }}</span>
+                    <span v-if="hasUnsavedChanges" class="skill-editor-unsaved" title="有未保存的修改">未保存</span>
+                  </div>
 
-                    <!-- 编辑与预览切换 (仅限 Markdown) -->
-                    <div 
-                      v-if="isMarkdownFile" 
-                      class="flex items-center bg-slate-950 border border-slate-850 px-1 py-0.5 rounded-lg text-[10px] select-none text-slate-400 gap-0.5 ml-2 -mb-[2px]"
-                    >
-                      <button 
+                  <div class="skill-editor-actions">
+                    <div v-if="isMarkdownFile" class="skill-editor-mode-toggle">
+                      <button
+                        type="button"
                         @click="editorMode = 'edit'"
-                        class="px-2.5 py-0.5 rounded transition-all"
-                        :class="editorMode === 'edit' ? 'bg-slate-800 text-slate-200 font-bold' : 'hover:text-slate-200'"
+                        :class="{ active: editorMode === 'edit' }"
                       >
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
                         编辑
                       </button>
-                      <button 
+                      <button
+                        type="button"
                         @click="editorMode = 'preview'"
-                        class="px-2.5 py-0.5 rounded transition-all"
-                        :class="editorMode === 'preview' ? 'bg-slate-800 text-slate-200 font-bold' : 'hover:text-slate-200'"
+                        :class="{ active: editorMode === 'preview' }"
                       >
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
                         预览
                       </button>
                     </div>
-                  </div>
 
-                  <!-- 右侧操作与编码 -->
-                  <div class="flex items-center space-x-3">
-                    <span class="text-[10px] text-slate-500 font-mono hidden sm:inline">UTF-8</span>
-                    
-                    <!-- 保存更改按钮 -->
-                    <button 
+                    <button
+                      type="button"
                       @click="saveFileContent"
                       :disabled="saving || !hasUnsavedChanges"
-                      class="flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold text-white rounded-lg transition-all shadow-md active:scale-95 flex-shrink-0"
-                      :class="[
-                        hasUnsavedChanges 
-                          ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 hover:shadow-emerald-900/30' 
-                          : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-50'
-                      ]"
+                      class="skill-editor-save-btn"
+                      :class="{ 'is-dirty': hasUnsavedChanges, 'is-saving': saving }"
+                      title="保存 (⌘S / Ctrl+S)"
                     >
-                      <span v-if="saving" class="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin"></span>
-                      <svg v-else class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <span v-if="saving" class="skill-editor-save-spinner"></span>
+                      <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                       </svg>
-                      {{ saving ? '保存中...' : '保存更改' }}
+                      {{ saving ? '保存中' : '保存' }}
                     </button>
                   </div>
                 </div>
 
-                <!-- Textarea With Line Numbers (编辑模式) -->
-                <div v-if="editorMode === 'edit'" class="flex-1 flex overflow-hidden min-h-0 bg-slate-950/80">
-                  <div class="w-10 bg-slate-950/20 text-slate-600 text-right pr-2.5 py-3 select-none font-mono text-[10px] sm:text-xs border-r border-slate-900 leading-6 overflow-hidden">
-                    <div v-for="n in lineCount" :key="n">{{ n }}</div>
+                <!-- 编辑区 -->
+                <div class="skill-editor-body">
+                  <div v-if="editorMode === 'edit'" class="skill-editor-code-pane">
+                    <div ref="lineNumbersRef" class="skill-editor-gutter">
+                      <div v-for="n in lineCount" :key="n" class="skill-editor-line-num">{{ n }}</div>
+                    </div>
+                    <textarea
+                      ref="editorTextareaRef"
+                      v-model="editingContent"
+                      @scroll="syncLineNumberScroll"
+                      @keydown="handleEditorKeydown"
+                      class="skill-editor-textarea"
+                      spellcheck="false"
+                      placeholder="在此输入文件内容..."
+                    ></textarea>
                   </div>
-                  <textarea 
-                    v-model="editingContent"
-                    class="flex-1 p-3 bg-transparent text-slate-200 font-mono text-xs focus:outline-none resize-none leading-6 overflow-y-auto"
-                    placeholder="在此输入文本内容..."
-                  ></textarea>
+
+                  <div
+                    v-else
+                    class="skill-editor-preview markdown-preview"
+                    v-html="renderedMarkdown"
+                  ></div>
                 </div>
 
-                <!-- Markdown Live Preview Panel (预览模式) -->
-                <div 
-                  v-else 
-                  class="flex-1 overflow-y-auto px-6 py-5 bg-slate-900 text-slate-100 markdown-preview"
-                  v-html="renderedMarkdown"
-                ></div>
-
-                <!-- Status Bar -->
-                <div class="flex items-center justify-between px-4 py-1.5 bg-slate-950 border-t border-slate-900/60 select-none text-[10px] text-slate-500 font-mono flex-shrink-0">
-                  <div class="flex items-center gap-4">
-                    <span class="flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                      Markdown 编辑器
-                    </span>
-                    <span>编码: UTF-8</span>
+                <!-- 状态栏 -->
+                <div class="skill-editor-statusbar">
+                  <div class="skill-editor-status-left">
+                    <span>{{ isMarkdownFile ? 'Markdown' : selectedFileExtension.toUpperCase() }}</span>
+                    <span class="skill-editor-status-sep">·</span>
+                    <span>UTF-8</span>
+                    <span v-if="hasUnsavedChanges" class="skill-editor-status-dirty">· 已修改</span>
                   </div>
-                  <div class="flex items-center gap-3">
-                    <span>共 {{ lineCount }} 行</span>
-                    <span class="text-slate-650">|</span>
-                    <span class="flex items-center gap-1 text-emerald-500">
-                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                      </svg>
-                      安全沙箱已保护
-                    </span>
+                  <div class="skill-editor-status-right">
+                    <span>{{ lineCount }} 行</span>
+                    <span class="skill-editor-status-sep">·</span>
+                    <span>{{ charCount }} 字符</span>
                   </div>
                 </div>
               </div>
@@ -1778,6 +1789,290 @@ textarea:focus {
   box-shadow: none;
 }
 
+/* Skill Editor */
+.skill-editor {
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #1a1b26;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.skill-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #16161e;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.skill-editor-file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.skill-editor-file-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.skill-editor-file-icon.ext-md {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+.skill-editor-file-icon.ext-sh,
+.skill-editor-file-icon.ext-bash {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+.skill-editor-file-icon.ext-py {
+  background: rgba(250, 204, 21, 0.15);
+  color: #facc15;
+}
+.skill-editor-file-icon.ext-json {
+  background: rgba(251, 146, 60, 0.15);
+  color: #fb923c;
+}
+
+.skill-editor-filename {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: #c0caf5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-editor-unsaved {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.skill-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.skill-editor-mode-toggle {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.skill-editor-mode-toggle button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #6b7280;
+  transition: all 0.15s ease;
+}
+
+.skill-editor-mode-toggle button:hover {
+  color: #a9b1d6;
+}
+
+.skill-editor-mode-toggle button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e0e6f5;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.skill-editor-save-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.15s ease;
+  cursor: not-allowed;
+}
+
+.skill-editor-save-btn.is-dirty {
+  color: #fff;
+  background: #2563eb;
+  border-color: #3b82f6;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3);
+}
+
+.skill-editor-save-btn.is-dirty:hover {
+  background: #1d4ed8;
+}
+
+.skill-editor-save-btn.is-dirty:active {
+  transform: scale(0.97);
+}
+
+.skill-editor-save-btn.is-saving {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+.skill-editor-save-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.skill-editor-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.skill-editor-code-pane {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.skill-editor-gutter {
+  width: 44px;
+  flex-shrink: 0;
+  padding: 12px 8px 12px 0;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.625rem;
+  color: #3b4261;
+  background: #16161e;
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  user-select: none;
+}
+
+.skill-editor-line-num {
+  height: 1.625rem;
+}
+
+.skill-editor-textarea {
+  flex: 1;
+  padding: 12px 16px;
+  background: transparent;
+  color: #a9bade;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.625rem;
+  border: none;
+  resize: none;
+  overflow-y: auto;
+  caret-color: #7aa2f7;
+}
+
+.skill-editor-textarea::placeholder {
+  color: #3b4261;
+}
+
+.skill-editor-textarea::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.skill-editor-textarea::-webkit-scrollbar-thumb {
+  background: #2a2b3d;
+  border-radius: 4px;
+}
+
+.skill-editor-textarea::-webkit-scrollbar-thumb:hover {
+  background: #3b3d52;
+}
+
+.skill-editor-preview {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+  color: #1e293b;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+}
+
+.skill-editor-preview::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.skill-editor-preview::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.skill-editor-preview::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.skill-editor-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 14px;
+  background: #16161e;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  color: #565f89;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.skill-editor-status-left,
+.skill-editor-status-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-editor-status-sep {
+  opacity: 0.5;
+}
+
+.skill-editor-status-dirty {
+  color: #e0af68;
+}
+
 /* 生态市场外链按钮特殊强制渐变背景以防止被第三方库覆盖 */
 .market-link {
   background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
@@ -1788,34 +2083,35 @@ textarea:focus {
   color: #ffffff !important;
 }
 
-/* Markdown Preview Styling */
+/* Markdown Preview Styling (light theme) */
 .markdown-preview :deep(h1) {
-  font-size: 1.5rem;
-  font-weight: bold;
-  border-bottom: 1px solid #334155;
+  font-size: 1.625rem;
+  font-weight: 700;
+  border-bottom: 1px solid #e2e8f0;
   padding-bottom: 0.5rem;
-  margin-top: 1.5rem;
+  margin-top: 0;
   margin-bottom: 1rem;
-  color: #f8fafc;
+  color: #0f172a;
+  letter-spacing: -0.01em;
 }
 .markdown-preview :deep(h2) {
   font-size: 1.25rem;
-  font-weight: bold;
-  margin-top: 1.25rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
   margin-bottom: 0.75rem;
-  color: #e2e8f0;
+  color: #1e293b;
 }
 .markdown-preview :deep(h3) {
-  font-size: 1.1rem;
-  font-weight: bold;
-  margin-top: 1rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
   margin-bottom: 0.5rem;
-  color: #cbd5e1;
+  color: #334155;
 }
 .markdown-preview :deep(p) {
   margin-bottom: 0.85rem;
-  line-height: 1.6;
-  color: #cbd5e1;
+  line-height: 1.75;
+  color: #475569;
 }
 .markdown-preview :deep(ul), .markdown-preview :deep(ol) {
   margin-left: 1.5rem;
@@ -1826,36 +2122,77 @@ textarea:focus {
   list-style-type: decimal;
 }
 .markdown-preview :deep(li) {
-  margin-bottom: 0.25rem;
-  color: #cbd5e1;
+  margin-bottom: 0.35rem;
+  line-height: 1.65;
+  color: #475569;
 }
 .markdown-preview :deep(code) {
-  font-family: monospace;
-  background-color: #1e293b;
-  padding: 0.125rem 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+  background-color: #f1f5f9;
+  padding: 0.15rem 0.4rem;
   border-radius: 0.25rem;
-  color: #f43f5e;
+  color: #be185d;
+  border: 1px solid #e2e8f0;
 }
 .markdown-preview :deep(pre) {
-  background-color: #0f172a;
-  padding: 1rem;
+  background-color: #f8fafc;
+  padding: 1rem 1.25rem;
   border-radius: 0.5rem;
   overflow-x: auto;
   margin-bottom: 1rem;
-  border: 1px solid #1e293b;
+  border: 1px solid #e2e8f0;
 }
 .markdown-preview :deep(pre code) {
   background-color: transparent;
   padding: 0;
-  color: #e2e8f0;
+  border: none;
+  color: #334155;
+  font-size: 0.8125rem;
+  line-height: 1.6;
 }
 .markdown-preview :deep(blockquote) {
-  border-left: 4px solid #3b82f6;
-  padding-left: 1rem;
+  border-left: 3px solid #3b82f6;
+  padding: 0.25rem 0 0.25rem 1rem;
   margin-left: 0;
   margin-right: 0;
   margin-bottom: 1rem;
+  color: #64748b;
+  background: #f8fafc;
+  border-radius: 0 0.375rem 0.375rem 0;
+}
+.markdown-preview :deep(a) {
+  color: #2563eb;
+  text-decoration: none;
+}
+.markdown-preview :deep(a:hover) {
+  text-decoration: underline;
+}
+.markdown-preview :deep(hr) {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 1.5rem 0;
+}
+.markdown-preview :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+.markdown-preview :deep(th),
+.markdown-preview :deep(td) {
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+.markdown-preview :deep(th) {
+  background: #f8fafc;
+  font-weight: 600;
+  color: #334155;
+}
+.markdown-preview :deep(.preview-empty) {
   color: #94a3b8;
   font-style: italic;
+  padding: 1rem 0;
 }
 </style>
