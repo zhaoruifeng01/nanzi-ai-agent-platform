@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.ai.grounding.models import EvidenceType
+
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -76,7 +78,15 @@ def test_legacy_runtime_tool_specs_do_not_infer_dangerous_scope():
         for name in former_dangerous_names
     ]
 
-    assert [spec.permission_scope for spec in specs] == ["ask"] * len(former_dangerous_names)
+    assert [spec.permission_scope for spec in specs] == [
+        "ask",
+        "read",
+        "ask",
+        "ask",
+        "ask",
+        "ask",
+    ]
+    assert all(spec.permission_scope != "dangerous" for spec in specs)
 
 
 @pytest.mark.asyncio
@@ -326,4 +336,5 @@ async def test_tool_registry_marks_db_mcp_runtime_tool_source():
 
     assert spec.source_type == "mcp"
     assert spec.permission_scope == "ask"
+    assert spec.evidence_types == frozenset({EvidenceType.EXTERNAL_TOOL})
     assert await spec.invoke({"query": "project = YS"}) == "mcp result"

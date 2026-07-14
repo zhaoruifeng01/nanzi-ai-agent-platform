@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from app.services.ai.grounding.ledger import EvidenceLedger
 from app.services.ai.grounding.models import EvidenceType
@@ -34,6 +35,9 @@ def test_empty_or_error_like_results_do_not_create_receipts():
         {},
         "错误：工具调用失败",
         "[TOOL_ERROR] permission denied",
+        "[MCP Error] remote server unavailable",
+        "[Execution Error] connection failed",
+        "[Error] unsupported method",
         "执行成功，但查询结果为空",
         "[SUCCESS] 未找到匹配的 Jira 工单",
         "未找到匹配内容，请调整关键词",
@@ -42,8 +46,13 @@ def test_empty_or_error_like_results_do_not_create_receipts():
         '{"content": "", "citations": []}',
         {"content": "", "rows": []},
         {"success": False, "message": "business failure"},
+        {"isError": True, "content": "remote tool failed"},
+        {"is_error": True, "content": "remote tool failed"},
+        {"state": "error", "content": "remote tool failed"},
         {"code": 500, "message": "server error"},
         {"status": "error", "content": "failed"},
+        SimpleNamespace(state="error", content="command failed"),
+        SimpleNamespace(isError=True, content="remote tool failed"),
     ):
         receipt = ledger.record_success(
             call_id="call-empty",
@@ -68,6 +77,124 @@ def test_receipt_requires_a_declared_evidence_type():
 
     assert receipt is None
     assert ledger.receipts == ()
+
+
+def test_ledger_snapshot_roundtrip_preserves_scoped_receipts():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-1",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"trains": [{"number": "G1"}]},
+    )
+
+    restored = EvidenceLedger.from_snapshot(
+        ledger.to_snapshot(),
+        user_id="7",
+        conversation_id="conv-1",
+    )
+
+    assert restored.has_valid_evidence({EvidenceType.EXTERNAL_TOOL})
+    assert restored.receipts[0].call_id == "call-1"
+
+
+def test_ledger_snapshot_rejects_receipt_from_another_scope():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-1",
+        producer="tool",
+        evidence_types={EvidenceType.PUBLIC_WEB},
+        result="ok",
+    )
+
+    restored = EvidenceLedger.from_snapshot(
+        ledger.to_snapshot(),
+        user_id="8",
+        conversation_id="conv-2",
+    )
+
+    assert restored.receipts == ()
+
+
+def test_ledger_matches_candidate_against_hashed_result_markers():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"number": "G1505", "departure": "07:50", "price": 973},
+    )
+
+    assert ledger.has_candidate_overlap(
+        "G1505 次列车 07:50 出发，二等座 973 元。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+    assert not ledger.has_candidate_overlap(
+        "上海明天天气晴，最高温度 28 度。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_single_weak_marker_does_not_establish_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"route": "北京到上海", "train": "G1", "price": 661},
+    )
+
+    assert not ledger.has_candidate_overlap(
+        "当前上海天气晴，最高温度 28 度。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_two_distinct_markers_establish_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"route": "北京到上海", "price": 661},
+    )
+
+    assert ledger.has_candidate_overlap(
+        "北京到上海的二等座票价为 661 元。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_strong_identifier_establishes_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"train": "G1505"},
+    )
+
+    assert ledger.has_candidate_overlap(
+        "推荐乘坐 G1505 次列车。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_successful_empty_receipt_supports_no_result_answer():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-empty",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"success": True, "content": ""},
+        policy="allow_empty_success",
+    )
+
+    assert ledger.has_candidate_overlap(
+        "本次查询暂无符合条件的车票。",
+        {EvidenceType.EXTERNAL_TOOL},
+        allow_empty=True,
+    )
 
 
 def test_allow_empty_success_records_successful_empty_result():
@@ -137,3 +264,23 @@ def test_successful_knowledge_content_with_failure_topic_is_not_treated_as_tool_
     )
 
     assert raw_receipt is not None
+
+
+def test_ledger_exposes_all_recorded_evidence_types():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="knowledge-1",
+        producer="search_knowledge_base",
+        evidence_types={EvidenceType.INTERNAL_KNOWLEDGE},
+        result={"items": [{"content": "审批制度"}]},
+    )
+    ledger.record_success(
+        call_id="file-1",
+        producer="read_file",
+        evidence_types={EvidenceType.USER_FILE},
+        result="报告正文",
+    )
+
+    assert ledger.available_evidence_types == frozenset(
+        {EvidenceType.INTERNAL_KNOWLEDGE, EvidenceType.USER_FILE}
+    )

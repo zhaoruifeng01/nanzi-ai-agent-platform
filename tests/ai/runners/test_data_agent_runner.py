@@ -2,13 +2,14 @@ import json
 import pytest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from pydantic import BaseModel
 
 from app.schemas.agent import ChatConfig
 from app.services.ai.runtime.agentscope.compat import AIMessage
 from app.services.ai.data_query_turn_classifier import DataQueryTurnClassification, DataQueryTurnType
 from app.services.ai.intent_service import IntentType
+from app.services.ai.grounding.models import EvidenceType
 
 
 pytestmark = pytest.mark.no_infrastructure
@@ -163,6 +164,7 @@ async def test_data_agent_runner_resolves_chatbi_runtime_tools(data_config):
     assert "get_current_time" in tool_names
     time_tool = next(tool for tool in tools if tool.name == "get_current_time")
     assert time_tool.permission_scope == "read"
+    assert time_tool.evidence_types == frozenset({EvidenceType.RUNTIME_STATE})
 
 
 @pytest.mark.asyncio
@@ -870,7 +872,7 @@ async def test_data_agent_runner_does_not_issue_derived_evidence_for_history_onl
         model_name = "synthesis-model"
 
         async def astream(self, messages):
-            yield AIMessage(content="根据历史内容生成的分析。")
+            yield AIMessage(content="启用用户数量为 8 人。")
 
     monkeypatch.setattr(
         "app.services.ai.runners.data_agent_runner.resolve_data_query_turn_classification",
@@ -903,8 +905,9 @@ async def test_data_agent_runner_does_not_issue_derived_evidence_for_history_onl
         conversation_id="conv-1",
     )
 
+    events = []
     try:
-        async for _chunk in runner.execute(
+        async for chunk in runner.execute(
             [
                 {
                     "role": "assistant",
@@ -913,11 +916,15 @@ async def test_data_agent_runner_does_not_issue_derived_evidence_for_history_onl
                 {"role": "user", "content": "可视化分析一下"},
             ]
         ):
-            pass
+            events.append(chunk)
     finally:
         agent_context.reset(context_token)
 
     assert not ledger.has_valid_evidence({EvidenceType.INTERNAL_DATA})
+    assert any(
+        event.get("grounding_risk", {}).get("level") == "high"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -1064,7 +1071,9 @@ async def test_data_agent_runner_reuse_synthesis_collapses_duplicated_output(
 
     retraction = next(event for event in events if event.get("type") == "retraction")
     assert retraction["content"].strip() == duplicate_block.strip()
-    assert runner.trace_buffer[-1].tool_output["content"].strip() == duplicate_block.strip()
+    trace_content = runner.trace_buffer[-1].tool_output["content"].strip()
+    assert trace_content.startswith(duplicate_block.strip())
+    assert "风险提示" in trace_content
 
 
 @pytest.mark.asyncio
@@ -2768,6 +2777,127 @@ def test_final_sql_limit_10_with_data_after_diagnostic_allows_answer(data_config
     assert state.empty_sql_result is False
     assert state.diagnostic_sql_pending_final is False
     assert state.expecting_final_sql_after_diagnostic is False
+    assert state.ready_to_answer is True
+
+
+def test_diagnostic_repair_marks_next_sample_shaped_sql_as_final_business_query(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-explicit-final-role", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    runner._reset_state_for_repair(state)
+    parsed, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={
+            "sql": (
+                "SELECT id, trace_id, user_id, user_name, feature_name, endpoint, method, "
+                "status_code, process_time_ms, client_ip, created_at "
+                "FROM api_access_log WHERE created_at IS NOT NULL LIMIT 20"
+            )
+        },
+        output={"items": [{"id": 1, "trace_id": "trace-1"}]},
+    )
+
+    assert parsed["items"][0]["id"] == 1
+    assert should_save is True
+    assert state.diagnostic_sql_pending_final is False
+    assert state.expecting_final_sql_after_diagnostic is False
+    assert state.ready_to_answer is True
+
+
+def test_final_business_query_role_survives_duration_anomaly_repair(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-role-duration", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    runner._reset_state_for_repair(state)
+    _, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={
+            "sql": (
+                "SELECT id, interval_seconds FROM api_access_log "
+                "WHERE interval_seconds IS NOT NULL LIMIT 20"
+            )
+        },
+        output={"items": [{"id": 1, "interval_seconds": -31400679}]},
+    )
+
+    assert should_save is False
+    assert state.duration_anomaly is True
+    runner._reset_state_for_repair(state)
+
+    _, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={
+            "sql": (
+                "SELECT id, interval_seconds FROM api_access_log "
+                "WHERE interval_seconds IS NOT NULL LIMIT 20"
+            )
+        },
+        output={"items": [{"id": 1, "interval_seconds": 315}]},
+    )
+
+    assert should_save is True
+    assert state.diagnostic_sql_pending_final is False
+    assert state.ready_to_answer is True
+
+
+def test_final_business_query_role_survives_sql_error_repair(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+
+    runner = DataAgentRunner(config=data_config, trace_id="trace-final-role-sql-error", trace_buffer=[])
+    state = _DataRunState(
+        requires_fresh_data=True,
+        schema_completed=True,
+        sql_completed=True,
+        expecting_final_sql_after_diagnostic=True,
+        diagnostic_sql_pending_final=True,
+    )
+
+    runner._reset_state_for_repair(state)
+    _, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={
+            "sql": (
+                "SELECT id, created_at FROM api_access_log "
+                "WHERE created_at IS NOT NULL LIMIT 20"
+            )
+        },
+        output="[TOOL_ERROR] Unknown column 'created_at'",
+    )
+
+    assert should_save is False
+    assert state.sql_error is True
+    runner._reset_state_for_repair(state)
+
+    _, should_save = runner._apply_sql_tool_result(
+        state,
+        tool_args={
+            "sql": (
+                "SELECT id, create_time FROM api_access_log "
+                "WHERE create_time IS NOT NULL LIMIT 20"
+            )
+        },
+        output={"items": [{"id": 1, "create_time": "2026-07-14 10:00:00"}]},
+    )
+
+    assert should_save is True
+    assert state.sql_error is False
+    assert state.diagnostic_sql_pending_final is False
     assert state.ready_to_answer is True
 
 
@@ -6018,3 +6148,50 @@ async def test_data_agent_runner_execute_does_not_require_sql_plan_for_high_risk
     assert "不应进入 SQL 计划修复" not in content
     assert fake_model.calls == 3
     assert not any(event.get("title") == "补充 SQL 计划" for event in events if isinstance(event, dict))
+
+
+def test_chatbi_grounding_audit_delegates_matching_sql_result(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+    from app.services.ai.grounding.service import GroundingService
+
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-chatbi-grounding-match",
+        trace_buffer=[],
+        user_info={"user_id": "1"},
+        conversation_id="conv-1",
+    )
+
+    with patch.object(
+        GroundingService,
+        "audit",
+        wraps=GroundingService.audit,
+    ) as audit_mock:
+        audit = runner._chatbi_grounding_audit(
+            candidate_text="王强本月金额为 100 万元。",
+            evidence_result={"rows": [{"name": "王强", "amount": 100}]},
+        )
+
+    assert audit.should_warn is False
+    assert audit_mock.call_count == 1
+
+
+def test_chatbi_grounding_audit_returns_warning_for_unrelated_business_fact(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-chatbi-grounding-unrelated",
+        trace_buffer=[],
+        user_info={"user_id": "1"},
+        conversation_id="conv-1",
+    )
+
+    audit = runner._chatbi_grounding_audit(
+        candidate_text="当前销售额排名第一的是王强，金额为 663.98 万元。",
+        evidence_result={"rows": [{"name": "李四", "amount": 20}]},
+    )
+
+    assert audit.should_warn is True
+    assert "风险提示" in audit.warning_chunk["content"]
+    assert audit.warning_chunk["grounding_risk"]["level"] == "high"

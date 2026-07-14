@@ -329,7 +329,10 @@ def apply_sql_tool_result(
     sql_text = ""
     if isinstance(tool_args, dict):
         sql_text = str(tool_args.get("sql") or tool_args.get("query") or "")
-    is_diag = runner._is_diagnostic_sql(sql_text)
+    is_diag = (
+        not state.next_sql_is_final_business_query
+        and runner._is_diagnostic_sql(sql_text)
+    )
 
     state.sql_error, state.sql_error_message = runner._detect_sql_error(output)
     if state.sql_error and runner._is_sql_fatal_error(state.sql_error_message):
@@ -386,6 +389,7 @@ def apply_sql_tool_result(
             state.last_successful_sql_output = output
             state.expecting_final_sql_after_diagnostic = False
             state.diagnostic_sql_pending_final = False
+            state.next_sql_is_final_business_query = False
             return parsed_output, True
         if runner._is_trusted_empty_result(sql_text, state):
             state.empty_sql_reason = ""
@@ -434,6 +438,7 @@ def apply_sql_tool_result(
         state.duration_anomaly = True
         state.duration_anomaly_reason = duration_reason
         return parsed_output, False
+    state.next_sql_is_final_business_query = False
     state.duration_anomaly = False
     state.duration_anomaly_reason = ""
     state.empty_filter_diagnostics = []

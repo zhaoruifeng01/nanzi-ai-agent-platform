@@ -28,13 +28,15 @@
 - `app/services/ai/runtime/agentscope/tools.py`
 - `app/services/ai/runtime/agentscope/event_stream.py`
 
+Main 与 ChatBI 的最终事实判断统一委托给 `GroundingService.audit()`；KnowledgeAgent 保留独立 NLI 反思，但通过同一服务生成最终消息内提示。该服务不接管 Runner 的流式输出、KnowledgeAgent 反思或 ChatBI SQL/Schema 安全门禁。
+
 ## 门控矩阵
 
 | Agent 类型 | 路由/意图门控 | 工具权限门控 | 外部执行挂起 | 数据/知识真实性门控 | SQL 安全门控 | 输出安全/反幻觉 | 中断恢复 | 当前契约状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ChatBI / DataQuery | 必须。外层只选 DataQuery，内部以 `DataQueryTurnClassifier` 为最终判定 | 必须。AgentScope runtime tool scope 统一处理 | 必须。支持 `external_execution_required` | 必须。schema、few-shot、结果复用、空结果、异常结果均需可观测 | 必须。只读 SQL、schema-before-sql、静态风险、重复 SQL、修复轮次、最终 guard | 必须。未完成查数不得直接回答 | 必须。pending snapshot 保存 data run state | 基本完整，需收口测试和少数边界顺序 |
-| General Assistant | 必须。使用会话级通用分类；专家直选（`direct_agent_selection`）跳过反幻觉 Guard | 必须。AgentScope runtime tool scope 统一处理；可选工具预检（`agent_tool_preflight_mode`） | 必须。支持 `external_execution_required` | 部分。无数据库连接时拦截疑似虚构业务数据 | 不适用 | 部分。仅主助手 + 自动路由 + 强查数信号时拦截；裸表格不单独触发 | 必须。AgentScope pending 恢复 | 基础完整，不等同 ChatBI 强门控 |
-| Knowledge Agent | 必须。知识库问答可优先于普通对话 | 必须。AgentScope runtime tool scope 统一处理 | 必须。支持 `external_execution_required` | 必须。dataset 范围、自动检索、空召回、引用约束 | 不适用 | 必须。空召回或无引用事实回答要拦截 | 必须。AgentScope pending 恢复 | 基本完整，需明确 dataset 缺失与后续反幻觉测试关系 |
+| ChatBI / DataQuery | 必须。外层只选 DataQuery，内部以 `DataQueryTurnClassifier` 为最终判定 | 必须。AgentScope runtime tool scope 统一处理 | 必须。支持 `external_execution_required` | 必须。schema、few-shot、结果复用、空结果、异常结果均需可观测 | 必须。只读 SQL、schema-before-sql、静态风险、重复 SQL、修复轮次、最终 guard | 必须。未完成查数不得直接回答；最终文字超出成功数据结果时保留正文并追加风险提示 | 必须。pending snapshot 保存 data run state | 基本完整，需收口测试和少数边界顺序 |
+| General Assistant | 必须。使用会话级通用分类；专家直选（`direct_agent_selection`）跳过旧查数 Guard，但仍接受平台事实审核 | 必须。AgentScope runtime tool scope 统一处理；可选工具预检（`agent_tool_preflight_mode`） | 必须。支持 `external_execution_required` | 部分。无数据库连接时对疑似虚构业务数据追加风险提示 | 不适用 | 柔性。保留正文并按证据匹配结果追加来源或风险提示，不再发送阻断卡片 | 必须。AgentScope pending 恢复后执行相同审核 | 基础完整，不等同 ChatBI 强门控 |
+| Knowledge Agent | 必须。知识库问答可优先于普通对话 | 必须。AgentScope runtime tool scope 统一处理 | 必须。支持 `external_execution_required` | 必须。dataset 范围、自动检索、空召回、引用约束 | 不适用 | 必须。先反思重写；最终仍不一致时保留最后回答并追加风险提示，不使用事实阻断卡片 | 必须。AgentScope pending 恢复 | 基本完整，需明确 dataset 缺失与后续反幻觉测试关系 |
 | RAGFlow 外部引擎 | 弱。适配器内只做查询提取和日志 | 不适用。外部引擎不走本地 AgentScope 工具权限 | 不适用。当前无统一挂起恢复 | 依赖 RAGFlow 返回引用和错误 | 不适用 | 弱。无本地二次反幻觉审计 | 不适用 | 非统一门控路径，需明确为外部引擎自管或补统一适配 |
 | OpenClaw 外部引擎 | 弱。主要交给 OpenClaw 处理 | 不适用。外部引擎不走本地 AgentScope 工具权限 | 不适用。当前无统一挂起恢复 | 部分。透传用户可访问 dataset 给外部引擎 | 不适用 | 必须。输入和输出安全审计可配置 | 不适用 | 有安全审计，但非统一 AgentScope 门控 |
 
@@ -138,16 +140,19 @@
    - **非**专家直选 / `@` 提及 / 显式 `agent_id`（`route_hints.direct_agent_selection`）；
    - 用户问题**非**联网/外部搜索（`looks_like_web_search_query`）；
    - 轮次分类或意图为 `DATA_QUERY`，或问题含**强内部业务查数信号**（`looks_like_strong_business_data_request`）。
-5. 拦截条件（须本轮**未**发起/待确认工具调用，且输出命中以下之一）：
+5. 高风险提示条件（须本轮**未**发起/待确认工具调用，且输出命中以下之一）：
    - 假装已转派 ChatBI / 正在检索内部数据集等话术；
    - Markdown 表格 **且** 含内网 IP；
    - Markdown 表格 **且** 含内部业务字段（主机名、资产、工单、数据集、表结构等）。
    - **裸 Markdown 表格 alone 不触发**；系统负载等可通过 Bash/工具执行的请求，若已出现 `permission_required` / `external_execution_required` 或 tool log，视为已尝试工具，不拦截。
-6. 拦截后须生成可执行的智能体切换建议（`quick:/switch_agent_expert?agent_id=...`），而非仅文字提示。
-7. **工具预检**（`tool_nudge_policy.resolve_tool_nudge`）：由已绑定工具的 `name + description` 与问题相关度驱动；配置 `agent_tool_preflight_mode`：`off` / `soft`（默认，注入便签）/ `hard`（便签 + 首步 `ToolChoice`）。问候、元操作、记忆类工具（`memory_search` 等）不促发。
-8. **Skill 自动扫描**（仅主助手）：未挂载/解析技能时，按 `skill_auto_scan_*` 配置扫描技能库并注入摘要（全文仍须 `read_skill_instruction`）。
-9. 绑定工具时必须走 AgentScope runtime tool 权限门控。
-10. 没有工具时走 simple synthesis，不适用工具权限/外部执行挂起。
+6. 命中后保留原回答并在消息内容中追加高风险提示；不再替换正文、不发送 `grounding_blocked`、不展示智能体切换阻断卡片。
+7. `internal_data`、`internal_knowledge`、`user_file` 属于内部可信来源族。类型不完全一致时允许兼容输出，并明确提示内容来源不代表实时数据库状态。附件要求必须与已有来源要求合并，不能覆盖知识库或数据来源要求。
+8. 动态只读 MCP（查询、检索、获取、读取、查看类或 `annotations.readOnlyHint=true`）成功后签发 `external_tool`，成功空结果允许证明“暂无数据”。公开信息、运行状态及 `UNKNOWN` 请求只有在答案与结果不可逆内容指纹重合时才正常通过；该回执不能替代明确要求的 `internal_data`、`internal_knowledge` 等来源，疑似内部业务数据表也不会被它放行。MCP `isError`、SDK 异常、Generic API HTTP 4xx/5xx 不签发回执；创建、更新、删除、写入、发送、预订和执行类 MCP 不自动签发读取型事实凭证。
+9. AgentScope 原生工具与普通运行时工具共享证据签发入口；Main、KnowledgeAgent、ChatBI 的隐式工具统一补齐元数据。permission/external execution 挂起快照必须保存当前证据回执，并在恢复时校验用户与会话范围后恢复。
+10. **工具预检**（`tool_nudge_policy.resolve_tool_nudge`）：由已绑定工具的 `name + description` 与问题相关度驱动；配置 `agent_tool_preflight_mode`：`off` / `soft`（默认，注入便签）/ `hard`（便签 + 首步 `ToolChoice`）。问候、元操作、记忆类工具（`memory_search` 等）不促发。
+11. **Skill 自动扫描**（仅主助手）：未挂载/解析技能时，按 `skill_auto_scan_*` 配置扫描技能库并注入摘要（全文仍须 `read_skill_instruction`）。
+12. 绑定工具时必须走 AgentScope runtime tool 权限门控。
+13. 没有工具时走 simple synthesis，不适用工具权限/外部执行挂起。
 
 测试映射：
 
@@ -166,8 +171,8 @@
 4. 如果要求显式 dataset 但未提供，必须在检索前终止。
 5. 如果没有任何可用默认 dataset，也必须终止并提示管理员配置。
 6. 知识库服务不可用时必须终止，不得继续让模型脑补。
-7. 空召回时，如果模型输出长事实性回答，必须拦截。
-8. 有召回但最终事实性回答没有有效引用标记时，必须拦截。
+7. 空召回时，如果模型输出长事实性回答，必须触发反思重写；耗尽后使用软风险提示。
+8. 有召回但最终事实性回答没有有效引用标记时，必须触发反思重写；耗尽后保留最后回答并追加风险提示。
 9. 模型输出中的无效引用标记必须过滤。
 10. 绑定业务工具时必须走 AgentScope runtime tool 权限门控。
 

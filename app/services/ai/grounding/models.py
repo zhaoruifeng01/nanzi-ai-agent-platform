@@ -12,6 +12,11 @@ class EvidenceType(str, Enum):
     RUNTIME_STATE = "runtime_state"
     USER_FILE = "user_file"
     CONVERSATION_MEMORY = "conversation_memory"
+    # A successful result returned by a dynamically registered external tool
+    # (currently MCP). This proves that the current turn consulted a tool, but
+    # intentionally does not impersonate a more specific source such as an
+    # internal dataset or knowledge base.
+    EXTERNAL_TOOL = "external_tool"
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,9 @@ class EvidenceReceipt:
     user_id: str | None
     conversation_id: str | None
     created_at: datetime
+    marker_digests: frozenset[str] = frozenset()
+    strong_marker_digests: frozenset[str] = frozenset()
+    empty_success: bool = False
 
     @classmethod
     def create(
@@ -34,6 +42,9 @@ class EvidenceReceipt:
         payload_digest: str,
         user_id: str | None,
         conversation_id: str | None,
+        marker_digests: frozenset[str] = frozenset(),
+        strong_marker_digests: frozenset[str] = frozenset(),
+        empty_success: bool = False,
     ) -> "EvidenceReceipt":
         return cls(
             call_id=call_id,
@@ -43,5 +54,7 @@ class EvidenceReceipt:
             user_id=user_id,
             conversation_id=conversation_id,
             created_at=datetime.now(timezone.utc),
+            marker_digests=marker_digests,
+            strong_marker_digests=strong_marker_digests,
+            empty_success=empty_success,
         )
-

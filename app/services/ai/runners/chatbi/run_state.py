@@ -37,6 +37,7 @@ class DataRunState:
     empty_filter_auto_retry_sql: str = ""
     expecting_final_sql_after_diagnostic: bool = False
     diagnostic_sql_pending_final: bool = False
+    next_sql_is_final_business_query: bool = False
     sql_error: bool = False
     sql_error_message: str = ""
     sql_fatal_error: bool = False

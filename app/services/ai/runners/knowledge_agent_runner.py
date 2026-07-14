@@ -13,6 +13,8 @@ from app.services.ai.executors.common import (
     tools_include_named,
 )
 from app.services.ai.executors.prompts import KnowledgeChatPrompts
+from app.services.ai.grounding.policy import GroundingRiskLevel
+from app.services.ai.grounding.service import GroundingService
 from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
 from app.services.ai.runtime.agentscope.stream_reconcile import truncate_for_context
 from app.services.metadata_rag_service import MetadataRagService
@@ -126,7 +128,8 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 name = str(getattr(tool, "name", "") or "")
                 if not name or name in KNOWLEDGE_EXCLUDED_IMPLICIT_TOOLS or name in seen:
                     continue
-                tools.append(runtime_tool_spec_from_legacy_tool(tool, source_type="system"))
+                spec = runtime_tool_spec_from_legacy_tool(tool, source_type="system")
+                tools.append(ToolRegistry._attach_evidence_metadata(spec.name, spec))
                 seen.add(name)
 
         if not tools_include_named(tools, "search_knowledge_base"):
@@ -562,6 +565,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         max_retries = 2
         retry_count = 0
         passed_guard = False
+        last_guard_reason = "回答中存在尚未完全核实的知识库事实"
         
         current_system_content = native_system_content
         current_messages = list(runtime_messages)
@@ -608,6 +612,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
             retry_count += 1
             reason = evaluation.get("reason") or "回答中存在无依据的幻觉陈述或缺少必要引用"
+            last_guard_reason = reason
             logger.warning(
                 f"[KnowledgeAgentRunner] Hallucination detected! Attempt {retry_count} failed. "
                 f"Reason: {reason}. Model output: {full_text[:150]}..."
@@ -682,16 +687,21 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
             for chunk in chunks_buffer:
                 yield chunk
         else:
-            logger.error(
+            logger.warning(
                 f"[KnowledgeAgentRunner] Hallucination check failed after {max_retries} retries. "
-                f"Bypassing with fatal fallback prompt."
+                f"Retaining the final answer with a grounding risk warning."
             )
+            for chunk in chunks_buffer:
+                yield chunk
             yield {
                 "type": "log",
                 "id": f"kb_guard_{uuid.uuid4().hex[:8]}",
-                "title": "安全网关最终拦截",
-                "details": "经网关多次反思纠偏，该回答仍无法通过事实一致性核验，已被安全屏蔽以保证准确性。",
-                "status": "error",
+                "title": "事实来源风险提示已追加",
+                "details": last_guard_reason,
+                "status": "warning",
+                "category": "grounding",
             }
-            refusal_content = "⚠️ 抱歉，在系统知识库中未检索到相关内容，无法回答该问题。建议您更换关键词重新检索。"
-            yield {"content": refusal_content}
+            yield GroundingService.warning_chunk(
+                risk_level=GroundingRiskLevel.HIGH,
+                reason=last_guard_reason,
+            )

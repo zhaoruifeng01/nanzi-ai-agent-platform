@@ -59,6 +59,27 @@ async def _finalize_content_and_persist(
         )
         state.full_content = deduped
         yield {"type": "retraction", "content": deduped}
+    evidence_result = (
+        state.last_successful_sql_output
+        if state.requires_sql_query
+        else state.schema_output
+    )
+    grounding_audit = runner._chatbi_grounding_audit(
+        candidate_text=state.full_content,
+        evidence_result=evidence_result,
+    )
+    if grounding_audit.should_warn:
+        warning = grounding_audit.warning_chunk
+        yield {
+            "type": "log",
+            "id": f"chatbi_grounding_{uuid.uuid4().hex[:8]}",
+            "title": "事实来源风险提示已追加",
+            "details": warning["grounding_risk"]["reason"],
+            "status": "warning",
+            "category": "grounding",
+        }
+        state.full_content += str(warning.get("content") or "")
+        yield warning
     await _persist_agent_state(
         runner,
         agent_name=agent_name,
