@@ -1449,6 +1449,7 @@ import axios from "axios";
 import { useToast } from "../composables/useToast";
 import { useBranding } from "../composables/useBranding";
 import { MENU_TREE } from "../constants/permissions";
+import { copyToClipboard } from "../utils/clipboard";
 import Switch from "../components/Switch.vue";
 import RoleList from "../components/RoleList.vue";
 import ThirdPartyUserSyncDrawer from "../components/ThirdPartyUserSyncDrawer.vue";
@@ -2190,17 +2191,29 @@ const toggleSelectAll = () => {
 };
 const formatDate = (dateStr: string) =>
   dateStr ? new Date(dateStr).toLocaleString() : "-";
-const copyApiKey = () => {
-  navigator.clipboard.writeText(createdApiKey.value);
-  showToast("复制成功", "success");
+const copyApiKey = async () => {
+  const success = await copyToClipboard(createdApiKey.value);
+  if (success) {
+    showToast("复制成功", "success");
+  } else {
+    showToast("复制失败，请手动复制", "error");
+  }
 };
-const copyViewedApiKey = () => {
-  navigator.clipboard.writeText(viewedApiKey.value);
-  showToast("复制成功", "success");
+const copyViewedApiKey = async () => {
+  const success = await copyToClipboard(viewedApiKey.value);
+  if (success) {
+    showToast("复制成功", "success");
+  } else {
+    showToast("复制失败，请手动复制", "error");
+  }
 };
-const copyRegeneratedApiKey = () => {
-  navigator.clipboard.writeText(regeneratedApiKey.value);
-  showToast("复制成功", "success");
+const copyRegeneratedApiKey = async () => {
+  const success = await copyToClipboard(regeneratedApiKey.value);
+  if (success) {
+    showToast("复制成功", "success");
+  } else {
+    showToast("复制失败，请手动复制", "error");
+  }
 };
 
 let searchTimeout: any = null;

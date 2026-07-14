@@ -4,6 +4,7 @@ import axios from '../utils/axios'
 import Toast from '../components/Toast.vue'
 import { useBranding } from '../composables/useBranding'
 import { renderMarkdown } from '../utils/markdown'
+import { copyToClipboard } from '../utils/clipboard'
 
 const { branding, loadBranding } = useBranding()
 
@@ -61,11 +62,11 @@ const fetchApiKey = async () => {
 
 const copyApiKey = async () => {
   if (!userApiKey.value) return
-  try {
-    await navigator.clipboard.writeText(userApiKey.value)
+  const success = await copyToClipboard(userApiKey.value)
+  if (success) {
     showToast('API Key 已复制', 'success')
-  } catch (err) {
-    showToast('复制失败', 'error')
+  } else {
+    showToast('复制失败，请手动复制', 'error')
   }
 }
 
