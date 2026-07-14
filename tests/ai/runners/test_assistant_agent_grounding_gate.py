@@ -9,6 +9,7 @@ from app.schemas.agent import ChatConfig
 from app.services.ai.grounding.models import EvidenceType
 from app.services.ai.grounding.ledger import EvidenceLedger
 from app.services.ai.grounding.policy import FactRequirement
+from app.services.ai.grounding.service import GroundingService
 from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
 from app.services.ai.runners import assistant_agent_runner as assistant_runner_module
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
@@ -417,7 +418,11 @@ async def test_general_route_dynamic_fact_streams_then_appends_warning():
     async def fake_core(_history):
         yield {"content": "当前美元汇率为 9.99。"}
 
-    with patch.object(runner, "_execute_core", fake_core):
+    with patch.object(
+        GroundingService,
+        "audit",
+        wraps=GroundingService.audit,
+    ) as audit_mock, patch.object(runner, "_execute_core", fake_core):
         events = [
             event
             async for event in runner.execute(
@@ -428,6 +433,7 @@ async def test_general_route_dynamic_fact_streams_then_appends_warning():
     content = "".join(str(event.get("content") or "") for event in events)
     assert "当前美元汇率为 9.99。" in content
     assert content.count("风险提示") == 1
+    assert audit_mock.call_count == 1
 
 
 @pytest.mark.asyncio

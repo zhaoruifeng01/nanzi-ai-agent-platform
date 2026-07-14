@@ -28,6 +28,8 @@
 - `app/services/ai/runtime/agentscope/tools.py`
 - `app/services/ai/runtime/agentscope/event_stream.py`
 
+Main 与 ChatBI 的最终事实判断统一委托给 `GroundingService.audit()`；KnowledgeAgent 保留独立 NLI 反思，但通过同一服务生成最终消息内提示。该服务不接管 Runner 的流式输出、KnowledgeAgent 反思或 ChatBI SQL/Schema 安全门禁。
+
 ## 门控矩阵
 
 | Agent 类型 | 路由/意图门控 | 工具权限门控 | 外部执行挂起 | 数据/知识真实性门控 | SQL 安全门控 | 输出安全/反幻觉 | 中断恢复 | 当前契约状态 |

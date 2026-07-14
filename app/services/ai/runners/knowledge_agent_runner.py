@@ -14,6 +14,7 @@ from app.services.ai.executors.common import (
 )
 from app.services.ai.executors.prompts import KnowledgeChatPrompts
 from app.services.ai.grounding.policy import GroundingRiskLevel
+from app.services.ai.grounding.service import GroundingService
 from app.services.ai.runners.assistant_agent_runner import AssistantAgentRunner
 from app.services.ai.runtime.agentscope.stream_reconcile import truncate_for_context
 from app.services.metadata_rag_service import MetadataRagService
@@ -700,7 +701,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 "status": "warning",
                 "category": "grounding",
             }
-            yield self._grounding_warning_chunk(
+            yield GroundingService.warning_chunk(
                 risk_level=GroundingRiskLevel.HIGH,
                 reason=last_guard_reason,
             )

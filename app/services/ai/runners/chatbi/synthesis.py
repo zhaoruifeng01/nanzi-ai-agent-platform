@@ -28,12 +28,13 @@ def _chatbi_grounding_events(
     stream_state: SynthesisStreamState,
     evidence_result: Any,
 ) -> list[Dict[str, Any]]:
-    warning = runner._chatbi_grounding_warning(
+    grounding_audit = runner._chatbi_grounding_audit(
         candidate_text=stream_state.full_content,
         evidence_result=evidence_result,
     )
-    if warning is None:
+    if not grounding_audit.should_warn:
         return []
+    warning = grounding_audit.warning_chunk
     stream_state.full_content += str(warning.get("content") or "")
     return [
         {

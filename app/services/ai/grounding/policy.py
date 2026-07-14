@@ -209,39 +209,6 @@ def _contains_high_confidence_dynamic_fact(text: str) -> bool:
     return bool(_DYNAMIC_FACT_RE.search(text) or _EXECUTION_CLAIM_RE.search(text))
 
 
-def build_grounding_warning_chunk(
-    *,
-    risk_level: GroundingRiskLevel,
-    reason: str,
-    required_types: frozenset[EvidenceType] = frozenset(),
-    available_types: frozenset[EvidenceType] = frozenset(),
-) -> dict[str, object]:
-    if risk_level == GroundingRiskLevel.LOW:
-        notice = (
-            "> **信息来源提示**：本回答基于知识库或已授权文件资料，"
-            "不代表实时数据库状态。"
-        )
-    elif risk_level == GroundingRiskLevel.MEDIUM:
-        notice = (
-            "> **信息来源提示**：本回答参考了已取得的资料，但部分结论未获得"
-            "完全匹配的数据来源，请结合原始资料核对。"
-        )
-    else:
-        notice = (
-            "> **风险提示**：本次未取得能够完整验证这些具体数据或当前状态的来源，"
-            "以下内容可能存在偏差，请勿直接用于生产操作或正式决策。"
-        )
-    return {
-        "content": f"\n\n{notice}",
-        "grounding_risk": {
-            "level": risk_level.value,
-            "reason": reason,
-            "required_evidence_types": sorted(item.value for item in required_types),
-            "available_evidence_types": sorted(item.value for item in available_types),
-        },
-    }
-
-
 def _is_pure_no_result_response(text: str) -> bool:
     return bool(
         _is_explicitly_unverified(text)

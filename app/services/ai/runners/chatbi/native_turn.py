@@ -64,11 +64,12 @@ async def _finalize_content_and_persist(
         if state.requires_sql_query
         else state.schema_output
     )
-    warning = runner._chatbi_grounding_warning(
+    grounding_audit = runner._chatbi_grounding_audit(
         candidate_text=state.full_content,
         evidence_result=evidence_result,
     )
-    if warning is not None:
+    if grounding_audit.should_warn:
+        warning = grounding_audit.warning_chunk
         yield {
             "type": "log",
             "id": f"chatbi_grounding_{uuid.uuid4().hex[:8]}",

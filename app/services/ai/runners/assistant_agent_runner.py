@@ -22,13 +22,11 @@ from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.grounding.ledger import EvidenceLedger
 from app.services.ai.grounding.models import EvidenceType
 from app.services.ai.grounding.policy import (
-    build_grounding_warning_chunk,
     FactRequirement,
-    GroundingAction,
     GroundingRiskLevel,
-    evaluate_grounding,
     resolve_fact_requirement,
 )
+from app.services.ai.grounding.service import GroundingService
 from app.services.ai.intent_service import (
     IntentType,
     looks_like_dynamic_public_fact_query,
@@ -350,21 +348,6 @@ class AssistantAgentRunner(BaseExecutor):
         )
 
     @staticmethod
-    def _grounding_warning_chunk(
-        *,
-        risk_level: GroundingRiskLevel,
-        reason: str,
-        required_types: frozenset[EvidenceType] = frozenset(),
-        available_types: frozenset[EvidenceType] = frozenset(),
-    ) -> Dict[str, Any]:
-        return build_grounding_warning_chunk(
-            risk_level=risk_level,
-            reason=reason,
-            required_types=required_types,
-            available_types=available_types,
-        )
-
-    @staticmethod
     def _parse_grounding_retry_evidence_types(action: Any) -> frozenset[EvidenceType]:
         if not isinstance(action, dict) or action.get("type") != "retry":
             return frozenset()
@@ -609,12 +592,13 @@ class AssistantAgentRunner(BaseExecutor):
 
         if not buffer_output:
             if grounding_requirement.scrutinize_dynamic_output:
-                grounding_decision = evaluate_grounding(
+                grounding_audit = GroundingService.audit(
                     requirement=grounding_requirement,
                     candidate_text=full_text,
                     ledger=self._evidence_ledger,
                 )
-                if grounding_decision.action == GroundingAction.PASS_WITH_WARNING:
+                if grounding_audit.should_warn:
+                    grounding_decision = grounding_audit.decision
                     yield {
                         "type": "log",
                         "id": f"grounding_dynamic_{uuid.uuid4().hex[:8]}",
@@ -623,12 +607,7 @@ class AssistantAgentRunner(BaseExecutor):
                         "status": "warning",
                         "category": "grounding",
                     }
-                    yield self._grounding_warning_chunk(
-                        risk_level=grounding_decision.risk_level,
-                        reason=grounding_decision.reason,
-                        required_types=grounding_decision.required_evidence_types,
-                        available_types=grounding_decision.available_evidence_types,
-                    )
+                    yield grounding_audit.warning_chunk
             return
 
         should_intercept = (
@@ -642,11 +621,12 @@ class AssistantAgentRunner(BaseExecutor):
             user_query=user_query,
             ledger=self._evidence_ledger,
         )
-        grounding_decision = evaluate_grounding(
+        grounding_audit = GroundingService.audit(
             requirement=evaluated_requirement,
             candidate_text=full_text,
             ledger=self._evidence_ledger,
         )
+        grounding_decision = grounding_audit.decision
 
         if should_intercept:
             logger.warning(
@@ -665,16 +645,13 @@ class AssistantAgentRunner(BaseExecutor):
                 "status": "warning",
                 "category": "grounding",
             }
-            yield self._grounding_warning_chunk(
+            yield GroundingService.warning_chunk(
                 risk_level=GroundingRiskLevel.HIGH,
                 reason="legacy data hallucination signal matched without a trusted tool attempt",
                 required_types=frozenset({EvidenceType.INTERNAL_DATA}),
                 available_types=self._evidence_ledger.available_evidence_types,
             )
-        elif grounding_decision.action in {
-            GroundingAction.PASS_WITH_WARNING,
-            GroundingAction.BLOCK_UNGROUNDED_FACTS,
-        }:
+        elif grounding_audit.should_warn:
             logger.warning(
                 "[AssistantAgentRunner] Ungrounded factual response retained with warning: %s",
                 grounding_decision.reason,
@@ -689,16 +666,7 @@ class AssistantAgentRunner(BaseExecutor):
                 "status": "warning",
                 "category": "grounding",
             }
-            yield self._grounding_warning_chunk(
-                risk_level=(
-                    grounding_decision.risk_level
-                    if grounding_decision.risk_level != GroundingRiskLevel.NONE
-                    else GroundingRiskLevel.HIGH
-                ),
-                reason=grounding_decision.reason,
-                required_types=grounding_decision.required_evidence_types,
-                available_types=grounding_decision.available_evidence_types,
-            )
+            yield grounding_audit.warning_chunk
         else:
             for chunk in chunks_buffer:
                 yield chunk
@@ -1703,15 +1671,13 @@ class AssistantAgentRunner(BaseExecutor):
                         user_query=user_query,
                         ledger=ledger,
                     )
-                    decision = evaluate_grounding(
+                    grounding_audit = GroundingService.audit(
                         requirement=evaluated_requirement,
                         candidate_text=candidate_text,
                         ledger=ledger,
                     )
-                    if decision.action in {
-                        GroundingAction.PASS_WITH_WARNING,
-                        GroundingAction.BLOCK_UNGROUNDED_FACTS,
-                    }:
+                    decision = grounding_audit.decision
+                    if grounding_audit.should_warn:
                         for buffered_chunk in buffered_content:
                             yield buffered_chunk
                         yield {
@@ -1722,16 +1688,7 @@ class AssistantAgentRunner(BaseExecutor):
                             "status": "warning",
                             "category": "grounding",
                         }
-                        yield self._grounding_warning_chunk(
-                            risk_level=(
-                                decision.risk_level
-                                if decision.risk_level != GroundingRiskLevel.NONE
-                                else GroundingRiskLevel.HIGH
-                            ),
-                            reason=decision.reason,
-                            required_types=decision.required_evidence_types,
-                            available_types=decision.available_evidence_types,
-                        )
+                        yield grounding_audit.warning_chunk
                     else:
                         for buffered_chunk in buffered_content:
                             yield buffered_chunk

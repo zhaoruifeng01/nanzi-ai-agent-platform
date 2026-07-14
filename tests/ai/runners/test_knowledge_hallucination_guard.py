@@ -4,6 +4,7 @@ import pytest
 import json
 
 from app.schemas.agent import ChatConfig
+from app.services.ai.grounding.service import GroundingService
 from app.services.ai.hallucination_evaluator import HallucinationEvaluator
 from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
@@ -231,7 +232,12 @@ async def test_hallucination_max_retries_retains_answer_with_soft_warning(kb_con
             })
         }
 
-    with patch.object(runner, "_execute_with_agentscope_native_agent", mock_execute_agentscope), \
+    with patch.object(
+        GroundingService,
+        "warning_chunk",
+        wraps=GroundingService.warning_chunk,
+    ) as warning_mock, \
+         patch.object(runner, "_execute_with_agentscope_native_agent", mock_execute_agentscope), \
          patch.object(runner, "_resolve_knowledge_tools", AsyncMock(return_value=[_search_knowledge_tool()])), \
          patch.object(runner, "_auto_invoke_search_knowledge_base", mock_auto_prefetch), \
          patch("app.services.ai.hallucination_evaluator.HallucinationEvaluator.evaluate", mock_evaluate), \
@@ -247,5 +253,6 @@ async def test_hallucination_max_retries_retains_answer_with_soft_warning(kb_con
         content = "".join(str(e.get("content") or "") for e in events)
         assert "系统 A 支持 B。" in content
         assert content.count("风险提示") == 1
+        assert warning_mock.call_count == 1
         assert not any(e.get("title") == "安全网关最终拦截" for e in events)
         assert not any(e.get("type") == "grounding_blocked" for e in events)

@@ -2,7 +2,7 @@ import json
 import pytest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from pydantic import BaseModel
 
 from app.schemas.agent import ChatConfig
@@ -6150,8 +6150,9 @@ async def test_data_agent_runner_execute_does_not_require_sql_plan_for_high_risk
     assert not any(event.get("title") == "补充 SQL 计划" for event in events if isinstance(event, dict))
 
 
-def test_chatbi_grounding_warning_is_absent_for_matching_sql_result(data_config):
+def test_chatbi_grounding_audit_delegates_matching_sql_result(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
+    from app.services.ai.grounding.service import GroundingService
 
     runner = DataAgentRunner(
         config=data_config,
@@ -6161,15 +6162,21 @@ def test_chatbi_grounding_warning_is_absent_for_matching_sql_result(data_config)
         conversation_id="conv-1",
     )
 
-    warning = runner._chatbi_grounding_warning(
-        candidate_text="王强本月金额为 100 万元。",
-        evidence_result={"rows": [{"name": "王强", "amount": 100}]},
-    )
+    with patch.object(
+        GroundingService,
+        "audit",
+        wraps=GroundingService.audit,
+    ) as audit_mock:
+        audit = runner._chatbi_grounding_audit(
+            candidate_text="王强本月金额为 100 万元。",
+            evidence_result={"rows": [{"name": "王强", "amount": 100}]},
+        )
 
-    assert warning is None
+    assert audit.should_warn is False
+    assert audit_mock.call_count == 1
 
 
-def test_chatbi_grounding_warning_is_appended_for_unrelated_business_fact(data_config):
+def test_chatbi_grounding_audit_returns_warning_for_unrelated_business_fact(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner
 
     runner = DataAgentRunner(
@@ -6180,11 +6187,11 @@ def test_chatbi_grounding_warning_is_appended_for_unrelated_business_fact(data_c
         conversation_id="conv-1",
     )
 
-    warning = runner._chatbi_grounding_warning(
+    audit = runner._chatbi_grounding_audit(
         candidate_text="当前销售额排名第一的是王强，金额为 663.98 万元。",
         evidence_result={"rows": [{"name": "李四", "amount": 20}]},
     )
 
-    assert warning is not None
-    assert "风险提示" in warning["content"]
-    assert warning["grounding_risk"]["level"] == "high"
+    assert audit.should_warn is True
+    assert "风险提示" in audit.warning_chunk["content"]
+    assert audit.warning_chunk["grounding_risk"]["level"] == "high"
