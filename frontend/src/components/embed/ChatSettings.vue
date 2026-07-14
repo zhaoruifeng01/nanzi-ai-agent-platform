@@ -5,7 +5,6 @@ import { useRouter } from 'vue-router';
 const props = defineProps<{
   visible: boolean;
   config: any;
-  availableModels: any[];
   allowedAgents: any[];
 }>();
 
@@ -70,7 +69,8 @@ const handleSetExpandThoughts = (enabled: boolean) => {
     saveAndClose();
 };
 
-const handleModelChange = () => {
+const handleSetGrounding = (enabled: boolean) => {
+    props.config.enableGrounding = enabled;
     saveAndClose();
 };
 
@@ -286,29 +286,34 @@ const handleLogout = () => {
             <p class="mt-1 text-[10px] text-gray-400">智能体推理思维链默认展示状态</p>
           </div>
 
-          <!-- Model Selector -->
+          <!-- Grounding Toggle -->
           <div>
-            <label
-              class="block text-xs font-semibold text-gray-500 uppercase mb-2"
-              >模型选择</label
-            >
-            <select
-              v-model="config.overrideModel"
-              @change="handleModelChange"
-              class="w-full text-xs bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-primary outline-none text-gray-700 dark:text-gray-300 transition-all"
-            >
-              <option value="">默认配置</option>
-              <option
-                v-for="model in availableModels"
-                :key="model.id"
-                :value="model.model_id"
+            <label class="block text-xs font-semibold text-gray-500 uppercase mb-2">反幻觉校验</label>
+            <div class="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+              <button
+                @click="handleSetGrounding(true)"
+                class="flex-1 py-1 text-[10px] rounded-md font-medium transition-all"
+                :class="
+                  config.enableGrounding
+                    ? 'bg-white text-primary shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400'
+                "
               >
-                {{ model.name }} ({{ model.model_id }})
-              </option>
-            </select>
-            <p class="mt-1 text-[10px] text-gray-400">
-              选择后将覆盖智能体默认模型配置
-            </p>
+                开启
+              </button>
+              <button
+                @click="handleSetGrounding(false)"
+                class="flex-1 py-1 text-[10px] rounded-md font-medium transition-all"
+                :class="
+                  !config.enableGrounding
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 dark:text-gray-400'
+                "
+              >
+                关闭
+              </button>
+            </div>
+            <p class="mt-1 text-[10px] text-gray-400">开启后校验回答的事实来源并提示风险</p>
           </div>
 
           <!-- Action Buttons -->

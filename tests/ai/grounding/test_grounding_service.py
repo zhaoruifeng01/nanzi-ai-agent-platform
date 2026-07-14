@@ -60,6 +60,21 @@ def test_audit_returns_standard_warning_payload_for_missing_evidence():
     }
 
 
+def test_audit_returns_pass_when_explicitly_disabled():
+    result = GroundingService.audit(
+        candidate_text="当前销售额排名第一的是王强，金额为 663.98 万元。",
+        requirement=FactRequirement(
+            required=True,
+            accepted_types=frozenset({EvidenceType.INTERNAL_DATA}),
+        ),
+        ledger=EvidenceLedger(user_id="1", conversation_id="c1"),
+        enabled=False,
+    )
+
+    assert result.decision.action == GroundingAction.PASS
+    assert result.should_warn is False
+
+
 def test_warning_chunk_can_reuse_an_external_guard_reason():
     chunk = GroundingService.warning_chunk(
         risk_level=GroundingRiskLevel.HIGH,

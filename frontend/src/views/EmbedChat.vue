@@ -1636,7 +1636,6 @@
     <ChatSettings
       v-model:visible="showSettings"
       :config="config"
-      :available-models="availableModels"
       :allowed-agents="allowedAgents"
       @set-theme="setTheme"
       @set-color="setColor"
@@ -3159,6 +3158,7 @@ const config = reactive({
   enableMultiAgent: true,
   showShortcuts: true,
   enableSqlPlan: false,
+  enableGrounding: false,
   expandThoughts: true, // 思考过程默认展示开关
 });
 const showAutoRoutingHint = ref(false);
@@ -4900,6 +4900,7 @@ const applyTheme = (theme: string, styleVars?: Record<string, string>) => {
 };
 const resetSession = (newToken?: string) => {
   messages.value = [];
+  config.enableGrounding = false;
   generateNewConversation();
   if (newToken) {
     config.token = newToken;
@@ -6287,6 +6288,7 @@ const sendMessage = async () => {
         injected_context: injectedContext.value,
         model: config.overrideModel || undefined,
         enable_sql_plan: config.enableSqlPlan,
+        grounding_enabled: config.enableGrounding,
         ignore_ltm: ltmIgnoredVal,
         hallucination_check: hallucinationCheckEnabled.value || undefined,
         knowledge_ragflow_similarity_threshold: knowledgeSimilarityThreshold.value,

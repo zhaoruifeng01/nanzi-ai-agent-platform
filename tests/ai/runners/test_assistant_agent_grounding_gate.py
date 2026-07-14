@@ -23,7 +23,7 @@ async def _unlocked_session(**_kwargs):
     yield
 
 
-def _runner(*, request_source="unknown") -> AssistantAgentRunner:
+def _runner(*, request_source="unknown", debug_options=None) -> AssistantAgentRunner:
     return AssistantAgentRunner(
         config=ChatConfig(
             agent_id="sys-agent-chat",
@@ -41,6 +41,7 @@ def _runner(*, request_source="unknown") -> AssistantAgentRunner:
             "request_source": request_source,
             "request_capability": "answer",
         },
+        debug_options=debug_options,
     )
 
 
@@ -64,6 +65,13 @@ def _fabricated_ranking() -> str:
     )
 
 
+def test_grounding_requires_explicit_boolean_true():
+    assert _runner(debug_options=None)._grounding_enabled() is False
+    assert _runner(debug_options={"grounding_enabled": False})._grounding_enabled() is False
+    assert _runner(debug_options={"grounding_enabled": "true"})._grounding_enabled() is False
+    assert _runner(debug_options={"grounding_enabled": True})._grounding_enabled() is True
+
+
 @pytest.mark.asyncio
 async def test_unknown_request_directly_passes_structured_output_without_tool_evidence():
     runner = _runner()
@@ -85,7 +93,10 @@ async def test_unknown_request_directly_passes_structured_output_without_tool_ev
 
 
 def test_structured_grounding_retry_overrides_unknown_route_with_typed_requirement():
-    runner = _runner(request_source="unknown")
+    runner = _runner(
+        request_source="unknown",
+        debug_options={"grounding_enabled": True},
+    )
     runner.debug_options["grounding_action"] = {
         "type": "retry",
         "required_evidence_types": ["public_web", "unsupported"],
@@ -118,7 +129,10 @@ def test_grounding_retry_selects_only_tool_with_matching_evidence_type():
 
 
 def test_structured_method_action_keeps_unknown_output_scrutiny_without_requiring_tool():
-    runner = _runner(request_source="internal_structured_data")
+    runner = _runner(
+        request_source="internal_structured_data",
+        debug_options={"grounding_enabled": True},
+    )
     runner.debug_options["grounding_action"] = {"type": "method"}
     ctx = runner._ensure_agent_context()
 
@@ -126,6 +140,19 @@ def test_structured_method_action_keeps_unknown_output_scrutiny_without_requirin
 
     assert requirement.required is False
     assert requirement.scrutinize_unknown_output is True
+
+
+def test_general_route_hint_is_upgraded_from_dynamic_public_user_intent():
+    runner = _runner(request_source="general")
+    ctx = runner._ensure_agent_context()
+
+    requirement = runner._resolve_turn_grounding_requirement(
+        "查询今天上海天气",
+        ctx,
+    )
+
+    assert requirement.required is True
+    assert requirement.accepted_types == frozenset({EvidenceType.PUBLIC_WEB})
 
 
 @pytest.mark.asyncio
@@ -198,7 +225,10 @@ async def test_successful_read_only_mcp_receipt_does_not_append_risk_warning():
 
 @pytest.mark.asyncio
 async def test_missing_evidence_preserves_answer_and_appends_risk_warning():
-    runner = _runner(request_source="internal_structured_data")
+    runner = _runner(
+        request_source="internal_structured_data",
+        debug_options={"grounding_enabled": True},
+    )
     answer = "当前销售额排名第一的是王强，金额为 663.98 万元。"
 
     async def fake_core(_history):
@@ -214,8 +244,31 @@ async def test_missing_evidence_preserves_answer_and_appends_risk_warning():
 
 
 @pytest.mark.asyncio
-async def test_internal_knowledge_compatibility_preserves_answer_with_source_notice():
+async def test_grounding_is_disabled_by_default_and_streams_without_warning():
     runner = _runner(request_source="internal_structured_data")
+    answer = "当前销售额排名第一的是王强，金额为 663.98 万元。"
+
+    async def fake_core(_history):
+        yield {"content": answer}
+
+    with patch.object(runner, "_execute_core", fake_core):
+        events = [
+            event
+            async for event in runner.execute(
+                [{"role": "user", "content": "分析排行"}]
+            )
+        ]
+
+    assert events == [{"content": answer}]
+    assert "风险提示" not in "".join(str(event.get("content") or "") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_internal_knowledge_compatibility_preserves_answer_with_source_notice():
+    runner = _runner(
+        request_source="internal_structured_data",
+        debug_options={"grounding_enabled": True},
+    )
     answer = "询价审批需要采购和主管共同确认。"
 
     async def fake_core(_history):
@@ -413,7 +466,10 @@ async def test_clearly_non_factual_turn_emits_content_before_generation_complete
 
 @pytest.mark.asyncio
 async def test_general_route_dynamic_fact_streams_then_appends_warning():
-    runner = _runner(request_source="general")
+    runner = _runner(
+        request_source="general",
+        debug_options={"grounding_enabled": True},
+    )
 
     async def fake_core(_history):
         yield {"content": "当前美元汇率为 9.99。"}
@@ -438,7 +494,10 @@ async def test_general_route_dynamic_fact_streams_then_appends_warning():
 
 @pytest.mark.asyncio
 async def test_resumed_stream_preserves_answer_and_appends_risk_warning():
-    runner = _runner(request_source="internal_structured_data")
+    runner = _runner(
+        request_source="internal_structured_data",
+        debug_options={"grounding_enabled": True},
+    )
     answer = "当前销售额为 663.98 万元。"
     agent = SimpleNamespace(reply_stream=lambda _event: object(), state={})
     native_model = SimpleNamespace(model="test")

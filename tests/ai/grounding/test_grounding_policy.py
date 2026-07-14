@@ -6,6 +6,7 @@ from app.services.ai.grounding.policy import (
     FactRequirement,
     GroundingAction,
     GroundingRiskLevel,
+    contains_grounding_fact_signal,
     evaluate_grounding,
     resolve_fact_requirement,
     evidence_types_for_capabilities,
@@ -525,7 +526,7 @@ def test_stable_general_knowledge_and_hypothetical_examples_pass_without_evidenc
     assert hypothetical.action == GroundingAction.PASS
 
 
-def test_general_route_dynamic_fact_without_evidence_returns_warning():
+def test_general_route_dynamic_fact_does_not_enable_output_only_scrutiny():
     requirement = resolve_fact_requirement(
         _decision(RequestSource.GENERAL, RequestCapability.ANSWER)
     )
@@ -536,7 +537,42 @@ def test_general_route_dynamic_fact_without_evidence_returns_warning():
         ledger=EvidenceLedger(user_id="1", conversation_id="c1"),
     )
 
-    assert decision.action == GroundingAction.PASS_WITH_WARNING
+    assert decision.action == GroundingAction.PASS
+
+
+def test_general_route_greeting_with_today_question_passes_without_warning():
+    greeting = (
+        "你好！admin，欢迎回来！很高兴再次为您服务。\n"
+        "今天有什么可以帮您的？无论是查数据、写代码、分析问题还是日常咨询，随时吩咐！"
+    )
+    requirement = resolve_fact_requirement(
+        _decision(RequestSource.GENERAL, RequestCapability.ANSWER)
+    )
+
+    decision = evaluate_grounding(
+        requirement=requirement,
+        candidate_text=greeting,
+        ledger=EvidenceLedger(user_id="1", conversation_id="c1"),
+    )
+
+    assert contains_grounding_fact_signal(greeting) is False
+    assert decision.action == GroundingAction.PASS
+
+
+def test_general_policy_detects_fact_signal_without_inventing_a_requirement():
+    statement = "今天服务器有 3 个告警。"
+    requirement = resolve_fact_requirement(
+        _decision(RequestSource.GENERAL, RequestCapability.ANSWER)
+    )
+
+    decision = evaluate_grounding(
+        requirement=requirement,
+        candidate_text=statement,
+        ledger=EvidenceLedger(user_id="1", conversation_id="c1"),
+    )
+
+    assert contains_grounding_fact_signal(statement) is True
+    assert decision.action == GroundingAction.PASS
 
 
 def test_matching_receipt_allows_evidence_required_answer():

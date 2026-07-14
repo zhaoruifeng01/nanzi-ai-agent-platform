@@ -36,7 +36,10 @@ class GroundingService:
         candidate_text: str,
         requirement: FactRequirement,
         ledger: EvidenceLedger,
+        enabled: bool = True,
     ) -> GroundingAuditResult:
+        if not enabled:
+            requirement = FactRequirement(required=False, accepted_types=frozenset())
         decision = evaluate_grounding(
             requirement=requirement,
             candidate_text=candidate_text,

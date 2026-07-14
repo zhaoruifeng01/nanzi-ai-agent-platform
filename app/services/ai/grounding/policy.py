@@ -28,7 +28,6 @@ class FactRequirement:
     required: bool
     accepted_types: frozenset[EvidenceType]
     scrutinize_unknown_output: bool = False
-    scrutinize_dynamic_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +73,12 @@ _DYNAMIC_FACT_RE = re.compile(
     r"(?:当前|目前|现在|最近|最新|实时|今天|今日|本周|本月|今年).{0,40}(?:是|为|有|达到|排名|最好|最高|最低|正常|异常|运行|发生)",
     re.IGNORECASE,
 )
+_DYNAMIC_INTERROGATIVE_RE = re.compile(
+    r"(?:什么|哪些|多少|如何|怎么|是否|有没有|能否|可否|吗|呢|"
+    r"可以帮|需要我(?:帮|协助))",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"[。！？!?；;，,\n]+")
 _GENERIC_FACT_ASSERTION_RE = re.compile(
     r"(?:作者|负责人|创建者|所有者)(?:是|为)|"
     r"(?:该|这|此|其|本|上述|以下)[^。！？\n]{0,24}"
@@ -155,7 +160,6 @@ def resolve_fact_requirement(decision: RequestDecision | None) -> FactRequiremen
         required=bool(accepted_types),
         accepted_types=accepted_types,
         scrutinize_unknown_output=decision.source == RequestSource.UNKNOWN,
-        scrutinize_dynamic_output=decision.source == RequestSource.GENERAL,
     )
 
 
@@ -178,6 +182,16 @@ def _is_explicitly_unverified(text: str) -> bool:
     return any(marker in text for marker in _REFUSAL_MARKERS)
 
 
+def _contains_dynamic_fact_assertion(text: str) -> bool:
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if not clause or not _DYNAMIC_FACT_RE.search(clause):
+            continue
+        if _DYNAMIC_INTERROGATIVE_RE.search(clause):
+            continue
+        return True
+    return False
+
+
 def _contains_structural_external_fact(text: str) -> bool:
     if _is_explicitly_hypothetical(text):
         return False
@@ -185,7 +199,7 @@ def _contains_structural_external_fact(text: str) -> bool:
     has_fact_value = bool(_FACT_VALUE_RE.search(text))
     has_numeric_table_value = has_table and bool(re.search(r"\d", text))
     has_execution_claim = bool(_EXECUTION_CLAIM_RE.search(text))
-    has_dynamic_fact = bool(_DYNAMIC_FACT_RE.search(text))
+    has_dynamic_fact = _contains_dynamic_fact_assertion(text)
     has_generic_assertion = bool(_GENERIC_FACT_ASSERTION_RE.search(text))
     return (
         has_execution_claim
@@ -201,12 +215,6 @@ def _contains_structural_external_fact(text: str) -> bool:
 def contains_grounding_fact_signal(text: str) -> bool:
     """Public, conservative fact-signal check shared by runner boundaries."""
     return _contains_structural_external_fact(str(text or "").strip())
-
-
-def _contains_high_confidence_dynamic_fact(text: str) -> bool:
-    if _is_explicitly_hypothetical(text):
-        return False
-    return bool(_DYNAMIC_FACT_RE.search(text) or _EXECUTION_CLAIM_RE.search(text))
 
 
 def _is_pure_no_result_response(text: str) -> bool:
@@ -339,10 +347,7 @@ def evaluate_grounding(
             GroundingRiskLevel.HIGH,
         )
 
-    if requirement.scrutinize_unknown_output or (
-        requirement.scrutinize_dynamic_output
-        and _contains_high_confidence_dynamic_fact(text)
-    ):
+    if requirement.scrutinize_unknown_output:
         if _contains_structural_external_fact(text):
             if (
                 EvidenceType.EXTERNAL_TOOL in available_types

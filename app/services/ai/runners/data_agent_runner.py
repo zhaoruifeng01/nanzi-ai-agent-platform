@@ -126,6 +126,7 @@ class DataAgentRunner(BaseExecutor):
             ),
             candidate_text=candidate_text,
             ledger=ledger,
+            enabled=self._grounding_enabled(),
         )
 
     async def _ensure_schema_similarity_threshold(self) -> float:

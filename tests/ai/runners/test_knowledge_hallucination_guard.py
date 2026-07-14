@@ -142,7 +142,10 @@ async def test_hybrid_search_does_not_trigger_on_tool_error(kb_config):
 @pytest.mark.asyncio
 async def test_hallucination_reflection_loop_corrects(kb_config):
     """验证当检测到幻觉时触发自反思重写循环，若第二次通过则输出正确答案。"""
-    runner = _kb_runner(kb_config)
+    runner = _kb_runner(
+        kb_config,
+        debug_options={"grounding_enabled": True, "hallucination_check": True},
+    )
     runner._rag_empty = False
     runner._valid_citation_ids = ["chunk_1"]
 
@@ -207,7 +210,10 @@ async def test_hallucination_reflection_loop_corrects(kb_config):
 @pytest.mark.asyncio
 async def test_hallucination_max_retries_retains_answer_with_soft_warning(kb_config):
     """反思次数耗尽后保留最后回答，并追加一次消息内风险提示。"""
-    runner = _kb_runner(kb_config)
+    runner = _kb_runner(
+        kb_config,
+        debug_options={"grounding_enabled": True, "hallucination_check": True},
+    )
     runner._rag_empty = False
 
     async def mock_execute_agentscope(*args, **kwargs):
@@ -256,3 +262,40 @@ async def test_hallucination_max_retries_retains_answer_with_soft_warning(kb_con
         assert warning_mock.call_count == 1
         assert not any(e.get("title") == "安全网关最终拦截" for e in events)
         assert not any(e.get("type") == "grounding_blocked" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_hallucination_guard_is_disabled_by_default(kb_config):
+    runner = _kb_runner(kb_config)
+    runner._rag_empty = False
+
+    async def mock_execute_agentscope(*args, **kwargs):
+        yield {"content": "系统 A 支持 B。"}
+
+    async def mock_auto_prefetch(*args, **kwargs):
+        yield {
+            "__knowledge_output__": json.dumps({
+                "content": "文献提到：系统 A 支持 C。",
+                "citations": [],
+            })
+        }
+
+    evaluate = AsyncMock(return_value={"is_hallucinated": True, "reason": "不应执行"})
+    with patch.object(runner, "_execute_with_agentscope_native_agent", mock_execute_agentscope), \
+         patch.object(runner, "_resolve_knowledge_tools", AsyncMock(return_value=[_search_knowledge_tool()])), \
+         patch.object(runner, "_auto_invoke_search_knowledge_base", mock_auto_prefetch), \
+         patch("app.services.ai.hallucination_evaluator.HallucinationEvaluator.evaluate", evaluate), \
+         patch("app.services.ai.runners.knowledge_agent_runner.is_knowledge_base_enabled", AsyncMock(return_value=True)), \
+         patch("app.services.ai.runners.knowledge_agent_runner.resolve_knowledge_dataset_ids", AsyncMock(return_value=(["ds-1"], None))), \
+         patch("app.services.ai.runners.knowledge_agent_runner.AgentConfigProvider.get_configured_llm", AsyncMock(return_value=SimpleNamespace(native_model=object()))), \
+         patch("app.services.config_service.ConfigService.get", AsyncMock(return_value="5")):
+        events = [
+            event
+            async for event in runner._execute_raw(
+                [{"role": "user", "content": "系统 A 支持什么？"}]
+            )
+        ]
+
+    evaluate.assert_not_awaited()
+    assert "系统 A 支持 B。" == "".join(str(event.get("content") or "") for event in events)
+    assert not any(event.get("category") == "grounding" for event in events)

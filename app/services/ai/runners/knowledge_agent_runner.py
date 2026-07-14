@@ -420,6 +420,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
 
         # 从 debug_options 读取会话级反幻觉开关（与模型覆盖等参数同通道）
         hallucination_check_enabled = bool(self.debug_options.get("hallucination_check", False))
+        grounding_enabled = self._grounding_enabled()
 
         system_content = self.config.system_prompt or ""
         system_content = f"{KnowledgeChatPrompts.TURN_SYSTEM_HINT}\n\n{system_content}"
@@ -589,6 +590,10 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                     chunk = dict(chunk)
                     chunk["content"] = content
                 chunks_buffer.append(chunk)
+
+            if not grounding_enabled:
+                passed_guard = True
+                break
 
             # 评估是否含有幻觉（受会话开关控制）
             evaluation = await HallucinationEvaluator.evaluate(

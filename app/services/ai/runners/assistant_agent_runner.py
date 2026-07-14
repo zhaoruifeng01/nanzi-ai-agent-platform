@@ -333,7 +333,7 @@ class AssistantAgentRunner(BaseExecutor):
                 source = RequestSource.INTERNAL_DOCS
                 capability = RequestCapability.KNOWLEDGE_SEARCH
         if source is not None and capability is not None:
-            return RequestDecision(
+            routed_decision = RequestDecision(
                 source=source,
                 capability=capability,
                 confidence=semantic_confidence,
@@ -341,6 +341,11 @@ class AssistantAgentRunner(BaseExecutor):
                 semantic_intent=self.route_hints.get("semantic_intent"),
                 semantic_confidence=semantic_confidence,
             )
+            if source == RequestSource.GENERAL:
+                inferred_decision = resolve_request_decision(user_query)
+                if resolve_fact_requirement(inferred_decision).required:
+                    return inferred_decision
+            return routed_decision
         return resolve_request_decision(
             user_query,
             semantic_intent=self.route_hints.get("semantic_intent"),
@@ -398,7 +403,11 @@ class AssistantAgentRunner(BaseExecutor):
         requirement = resolve_fact_requirement(
             self._resolve_grounding_request_decision(user_query)
         )
-        grounding_action = self.debug_options.get("grounding_action")
+        grounding_action = (
+            self.debug_options.get("grounding_action")
+            if self._grounding_enabled()
+            else None
+        )
         if isinstance(grounding_action, dict) and grounding_action.get("type") == "method":
             return FactRequirement(
                 required=False,
@@ -435,7 +444,6 @@ class AssistantAgentRunner(BaseExecutor):
                     | frozenset({EvidenceType.USER_FILE})
                 ),
                 scrutinize_unknown_output=requirement.scrutinize_unknown_output,
-                scrutinize_dynamic_output=requirement.scrutinize_dynamic_output,
             )
         return requirement
 
@@ -494,7 +502,11 @@ class AssistantAgentRunner(BaseExecutor):
         history: List[Dict[str, str]]
     ) -> AsyncGenerator[Dict[str, Any], None]:
         user_query = self._extract_last_user_query(history)
-        run_data_guard = self._should_run_data_hallucination_guard(user_query)
+        grounding_enabled = self._grounding_enabled()
+        run_data_guard = (
+            grounding_enabled
+            and self._should_run_data_hallucination_guard(user_query)
+        )
         ctx = self._ensure_agent_context()
         shared_ledger = (
             getattr(ctx, "grounding_evidence_ledger", None)
@@ -506,10 +518,17 @@ class AssistantAgentRunner(BaseExecutor):
             conversation_id=self.conversation_id,
         )
         ctx.grounding_evidence_ledger = self._evidence_ledger
-        grounding_requirement = self._resolve_turn_grounding_requirement(user_query, ctx)
-        buffer_output = self._should_buffer_grounding_output(
-            grounding_requirement,
-            run_data_guard=run_data_guard,
+        grounding_requirement = (
+            self._resolve_turn_grounding_requirement(user_query, ctx)
+            if grounding_enabled
+            else FactRequirement(required=False, accepted_types=frozenset())
+        )
+        buffer_output = (
+            grounding_enabled
+            and self._should_buffer_grounding_output(
+                grounding_requirement,
+                run_data_guard=run_data_guard,
+            )
         )
 
         chunks_buffer = []
@@ -582,32 +601,9 @@ class AssistantAgentRunner(BaseExecutor):
                 full_text += chunk["content"]
                 chunks_buffer.append(chunk)
             else:
-                if (
-                    "content" in chunk
-                    and grounding_requirement.scrutinize_dynamic_output
-                    and not chunk.get("type")
-                ):
-                    full_text += str(chunk.get("content") or "")
                 yield chunk
 
         if not buffer_output:
-            if grounding_requirement.scrutinize_dynamic_output:
-                grounding_audit = GroundingService.audit(
-                    requirement=grounding_requirement,
-                    candidate_text=full_text,
-                    ledger=self._evidence_ledger,
-                )
-                if grounding_audit.should_warn:
-                    grounding_decision = grounding_audit.decision
-                    yield {
-                        "type": "log",
-                        "id": f"grounding_dynamic_{uuid.uuid4().hex[:8]}",
-                        "title": "事实来源风险提示已追加",
-                        "details": grounding_decision.reason,
-                        "status": "warning",
-                        "category": "grounding",
-                    }
-                    yield grounding_audit.warning_chunk
             return
 
         should_intercept = (
@@ -691,7 +687,11 @@ class AssistantAgentRunner(BaseExecutor):
 
         # 2. Build Messages
         system_content = self.config.system_prompt or ""
-        grounding_action = self.debug_options.get("grounding_action")
+        grounding_action = (
+            self.debug_options.get("grounding_action")
+            if self._grounding_enabled()
+            else None
+        )
         if isinstance(grounding_action, dict) and grounding_action.get("type") == "method":
             system_content = (
                 "【安全回答模式】本轮只提供查询步骤、分析框架或排查方法；"
@@ -832,10 +832,19 @@ class AssistantAgentRunner(BaseExecutor):
         _preflight_user_query = self._extract_last_user_query(history)
         _preflight_ctx = self._ensure_agent_context()
         grounding_request_decision = self._resolve_grounding_request_decision(_preflight_user_query)
-        turn_grounding_requirement = self._resolve_turn_grounding_requirement(_preflight_user_query, _preflight_ctx)
+        grounding_enabled = self._grounding_enabled()
+        turn_grounding_requirement = (
+            self._resolve_turn_grounding_requirement(_preflight_user_query, _preflight_ctx)
+            if grounding_enabled
+            else FactRequirement(required=False, accepted_types=frozenset())
+        )
         grounding_requires_tool = turn_grounding_requirement.required
-        retry_evidence_types = self._parse_grounding_retry_evidence_types(
-            self.debug_options.get("grounding_action")
+        retry_evidence_types = (
+            self._parse_grounding_retry_evidence_types(
+                self.debug_options.get("grounding_action")
+            )
+            if grounding_enabled
+            else frozenset()
         )
         try:
             if not recall_query_pending:
@@ -1626,10 +1635,18 @@ class AssistantAgentRunner(BaseExecutor):
                     )
                 interrupted = False
                 user_query = str(state.get("user_query") or "")
-                requirement = self._resolve_turn_grounding_requirement(user_query, ctx)
-                buffer_output = self._should_buffer_grounding_output(
-                    requirement,
-                    run_data_guard=False,
+                grounding_enabled = self._grounding_enabled()
+                requirement = (
+                    self._resolve_turn_grounding_requirement(user_query, ctx)
+                    if grounding_enabled
+                    else FactRequirement(required=False, accepted_types=frozenset())
+                )
+                buffer_output = (
+                    grounding_enabled
+                    and self._should_buffer_grounding_output(
+                        requirement,
+                        run_data_guard=False,
+                    )
                 )
                 buffered_content: List[Dict[str, Any]] = []
                 async for chunk in self._stream_agentscope_native_events(

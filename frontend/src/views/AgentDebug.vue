@@ -492,6 +492,7 @@ const generateNewConversation = (isManual = false) => {
     finalizeConversationInBackground(previousId);
   }
   conversationId.value = createConversationId();
+  debugConfig.enableGrounding = false;
   localStorage.setItem("agent_debug_conv_id", conversationId.value);
   if (isManual) {
     messages.value = [];
@@ -1414,6 +1415,7 @@ const debugConfig = reactive({
   dryRun: false, // SQL Review Mode
   returnRawPrompt: true, // Always verify context
   enableMultiAgent: true, // Multi-agent collaboration
+  enableGrounding: false, // Session grounding audit (opt-in)
   showShortcuts: true, // Show slash commands
   systemPromptOverride: "", // Prompt Engineering
   injectedContext: [] as { key: string; value: string }[], // Manual Context Injection
@@ -2949,6 +2951,7 @@ const sendMessage = async () => {
     const debugOptions: any = {
       return_raw_prompt: debugConfig.returnRawPrompt,
       dry_run: debugConfig.dryRun,
+      grounding_enabled: debugConfig.enableGrounding,
       hallucination_check: hallucinationCheckEnabled.value || undefined,
       knowledge_ragflow_similarity_threshold: knowledgeSimilarityThreshold.value,
       knowledge_ragflow_vector_weight: knowledgeVectorWeight.value,
@@ -4825,7 +4828,6 @@ onUnmounted(() => {
       v-model:visible="showConfigPanel"
       v-model:is-floating="isConfigPanelFloating"
       :config="debugConfig"
-      :models="availableModels"
       :agent-params="agentParams"
       :loading-config="loadingConfig"
       :agent-context="agentContext"

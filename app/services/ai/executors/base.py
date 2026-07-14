@@ -30,6 +30,10 @@ class BaseExecutor(ABC):
         self.conversation_id = conversation_id
         self.step_counter = 0
 
+    def _grounding_enabled(self) -> bool:
+        """Return whether this request explicitly enabled grounding audits."""
+        return self.debug_options.get("grounding_enabled") is True
+
     @abstractmethod
     async def execute(
         self,

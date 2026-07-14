@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import type { AIModel } from "@/api/model";
-
 interface DebugConfig {
   model: string;
   temperature: number;
   dryRun: boolean;
   returnRawPrompt: boolean;
   enableMultiAgent: boolean;
+  enableGrounding: boolean;
   showShortcuts: boolean;
   systemPromptOverride: string;
   injectedContext: { key: string; value: string }[];
@@ -21,7 +20,6 @@ const props = defineProps<{
   visible: boolean;
   isFloating: boolean;
   config: DebugConfig;
-  models: AIModel[];
   agentParams: AgentParams;
   loadingConfig: boolean;
   agentContext: Record<string, any>;
@@ -173,26 +171,18 @@ const removeContextItem = (index: number) => {
 
         <hr class="border-gray-100" />
 
-        <!-- Model Overrides -->
+        <!-- Grounding Toggle -->
         <div class="space-y-3">
-          <label class="block text-sm font-medium text-gray-700"
-            >模型覆盖 (Model Override)</label
-          >
-          <select
-            v-model="config.model"
-            class="w-full text-sm border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary"
-          >
-            <option value="">(默认: 使用智能体配置)</option>
-            <option
-              v-for="m in models"
-              :key="m.id"
-              :value="m.model_id"
-            >
-              {{ m.name }} ({{ m.model_id }})
-            </option>
-          </select>
-          <p class="text-xs text-gray-400">
-            选择一个模型以临时覆盖智能体的默认配置。
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input
+              type="checkbox"
+              v-model="config.enableGrounding"
+              class="rounded text-primary focus:ring-primary border-gray-300"
+            />
+            <span class="text-sm font-medium text-gray-700">反幻觉校验</span>
+          </label>
+          <p class="text-xs text-gray-500 ml-6">
+            开启后校验回答的事实来源并提示风险。
           </p>
         </div>
 

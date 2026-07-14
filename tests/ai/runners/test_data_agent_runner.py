@@ -903,6 +903,7 @@ async def test_data_agent_runner_does_not_issue_derived_evidence_for_history_onl
         trace_buffer=[],
         user_info={"user_id": 42},
         conversation_id="conv-1",
+        debug_options={"grounding_enabled": True},
     )
 
     events = []
@@ -1063,6 +1064,7 @@ async def test_data_agent_runner_reuse_synthesis_collapses_duplicated_output(
         trace_buffer=[],
         user_info={"user_id": 42},
         conversation_id="conv-1",
+        debug_options={"grounding_enabled": True},
     )
 
     events = []
@@ -6185,6 +6187,7 @@ def test_chatbi_grounding_audit_returns_warning_for_unrelated_business_fact(data
         trace_buffer=[],
         user_info={"user_id": "1"},
         conversation_id="conv-1",
+        debug_options={"grounding_enabled": True},
     )
 
     audit = runner._chatbi_grounding_audit(
@@ -6195,3 +6198,22 @@ def test_chatbi_grounding_audit_returns_warning_for_unrelated_business_fact(data
     assert audit.should_warn is True
     assert "风险提示" in audit.warning_chunk["content"]
     assert audit.warning_chunk["grounding_risk"]["level"] == "high"
+
+
+def test_chatbi_grounding_audit_is_disabled_by_default(data_config):
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner
+
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-chatbi-grounding-disabled",
+        trace_buffer=[],
+        user_info={"user_id": "1"},
+        conversation_id="conv-1",
+    )
+
+    audit = runner._chatbi_grounding_audit(
+        candidate_text="当前销售额排名第一的是王强，金额为 663.98 万元。",
+        evidence_result={"rows": [{"name": "李四", "amount": 20}]},
+    )
+
+    assert audit.should_warn is False

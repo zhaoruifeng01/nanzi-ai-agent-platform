@@ -91,6 +91,7 @@ async def test_expert_mode_still_uses_platform_grounding_gate(chat_config):
     runner = _main_runner(
         chat_config,
         route_hints={"direct_agent_selection": True},
+        debug_options={"grounding_enabled": True},
     )
 
     async def fake_core(_history):
@@ -117,7 +118,10 @@ async def test_web_search_table_without_internal_signals_not_intercepted(chat_co
         "| --- | --- |\n"
         "| AI 新进展 | example.com |\n"
     )
-    runner = _main_runner(chat_config)
+    runner = _main_runner(
+        chat_config,
+        debug_options={"grounding_enabled": True},
+    )
 
     async def fake_core(_history):
         yield {"content": web_table}
@@ -139,7 +143,10 @@ async def test_auto_main_preserves_internal_asset_table_with_risk_warning(chat_c
         "| --- | --- | --- |\n"
         "| app-01 | 192.168.1.10 | 8C16G |\n"
     )
-    runner = _main_runner(chat_config)
+    runner = _main_runner(
+        chat_config,
+        debug_options={"grounding_enabled": True},
+    )
     data_agent = SimpleNamespace(
         id="agent-data-custom",
         display_name="业务数据专家",
