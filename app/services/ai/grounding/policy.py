@@ -129,6 +129,12 @@ _INTERNAL_TRUSTED_TYPES = frozenset(
         EvidenceType.USER_FILE,
     }
 )
+_EXTERNAL_TOOL_COMPATIBLE_TYPES = frozenset(
+    {
+        EvidenceType.PUBLIC_WEB,
+        EvidenceType.RUNTIME_STATE,
+    }
+)
 
 
 def resolve_fact_requirement(decision: RequestDecision | None) -> FactRequirement:
@@ -234,6 +240,17 @@ def evaluate_grounding(
 
     if requirement.required:
         if (
+            EvidenceType.EXTERNAL_TOOL in available_types
+            and requirement.accepted_types
+            and requirement.accepted_types <= _EXTERNAL_TOOL_COMPATIBLE_TYPES
+        ):
+            return GroundingDecision(
+                GroundingAction.PASS,
+                "external or runtime request backed by a successful external tool result",
+                requirement.accepted_types,
+                available_types,
+            )
+        if (
             _is_explicitly_unverified(text)
             and not _FACT_VALUE_RE.search(text)
             and not _MARKDOWN_TABLE_SEPARATOR_RE.search(text)
@@ -269,6 +286,15 @@ def evaluate_grounding(
 
     if requirement.scrutinize_unknown_output:
         if _contains_structural_external_fact(text):
+            if (
+                EvidenceType.EXTERNAL_TOOL in available_types
+                and not _looks_like_internal_business_fact(text)
+            ):
+                return GroundingDecision(
+                    GroundingAction.PASS,
+                    "unknown request backed by a successful external tool result",
+                    available_evidence_types=available_types,
+                )
             requirement_groups = _infer_evidence_requirement_groups(text)
             if requirement_groups and all(
                 ledger.has_valid_evidence(alternatives)

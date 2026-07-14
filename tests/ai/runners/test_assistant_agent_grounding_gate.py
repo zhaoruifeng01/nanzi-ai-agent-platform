@@ -157,6 +157,38 @@ async def test_matching_server_receipt_allows_grounded_facts():
 
 
 @pytest.mark.asyncio
+async def test_successful_read_only_mcp_receipt_does_not_append_risk_warning():
+    runner = _runner()
+    grounded = (
+        "| 车次 | 出发时间 | 二等座 |\n"
+        "| --- | --- | --- |\n"
+        "| G1 | 06:30 | 661元 |"
+    )
+
+    async def fake_core(_history):
+        runner._evidence_ledger.record_success(
+            call_id="mcp-tickets-1",
+            producer="mcp-api:get-tickets",
+            evidence_types={EvidenceType.EXTERNAL_TOOL},
+            result={"trains": [{"number": "G1", "departure": "06:30", "price": 661}]},
+        )
+        yield {"content": grounded}
+
+    with patch.object(runner, "_execute_core", fake_core):
+        events = [
+            event
+            async for event in runner.execute(
+                [{"role": "user", "content": "查询明天北京到上海的火车票"}]
+            )
+        ]
+
+    content = "".join(str(event.get("content") or "") for event in events)
+    assert content == grounded
+    assert "风险提示" not in content
+    assert not any(event.get("type") == "grounding_blocked" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_missing_evidence_preserves_answer_and_appends_risk_warning():
     runner = _runner(request_source="internal_structured_data")
     answer = "当前销售额排名第一的是王强，金额为 663.98 万元。"

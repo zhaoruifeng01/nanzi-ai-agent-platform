@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.ai.grounding.models import EvidenceType
+
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -326,4 +328,5 @@ async def test_tool_registry_marks_db_mcp_runtime_tool_source():
 
     assert spec.source_type == "mcp"
     assert spec.permission_scope == "ask"
+    assert spec.evidence_types == frozenset({EvidenceType.EXTERNAL_TOOL})
     assert await spec.invoke({"query": "project = YS"}) == "mcp result"

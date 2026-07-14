@@ -119,6 +119,109 @@ def test_unknown_structured_fact_with_ambiguous_receipt_returns_warning():
     assert decision.action == GroundingAction.PASS_WITH_WARNING
 
 
+def test_unknown_structured_fact_passes_with_successful_external_tool_receipt():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-travel-mcp",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"trains": [{"number": "G1505", "price": 973}]},
+    )
+    answer = (
+        "| 车次 | 出发时间 | 票价 |\n"
+        "| --- | --- | --- |\n"
+        "| G1505 | 07:50 | 973元 |"
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.UNKNOWN, RequestCapability.ANSWER)
+        ),
+        candidate_text=answer,
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS
+    assert decision.risk_level.value == "none"
+
+
+def test_external_tool_receipt_does_not_bypass_explicit_internal_data_requirement():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-travel-mcp",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"trains": [{"number": "G1505", "price": 973}]},
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.INTERNAL_STRUCTURED_DATA, RequestCapability.DATA_QUERY)
+        ),
+        candidate_text="销售额为 973 元。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+    assert decision.required_evidence_types == frozenset({EvidenceType.INTERNAL_DATA})
+
+
+@pytest.mark.parametrize(
+    ("source", "capability", "answer"),
+    [
+        (RequestSource.PUBLIC_WEB, RequestCapability.WEB_SEARCH, "明天上海有 G1 次列车。"),
+        (
+            RequestSource.RUNTIME_DIAGNOSTIC,
+            RequestCapability.RUNTIME_TOOL,
+            "当前日期为 2026-07-15。",
+        ),
+    ],
+)
+def test_external_tool_receipt_satisfies_external_or_runtime_requirement(
+    source, capability, answer
+):
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-external-mcp",
+        producer="external:get-current-state",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"value": "verified"},
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(_decision(source, capability)),
+        candidate_text=answer,
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS
+
+
+def test_external_tool_receipt_does_not_back_unknown_internal_business_table():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-current-date",
+        producer="calendar:get-current-date",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"date": "2026-07-15"},
+    )
+    answer = (
+        "| 排名 | 业务员 | 销售额 |\n"
+        "| --- | --- | --- |\n"
+        "| 1 | 王强 | ¥663.98万 |"
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.UNKNOWN, RequestCapability.ANSWER)
+        ),
+        candidate_text=answer,
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+
+
 def test_unknown_runtime_fact_passes_when_matching_runtime_receipt_exists():
     ledger = EvidenceLedger(user_id="1", conversation_id="c1")
     ledger.record_success(

@@ -108,6 +108,50 @@ def test_native_tool_ignores_invalid_evidence_type(caplog):
     assert "unsupported" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("name", "description"),
+    [
+        ("railway:get-tickets", "Query train tickets for a route and date"),
+        ("calendar:get-current-date", "Get the current date"),
+        ("jira:search", "Search Jira issues"),
+    ],
+)
+def test_registry_assigns_external_tool_evidence_to_read_only_mcp_tools(name, description):
+    spec = RuntimeToolSpec(
+        name=name,
+        description=description,
+        parameters_schema={"type": "object"},
+        source_type="mcp",
+        callable=_noop,
+    )
+
+    resolved = ToolRegistry._attach_evidence_metadata(name, spec)
+
+    assert resolved.evidence_types == frozenset({EvidenceType.EXTERNAL_TOOL})
+
+
+@pytest.mark.parametrize(
+    ("name", "description"),
+    [
+        ("railway:book-ticket", "Book a train ticket"),
+        ("jira:create-issue", "Create a Jira issue"),
+        ("files:delete", "Delete a remote file"),
+    ],
+)
+def test_registry_does_not_assign_fact_evidence_to_mutating_mcp_tools(name, description):
+    spec = RuntimeToolSpec(
+        name=name,
+        description=description,
+        parameters_schema={"type": "object"},
+        source_type="mcp",
+        callable=_noop,
+    )
+
+    resolved = ToolRegistry._attach_evidence_metadata(name, spec)
+
+    assert resolved.evidence_types == frozenset()
+
+
 @pytest.mark.asyncio
 async def test_runtime_tool_records_typed_evidence_in_request_context_ledger():
     ledger = EvidenceLedger(user_id="1", conversation_id="conv-1")

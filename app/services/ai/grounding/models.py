@@ -12,6 +12,11 @@ class EvidenceType(str, Enum):
     RUNTIME_STATE = "runtime_state"
     USER_FILE = "user_file"
     CONVERSATION_MEMORY = "conversation_memory"
+    # A successful result returned by a dynamically registered external tool
+    # (currently MCP). This proves that the current turn consulted a tool, but
+    # intentionally does not impersonate a more specific source such as an
+    # internal dataset or knowledge base.
+    EXTERNAL_TOOL = "external_tool"
 
 
 @dataclass(frozen=True)
@@ -44,4 +49,3 @@ class EvidenceReceipt:
             conversation_id=conversation_id,
             created_at=datetime.now(timezone.utc),
         )
-

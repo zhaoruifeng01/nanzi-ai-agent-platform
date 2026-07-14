@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, List
 from dataclasses import replace
 import inspect
+import re
 import time
 import logging
 from app.services.ai.tools.data_api import get_dataset_schema, execute_sql_query
@@ -111,6 +112,36 @@ TOOL_EVIDENCE_POLICY: dict[str, str] = {
     "excel_document_read": "allow_empty_success",
     "word_document_read": "allow_empty_success",
 }
+
+
+_MCP_READ_ACTION_RE = re.compile(
+    r"^\s*(?:get|list|search|query|fetch|find|lookup|read|retrieve|inspect|check|"
+    r"current|describe|show|view|status|history|detail)s?(?:\b|[_./-])|"
+    r"^\s*(?:获取|查询|搜索|检索|读取|列出|查看|检查|详情|状态)",
+    re.IGNORECASE,
+)
+_MCP_MUTATION_ACTION_RE = re.compile(
+    r"^\s*(?:create|add|update|edit|patch|delete|remove|write|set|send|book|"
+    r"purchase|order|cancel|start|stop|restart|run|execute|invoke|upload|move|"
+    r"copy|rename)(?:\b|[_./-])|"
+    r"^\s*(?:创建|新增|添加|更新|修改|编辑|删除|移除|写入|设置|发送|预订|"
+    r"购买|下单|取消|启动|停止|重启|执行|调用|上传|移动|复制|重命名)",
+    re.IGNORECASE,
+)
+
+
+def _is_read_only_mcp_tool(*, name: str, description: str) -> bool:
+    """Conservatively recognize retrieval-style MCP tools from their metadata.
+
+    MCP annotations are not persisted in the current cache schema, so only an
+    explicit retrieval verb is accepted. Mutation verbs take precedence.
+    """
+    action_name = str(name or "").rsplit(":", 1)[-1]
+    description_text = str(description or "")
+    candidates = (action_name, description_text)
+    if any(_MCP_MUTATION_ACTION_RE.search(candidate) for candidate in candidates):
+        return False
+    return any(_MCP_READ_ACTION_RE.search(candidate) for candidate in candidates)
 
 
 def resolve_tool_evidence_types(*names: str) -> frozenset[EvidenceType]:
@@ -358,6 +389,15 @@ class ToolRegistry:
             return spec
 
         evidence_types = resolve_tool_evidence_types(name, spec_name)
+        if (
+            not evidence_types
+            and getattr(spec, "source_type", None) == "mcp"
+            and _is_read_only_mcp_tool(
+                name=spec_name or name,
+                description=str(getattr(spec, "description", "") or ""),
+            )
+        ):
+            evidence_types = frozenset({EvidenceType.EXTERNAL_TOOL})
         if not evidence_types:
             return spec
         return replace(
