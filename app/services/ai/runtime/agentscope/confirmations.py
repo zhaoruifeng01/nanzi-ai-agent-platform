@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import TypeAdapter
 
 from app.services.ai.runtime.agentscope.pending_store import (
     PENDING_CONFIRMATION_TTL_SECONDS,
@@ -69,6 +72,48 @@ def _deserialize_tool_call(payload: dict[str, Any]) -> Any:
         return payload
 
 
+async def _resolve_snapshot_awaitables(value: Any, *, path: str) -> Any:
+    """Resolve awaitables leaked into a snapshot payload at this async boundary."""
+    if inspect.isawaitable(value):
+        try:
+            resolved = await value
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to resolve awaitable while serializing {path}: {exc}",
+            ) from exc
+        return await _resolve_snapshot_awaitables(resolved, path=path)
+    if isinstance(value, dict):
+        return {
+            key: await _resolve_snapshot_awaitables(
+                item,
+                path=f"{path}.{key}",
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            await _resolve_snapshot_awaitables(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            [
+                await _resolve_snapshot_awaitables(item, path=f"{path}[{index}]")
+                for index, item in enumerate(value)
+            ],
+        )
+    return value
+
+
+async def _serialize_agent_state(state: Any) -> dict[str, Any]:
+    python_state = state.model_dump(mode="python")
+    resolved_state = await _resolve_snapshot_awaitables(
+        python_state,
+        path="agent_state",
+    )
+    return TypeAdapter(dict[str, Any]).dump_python(resolved_state, mode="json")
+
+
 class PendingAgentScopeConfirmationRegistry:
     def __init__(self) -> None:
         self._items: dict[str, PendingAgentScopeConfirmation] = {}
@@ -93,6 +138,7 @@ class PendingAgentScopeConfirmationRegistry:
         await self.prune()
         request_id = pending_agentscope_store.new_request_id()
         evidence_ledger = getattr(runner, "_evidence_ledger", None)
+        serialized_agent_state = await _serialize_agent_state(agent.state)
         snapshot = PendingAgentScopeSnapshot(
             request_id=request_id,
             kind=kind,
@@ -102,7 +148,7 @@ class PendingAgentScopeConfirmationRegistry:
             reply_id=reply_id,
             agent_name=agent_name,
             tool_call=_serialize_tool_call(tool_call),
-            agent_state=agent.state.model_dump(mode="json"),
+            agent_state=serialized_agent_state,
             stream_state=state or {},
             runner_context=runner_context or {},
             evidence_receipts=(

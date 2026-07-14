@@ -93,6 +93,39 @@ async def test_confirmation_snapshot_captures_runner_evidence_ledger():
 
 
 @pytest.mark.asyncio
+async def test_confirmation_snapshot_resolves_nested_coroutine():
+    async def leaked_value():
+        return "not awaited"
+
+    leaked = leaked_value()
+
+    class CoroutineState:
+        def model_dump(self, mode):
+            if mode == "python":
+                return {"context": [{"metadata": {"pending": leaked}}]}
+            raise ValueError("Unable to serialize unknown type: <class 'coroutine'>")
+
+    registry = PendingAgentScopeConfirmationRegistry()
+    agent = SimpleNamespace(state=CoroutineState())
+
+    pending = await registry.register(
+        kind="permission",
+        agent=agent,
+        runner=SimpleNamespace(),
+        tools=[],
+        native_model=SimpleNamespace(),
+        tool_call={"id": "call-coroutine", "name": "Write", "input": {}},
+        reply_id="reply-1",
+        trace_id="trace-1",
+        agent_name="GeneralAgent",
+    )
+
+    assert pending.snapshot.agent_state == {
+        "context": [{"metadata": {"pending": "not awaited"}}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_pending_store_expired_snapshot_returns_none():
     store = PendingAgentScopeStore()
     store.clear()

@@ -355,6 +355,20 @@ def test_build_toolkit_wraps_native_agentscope_tools_with_approval_mode(monkeypa
     assert toolkit.tools[0].approval_mode == "allow"
 
 
+def test_native_wrapper_preserves_agentscope_execution_metadata():
+    from agentscope.tool import Write
+
+    from app.services.ai.runtime.agentscope.tools import AgentScopeNativeApprovalTool
+
+    native_tool = Write()
+    wrapped_tool = AgentScopeNativeApprovalTool(native_tool)
+
+    assert wrapped_tool.is_state_injected is native_tool.is_state_injected is True
+    assert wrapped_tool.is_concurrency_safe is native_tool.is_concurrency_safe
+    assert wrapped_tool.is_external_tool is native_tool.is_external_tool
+    assert wrapped_tool.is_mcp is native_tool.is_mcp
+
+
 @pytest.mark.asyncio
 async def test_native_wrapper_applies_user_forbidden_tool_and_command_checks(monkeypatch):
     from agentscope.permission import PermissionBehavior, PermissionDecision
