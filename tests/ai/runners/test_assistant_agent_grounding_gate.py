@@ -411,6 +411,26 @@ async def test_clearly_non_factual_turn_emits_content_before_generation_complete
 
 
 @pytest.mark.asyncio
+async def test_general_route_dynamic_fact_streams_then_appends_warning():
+    runner = _runner(request_source="general")
+
+    async def fake_core(_history):
+        yield {"content": "当前美元汇率为 9.99。"}
+
+    with patch.object(runner, "_execute_core", fake_core):
+        events = [
+            event
+            async for event in runner.execute(
+                [{"role": "user", "content": "给我简单介绍一下汇率"}]
+            )
+        ]
+
+    content = "".join(str(event.get("content") or "") for event in events)
+    assert "当前美元汇率为 9.99。" in content
+    assert content.count("风险提示") == 1
+
+
+@pytest.mark.asyncio
 async def test_resumed_stream_preserves_answer_and_appends_risk_warning():
     runner = _runner(request_source="internal_structured_data")
     answer = "当前销售额为 663.98 万元。"
@@ -511,3 +531,56 @@ async def test_cross_process_resume_restores_mcp_evidence_without_warning():
     content = "".join(str(event.get("content") or "") for event in events)
     assert content == answer
     assert "风险提示" not in content
+
+
+def test_successful_external_execution_result_records_tool_evidence():
+    ledger = EvidenceLedger(user_id="1", conversation_id="conv-1")
+    tool = RuntimeToolSpec(
+        name="client_weather",
+        description="client weather",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=lambda: None,
+        evidence_types=frozenset({EvidenceType.EXTERNAL_TOOL}),
+        evidence_policy="allow_empty_success",
+    )
+    result = SimpleNamespace(
+        id="call-weather",
+        name="client_weather",
+        output='{"city":"上海","temperature":28}',
+        state=SimpleNamespace(value="success"),
+    )
+
+    AssistantAgentRunner._record_external_execution_evidence(
+        ledger=ledger,
+        tools=[tool],
+        execution_results=[result],
+    )
+
+    assert ledger.has_valid_evidence({EvidenceType.EXTERNAL_TOOL})
+
+
+def test_failed_external_execution_result_does_not_record_tool_evidence():
+    ledger = EvidenceLedger(user_id="1", conversation_id="conv-1")
+    tool = RuntimeToolSpec(
+        name="client_weather",
+        description="client weather",
+        parameters_schema={"type": "object", "properties": {}},
+        source_type="static",
+        callable=lambda: None,
+        evidence_types=frozenset({EvidenceType.EXTERNAL_TOOL}),
+    )
+    result = SimpleNamespace(
+        id="call-weather",
+        name="client_weather",
+        output="permission denied",
+        state=SimpleNamespace(value="error"),
+    )
+
+    AssistantAgentRunner._record_external_execution_evidence(
+        ledger=ledger,
+        tools=[tool],
+        execution_results=[result],
+    )
+
+    assert not ledger.receipts

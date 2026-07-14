@@ -59,6 +59,20 @@ async def test_mcp_direct_error_result_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mcp_direct_error_without_content_raises(monkeypatch):
+    session_mgr = SimpleNamespace(is_direct_http=True, mcp_session_id="session-1")
+    monkeypatch.setattr(McpClientService, "get_session", AsyncMock(return_value=session_mgr))
+    monkeypatch.setattr(
+        McpClientService,
+        "_direct_http_rpc",
+        AsyncMock(return_value={"isError": True, "message": "tool failed"}),
+    )
+
+    with pytest.raises(RuntimeError, match="tool failed"):
+        await McpClientService.call_remote_tool("server-1", "get-data", {})
+
+
+@pytest.mark.asyncio
 async def test_mcp_successful_empty_content_returns_explicit_success_envelope(monkeypatch):
     response = SimpleNamespace(isError=False, content=[])
     session_mgr = SimpleNamespace(
@@ -86,3 +100,83 @@ async def test_mcp_direct_empty_success_returns_explicit_success_envelope(monkey
     result = await McpClientService.call_remote_tool("server-1", "get-data", {})
 
     assert result == {"success": True, "content": ""}
+
+
+@pytest.mark.asyncio
+async def test_mcp_sdk_structured_content_is_preserved(monkeypatch):
+    response = SimpleNamespace(
+        isError=False,
+        content=[],
+        structuredContent={"trains": [{"number": "G1", "price": 661}]},
+    )
+    session_mgr = SimpleNamespace(
+        is_direct_http=False,
+        session=SimpleNamespace(call_tool=AsyncMock(return_value=response)),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(McpClientService, "get_session", AsyncMock(return_value=session_mgr))
+
+    result = await McpClientService.call_remote_tool("server-1", "get-data", {})
+
+    assert result == {
+        "success": True,
+        "content": "",
+        "structured_content": {"trains": [{"number": "G1", "price": 661}]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_direct_structured_content_is_preserved(monkeypatch):
+    session_mgr = SimpleNamespace(is_direct_http=True, mcp_session_id="session-1")
+    monkeypatch.setattr(McpClientService, "get_session", AsyncMock(return_value=session_mgr))
+    monkeypatch.setattr(
+        McpClientService,
+        "_direct_http_rpc",
+        AsyncMock(
+            return_value={
+                "content": [],
+                "structuredContent": {"trains": [{"number": "G1"}]},
+            }
+        ),
+    )
+
+    result = await McpClientService.call_remote_tool("server-1", "get-data", {})
+
+    assert result == {
+        "success": True,
+        "content": "",
+        "structured_content": {"trains": [{"number": "G1"}]},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct_http", [False, True])
+async def test_mcp_structured_content_allows_null_text_content(monkeypatch, direct_http):
+    structured = {"trains": [{"number": "G1"}]}
+    if direct_http:
+        session_mgr = SimpleNamespace(is_direct_http=True, mcp_session_id="session-1")
+        monkeypatch.setattr(
+            McpClientService,
+            "_direct_http_rpc",
+            AsyncMock(return_value={"content": None, "structuredContent": structured}),
+        )
+    else:
+        response = SimpleNamespace(
+            isError=False,
+            content=None,
+            structuredContent=structured,
+        )
+        session_mgr = SimpleNamespace(
+            is_direct_http=False,
+            session=SimpleNamespace(call_tool=AsyncMock(return_value=response)),
+            close=AsyncMock(),
+        )
+    monkeypatch.setattr(McpClientService, "get_session", AsyncMock(return_value=session_mgr))
+
+    result = await McpClientService.call_remote_tool("server-1", "get-data", {})
+
+    assert result == {
+        "success": True,
+        "content": "",
+        "structured_content": structured,
+    }

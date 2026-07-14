@@ -28,6 +28,7 @@ class FactRequirement:
     required: bool
     accepted_types: frozenset[EvidenceType]
     scrutinize_unknown_output: bool = False
+    scrutinize_dynamic_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,14 @@ _REFUSAL_MARKERS = (
     "暂无",
 )
 
+_CONCRETE_DETAIL_RE = re.compile(
+    r"\b[A-Za-z]+\d+[A-Za-z0-9_.:-]*\b|"
+    r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|"
+    r"\d{1,2}:\d{2}(?::\d{2})?|"
+    r"\d[\d,.]*\s*(?:张|座|℃|度|公里|分钟|小时|天|日|月|年)",
+    re.IGNORECASE,
+)
+
 _INTERNAL_TRUSTED_TYPES = frozenset(
     {
         EvidenceType.INTERNAL_DATA,
@@ -146,6 +155,7 @@ def resolve_fact_requirement(decision: RequestDecision | None) -> FactRequiremen
         required=bool(accepted_types),
         accepted_types=accepted_types,
         scrutinize_unknown_output=decision.source == RequestSource.UNKNOWN,
+        scrutinize_dynamic_output=decision.source == RequestSource.GENERAL,
     )
 
 
@@ -181,8 +191,63 @@ def _contains_structural_external_fact(text: str) -> bool:
         has_execution_claim
         or has_dynamic_fact
         or has_generic_assertion
+        or has_fact_value
+        or bool(_CONCRETE_DETAIL_RE.search(text))
         or has_numeric_table_value
         or (has_table and has_fact_value)
+    )
+
+
+def contains_grounding_fact_signal(text: str) -> bool:
+    """Public, conservative fact-signal check shared by runner boundaries."""
+    return _contains_structural_external_fact(str(text or "").strip())
+
+
+def _contains_high_confidence_dynamic_fact(text: str) -> bool:
+    if _is_explicitly_hypothetical(text):
+        return False
+    return bool(_DYNAMIC_FACT_RE.search(text) or _EXECUTION_CLAIM_RE.search(text))
+
+
+def build_grounding_warning_chunk(
+    *,
+    risk_level: GroundingRiskLevel,
+    reason: str,
+    required_types: frozenset[EvidenceType] = frozenset(),
+    available_types: frozenset[EvidenceType] = frozenset(),
+) -> dict[str, object]:
+    if risk_level == GroundingRiskLevel.LOW:
+        notice = (
+            "> **信息来源提示**：本回答基于知识库或已授权文件资料，"
+            "不代表实时数据库状态。"
+        )
+    elif risk_level == GroundingRiskLevel.MEDIUM:
+        notice = (
+            "> **信息来源提示**：本回答参考了已取得的资料，但部分结论未获得"
+            "完全匹配的数据来源，请结合原始资料核对。"
+        )
+    else:
+        notice = (
+            "> **风险提示**：本次未取得能够完整验证这些具体数据或当前状态的来源，"
+            "以下内容可能存在偏差，请勿直接用于生产操作或正式决策。"
+        )
+    return {
+        "content": f"\n\n{notice}",
+        "grounding_risk": {
+            "level": risk_level.value,
+            "reason": reason,
+            "required_evidence_types": sorted(item.value for item in required_types),
+            "available_evidence_types": sorted(item.value for item in available_types),
+        },
+    }
+
+
+def _is_pure_no_result_response(text: str) -> bool:
+    return bool(
+        _is_explicitly_unverified(text)
+        and not _FACT_VALUE_RE.search(text)
+        and not _CONCRETE_DETAIL_RE.search(text)
+        and not _MARKDOWN_TABLE_SEPARATOR_RE.search(text)
     )
 
 
@@ -231,13 +296,24 @@ def evaluate_grounding(
 ) -> GroundingDecision:
     text = str(candidate_text or "").strip()
     available_types = ledger.available_evidence_types
-    if requirement.accepted_types and ledger.has_valid_evidence(requirement.accepted_types):
-        return GroundingDecision(
-            GroundingAction.PASS,
-            "matching evidence receipt exists",
+    exact_evidence_exists = bool(
+        requirement.accepted_types
+        and ledger.has_valid_evidence(requirement.accepted_types)
+    )
+    if exact_evidence_exists:
+        fact_bearing = _contains_structural_external_fact(text)
+        receipt_correlated = ledger.has_candidate_overlap(
+            text,
             requirement.accepted_types,
-            available_types,
+            allow_empty=_is_pure_no_result_response(text),
         )
+        if not fact_bearing or receipt_correlated:
+            return GroundingDecision(
+                GroundingAction.PASS,
+                "matching evidence receipt exists",
+                requirement.accepted_types,
+                available_types,
+            )
 
     if requirement.required:
         if (
@@ -247,7 +323,7 @@ def evaluate_grounding(
             and ledger.has_candidate_overlap(
                 text,
                 {EvidenceType.EXTERNAL_TOOL},
-                allow_empty=_is_explicitly_unverified(text),
+                allow_empty=_is_pure_no_result_response(text),
             )
         ):
             return GroundingDecision(
@@ -257,15 +333,21 @@ def evaluate_grounding(
                 available_types,
             )
         if (
-            _is_explicitly_unverified(text)
-            and not _FACT_VALUE_RE.search(text)
-            and not _MARKDOWN_TABLE_SEPARATOR_RE.search(text)
+            _is_pure_no_result_response(text)
         ):
             return GroundingDecision(
                 GroundingAction.PASS,
                 "response explicitly avoids unverified factual claims",
                 requirement.accepted_types,
                 available_types,
+            )
+        if exact_evidence_exists:
+            return GroundingDecision(
+                GroundingAction.PASS_WITH_WARNING,
+                "matching evidence type exists but the answer is not correlated with its content",
+                requirement.accepted_types,
+                available_types,
+                GroundingRiskLevel.HIGH,
             )
         internal_requirement = bool(requirement.accepted_types & _INTERNAL_TRUSTED_TYPES)
         internal_evidence = bool(available_types & _INTERNAL_TRUSTED_TYPES)
@@ -290,7 +372,10 @@ def evaluate_grounding(
             GroundingRiskLevel.HIGH,
         )
 
-    if requirement.scrutinize_unknown_output:
+    if requirement.scrutinize_unknown_output or (
+        requirement.scrutinize_dynamic_output
+        and _contains_high_confidence_dynamic_fact(text)
+    ):
         if _contains_structural_external_fact(text):
             if (
                 EvidenceType.EXTERNAL_TOOL in available_types
@@ -298,7 +383,7 @@ def evaluate_grounding(
                 and ledger.has_candidate_overlap(
                     text,
                     {EvidenceType.EXTERNAL_TOOL},
-                    allow_empty=_is_explicitly_unverified(text),
+                    allow_empty=_is_pure_no_result_response(text),
                 )
             ):
                 return GroundingDecision(
@@ -308,7 +393,7 @@ def evaluate_grounding(
                 )
             requirement_groups = _infer_evidence_requirement_groups(text)
             if requirement_groups and all(
-                ledger.has_valid_evidence(alternatives)
+                ledger.has_candidate_overlap(text, alternatives)
                 for alternatives in requirement_groups
             ):
                 return GroundingDecision(
@@ -319,7 +404,7 @@ def evaluate_grounding(
             missing_groups = tuple(
                 alternatives
                 for alternatives in requirement_groups
-                if not ledger.has_valid_evidence(alternatives)
+                if not ledger.has_candidate_overlap(text, alternatives)
             )
             missing_types = frozenset(
                 evidence_type

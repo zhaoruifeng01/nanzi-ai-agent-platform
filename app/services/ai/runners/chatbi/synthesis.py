@@ -22,6 +22,32 @@ from app.services.ai.runners.chatbi.synthesis_stream import (
 logger = logging.getLogger(__name__)
 
 
+def _chatbi_grounding_events(
+    runner: Any,
+    *,
+    stream_state: SynthesisStreamState,
+    evidence_result: Any,
+) -> list[Dict[str, Any]]:
+    warning = runner._chatbi_grounding_warning(
+        candidate_text=stream_state.full_content,
+        evidence_result=evidence_result,
+    )
+    if warning is None:
+        return []
+    stream_state.full_content += str(warning.get("content") or "")
+    return [
+        {
+            "type": "log",
+            "id": f"chatbi_grounding_{uuid.uuid4().hex[:8]}",
+            "title": "事实来源风险提示已追加",
+            "details": warning["grounding_risk"]["reason"],
+            "status": "warning",
+            "category": "grounding",
+        },
+        warning,
+    ]
+
+
 def _recent_human_messages(runtime_messages: List[Any]) -> List[Any]:
     return [
         message
@@ -111,6 +137,13 @@ async def synthesize_from_last_data_result(
     ):
         yield chunk
 
+    for event in _chatbi_grounding_events(
+        runner,
+        stream_state=stream_state,
+        evidence_result=last_result,
+    ):
+        yield event
+
     _append_synthesis_trace(
         runner,
         start_synthesis=start_synthesis,
@@ -156,6 +189,13 @@ async def synthesize_format_correction(
         fallback=DataQueryPrompts.FOLLOWUP_SYNTHESIS_FALLBACK,
     ):
         yield chunk
+
+    for event in _chatbi_grounding_events(
+        runner,
+        stream_state=stream_state,
+        evidence_result=last_result,
+    ):
+        yield event
 
     _append_synthesis_trace(
         runner,
@@ -208,6 +248,13 @@ async def synthesize_from_history_data_result(
         fallback=DataQueryPrompts.FOLLOWUP_SYNTHESIS_FALLBACK,
     ):
         yield chunk
+
+    for event in _chatbi_grounding_events(
+        runner,
+        stream_state=stream_state,
+        evidence_result=None,
+    ):
+        yield event
 
     _append_synthesis_trace(
         runner,
@@ -262,6 +309,13 @@ async def synthesize_from_cached_sql_result(
         dedupe_warning_context="[DataAgentRunner] Collapsed duplicated cached SQL synthesis output",
     ):
         yield chunk
+
+    for event in _chatbi_grounding_events(
+        runner,
+        stream_state=stream_state,
+        evidence_result=parsed_result,
+    ):
+        yield event
 
     _append_synthesis_trace(
         runner,

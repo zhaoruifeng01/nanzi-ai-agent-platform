@@ -11,6 +11,12 @@ from app.services.ai.grounding.models import EvidenceReceipt, EvidenceType
 
 _ASCII_MARKER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{1,}")
 _CHINESE_SEQUENCE_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+_STRONG_IDENTIFIER_RE = re.compile(
+    r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]+$"
+)
+_STRONG_DATE_TIME_RE = re.compile(
+    r"(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?)$"
+)
 _MARKER_STOPWORDS = {
     "success",
     "true",
@@ -26,25 +32,39 @@ _MARKER_STOPWORDS = {
 }
 
 
-def _marker_digests(value: Any) -> frozenset[str]:
+def _digest_marker(marker: str) -> str:
+    return hashlib.sha256(marker.encode("utf-8")).hexdigest()
+
+
+def _marker_sets(value: Any) -> tuple[frozenset[str], frozenset[str]]:
     if isinstance(value, str):
         text = value
     else:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     markers: set[str] = set()
+    strong_markers: set[str] = set()
     for match in _ASCII_MARKER_RE.findall(text):
         normalized = match.strip("._:-").lower()
         if len(normalized) >= 2 and normalized not in _MARKER_STOPWORDS:
             markers.add(normalized)
+            if (
+                _STRONG_IDENTIFIER_RE.match(normalized)
+                or _STRONG_DATE_TIME_RE.match(normalized)
+            ):
+                strong_markers.add(normalized)
     for sequence in _CHINESE_SEQUENCE_RE.findall(text):
         if len(sequence) == 2:
             markers.add(sequence)
         else:
             markers.update(sequence[index:index + 2] for index in range(len(sequence) - 1))
-    return frozenset(
-        hashlib.sha256(marker.encode("utf-8")).hexdigest()
-        for marker in markers
+    return (
+        frozenset(_digest_marker(marker) for marker in markers),
+        frozenset(_digest_marker(marker) for marker in strong_markers),
     )
+
+
+def _marker_digests(value: Any) -> frozenset[str]:
+    return _marker_sets(value)[0]
 
 
 def _is_error_like_text(text: str) -> bool:
@@ -97,6 +117,8 @@ def _is_success_result(result: Any) -> bool:
         return True
     if isinstance(result, dict):
         explicit_success = result.get("success") is True
+        if bool(result.get("isError") or result.get("is_error")):
+            return False
         if result.get("success") is False:
             return False
         try:
@@ -106,6 +128,9 @@ def _is_success_result(result: Any) -> bool:
             pass
         status = str(result.get("status") or "").strip().lower()
         if status in {"error", "failed", "failure", "denied"}:
+            return False
+        state = str(result.get("state") or "").strip().lower()
+        if state in {"error", "failed", "failure", "denied", "interrupted"}:
             return False
         error_value = result.get("error")
         if error_value not in (None, "", False, [], {}):
@@ -190,6 +215,7 @@ class EvidenceLedger:
                 "conversation_id": receipt.conversation_id,
                 "created_at": receipt.created_at.isoformat(),
                 "marker_digests": sorted(receipt.marker_digests),
+                "strong_marker_digests": sorted(receipt.strong_marker_digests),
                 "empty_success": receipt.empty_success,
             }
             for receipt in self._receipts
@@ -235,6 +261,10 @@ class EvidenceLedger:
                         marker_digests=frozenset(
                             str(item) for item in raw.get("marker_digests") or []
                         ),
+                        strong_marker_digests=frozenset(
+                            str(item)
+                            for item in raw.get("strong_marker_digests") or []
+                        ),
                         empty_success=bool(raw.get("empty_success", False)),
                     )
                 )
@@ -267,6 +297,11 @@ class EvidenceLedger:
             return None
         serialized = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
         non_empty_success = _is_non_empty_success_result(result)
+        marker_digests, strong_marker_digests = (
+            _marker_sets(result)
+            if non_empty_success
+            else (frozenset(), frozenset())
+        )
         receipt = EvidenceReceipt.create(
             call_id=call_id,
             producer=producer,
@@ -274,7 +309,8 @@ class EvidenceLedger:
             payload_digest=hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
             user_id=self.user_id,
             conversation_id=self.conversation_id,
-            marker_digests=_marker_digests(result) if non_empty_success else frozenset(),
+            marker_digests=marker_digests,
+            strong_marker_digests=strong_marker_digests,
             empty_success=not non_empty_success,
         )
         self._receipts.append(receipt)
@@ -294,12 +330,14 @@ class EvidenceLedger:
         allow_empty: bool = False,
     ) -> bool:
         required = frozenset(required_types)
-        candidate_markers = _marker_digests(candidate_text)
+        candidate_markers, candidate_strong_markers = _marker_sets(candidate_text)
         for receipt in self._receipts:
             if required and not (receipt.evidence_types & required):
                 continue
             if allow_empty and receipt.empty_success:
                 return True
-            if candidate_markers & receipt.marker_digests:
+            if candidate_strong_markers & receipt.strong_marker_digests:
+                return True
+            if len(candidate_markers & receipt.marker_digests) >= 2:
                 return True
         return False

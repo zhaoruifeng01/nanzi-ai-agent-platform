@@ -46,6 +46,9 @@ def test_empty_or_error_like_results_do_not_create_receipts():
         '{"content": "", "citations": []}',
         {"content": "", "rows": []},
         {"success": False, "message": "business failure"},
+        {"isError": True, "content": "remote tool failed"},
+        {"is_error": True, "content": "remote tool failed"},
+        {"state": "error", "content": "remote tool failed"},
         {"code": 500, "message": "server error"},
         {"status": "error", "content": "failed"},
         SimpleNamespace(state="error", content="command failed"),
@@ -128,6 +131,51 @@ def test_ledger_matches_candidate_against_hashed_result_markers():
     )
     assert not ledger.has_candidate_overlap(
         "上海明天天气晴，最高温度 28 度。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_single_weak_marker_does_not_establish_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"route": "北京到上海", "train": "G1", "price": 661},
+    )
+
+    assert not ledger.has_candidate_overlap(
+        "当前上海天气晴，最高温度 28 度。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_two_distinct_markers_establish_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"route": "北京到上海", "price": 661},
+    )
+
+    assert ledger.has_candidate_overlap(
+        "北京到上海的二等座票价为 661 元。",
+        {EvidenceType.EXTERNAL_TOOL},
+    )
+
+
+def test_strong_identifier_establishes_candidate_correlation():
+    ledger = EvidenceLedger(user_id="7", conversation_id="conv-1")
+    ledger.record_success(
+        call_id="call-train",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"train": "G1505"},
+    )
+
+    assert ledger.has_candidate_overlap(
+        "推荐乘坐 G1505 次列车。",
         {EvidenceType.EXTERNAL_TOOL},
     )
 

@@ -204,8 +204,8 @@ async def test_hallucination_reflection_loop_corrects(kb_config):
 
 
 @pytest.mark.asyncio
-async def test_hallucination_max_retries_triggers_fatal_fallback(kb_config):
-    """验证当反思次数耗尽仍有幻觉时，触发安全网关熔断拦截并降级提示。"""
+async def test_hallucination_max_retries_retains_answer_with_soft_warning(kb_config):
+    """反思次数耗尽后保留最后回答，并追加一次消息内风险提示。"""
     runner = _kb_runner(kb_config)
     runner._rag_empty = False
 
@@ -244,7 +244,8 @@ async def test_hallucination_max_retries_triggers_fatal_fallback(kb_config):
         async for chunk in runner._execute_raw([{"role": "user", "content": "系统 A 支持什么？"}]):
             events.append(chunk)
 
-        # 检查是否上报了最终拦截 log
-        assert any(e.get("title") == "安全网关最终拦截" for e in events)
-        # 检查最终返回的降级文案
-        assert any("抱歉，在系统知识库中未检索到相关内容" in str(e.get("content")) for e in events)
+        content = "".join(str(e.get("content") or "") for e in events)
+        assert "系统 A 支持 B。" in content
+        assert content.count("风险提示") == 1
+        assert not any(e.get("title") == "安全网关最终拦截" for e in events)
+        assert not any(e.get("type") == "grounding_blocked" for e in events)

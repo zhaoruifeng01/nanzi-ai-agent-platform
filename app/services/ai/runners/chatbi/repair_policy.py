@@ -334,6 +334,8 @@ def build_repair_message(
 
 def reset_state_for_repair(state: DataRunState) -> None:
     repair_kind = current_repair_kind(state)
+    if repair_kind == "diagnostic_sql_pending_final":
+        state.next_sql_is_final_business_query = True
     state.blocked_content = ""
     state.full_content = ""
     state.content_emitted = False

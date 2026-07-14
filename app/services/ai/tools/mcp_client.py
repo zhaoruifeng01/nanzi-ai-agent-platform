@@ -142,9 +142,21 @@ class McpClientService:
         if not session_mgr.is_direct_http:
             try:
                 response = await session_mgr.session.call_tool(tool_name, arguments)
-                text = "".join([getattr(item, 'text', '') for item in response.content])
+                text = "".join(
+                    getattr(item, "text", "")
+                    for item in (getattr(response, "content", None) or [])
+                )
                 if bool(getattr(response, "isError", False) or getattr(response, "is_error", False)):
                     raise RuntimeError(text or f"MCP tool '{tool_name}' returned an error")
+                structured_content = getattr(response, "structuredContent", None)
+                if structured_content is None:
+                    structured_content = getattr(response, "structured_content", None)
+                if structured_content is not None:
+                    return {
+                        "success": True,
+                        "content": text,
+                        "structured_content": structured_content,
+                    }
                 return text if text else {"success": True, "content": ""}
             except Exception as e:
                 await session_mgr.close()
@@ -162,10 +174,32 @@ class McpClientService:
                 "name": tool_name,
                 "arguments": arguments
             })
+            if isinstance(res, dict) and bool(res.get("isError") or res.get("is_error")):
+                error_text = "".join(
+                    c.get("text", "")
+                    for c in res.get("content") or []
+                    if isinstance(c, dict) and c.get("type") == "text"
+                )
+                raise RuntimeError(
+                    error_text
+                    or str(res.get("message") or res.get("error") or "")
+                    or f"MCP tool '{tool_name}' returned an error"
+                )
             if isinstance(res, dict) and "content" in res:
-                text = "".join([c.get("text", "") for c in res["content"] if c.get("type") == "text"])
-                if bool(res.get("isError") or res.get("is_error")):
-                    raise RuntimeError(text or f"MCP tool '{tool_name}' returned an error")
+                text = "".join(
+                    c.get("text", "")
+                    for c in (res.get("content") or [])
+                    if isinstance(c, dict) and c.get("type") == "text"
+                )
+                structured_content = res.get("structuredContent")
+                if structured_content is None:
+                    structured_content = res.get("structured_content")
+                if structured_content is not None:
+                    return {
+                        "success": True,
+                        "content": text,
+                        "structured_content": structured_content,
+                    }
                 return text if text else {"success": True, "content": ""}
             if res is None:
                 return {"success": True, "content": ""}

@@ -29,6 +29,7 @@ class EvidenceReceipt:
     conversation_id: str | None
     created_at: datetime
     marker_digests: frozenset[str] = frozenset()
+    strong_marker_digests: frozenset[str] = frozenset()
     empty_success: bool = False
 
     @classmethod
@@ -42,6 +43,7 @@ class EvidenceReceipt:
         user_id: str | None,
         conversation_id: str | None,
         marker_digests: frozenset[str] = frozenset(),
+        strong_marker_digests: frozenset[str] = frozenset(),
         empty_success: bool = False,
     ) -> "EvidenceReceipt":
         return cls(
@@ -53,5 +55,6 @@ class EvidenceReceipt:
             conversation_id=conversation_id,
             created_at=datetime.now(timezone.utc),
             marker_digests=marker_digests,
+            strong_marker_digests=strong_marker_digests,
             empty_success=empty_success,
         )

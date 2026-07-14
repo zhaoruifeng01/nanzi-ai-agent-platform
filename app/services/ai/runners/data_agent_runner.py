@@ -19,6 +19,15 @@ from app.services.ai.executors.common import convert_history_to_messages, normal
 from app.services.ai.chatbi_sql_user_messages import format_empty_filter_result_content, map_sql_tool_error_for_user
 from app.services.ai.data_query_semantic_intent import DataQuerySemanticIntent, format_empty_result_semantic_repair_context, semantic_intent_from_dict, semantic_intent_to_dict
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.grounding.ledger import EvidenceLedger
+from app.services.ai.grounding.models import EvidenceType
+from app.services.ai.grounding.policy import (
+    FactRequirement,
+    GroundingAction,
+    build_grounding_warning_chunk,
+    contains_grounding_fact_signal,
+    evaluate_grounding,
+)
 from app.services.ai.time_anchor import TIME_RANGE_GATE_PREFIX, build_data_query_time_anchor_block, build_time_range_gate_message, detect_time_range_mismatch
 from app.services.ai.multimodal_support import ensure_multimodal_compatible, resolve_runtime_model_name
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
@@ -88,6 +97,43 @@ class DataAgentRunner(BaseExecutor):
         self._semantic_intent: DataQuerySemanticIntent | None = None
         self._schema_similarity_threshold: float | None = None
         self._requires_sql_query = True
+
+    def _chatbi_grounding_warning(
+        self,
+        *,
+        candidate_text: str,
+        evidence_result: Any,
+    ) -> Dict[str, Any] | None:
+        if not contains_grounding_fact_signal(candidate_text):
+            return None
+        ledger = EvidenceLedger(
+            user_id=self._runtime_user_id(),
+            conversation_id=self.conversation_id,
+        )
+        if evidence_result is not None:
+            ledger.record_success(
+                call_id=f"chatbi-final:{uuid.uuid4().hex}",
+                producer="chatbi_final_result",
+                evidence_types={EvidenceType.INTERNAL_DATA},
+                result=evidence_result,
+                policy="allow_empty_success",
+            )
+        decision = evaluate_grounding(
+            requirement=FactRequirement(
+                required=True,
+                accepted_types=frozenset({EvidenceType.INTERNAL_DATA}),
+            ),
+            candidate_text=candidate_text,
+            ledger=ledger,
+        )
+        if decision.action == GroundingAction.PASS:
+            return None
+        return build_grounding_warning_chunk(
+            risk_level=decision.risk_level,
+            reason=decision.reason,
+            required_types=decision.required_evidence_types,
+            available_types=decision.available_evidence_types,
+        )
 
     async def _ensure_schema_similarity_threshold(self) -> float:
         """与 fetch_dataset_schema_core 共用 ragflow_similarity_threshold。"""

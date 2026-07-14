@@ -5,6 +5,7 @@ from app.services.ai.grounding.models import EvidenceType
 from app.services.ai.grounding.policy import (
     FactRequirement,
     GroundingAction,
+    GroundingRiskLevel,
     evaluate_grounding,
     resolve_fact_requirement,
     evidence_types_for_capabilities,
@@ -228,6 +229,110 @@ def test_external_tool_receipt_does_not_back_unknown_internal_business_table():
     assert decision.action == GroundingAction.PASS_WITH_WARNING
 
 
+def test_exact_public_web_receipt_requires_candidate_correlation():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-weather",
+        producer="web-search",
+        evidence_types={EvidenceType.PUBLIC_WEB},
+        result="北京今天晴，最高温度 30 度。",
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.PUBLIC_WEB, RequestCapability.WEB_SEARCH)
+        ),
+        candidate_text="当前美元汇率为 9.99。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+    assert decision.risk_level == GroundingRiskLevel.HIGH
+
+
+def test_exact_internal_data_receipt_requires_candidate_correlation():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-sales",
+        producer="execute_sql_query",
+        evidence_types={EvidenceType.INTERNAL_DATA},
+        result={"rows": [{"name": "李四", "amount": 20}]},
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.INTERNAL_STRUCTURED_DATA, RequestCapability.DATA_QUERY)
+        ),
+        candidate_text="当前销售额排名第一的是王强，金额为 663.98 万元。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+    assert decision.risk_level == GroundingRiskLevel.HIGH
+
+
+def test_exact_internal_data_receipt_with_unrelated_generic_detail_is_high_risk():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-total",
+        producer="execute_sql_query",
+        evidence_types={EvidenceType.INTERNAL_DATA},
+        result={"rows": [{"total": 1}]},
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.INTERNAL_STRUCTURED_DATA, RequestCapability.DATA_QUERY)
+        ),
+        candidate_text="Top5 功能点趋势分析。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+    assert decision.risk_level == GroundingRiskLevel.HIGH
+
+
+def test_empty_external_receipt_does_not_back_fabricated_details():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-empty",
+        producer="railway:get-tickets",
+        evidence_types={EvidenceType.EXTERNAL_TOOL},
+        result={"success": True, "content": ""},
+        policy="allow_empty_success",
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.PUBLIC_WEB, RequestCapability.WEB_SEARCH)
+        ),
+        candidate_text="暂无查询结果，但 G1 二等座仍有 10 张，票价 661 元。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+
+
+def test_unknown_type_only_receipt_requires_candidate_correlation():
+    ledger = EvidenceLedger(user_id="1", conversation_id="c1")
+    ledger.record_success(
+        call_id="call-company",
+        producer="web-search",
+        evidence_types={EvidenceType.PUBLIC_WEB},
+        result="某公司官网首页。",
+    )
+
+    decision = evaluate_grounding(
+        requirement=resolve_fact_requirement(
+            _decision(RequestSource.UNKNOWN, RequestCapability.ANSWER)
+        ),
+        candidate_text="该公司目前营收为 999 亿元。",
+        ledger=ledger,
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
+
+
 def test_unrelated_external_tool_receipt_does_not_back_unknown_weather_fact():
     ledger = EvidenceLedger(user_id="1", conversation_id="c1")
     ledger.record_success(
@@ -418,6 +523,20 @@ def test_stable_general_knowledge_and_hypothetical_examples_pass_without_evidenc
 
     assert stable.action == GroundingAction.PASS
     assert hypothetical.action == GroundingAction.PASS
+
+
+def test_general_route_dynamic_fact_without_evidence_returns_warning():
+    requirement = resolve_fact_requirement(
+        _decision(RequestSource.GENERAL, RequestCapability.ANSWER)
+    )
+
+    decision = evaluate_grounding(
+        requirement=requirement,
+        candidate_text="当前美元汇率为 9.99。",
+        ledger=EvidenceLedger(user_id="1", conversation_id="c1"),
+    )
+
+    assert decision.action == GroundingAction.PASS_WITH_WARNING
 
 
 def test_matching_receipt_allows_evidence_required_answer():

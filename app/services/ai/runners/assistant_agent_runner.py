@@ -22,6 +22,7 @@ from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.grounding.ledger import EvidenceLedger
 from app.services.ai.grounding.models import EvidenceType
 from app.services.ai.grounding.policy import (
+    build_grounding_warning_chunk,
     FactRequirement,
     GroundingAction,
     GroundingRiskLevel,
@@ -356,30 +357,12 @@ class AssistantAgentRunner(BaseExecutor):
         required_types: frozenset[EvidenceType] = frozenset(),
         available_types: frozenset[EvidenceType] = frozenset(),
     ) -> Dict[str, Any]:
-        if risk_level == GroundingRiskLevel.LOW:
-            notice = (
-                "> **信息来源提示**：本回答基于知识库或已授权文件资料，"
-                "不代表实时数据库状态。"
-            )
-        elif risk_level == GroundingRiskLevel.MEDIUM:
-            notice = (
-                "> **信息来源提示**：本回答参考了已取得的资料，但部分结论未获得"
-                "完全匹配的数据来源，请结合原始资料核对。"
-            )
-        else:
-            notice = (
-                "> **风险提示**：本次未取得能够完整验证这些具体数据或当前状态的来源，"
-                "以下内容可能存在偏差，请勿直接用于生产操作或正式决策。"
-            )
-        return {
-            "content": f"\n\n{notice}",
-            "grounding_risk": {
-                "level": risk_level.value,
-                "reason": reason,
-                "required_evidence_types": sorted(item.value for item in required_types),
-                "available_evidence_types": sorted(item.value for item in available_types),
-            },
-        }
+        return build_grounding_warning_chunk(
+            risk_level=risk_level,
+            reason=reason,
+            required_types=required_types,
+            available_types=available_types,
+        )
 
     @staticmethod
     def _parse_grounding_retry_evidence_types(action: Any) -> frozenset[EvidenceType]:
@@ -469,6 +452,7 @@ class AssistantAgentRunner(BaseExecutor):
                     | frozenset({EvidenceType.USER_FILE})
                 ),
                 scrutinize_unknown_output=requirement.scrutinize_unknown_output,
+                scrutinize_dynamic_output=requirement.scrutinize_dynamic_output,
             )
         return requirement
 
@@ -615,9 +599,36 @@ class AssistantAgentRunner(BaseExecutor):
                 full_text += chunk["content"]
                 chunks_buffer.append(chunk)
             else:
+                if (
+                    "content" in chunk
+                    and grounding_requirement.scrutinize_dynamic_output
+                    and not chunk.get("type")
+                ):
+                    full_text += str(chunk.get("content") or "")
                 yield chunk
 
         if not buffer_output:
+            if grounding_requirement.scrutinize_dynamic_output:
+                grounding_decision = evaluate_grounding(
+                    requirement=grounding_requirement,
+                    candidate_text=full_text,
+                    ledger=self._evidence_ledger,
+                )
+                if grounding_decision.action == GroundingAction.PASS_WITH_WARNING:
+                    yield {
+                        "type": "log",
+                        "id": f"grounding_dynamic_{uuid.uuid4().hex[:8]}",
+                        "title": "事实来源风险提示已追加",
+                        "details": grounding_decision.reason,
+                        "status": "warning",
+                        "category": "grounding",
+                    }
+                    yield self._grounding_warning_chunk(
+                        risk_level=grounding_decision.risk_level,
+                        reason=grounding_decision.reason,
+                        required_types=grounding_decision.required_evidence_types,
+                        available_types=grounding_decision.available_evidence_types,
+                    )
             return
 
         should_intercept = (
@@ -1567,11 +1578,38 @@ class AssistantAgentRunner(BaseExecutor):
                 tools.append(ToolRegistry._attach_evidence_metadata(spec.name, spec))
         return tools
 
+    @staticmethod
+    def _record_external_execution_evidence(
+        *,
+        ledger: EvidenceLedger,
+        tools: List[RuntimeToolSpec],
+        execution_results: List[Any],
+    ) -> None:
+        """Record successful client-side tool results using server-owned metadata."""
+        tools_by_name = {tool.name: tool for tool in tools}
+        for result in execution_results:
+            state = getattr(result, "state", "")
+            state_value = getattr(state, "value", state)
+            if str(state_value or "").strip().lower() != "success":
+                continue
+            tool_name = str(getattr(result, "name", "") or "")
+            tool = tools_by_name.get(tool_name)
+            if tool is None or not tool.evidence_types:
+                continue
+            ledger.record_success(
+                call_id=str(getattr(result, "id", "") or f"{tool_name}:{uuid.uuid4().hex}"),
+                producer=tool_name,
+                evidence_types=tool.evidence_types,
+                result=getattr(result, "output", None),
+                policy=tool.evidence_policy,
+            )
+
     async def _resume_agentscope_native_stream(
         self,
         *,
         pending: Any,
         resume_event: Any,
+        external_execution_results: List[Any] | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         from app.core.context import set_agent_context
 
@@ -1612,6 +1650,12 @@ class AssistantAgentRunner(BaseExecutor):
                     pending,
                     loop_detector=loop_detector,
                 )
+                if external_execution_results:
+                    self._record_external_execution_evidence(
+                        ledger=ledger,
+                        tools=tools,
+                        execution_results=external_execution_results,
+                    )
                 interrupted = False
                 user_query = str(state.get("user_query") or "")
                 requirement = self._resolve_turn_grounding_requirement(user_query, ctx)
@@ -1754,6 +1798,7 @@ class AssistantAgentRunner(BaseExecutor):
         async for chunk in self._resume_agentscope_native_stream(
             pending=pending,
             resume_event=event,
+            external_execution_results=execution_results,
         ):
             yield chunk
 
