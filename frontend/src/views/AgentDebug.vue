@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // ... imports ...
 import { ref, nextTick, watch, onUnmounted, reactive, onMounted, computed } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import TraceLogViewer from "@/components/TraceLogViewer.vue";
 import DebugConfigPanel from "@/components/DebugConfigPanel.vue";
 import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
@@ -87,6 +87,8 @@ import KnowledgeToolLogDetails from "@/components/KnowledgeToolLogDetails.vue";
 import { isKnowledgeToolLog } from "@/utils/knowledgeToolLog";
 
 const route = useRoute();
+const router = useRouter();
+const openFullDataPortal = () => router.push({ path: "/dashboard/personal", query: { tab: "data" } });
 const { showToast } = useToast();
 const { quotaStatus, refreshQuota } = useTokenQuota();
 
@@ -6010,6 +6012,7 @@ onUnmounted(() => {
     @refresh="refreshPortalNavigation"
     @execute-saved-report="handleExecuteSavedReport"
     @edit-saved-report="openEditReportModal"
+    @open-full-page="openFullDataPortal"
   />
 
   <!-- Modal: Run Saved Report -->

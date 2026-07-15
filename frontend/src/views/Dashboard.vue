@@ -667,13 +667,13 @@ const filteredMenuGroups = computed(() => {
       <!-- Main Scrollable Content -->
       <main 
         class="flex-1 overflow-y-auto bg-gray-100 custom-scrollbar"
-        :class="route.name === 'AIChat' ? 'p-0' : 'p-0 sm:p-4 md:p-8'"
+        :class="['AIChat', 'PersonalCenter'].includes(route.name as string) ? 'p-0' : 'p-0 sm:p-4 md:p-8'"
       >
         <router-view v-slot="{ Component }">
           <transition name="page">
             <Suspense>
               <template #default>
-                <component :is="Component" :key="$route.fullPath" />
+                <component :is="Component" :key="$route.path" />
               </template>
               <template #fallback>
                 <div class="flex items-center justify-center h-64">

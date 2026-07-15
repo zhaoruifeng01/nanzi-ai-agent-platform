@@ -2376,7 +2376,8 @@
 	      @clear-question-click="(payload) => clearDatasetMenuQuestionClick(portalNavigationPayload, payload)"
 	      @refresh="refreshPortalNavigation"
 	      @execute-saved-report="handleExecuteSavedReport"
-	      @edit-saved-report="openEditReportModal"
+      @edit-saved-report="openEditReportModal"
+	      @open-full-page="openFullDataPortal"
 	    />
 
     <!-- TraceLogViewer -->
@@ -2389,6 +2390,7 @@
 </template>
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
+import { useRouter } from "vue-router";
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import { cancelConversationRun } from "@/utils/cancelConversationRun";
@@ -2414,6 +2416,14 @@ import {
 import { useBranding } from "@/composables/useBranding";
 
 const toast = useToast();
+const router = useRouter();
+const openFullDataPortal = () => {
+  if (window.parent !== window) {
+    postMessageToHost({ type: "OPEN_DATA_PORTAL_FULL" });
+    return;
+  }
+  router.push({ path: "/dashboard/personal", query: { tab: "data" } });
+};
 const { branding } = useBranding();
 const {
   bannerMessage: quotaBannerMessage,
@@ -4833,6 +4843,15 @@ const handlePostMessage = (event: MessageEvent) => {
         if (data.open_saved_report?.report_id) {
           localStorage.setItem("portal_focus_saved_report", JSON.stringify(data.open_saved_report));
           setTimeout(() => openPortalDrawer(), 0);
+        }
+        if (data.portal_question?.query) {
+          setTimeout(
+            () => handlePortalQuickQuestion(
+              String(data.portal_question.query),
+              data.portal_question.action === "fill" ? "fill" : "send",
+            ),
+            0,
+          );
         }
         postMessageToHost({ type: "INIT_SUCCESS" });
         initChat(); // Only init if token exists
