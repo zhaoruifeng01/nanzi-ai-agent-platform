@@ -762,13 +762,13 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
             <td class="px-4 py-4">
               <span class="whitespace-nowrap text-xs font-medium text-gray-600">{{ formatNextRunCompact(task.next_run_at) }}</span>
             </td>
-            <td class="px-6 py-4">
+            <td class="px-4 py-4">
               <div class="flex justify-center">
                 <span 
-                  class="px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center"
+                  class="px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center whitespace-nowrap flex-shrink-0"
                   :class="task.status === 1 ? 'bg-green-50 text-green-600 border-green-100' : 'bg-gray-100 text-gray-400 border-gray-200'"
                 >
-                  <span class="w-1 h-1 rounded-full mr-1.5" :class="task.status === 1 ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
+                  <span class="w-1.5 h-1.5 rounded-full mr-1.5 flex-shrink-0" :class="task.status === 1 ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
                   {{ task.status === 1 ? '活跃' : '停止' }}
                 </span>
               </div>

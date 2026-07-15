@@ -24,7 +24,7 @@ def test_subscription_migration_documents_every_business_column():
 
     for column in (
         "schedule_type", "cron_expr", "params", "notify_on_success",
-        "notify_on_failure", "external_channels", "consecutive_failures",
+        "ai_analysis_enabled", "analysis_instruction", "notify_on_failure", "external_channels", "consecutive_failures",
         "category", "level", "resource_type", "resource_id", "read_at",
     ):
         line = next(line for line in source.splitlines() if f"`{column}`" in line)

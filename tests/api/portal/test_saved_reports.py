@@ -11,6 +11,20 @@ from app.api.portal.endpoints import saved_reports
 pytestmark = pytest.mark.no_infrastructure
 
 
+def test_saved_report_list_items_receive_owner_subscription_summary():
+    report = saved_reports._report_row_to_item(_report_row(), current_user_id=7)
+    subscription = SimpleNamespace(
+        report_id="rpt_5", status="active", cron_expr="0 9 * * *",
+        next_run_at=datetime(2026, 7, 16, 9, 0, 0),
+    )
+
+    saved_reports._apply_saved_report_subscription_summaries([report], [subscription])
+
+    assert report.subscription_status == "active"
+    assert report.subscription_cron_expr == "0 9 * * *"
+    assert report.subscription_next_run_at == "2026-07-16T09:00:00"
+
+
 def _report_row(**overrides):
     data = {
         "id": "rpt_5",
@@ -115,6 +129,7 @@ async def test_get_saved_reports_enriches_owner_share_summary(monkeypatch):
             _ExecuteResult([owner_report]),
             _ExecuteResult([SimpleNamespace(id=9, user_name="bob", real_name="Bob")]),
             _ExecuteResult([SimpleNamespace(id=2, code="ops", name="运维角色")]),
+            _ExecuteResult([]),
             _ExecuteResult([]),
         ]
     )
@@ -229,6 +244,7 @@ async def test_get_saved_report_detail_includes_user_preferences(monkeypatch):
     monkeypatch.setattr(saved_reports, "_get_report_user_prefs", AsyncMock(return_value={"rpt_5": pref}))
     monkeypatch.setattr(saved_reports, "_enrich_saved_report_share_targets", AsyncMock())
     monkeypatch.setattr(saved_reports, "_annotate_saved_report_run_permissions", AsyncMock())
+    monkeypatch.setattr(saved_reports, "_enrich_saved_report_subscriptions", AsyncMock())
     monkeypatch.setattr(saved_reports, "_touch_saved_report_view", AsyncMock())
 
     response = await saved_reports.get_saved_report_detail(

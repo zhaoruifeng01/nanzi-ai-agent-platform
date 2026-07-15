@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS `portal_saved_report_subscriptions` (
   `cron_expr` VARCHAR(64) NOT NULL COMMENT '标准五段Cron表达式',
   `timezone` VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai' COMMENT '调度时区',
   `params` JSON NULL COMMENT '定时运行使用的报表参数JSON',
+  `ai_analysis_enabled` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用AI智能分析',
+  `analysis_instruction` TEXT NULL COMMENT '订阅级补充AI分析要求，最多500字',
   `notify_on_success` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '运行成功时是否生成通知',
   `notify_on_failure` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '运行失败时是否生成通知',
   `external_channels` JSON NULL COMMENT '启用的外部通知渠道数组',

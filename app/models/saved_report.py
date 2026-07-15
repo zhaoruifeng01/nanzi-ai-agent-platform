@@ -123,6 +123,8 @@ class PortalSavedReportSubscription(Base):
     cron_expr = Column(String(64), nullable=False)
     timezone = Column(String(64), nullable=False, default="Asia/Shanghai")
     params = Column(JSON, nullable=True)
+    ai_analysis_enabled = Column(Boolean, nullable=False, default=True)
+    analysis_instruction = Column(Text, nullable=True)
     notify_on_success = Column(Boolean, nullable=False, default=False)
     notify_on_failure = Column(Boolean, nullable=False, default=True)
     external_channels = Column(JSON, nullable=True)
@@ -134,3 +136,24 @@ class PortalSavedReportSubscription(Base):
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
+class PortalSavedReportDigestDelivery(Base):
+    __tablename__ = "portal_saved_report_digest_deliveries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_id = Column(BigInteger, ForeignKey("portal_saved_report_runs.id"), nullable=False, index=True)
+    subscription_id = Column(BigInteger, ForeignKey("portal_saved_report_subscriptions.id"), nullable=False, index=True)
+    channel = Column(String(32), nullable=False)
+    digest_payload = Column(JSON, nullable=True)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    error_message = Column(Text, nullable=True)
+    ai_status = Column(String(16), nullable=False, default="disabled")
+    sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+    __table_args__ = (
+        Index("idx_saved_report_digest_subscription_created", "subscription_id", "created_at"),
+    )

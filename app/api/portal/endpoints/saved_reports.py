@@ -20,6 +20,7 @@ from app.models.metadata import MetaDataset, MetaTable
 from app.models.permission import Role, UserRoleRelation
 from app.models.saved_report import (
     PortalSavedReport,
+    PortalSavedReportDigestDelivery,
     PortalSavedReportRun,
     PortalSavedReportSubscription,
     PortalSavedReportShare,
@@ -65,6 +66,8 @@ class SavedReportSubscriptionRequest(BaseModel):
     monthday: Optional[int] = None
     cron_expr: Optional[str] = None
     params: Dict[str, Any] = Field(default_factory=dict)
+    ai_analysis_enabled: bool = True
+    analysis_instruction: Optional[str] = Field(None, max_length=500)
     notify_on_success: bool = False
     notify_on_failure: bool = True
     external_channels: List[str] = Field(default_factory=list)
@@ -146,6 +149,9 @@ class SavedReportItem(BaseModel):
     last_viewed_at: Optional[str] = None
     user_run_count: int = 0
     user_last_run_at: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_cron_expr: Optional[str] = None
+    subscription_next_run_at: Optional[str] = None
 
 
 class SavedReportRunSummary(BaseModel):
@@ -170,6 +176,7 @@ class SavedReportRunDetail(SavedReportRunSummary):
     data_source: Optional[str] = None
     dataset_name: Optional[str] = None
     result_snapshot: Optional[Dict[str, Any]] = None
+    deliveries: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ReportParameterError(ValueError):
@@ -271,7 +278,10 @@ def _saved_report_run_to_summary(row: PortalSavedReportRun) -> SavedReportRunSum
     )
 
 
-def _saved_report_run_to_detail(row: PortalSavedReportRun) -> SavedReportRunDetail:
+def _saved_report_run_to_detail(
+    row: PortalSavedReportRun,
+    deliveries: Optional[List[PortalSavedReportDigestDelivery]] = None,
+) -> SavedReportRunDetail:
     summary = _saved_report_run_to_summary(row)
     return SavedReportRunDetail(
         **summary.model_dump(),
@@ -279,6 +289,20 @@ def _saved_report_run_to_detail(row: PortalSavedReportRun) -> SavedReportRunDeta
         data_source=row.data_source,
         dataset_name=row.dataset_name,
         result_snapshot=row.result_snapshot,
+        deliveries=[
+            {
+                "id": int(delivery.id),
+                "channel": delivery.channel,
+                "title": delivery.title,
+                "content": delivery.content,
+                "status": delivery.status,
+                "error_message": delivery.error_message,
+                "ai_status": delivery.ai_status,
+                "analysis_instruction": (delivery.digest_payload or {}).get("analysis_instruction"),
+                "sent_at": _dt_to_iso(delivery.sent_at),
+            }
+            for delivery in deliveries or []
+        ],
     )
 
 
@@ -856,6 +880,33 @@ async def _enrich_saved_report_user_prefs(
         _apply_saved_report_pref(report, prefs.get(report.id))
 
 
+def _apply_saved_report_subscription_summaries(
+    reports: List[SavedReportItem],
+    subscriptions: List[PortalSavedReportSubscription],
+) -> None:
+    by_report_id = {subscription.report_id: subscription for subscription in subscriptions}
+    for report in reports:
+        subscription = by_report_id.get(report.id) if report.is_owner else None
+        report.subscription_status = subscription.status if subscription else None
+        report.subscription_cron_expr = subscription.cron_expr if subscription else None
+        report.subscription_next_run_at = _dt_to_iso(subscription.next_run_at) if subscription else None
+
+
+async def _enrich_saved_report_subscriptions(
+    db: AsyncSession,
+    reports: List[SavedReportItem],
+) -> None:
+    owner_report_ids = [report.id for report in reports if report.is_owner]
+    if not owner_report_ids:
+        return
+    result = await db.execute(
+        select(PortalSavedReportSubscription).where(
+            PortalSavedReportSubscription.report_id.in_(owner_report_ids)
+        )
+    )
+    _apply_saved_report_subscription_summaries(reports, list(result.scalars().all()))
+
+
 async def _get_or_create_report_user_pref(
     db: AsyncSession,
     *,
@@ -1140,6 +1191,7 @@ async def get_saved_reports(
     await _enrich_saved_report_share_targets(db, reports)
     await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
     await _enrich_saved_report_user_prefs(db, reports, user_id=user_id)
+    await _enrich_saved_report_subscriptions(db, reports)
     return StandardResponse(data=_sort_saved_reports_for_user(reports))
 
 
@@ -1161,6 +1213,7 @@ async def get_saved_report_detail(
     await _enrich_saved_report_share_targets(db, reports)
     await _annotate_saved_report_run_permissions(db, reports, user_info=user_info, user_id=user_id)
     await _enrich_saved_report_user_prefs(db, reports, user_id=user_id)
+    await _enrich_saved_report_subscriptions(db, reports)
     try:
         await _touch_saved_report_view(db, report_id=report_id, user_id=user_id)
     except Exception as exc:
@@ -1536,13 +1589,20 @@ async def get_saved_report_run(
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="运行记录不存在")
-    return StandardResponse(data=_saved_report_run_to_detail(run))
+    delivery_result = await db.execute(
+        select(PortalSavedReportDigestDelivery)
+        .where(PortalSavedReportDigestDelivery.run_id == run.id)
+        .order_by(PortalSavedReportDigestDelivery.created_at.asc())
+    )
+    return StandardResponse(data=_saved_report_run_to_detail(run, list(delivery_result.scalars().all())))
 
 
 def _saved_report_subscription_data(row: PortalSavedReportSubscription) -> Dict[str, Any]:
     return {
         "id": int(row.id), "report_id": row.report_id, "schedule_type": row.schedule_type,
         "cron_expr": row.cron_expr, "timezone": row.timezone, "params": row.params or {},
+        "ai_analysis_enabled": bool(row.ai_analysis_enabled),
+        "analysis_instruction": row.analysis_instruction,
         "notify_on_success": bool(row.notify_on_success), "notify_on_failure": bool(row.notify_on_failure),
         "external_channels": row.external_channels or [], "status": row.status,
         "consecutive_failures": row.consecutive_failures or 0, "last_run_id": row.last_run_id,
@@ -1589,6 +1649,8 @@ async def put_saved_report_subscription(report_id: str, body: SavedReportSubscri
     row.schedule_type = body.schedule_type
     row.cron_expr = cron_expr
     row.params = body.params
+    row.ai_analysis_enabled = body.ai_analysis_enabled
+    row.analysis_instruction = str(body.analysis_instruction or "").strip()[:500] or None
     row.notify_on_success = body.notify_on_success
     row.notify_on_failure = body.notify_on_failure
     row.external_channels = channels

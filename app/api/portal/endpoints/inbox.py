@@ -42,3 +42,15 @@ async def mark_read(notification_id: int, user_info=Depends(require_api_key), db
 @router.post("/read-all")
 async def mark_all_read(user_info=Depends(require_api_key), db: AsyncSession = Depends(get_db_session)):
     return {"data": {"updated": await PortalNotificationService.mark_all_read(db, int(user_info["user_id"]))}}
+
+
+@router.delete("/read")
+async def delete_read_notifications(user_info=Depends(require_api_key), db: AsyncSession = Depends(get_db_session)):
+    return {"data": {"deleted": await PortalNotificationService.delete_read(db, int(user_info["user_id"]))}}
+
+
+@router.delete("/{notification_id}")
+async def delete_notification(notification_id: int, user_info=Depends(require_api_key), db: AsyncSession = Depends(get_db_session)):
+    if not await PortalNotificationService.delete_one(db, int(user_info["user_id"]), notification_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="通知不存在")
+    return {"status": "success"}

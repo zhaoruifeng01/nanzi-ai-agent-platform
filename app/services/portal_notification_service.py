@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.portal_notification import PortalNotification
@@ -61,5 +61,23 @@ class PortalNotificationService:
             PortalNotification.user_id == user_id,
             PortalNotification.read_at.is_(None),
         ).values(read_at=datetime.now()))
+        await db.flush()
+        return int(result.rowcount or 0)
+
+    @staticmethod
+    async def delete_one(db: AsyncSession, user_id: int, notification_id: int) -> bool:
+        result = await db.execute(delete(PortalNotification).where(
+            PortalNotification.id == notification_id,
+            PortalNotification.user_id == user_id,
+        ))
+        await db.flush()
+        return bool(result.rowcount)
+
+    @staticmethod
+    async def delete_read(db: AsyncSession, user_id: int) -> int:
+        result = await db.execute(delete(PortalNotification).where(
+            PortalNotification.user_id == user_id,
+            PortalNotification.read_at.is_not(None),
+        ))
         await db.flush()
         return int(result.rowcount or 0)

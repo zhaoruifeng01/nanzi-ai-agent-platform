@@ -16,7 +16,12 @@ from app.core.orm import AsyncSessionLocal, engine
 from app.core import redis
 from app.models.task import AgentScheduledTask
 from app.models.user import User
-from app.models.saved_report import PortalSavedReport, PortalSavedReportRun, PortalSavedReportSubscription
+from app.models.saved_report import (
+    PortalSavedReport,
+    PortalSavedReportDigestDelivery,
+    PortalSavedReportRun,
+    PortalSavedReportSubscription,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -533,6 +538,11 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
     from app.api.portal.endpoints.saved_reports import ExecuteReportRequest, _execute_saved_report_impl
     from app.services.portal_notification_service import PortalNotificationService
     from app.services.notification_service import NotificationService
+    from app.services.saved_report_digest_service import (
+        build_deterministic_digest,
+        enrich_digest_with_ai,
+        render_mobile_markdown,
+    )
     trigger_label = "手动触发" if is_manual else "定时触发"
 
     async def send_external(db, subscription, user_id, title, content, *, failure: bool):
@@ -585,14 +595,60 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
             subscription.consecutive_failures = 0
             subscription.last_error = None
             if subscription.notify_on_success:
-                title = f"报表运行成功：{report.title}"
-                content = f"触发方式：{trigger_label}\n本次查询返回 {run.row_count if run else 0} 行数据。"
-                await PortalNotificationService.create(
-                    db, user_id=user.id, title=title, content=content, level="success",
-                    resource_type="saved_report_run", resource_id=str(run.id) if run else None,
-                    metadata={"report_id": report.id, "report_title": report.title, "subscription_id": subscription.id},
-                )
-                await send_external(db, subscription, user.id, title, content, failure=False)
+                try:
+                    async with db.begin_nested():
+                        digest = build_deterministic_digest(report, run, subscription.params or {})
+                        digest = await enrich_digest_with_ai(
+                            digest,
+                            enabled=bool(getattr(subscription, "ai_analysis_enabled", True)),
+                            analysis_instruction=getattr(subscription, "analysis_instruction", None),
+                        )
+                        public_base = str(settings.APP_PUBLIC_URL or "").rstrip("/")
+                        report_url = (
+                            f"{public_base}/dashboard/chat?dataset_portal=1&report_id={report.id}&run_id={run.id}"
+                            if public_base and run else ""
+                        )
+                        title, content = render_mobile_markdown(digest, report_url, "inbox")
+                        await PortalNotificationService.create(
+                            db, user_id=user.id, title=title, content=content, level="success",
+                            resource_type="saved_report_run", resource_id=str(run.id) if run else None,
+                            metadata={
+                                "report_id": report.id,
+                                "report_title": report.title,
+                                "subscription_id": subscription.id,
+                                "digest_mode": digest.get("generation_mode"),
+                            },
+                        )
+                        if run:
+                            db.add(PortalSavedReportDigestDelivery(
+                                run_id=run.id, subscription_id=subscription.id, channel="inbox",
+                                digest_payload=digest, title=title, content=content, status="success",
+                                ai_status=digest.get("ai_status") or "disabled", sent_at=datetime.now(),
+                            ))
+                        senders = {
+                            "dingtalk": NotificationService.send_dingtalk,
+                            "wechat_work": NotificationService.send_wechat_work,
+                            "email": NotificationService.send_email,
+                        }
+                        for channel in subscription.external_channels or []:
+                            sender = senders.get(channel)
+                            if sender is None:
+                                continue
+                            channel_title, channel_content = render_mobile_markdown(digest, report_url, channel)
+                            ok, error = await sender(db, user.id, channel_title, channel_content)
+                            if run:
+                                db.add(PortalSavedReportDigestDelivery(
+                                    run_id=run.id, subscription_id=subscription.id, channel=channel,
+                                    digest_payload=digest, title=channel_title, content=channel_content,
+                                    status="success" if ok else "failed",
+                                    error_message=None if ok else error,
+                                    ai_status=digest.get("ai_status") or "disabled",
+                                    sent_at=datetime.now(),
+                                ))
+                            if not ok:
+                                logger.warning("Saved report digest delivery failed: channel=%s error=%s", channel, error)
+                except Exception as digest_error:
+                    logger.exception("Saved report digest generation or audit failed: %s", type(digest_error).__name__)
             await db.commit()
         except Exception as exc:
             subscription.last_run_at = datetime.now()
