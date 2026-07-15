@@ -690,12 +690,12 @@
                                     'text-gray-700 dark:text-gray-300': !isActiveThoughtStep(log, msg.isThinking) && log.status !== 'error',
                                   }">
                                <!-- Semantic Icon -->
-                               <span class="text-[13px] flex-shrink-0" :class="{ 'animate-pulse': log.status === 'pending' }">
+                               <span class="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" :class="{ 'animate-pulse': log.status === 'pending' }">
                                  <template v-if="log.status === 'error'">⚠️</template>
                                  <template v-else-if="log.category === 'router'">🧠</template>
                                  <template v-else-if="log.category === 'tool' || log.category === 'sql'">🛠️</template>
                                  <template v-else-if="log.category === 'permission'">🔒</template>
-                                 <template v-else>🤖</template>
+                                 <SparklesIcon v-else class="h-3.5 w-3.5 text-primary" />
                                </span>
                                <!-- Main Text -->
                                <span class="truncate">{{ log.title }}</span>
@@ -2386,6 +2386,7 @@ import {
   isWorkspaceSlashCommand,
 } from "@/constants/workspaceCommand";
 
+import { SparklesIcon } from "@heroicons/vue/24/outline";
 import { useBranding } from "@/composables/useBranding";
 
 const toast = useToast();
@@ -2439,12 +2440,12 @@ import { createSseLineParser } from "@/utils/chartRenderer";
 import { modelApi, type AIModel } from "@/api/model";
 import {
   filterLogsForTurn,
-  getTurnPanelTitle,
   countHiddenLogs,
   isActiveThoughtStep,
   isDimmedThoughtStep,
   type TurnType,
 } from "@/utils/turnLogDisplay";
+import { getEmbedThoughtSummaryTitle } from "@/utils/embedThoughtStages";
 import {
   buildSkillFlowBadges,
   skillFlowNoticeLabel,
@@ -2665,8 +2666,12 @@ function getDisplayLogs(msg: Message) {
 }
 
 function getThoughtPanelTitle(msg: Message) {
-  if (msg.isThinking && msg.thinkingText) return msg.thinkingText;
-  return getTurnPanelTitle(msg.turnType, msg.isThinking);
+  return getEmbedThoughtSummaryTitle({
+    logs: getDisplayLogs(msg),
+    isThinking: msg.isThinking,
+    thinkingText: msg.thinkingText,
+    turnType: msg.turnType,
+  });
 }
 
 function getHiddenLogCount(msg: Message) {
