@@ -1385,8 +1385,7 @@ const showRefreshBusy = computed(() => isRefreshing.value || props.backgroundRef
 const refreshDisabled = computed(
   () =>
     props.initialLoading
-    || showRefreshBusy.value
-    || props.payload?.has_datasets === false,
+    || showRefreshBusy.value,
 );
 
 const clearRefreshBusy = () => {

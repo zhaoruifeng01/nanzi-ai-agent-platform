@@ -2843,7 +2843,7 @@ const sendMessage = async () => {
             else if (data.content) {
               const piece = sanitizeStreamContent(String(data.content));
               if (piece) {
-                if (agentMsg.value.isThinking && agentMsg.value.isThoughtExpanded) {
+                if (agentMsg.value.isThoughtExpanded && !agentMsg.value.content) {
                   agentMsg.value.isThoughtExpanded = false;
                 }
                 agentMsg.value.content += piece;
@@ -3045,7 +3045,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
     } else if (data.content) {
       const piece = sanitizeStreamContent(String(data.content));
       if (piece) {
-        if (msg.isThinking && msg.isThoughtExpanded) msg.isThoughtExpanded = false;
+        if (msg.isThoughtExpanded && !msg.content) msg.isThoughtExpanded = false;
         msg.content += piece;
         if (msg.isThinking) {
           msg.isThinking = false;
@@ -3123,7 +3123,7 @@ const applyPermissionStreamEvent = (msg: Message, data: any) => {
   } else if (data.content) {
     const piece = sanitizeStreamContent(String(data.content));
     if (piece) {
-      if (msg.isThinking && msg.isThoughtExpanded) {
+      if (msg.isThoughtExpanded && !msg.content) {
         msg.isThoughtExpanded = false;
       }
       msg.content += piece;

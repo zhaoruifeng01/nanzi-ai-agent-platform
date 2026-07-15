@@ -64,7 +64,10 @@ def test_dataset_capability_menu_component_contract():
     assert "payload.has_datasets" in source
     assert "isNoPermissionEmpty" in source
     assert "showStatusBanner" in source
-    assert "has_datasets === false" in source
+    assert "refreshDisabled" in source
+    assert "props.initialLoading" in source
+    assert "showRefreshBusy.value" in source
+    assert "|| props.payload?.has_datasets === false" not in source
     assert "cacheAgeLabel" in source
     assert "我的数据门户" in source
     assert "click_count" in source
