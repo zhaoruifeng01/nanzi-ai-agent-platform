@@ -68,6 +68,22 @@ def test_internal_structured_data_requires_data_query_and_allows_data_route():
     assert decision.allows_data_route is True
 
 
+def test_data_query_intent_delegates_without_strong_keyword_signal():
+    """意图已是 DATA_QUERY 时，即使未命中强业务关键词也必须委派/可路由。"""
+    decision = resolve_request_decision(
+        "查询合同编号 YVPR-FZN-202211-068 下的所有资产信息",
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+        turn_intent=IntentType.DATA_QUERY,
+    )
+
+    assert decision.source == RequestSource.INTERNAL_STRUCTURED_DATA
+    assert decision.capability == RequestCapability.DATA_QUERY
+    assert decision.should_delegate is True
+    assert decision.delegate_capability == "data_query"
+    assert decision.allows_data_route is True
+
+
 def test_runtime_diagnostic_is_tool_capability_not_data_route():
     decision = resolve_request_decision(
         "查看当前系统的CPU和内存使用情况",

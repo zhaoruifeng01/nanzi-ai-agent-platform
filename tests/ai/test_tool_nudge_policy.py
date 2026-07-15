@@ -286,6 +286,27 @@ def test_data_query_semantic_forces_data_sub_agent():
     assert nudge.should_force_first_call is True
 
 
+def test_data_query_intent_forces_sub_agent_without_strong_keyword():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+
+    nudge = resolve_tool_nudge(
+        "查询合同编号 YVPR-FZN-202211-068 下的所有资产信息",
+        tools,
+        available_sub_agent_names={"chat-bi"},
+        sub_agent_targets_by_capability={"data_query": "chat-bi"},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+        turn_intent=IntentType.DATA_QUERY,
+    )
+
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='chat-bi'" in nudge.message
+    assert nudge.should_force_first_call is True
+
+
 def test_server_load_query_prefers_shell_tool_over_data_sub_agent():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
@@ -320,7 +341,8 @@ def test_runtime_diagnostic_data_intent_does_not_force_data_sub_agent():
     assert nudge is None
 
 
-def test_generic_data_intent_without_business_signal_does_not_force_data_sub_agent():
+def test_generic_data_intent_forces_data_sub_agent_without_business_signal():
+    """意图已是 DATA_QUERY 时，即使没有强业务关键词也强制委派。"""
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
     ]
@@ -334,7 +356,10 @@ def test_generic_data_intent_without_business_signal_does_not_force_data_sub_age
         semantic_confidence=0.91,
     )
 
-    assert nudge is None
+    assert nudge is not None
+    assert nudge.tool_name == "sub_agent_call"
+    assert "agent_name='biz-data-agent'" in nudge.message
+    assert nudge.should_force_first_call is True
 
 
 @pytest.mark.parametrize(

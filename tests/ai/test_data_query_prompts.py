@@ -77,13 +77,14 @@ def test_structured_clarification_only_builds_requested_gap_buttons():
         missing_fields=("time_range",),
     )
 
-    assert "补充时间" in content
-    assert "指标口径" not in content
-    assert "统计对象" not in content
+    assert "时间范围" in content
     assert "### ℹ️ 为什么需要补充信息" in content
+    assert "### 📝 可以这样问我" in content
     assert "### 💬 您可以这样继续" in content
     assert "(quick:" in content
     assert "PUE" in content
+    assert "本月" in content
+    assert "请补充具体指标" not in content
 
 
 def test_semantic_clarification_recommendations_replace_mechanical_gap_buttons():
@@ -101,7 +102,33 @@ def test_semantic_clarification_recommendations_replace_mechanical_gap_buttons()
 
     assert "查询本月各机房平均 PUE" in content
     assert "最近 30 天各机房 PUE 趋势" in content
+    assert "可以这样问我" in content
     assert "（时间范围：本月）" not in content
+
+
+def test_clarification_examples_rewrite_user_question_with_id():
+    content = DataQueryPrompts.build_clarification_response(
+        "帮我查查A1000-0009D3 的数据",
+        "查数意图明确但缺少指标口径与时间范围",
+        "",
+        missing_fields=("metric", "time_range"),
+    )
+
+    assert "可以这样问我" in content
+    assert "A1000-0009D3" in content
+    assert "明细" in content or "状态" in content
+    assert "请补充具体指标和统计口径后回答" not in content
+    assert content.count("(quick:") >= 3
+
+
+def test_gap_fill_examples_keep_original_object():
+    examples = DataQueryPrompts._build_gap_fill_example_queries(
+        "帮我查查A1000-0009D3 的数据",
+        ("metric", "time_range"),
+    )
+    assert examples
+    assert all("A1000-0009D3" in item for item in examples)
+    assert any("本月" in item or "30天" in item or "30 天" in item for item in examples)
 
 
 def test_validate_semantic_recommendations_rejects_unrelated_topics():

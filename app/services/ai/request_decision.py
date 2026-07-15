@@ -231,6 +231,26 @@ def resolve_request_decision(
             semantic_confidence=semantic_score,
         )
 
+    # 意图已确认为 DATA_QUERY 时，不再依赖强业务关键词；统一打开路由/委派闸门，
+    # 由主助手强制 sub_agent_call 或直接路由到 data_query 智能体。
+    # 平台自助/公网/运行诊断等更强边界已在上方优先拦截。
+    if has_data_semantics:
+        return _decision(
+            RequestSource.INTERNAL_STRUCTURED_DATA,
+            RequestCapability.DATA_QUERY,
+            max(semantic_score, 0.86),
+            (
+                "internal structured data signal"
+                if looks_like_strong_business_data_request(q)
+                else "confirmed data_query intent requires data agent"
+            ),
+            should_delegate=True,
+            delegate_capability="data_query",
+            allows_data_route=True,
+            semantic_name=effective_intent,
+            semantic_confidence=semantic_score,
+        )
+
     if looks_like_general_query(q) or semantic_name == IntentType.GENERAL.value:
         return _decision(
             RequestSource.GENERAL,
@@ -250,20 +270,6 @@ def resolve_request_decision(
             should_delegate=True,
             delegate_capability="knowledge_base",
             requires_knowledge_search=True,
-            semantic_name=effective_intent,
-            semantic_confidence=semantic_score,
-        )
-
-    has_structured_signal = looks_like_strong_business_data_request(q)
-    if has_structured_signal and has_data_semantics:
-        return _decision(
-            RequestSource.INTERNAL_STRUCTURED_DATA,
-            RequestCapability.DATA_QUERY,
-            max(semantic_score, 0.86),
-            "internal structured data signal",
-            should_delegate=True,
-            delegate_capability="data_query",
-            allows_data_route=True,
             semantic_name=effective_intent,
             semantic_confidence=semantic_score,
         )
