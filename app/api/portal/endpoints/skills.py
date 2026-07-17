@@ -89,11 +89,11 @@ def validate_new_asset_path(skill_id: str, relative_path: str, asset_type: str) 
 
 def parse_skill_metadata(skill_id: str, skill_md_path: str) -> dict:
     """
-    无三方依赖正则提取 SKILL.md Frontmatter 元数据
+    无三方依赖正则提取 SKILL.md Frontmatter 元数据，支持 YAML 块标量(>-/>/|/|-)
     """
     metadata = {
-        "id": skill_id, 
-        "name": skill_id, 
+        "id": skill_id,
+        "name": skill_id,
         "description": "暂无技能描述",
         "path": f"data/skills/{skill_id}"
     }
@@ -105,10 +105,27 @@ def parse_skill_metadata(skill_id: str, skill_md_path: str) -> dict:
         match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
         if match:
             yaml_block = match.group(1)
-            for line in yaml_block.splitlines():
-                if ":" in line:
+            lines = yaml_block.splitlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                if ":" in line and not line.startswith((" ", "\t", "-")):
                     k, v = line.split(":", 1)
-                    metadata[k.strip().lower()] = v.strip().strip('"').strip("'")
+                    key = k.strip().lower()
+                    raw_v = v.strip()
+                    # 处理 YAML 块标量指示符: >-, >, |-, |
+                    if raw_v in (">-", ">", "|-", "|"):
+                        collected = []
+                        i += 1
+                        while i < len(lines) and (lines[i].startswith(" ") or lines[i].startswith("\t")):
+                            collected.append(lines[i].strip())
+                            i += 1
+                        joined = " ".join(collected) if raw_v.startswith(">") else "\n".join(collected)
+                        metadata[key] = joined.strip().strip('"').strip("'") or metadata.get(key, "")
+                        continue
+                    else:
+                        metadata[key] = raw_v.strip('"').strip("'")
+                i += 1
     except Exception as e:
         logger.error(f"[Skills] Failed to parse SKILL.md for {skill_id}: {e}")
     return metadata

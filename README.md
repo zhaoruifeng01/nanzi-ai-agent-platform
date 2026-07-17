@@ -276,9 +276,20 @@ cd frontend && npm install && npm run dev
 
 ## 💬 联系与交流
 
-如果您在使用过程中有任何疑问、功能建议，或者想要获取更多技术资讯，欢迎扫码关注我们的微信公众号：
+如果您在使用过程中有任何疑问、功能建议，或者想要获取更多技术资讯，欢迎扫码关注我们的微信公众号，或加入微信交流群：
 
-<img src="docs/images/weixin.png" alt="微信公众号" width="200" />
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/images/weixin.png" alt="微信公众号" width="200" /><br/>
+      <sub>微信公众号</sub>
+    </td>
+    <td align="center">
+      <img src="docs/images/weixin-group.png" alt="微信交流群" width="200" /><br/>
+      <sub>微信交流群（7天内有效）</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
