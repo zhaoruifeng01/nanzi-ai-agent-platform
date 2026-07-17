@@ -118,7 +118,7 @@ metrics:            # 预定义计算公式 (Computed Metrics)
 2.  **检索阶段 (Retrieval)**：
     *   **User Query**: "帮我查一下上海机房昨天的平均PUE"
     *   **Search**: 系统根据关键词 "上海机房", "PUE" 在向量库中检索。
-    *   **Match**: 命中 `ck_fact_yunshu_resroom_hbase` (因为有同义词 "机房") 和 `ck_fact_donghuan_real_metric_hbase` (因为有同义词 "PUE")。
+    *   **Match**: 命中 `ck_fact_nanzi_resroom_hbase` (因为有同义词 "机房") 和 `ck_fact_donghuan_real_metric_hbase` (因为有同义词 "PUE")。
 
 3.  **构建提示词 (Prompt Construction)**：
     *   系统仅将 **命中的这 2 张表** 的元数据（YAML片段）注入到 Prompt 中。

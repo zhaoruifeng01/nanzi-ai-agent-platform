@@ -1,4 +1,4 @@
-# 🎉 Yunshu AI Agent Platform v1.0.3 Release Notes
+# 🎉 NanZi AI Agent Platform v1.0.3 Release Notes
 
 **GitHub Repository**: [RandyChen1985/yunshu-ai-agent-platform](https://github.com/RandyChen1985/yunshu-ai-agent-platform)
 
@@ -133,10 +133,10 @@ cd frontend && npm install && npm run build && cd ..
 
 本项目 v1.0.3 发布版本关联的源码、Docker 镜像资产归档包及配置文件如下：
 
-* 📦 **Source Code (zip)**: `yunshu-ai-agent-platform-1.0.3.zip`
-* 📦 **Source Code (tar.gz)**: `yunshu-ai-agent-platform-1.0.3.tar.gz`
-* 🐳 **Docker Image for Linux amd64 (x86_64)**: `yunshu-ai-agent_1.0.3_linux-amd64_*.tar`
-* 🐳 **Docker Image for Linux arm64 (aarch64)**: `yunshu-ai-agent_1.0.3_linux-arm64_*.tar`
+* 📦 **Source Code (zip)**: `nanzi-ai-agent-platform-1.0.3.zip`
+* 📦 **Source Code (tar.gz)**: `nanzi-ai-agent-platform-1.0.3.tar.gz`
+* 🐳 **Docker Image for Linux amd64 (x86_64)**: `nanzi-ai-agent_1.0.3_linux-amd64_*.tar`
+* 🐳 **Docker Image for Linux arm64 (aarch64)**: `nanzi-ai-agent_1.0.3_linux-arm64_*.tar`
 * ⚙️ **Docker Compose YAML file**: `docker-compose.yml`
 
 🔗 **下载地址**: [GitHub Releases v1.0.3](https://github.com/RandyChen1985/yunshu-ai-agent-platform/releases/tag/1.0.3)

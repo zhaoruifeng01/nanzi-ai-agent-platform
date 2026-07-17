@@ -31,13 +31,13 @@
 > [!IMPORTANT]
 > **运行前置说明**：
 >
-> 1. **服务依赖**：需提前准备好 MySQL 服务（并手动创建数据库，如 `yunshu_ai_agent_platform`）与 Redis 服务（因包含向量检索等高级功能，必须使用支持 RediSearch 的 `redis/redis-stack:latest` 版本服务）。
-> 2. **镜像构建**：一键启动脚本底层依赖本地的 `yunshu-ai-agent` 镜像，运行前需先执行构建。
+> 1. **服务依赖**：需提前准备好 MySQL 服务（并手动创建数据库，如 `nanzi_ai_agent_platform`）与 Redis 服务（因包含向量检索等高级功能，必须使用支持 RediSearch 的 `redis/redis-stack:latest` 版本服务）。
+> 2. **镜像构建**：一键启动脚本底层依赖本地的 `nanzi-ai-agent` 镜像，运行前需先执行构建。
 
 ```bash
 # 1. 克隆仓库并进入目录
 git clone <repository-url>
-cd yunshu-ai-agent-platform
+cd nanzi-ai-agent-platform
 
 # 2. 本地构建 Docker 镜像（以本机 CPU 架构调试为例）
 cd docker
@@ -48,7 +48,7 @@ cp ../env.example .env
 vim .env
 
 # 4. 运行一键启动脚本
-./start-yunshu-ai-agent.sh
+./start-nanzi-ai-agent.sh
 ```
 
 访问：http://localhost:8001
@@ -71,7 +71,7 @@ pip install -r requirements.txt
 cp env.example .env
 # 编辑 .env 文件，配置数据库连接等信息
 
-# 4. 初始化数据库（请先确保已手动创建数据库，如 `yunshu_ai_agent_platform`）
+# 4. 初始化数据库（请先确保已手动创建数据库，如 `nanzi_ai_agent_platform`）
 # 执行交互式部署脚本，详见 db-prod/README.md 指南
 ./db-prod/apply-sql.sh
 ```
@@ -710,7 +710,7 @@ A: 检查 `app.core.config.py` 配置和 `.env` 文件：
 ```bash
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
-MYSQL_DB=yunshu_ai
+MYSQL_DB=nanzi_ai
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 ```
@@ -769,7 +769,7 @@ npm run type-check
 
 ```bash
 # 1. 登录 MySQL 并重建数据库
-mysql -u root -p -e "DROP DATABASE IF EXISTS yunshu_ai_agent_platform; CREATE DATABASE yunshu_ai_agent_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+mysql -u root -p -e "DROP DATABASE IF EXISTS nanzi_ai_agent_platform; CREATE DATABASE nanzi_ai_agent_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 
 # 2. 重新运行脚本进行全量初始化
 ./db-prod/apply-sql.sh
@@ -788,11 +788,11 @@ mysql -u root -p -e "DROP DATABASE IF EXISTS yunshu_ai_agent_platform; CREATE DA
 
 ```bash
 # 构建后端镜像
-docker build -t yunshu-ai-backend:latest .
+docker build -t nanzi-ai-backend:latest .
 
 # 构建前端镜像
 cd frontend
-docker build -t yunshu-ai-frontend:latest .
+docker build -t nanzi-ai-frontend:latest .
 ```
 
 #### 启动服务

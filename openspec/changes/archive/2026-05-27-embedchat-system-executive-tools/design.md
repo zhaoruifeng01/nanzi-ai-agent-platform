@@ -53,7 +53,7 @@
 ### 4. 长期记忆 (LTM) 数据结构与无感注入管道
 
 - **Redis 双轨哈希存储结构**:
-  - 长期记忆 key 设计为 `yunshu:agent:ltm:{user_id}`。
+  - 长期记忆 key 设计为 `nanzi:agent:ltm:{user_id}`。
   - 采用 Redis `Hash` 数据类型，字段规划为：
     - `user_preferences`: 结构化存储用户的代码风格、语言偏好、系统偏好（JSON）。
     - `core_facts`: 记录关于用户角色的核心事实、历史遗留背景（JSON）。

@@ -1,4 +1,4 @@
-# 🎉 Yunshu AI Agent Platform v1.0.6 Release Notes
+# 🎉 NanZi AI Agent Platform v1.0.6 Release Notes
 
 **GitHub Repository**: [RandyChen1985/yunshu-ai-agent-platform](https://github.com/RandyChen1985/yunshu-ai-agent-platform)
 

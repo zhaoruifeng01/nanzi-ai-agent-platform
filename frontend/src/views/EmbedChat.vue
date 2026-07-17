@@ -4333,7 +4333,7 @@ const postMessageToHost = (payload: any) => {
   }
   window.parent?.postMessage(
     {
-      source: "yunshu-agent-embed",
+      source: "nanzi-agent-embed",
       ...payload,
     },
     "*"
@@ -4976,7 +4976,7 @@ const exportData = async (traceId: string, format = 'xlsx') => {
     const link = document.createElement('a');
     link.href = url;
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    link.setAttribute('download', `yunshu_export_${dateStr}_${traceId.slice(0, 8)}.${format}`);
+    link.setAttribute('download', `nanzi_export_${dateStr}_${traceId.slice(0, 8)}.${format}`);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -6194,7 +6194,7 @@ onMounted(() => {
   }
   if (query.get("agent_id")) config.agentId = query.get("agent_id")!;
   if (query.get("theme")) applyTheme(query.get("theme")!);
-  postMessageToHost({ type: "YUNSHU_WIDGET_READY" });
+  postMessageToHost({ type: "NANZI_WIDGET_READY" });
   if (config.token) {
     console.log("[LifeCycle] Initializing chat from existing token...");
     initChat();

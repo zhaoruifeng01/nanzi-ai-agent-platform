@@ -9,7 +9,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 COMPOSE_FILE="docker-compose.ai-agent.yml"
-CONTAINER_NAME="yunshu-ai-agent"
+CONTAINER_NAME="nanzi-ai-agent"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -24,8 +24,8 @@ if [ ! -f ".env" ]; then
     exit 1
 fi
 
-if ! docker images | grep -q "yunshu-ai-agent"; then
-    echo -e "${YELLOW}警告: yunshu-ai-agent 镜像不存在${NC}"
+if ! docker images | grep -q "nanzi-ai-agent"; then
+    echo -e "${YELLOW}警告: nanzi-ai-agent 镜像不存在${NC}"
     echo "请先构建镜像: ./build_linux_x86.sh"
     exit 1
 fi
@@ -59,7 +59,7 @@ if [ "$(docker ps -q -f name=${CONTAINER_NAME})" ]; then
     echo "  - 管理后台: http://localhost:8001/"
     echo ""
     echo "查看日志: docker logs -f ${CONTAINER_NAME}"
-    echo "停止服务: ./stop-yunshu-ai-agent.sh"
+    echo "停止服务: ./stop-nanzi-ai-agent.sh"
 else
     echo -e "${RED}✗ 服务启动失败${NC}"
     echo "查看日志: docker logs ${CONTAINER_NAME}"

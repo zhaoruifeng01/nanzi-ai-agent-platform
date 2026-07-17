@@ -22,7 +22,7 @@
 如果目标数据库不存在，部署脚本在运行时会自动以 `utf8mb4` 字符集创建它。但如果您需要自定义库名或有特殊的初始化字符集要求，可登录您的 MySQL 服务提前手动创建一个干净的数据库：
 
 ```sql
-CREATE DATABASE IF NOT EXISTS `yunshu_ai_agent_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE DATABASE IF NOT EXISTS `nanzi_ai_agent_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 ```
 
 ### 第二步：运行结构初始化脚本

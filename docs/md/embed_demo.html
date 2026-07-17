@@ -318,10 +318,10 @@
         // if (event.origin !== 'http://yunshu-aigent.yovole.net') return;
 
         const data = event.data;
-        if (data.source === "yunshu-agent-embed") {
+        if (data.source === "nanzi-agent-embed") {
           log(`${data.type}`, "RX");
 
-          if (data.type === "YUNSHU_WIDGET_READY") {
+          if (data.type === "NANZI_WIDGET_READY") {
             log("Widget is ready. Auto-initializing...");
             setTimeout(initWidget, 500);
           }

@@ -74,10 +74,10 @@
 ```
 
 ### 方案 B: JS SDK (Widget 模式 - 后续规划)
-提供 `yunshu-widget.js`，自动注入 DOM 和样式。
+提供 `nanzi-widget.js`，自动注入 DOM 和样式。
 ```html
 <script>
-  window.YunshuAI = {
+  window.NanZiAI = {
     config: {
       agent_id: "sys-agent-chatbi",
       token: "..."

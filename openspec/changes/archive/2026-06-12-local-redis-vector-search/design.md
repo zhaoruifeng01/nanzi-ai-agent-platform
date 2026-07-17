@@ -18,7 +18,7 @@
 
 ### 决策 1: 索引类型与命名空间隔离（对齐 RAGFlow 颗粒度）
 - **选择方案**：以“物理表”和“指标文件”为独立文档单元存储于 Redis HASH 中：
-  - 元数据专属 RediSearch 索引名：`yunshu:idx:metadata:dataset`
+  - 元数据专属 RediSearch 索引名：`nanzi:idx:metadata:dataset`
   - 前置扫描范围前缀限定为：`PREFIX 1 metadata:dataset:`
   - 数据集下的**物理表** Redis Key 格式：`metadata:dataset:<dataset_id>:table:<table_physical_name>`
   - 数据集下的**指标** Redis Key 格式：`metadata:dataset:<dataset_id>:metrics`

@@ -307,7 +307,7 @@ const showSecrets = ref<{ [key: string]: boolean }>({})
 const brandingConfig = ref({
   enabled: false,
   product_name: '南孜 · 智能体平台',
-  login_subtitle: 'Yunshu Intelligent Agent Platform',
+  login_subtitle: 'NanZi Intelligent Agent Platform',
   icon_url: '/favicon.png',
   hide_login_sso: false,
   hide_version_link: false,
@@ -324,7 +324,7 @@ const fetchBrandingConfig = async () => {
     brandingConfig.value = {
       enabled: !!data.enabled,
       product_name: data.product_name || '南孜 · 智能体平台',
-      login_subtitle: data.login_subtitle || 'Yunshu Intelligent Agent Platform',
+      login_subtitle: data.login_subtitle || 'NanZi Intelligent Agent Platform',
       icon_url: data.icon_url || '/favicon.png',
       hide_login_sso: !!data.hide_login_sso,
       hide_version_link: !!data.hide_version_link,
@@ -1450,7 +1450,7 @@ onMounted(() => {
                 <input
                   type="text"
                   v-model="redisPattern"
-                  placeholder="匹配模式 (例如 * 或 yunshu:*)"
+                  placeholder="匹配模式 (例如 * 或 nanzi:*)"
                   @keyup.enter="fetchRedisKeys"
                   class="flex-1 min-w-0 shadow-sm focus:ring-primary focus:border-primary block w-full sm:text-sm border-gray-300 rounded-md bg-gray-50 p-2 border"
                 />
@@ -1576,7 +1576,7 @@ onMounted(() => {
                 v-model="brandingConfig.login_subtitle"
                 type="text"
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                placeholder="Yunshu Intelligent Agent Platform"
+                placeholder="NanZi Intelligent Agent Platform"
               />
             </div>
 

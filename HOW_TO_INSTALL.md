@@ -1,6 +1,6 @@
 # 南孜智能体平台部署安装指南 (HOW TO INSTALL)
 
-本指南旨在指导开发和运维人员在本地开发环境或生产环境下完成 **南孜智能体平台 (Yunshu AI Agent Platform)** 的安装部署、数据库表结构初始化以及常见问题的快速排查。
+本指南旨在指导开发和运维人员在本地开发环境或生产环境下完成 **南孜智能体平台 (NanZi AI Agent Platform)** 的安装部署、数据库表结构初始化以及常见问题的快速排查。
 
 ---
 
@@ -38,7 +38,7 @@
 1.  **手动创建数据库**：
     登录您的 MySQL 服务，手动创建一个干净的数据库，确保使用 `utf8mb4` 字符集以完美支持中文字符与 Emoji：
     ```sql
-    CREATE DATABASE IF NOT EXISTS `yunshu_ai_agent_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+    CREATE DATABASE IF NOT EXISTS `nanzi_ai_agent_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
     ```
 
 2.  **执行结构自动初始化（提供以下两种途径）**：
@@ -104,12 +104,12 @@
         # 仅在本机试跑调试（原生架构）
         ./build_native.sh 1.0.0
         ```
-        构建完成后，带版本号与平台架构后缀的镜像 tar 归档包将固定生成在 `docker/release/` 目录下（例如 `yunshu-ai-agent_1.0.0_linux-amd64_YYYYMMDD.tar`）。
+        构建完成后，带版本号与平台架构后缀的镜像 tar 归档包将固定生成在 `docker/release/` 目录下（例如 `nanzi-ai-agent_1.0.0_linux-amd64_YYYYMMDD.tar`）。
 
 2.  **载入离线镜像包**：
     将下载或自行编译生成的镜像 tar 包拷贝到目标运行服务器上，执行以下命令载入镜像：
     ```bash
-    docker load -i yunshu-ai-agent_1.0.0_linux-amd64_YYYYMMDD.tar
+    docker load -i nanzi-ai-agent_1.0.0_linux-amd64_YYYYMMDD.tar
     ```
 3.  **准备容器环境变量配置文件及 Docker Compose 编排调整**：
 
@@ -124,20 +124,20 @@
 
     *   **检查与修改 Docker Compose 编排文件（[docker-compose.ai-agent.yml](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/docker/docker-compose.ai-agent.yml)）**：
         在启动前，您可以根据实际运行环境修改该配置文件：
-        1.  **镜像版本校准**：YAML 中默认使用 `image: yunshu-ai-agent:latest`。如果您下载或编译出来的镜像是带具体版本号的（如 `yunshu-ai-agent:1.0.0`），您需要将 YAML 中 `image:` 指向对应标签；或直接在终端为该镜像重新打上 `latest` 标签，即可免除文件修改：
+        1.  **镜像版本校准**：YAML 中默认使用 `image: nanzi-ai-agent:latest`。如果您下载或编译出来的镜像是带具体版本号的（如 `nanzi-ai-agent:1.0.0`），您需要将 YAML 中 `image:` 指向对应标签；或直接在终端为该镜像重新打上 `latest` 标签，即可免除文件修改：
             ```bash
-            docker tag yunshu-ai-agent:1.0.0 yunshu-ai-agent:latest
+            docker tag nanzi-ai-agent:1.0.0 nanzi-ai-agent:latest
             ```
-        2.  **Oracle 客户端挂载卷调整（仅当需要直连 Oracle 数据库时）**：请根据宿主机上 Oracle Instant Client 实际物理存放路径，将 `volumes` 下的 `/app/yunshu-aiagent/lib/instantclient_19_30` 替换为宿主机对应的真实目录。
+        2.  **Oracle 客户端挂载卷调整（仅当需要直连 Oracle 数据库时）**：请根据宿主机上 Oracle Instant Client 实际物理存放路径，将 `volumes` 下的 `/app/nanzi-aiagent/lib/instantclient_19_30` 替换为宿主机对应的真实目录。
             *   *低版本 Oracle 数据库兼容提示*：若需要连接低版本 Oracle（如 Oracle 11g 或更低版本），Python 的默认 Thin 模式无法兼容，**必须启用 Thick 模式**（即在 `.env` 中设置 `USE_ORACLE_THICK_MODE=1`），并在此处正确挂载兼容该低版本 Oracle 的物理客户端目录。如果您的智能体不需要操作 Oracle 数据库，此挂载卷配置可直接保留默认或予以注释。
 4.  **一键启动与停止服务**：
     平台封装了高内聚的容器启动管理脚本，能自动完成冲突校验与状态检测：
     ```bash
     # 启动 API 容器
-    ./start-yunshu-ai-agent.sh
+    ./start-nanzi-ai-agent.sh
     
     # 停止并移除容器
-    ./stop-yunshu-ai-agent.sh
+    ./stop-nanzi-ai-agent.sh
     ```
 
 详细的 Docker 编排配置，请参考：[docker/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/docker/README.md)。

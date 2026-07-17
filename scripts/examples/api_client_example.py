@@ -39,7 +39,7 @@ def execute_logical_query(resource, filters=None, sort_by=None, page=1, size=10)
         print(f"Error {response.status_code}: {response.text}")
         return None
 
-def get_yunshu_rooms():
+def get_nanzi_rooms():
     """获取南孜机房列表示例"""
     url = f"{BASE_URL}/resources/rooms"
     headers = {"X-API-Key": API_KEY}
@@ -63,5 +63,5 @@ if __name__ == "__main__":
             print(f"Time: {m['metric_time']} | Value: {m['metric_value']}")
 
     # 示例 2: 获取机房列表
-    rooms = get_yunshu_rooms()
+    rooms = get_nanzi_rooms()
     print(f"\nAvailable Rooms: {[r.get('room_name') for r in rooms]}")

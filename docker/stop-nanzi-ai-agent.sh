@@ -8,7 +8,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 COMPOSE_FILE="docker-compose.ai-agent.yml"
-CONTAINER_NAME="yunshu-ai-agent"
+CONTAINER_NAME="nanzi-ai-agent"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

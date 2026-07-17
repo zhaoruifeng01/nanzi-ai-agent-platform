@@ -14,27 +14,27 @@
 
 1. **数据采集与大数据加工平台**
    - 中文名：**南孜・数据底座**
-   - 英文名：**Yunshu Data Foundation**
+   - 英文名：**NanZi Data Foundation**
    - 简称：**数据底座 / Data Foundation (DF)**
 
 2. **`api_service` 数据服务化平台**
    - 中文名：**南孜・数据服务平台**
-   - 英文名：**Yunshu Data API Platform**
+   - 英文名：**NanZi Data API Platform**
    - 简称：**数据服务平台 / Data API Platform**，技术名沿用 `api_service`
 
 3. **AI 智能体平台**
    - 中文名：**南孜・智能体平台**
-   - 英文名：**Yunshu AI Agent Platform**
+   - 英文名：**NanZi AI Agent Platform**
    - 简称：**AI 智能体平台 / AI Agent 平台**
 
 4. **南孜应用端（Web / 移动 + 后端）**
    - 前端控制台：
      - 中文名：**南孜・运营控制台**（本仓库 `frontend-app`）
-     - 英文名：**Yunshu Ops Console**
+     - 英文名：**NanZi Ops Console**
      - 简称：**控制台 / Console**
    - 应用后端（待开发）：
      - 中文名：**南孜・业务服务**
-     - 英文名：**Yunshu App Service**
+     - 英文名：**NanZi App Service**
      - 简称：**App Service**
 
 > 后续在所有设计文档、架构图和讨论中，建议优先使用上述中文名 + 括号补充技术名的方式，例如：
@@ -44,13 +44,13 @@
 
 从公司整体视角来看，当前围绕数据中心智能运营大致包含 **四大核心系统**，本仓库主要覆盖的是第 2、3、4 点中的一部分：
 
-1. **南孜・数据底座（Yunshu Data Foundation，数据采集与大数据加工平台）**
+1. **南孜・数据底座（NanZi Data Foundation，数据采集与大数据加工平台）**
    - 负责采集 YES、NC、动环等多源数据：设备、告警、能耗、环境等。
    - 在大数据平台内部完成：清洗、聚合、建模特征等加工，形成统一数据资产。
    - 对外通过 API / 表视图 / 实时流等接口，输出加工后的指标、明细、聚合结果。
    - 本项目 **不负责** 该平台的详细设计与开发，只作为其 **数据消费者** 使用其输出。
 
-2. **南孜・数据服务平台（Yunshu Data API Platform，技术名 `api_service`，独立通用数据服务层）**
+2. **南孜・数据服务平台（NanZi Data API Platform，技术名 `api_service`，独立通用数据服务层）**
    - 定位为 **通用 Data API 平台**，对上屏蔽底层存储的差异，对下统一封装多种数据源：
      - ClickHouse（OLAP 分析）
      - HBase（实时/宽表）
@@ -61,7 +61,7 @@
      - 提供统一的响应 Envelope：`{ code, message, data, timestamp, trace_id }`，对齐 OpenSpec 规范。
      - 提供查询编排与多数据源路由能力，作为后续所有应用和 AI 的“取数中枢”。
 
-3. **南孜・智能体平台（Yunshu AI Agent Platform，独立的 AI 服务系统）**
+3. **南孜・智能体平台（NanZi AI Agent Platform，独立的 AI 服务系统）**
    - 定位为 **通用 AI Agent 平台**，不是南孜 Web 的内嵌功能，而是独立服务：
      - 提供 ChatBI（自然语言取数 + 图表）能力；
      - 后续扩展 RAG 知识库、多 Agent 意图识别、自动化工作流等。
@@ -73,8 +73,8 @@
 
 4. **南孜应用端（南孜・运营控制台 + 南孜・业务服务，Web / 移动 + 自有后端）**
    - 包括：
-     - 南孜・运营控制台（Yunshu Ops Console，本仓库 `frontend-app`）；
-     - 南孜・业务服务（Yunshu App Service，待开发，将独立成后端工程）；
+     - 南孜・运营控制台（NanZi Ops Console，本仓库 `frontend-app`）；
+     - 南孜・业务服务（NanZi App Service，待开发，将独立成后端工程）；
      - 未来的移动端 App / H5 等。
    - 南孜・业务服务主要职责：
      - 面向具体业务场景（大屏、资源管理、告警管理等）聚合 API，做领域逻辑；
@@ -174,7 +174,7 @@
 #### 服务端仓库（3 个）
 
 1. **yovole-yunshu-api-data-platform**
-   - 系统：南孜・数据服务平台（Yunshu Data API Platform）
+   - 系统：南孜・数据服务平台（NanZi Data API Platform）
    - 技术栈：Python + FastAPI
    - 职责：多数据源统一 API 封装、权限控制、查询编排
    - 负责团队：API 服务团队

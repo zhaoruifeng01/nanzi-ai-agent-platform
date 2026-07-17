@@ -7,8 +7,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![AgentScope](https://img.shields.io/badge/AgentScope-2.x-7C3AED.svg)](https://github.com/agentscope-ai/agentscope) [![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/) [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D.svg?logo=vue.js&logoColor=white)](https://vuejs.org/) [![TailwindCSS](https://img.shields.io/badge/Tailwind-3.x-38B2AC.svg?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/) [![ClickHouse](https://img.shields.io/badge/ClickHouse-Ready-FFCC00.svg?logo=clickhouse&logoColor=black)](https://clickhouse.com/) [![Redis](https://img.shields.io/badge/Redis-Active-DC382D.svg?logo=redis&logoColor=white)](https://redis.io/) [![MCP](https://img.shields.io/badge/MCP-Supported-orange.svg?logo=anthropic)](https://modelcontextprotocol.org/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-![Promo](docs/images/yunshu-platform-promo-16x9.png)
-![Overview](docs/images/yunshu-platform-overview-16x9.png)
+![Promo](docs/images/nanzi-platform-promo-16x9.png)
+![Overview](docs/images/nanzi-platform-overview-16x9.png)
 
 **NanZi AI Agent Platform** is an AI intelligence center purpose-built for complex enterprise scenarios.
 
@@ -27,7 +27,7 @@ The platform revolves around the following core capability matrix:
 
 ## 🏛️ Architecture
 
-![Architecture](docs/images/yunshu-platform-architecture-16x9.png)
+![Architecture](docs/images/nanzi-platform-architecture-16x9.png)
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
@@ -200,7 +200,7 @@ cp ../env.example .env   # DB, Redis, ENCRYPTION_KEY, etc.
 ./build_linux_x86.sh
 ```
 
-Artifacts are written to **`docker/release/`**, e.g. `yunshu-ai-agent_linux-amd64_20250527.tar`. On the target host: `docker load -i docker/release/xxx.tar`.
+Artifacts are written to **`docker/release/`**, e.g. `nanzi-ai-agent_linux-amd64_20250527.tar`. On the target host: `docker load -i docker/release/xxx.tar`.
 
 > On Apple Silicon Macs deploying to x86 servers, use `build_linux_x86.sh`, not `build_native.sh`. The first cross-platform build may take a long time with little console output while base images are pulled.
 
@@ -216,7 +216,7 @@ More details: [docker/README.md](docker/README.md) (Chinese) · [docker/README_E
 
 **3. Start services**
 ```bash
-./start-yunshu-ai-agent.sh
+./start-nanzi-ai-agent.sh
 ```
 
 ### 🛠️ Development & Deployment Tools
