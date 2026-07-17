@@ -291,6 +291,9 @@ def scan_relevant_skills(
         skill_id = meta.get("id")
         if not skill_id or skill_id in excluded:
             continue
+        # 过滤未启用的技能，防止每次都全部加载
+        if meta.get("enabled", "true") == "false":
+            continue
         score = lexical_relevance_score(query, meta)
         # 个人技能加权，鼓励优先匹配用户自定义技能
         if meta.get("scope") == SCOPE_PERSONAL and score > 0:
@@ -335,6 +338,8 @@ def resolve_skills_from_query(
     scored: List[tuple[float, Dict[str, str]]] = []
     for hint in hints:
         for meta in metas:
+            if meta.get("enabled", "true") == "false":
+                continue
             score = _score_skill_match(hint, meta)
             if score >= 0.7:
                 scored.append((score, meta))
@@ -342,6 +347,8 @@ def resolve_skills_from_query(
     # 兜底：用户直接在句子里提到技能 display_name
     if not scored:
         for meta in metas:
+            if meta.get("enabled", "true") == "false":
+                continue
             name = (meta.get("name") or "").strip()
             if len(name) >= 2 and name in query:
                 scored.append((0.75, meta))

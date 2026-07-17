@@ -349,6 +349,22 @@ const deleteSkill = (skillId: string) => {
   }
 }
 
+// 切换启用/禁用状态
+const toggleSkillStatus = async (skill: Skill) => {
+  const newStatus = skill.enabled === 'false' ? 'true' : 'false'
+  try {
+    const isPersonal = skill.scope === 'personal'
+    const apiPrefix = isPersonal ? '/api/portal/skills/personal' : '/api/portal/skills'
+    const response = await axios.put(`${apiPrefix}/${skill.id}/toggle?enabled=${newStatus === 'true'}`)
+    if (response.data && response.data.status === 'success') {
+      skill.enabled = newStatus
+      showToast(`技能已${newStatus === 'true' ? '启用' : '禁用'}`, 'success')
+    }
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '更新技能状态失败', 'error')
+  }
+}
+
 // 查看技能详情与抽屉挂载
 const openSkillDetail = async (skillId: string) => {
   activeSkillId.value = skillId
@@ -1111,6 +1127,7 @@ onUnmounted(() => {
         :key="skill.id"
         @click="openSkillDetail(skill.id)"
         class="group relative flex flex-col bg-white border border-gray-200 hover:border-blue-400 hover:shadow-lg hover:-translate-y-0.5 rounded-lg p-5 cursor-pointer transition-all duration-200"
+        :class="{ 'opacity-65 saturate-50 bg-gray-50/50': skill.enabled === 'false' }"
       >
         <!-- 卡片顶部 -->
         <div class="flex items-start justify-between">
@@ -1144,16 +1161,29 @@ onUnmounted(() => {
             </div>
           </div>
           
-          <!-- 删除物理技能按钮 -->
-          <button 
-            @click.stop="deleteSkill(skill.id)"
-            class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-            title="注销并彻底删除技能目录"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
+          <div class="flex items-center space-x-2 shrink-0" @click.stop>
+            <!-- Switch 开关 -->
+            <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能">
+              <input 
+                type="checkbox" 
+                :checked="skill.enabled !== 'false'"
+                @change="toggleSkillStatus(skill)"
+                class="sr-only peer"
+              >
+              <div class="w-7 h-4 bg-gray-250 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+            </label>
+
+            <!-- 删除物理技能按钮 -->
+            <button 
+              @click.stop="deleteSkill(skill.id)"
+              class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+              title="注销并彻底删除技能目录"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <!-- 技能描述 -->
@@ -1179,6 +1209,7 @@ onUnmounted(() => {
             <tr>
               <th class="px-6 py-4">技能名称与描述</th>
               <th class="px-6 py-4 text-center">物理映射路径</th>
+              <th class="px-6 py-4 text-center">状态</th>
               <th class="px-6 py-4 text-center">操作</th>
             </tr>
           </thead>
@@ -1188,6 +1219,7 @@ onUnmounted(() => {
               :key="skill.id"
               @click="openSkillDetail(skill.id)"
               class="hover:bg-blue-50/20 cursor-pointer transition-colors group"
+              :class="{ 'opacity-65 saturate-50 bg-gray-50/30': skill.enabled === 'false' }"
             >
               <td class="px-6 py-4">
                 <div class="flex items-start space-x-3">
@@ -1209,6 +1241,18 @@ onUnmounted(() => {
               </td>
               <td class="px-6 py-4 text-center font-mono text-xs text-gray-500 max-w-xs truncate" :title="skill.path">
                 {{ skill.path }}
+              </td>
+              <td class="px-6 py-4 text-center whitespace-nowrap" @click.stop>
+                <!-- Switch 开关 -->
+                <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能">
+                  <input 
+                    type="checkbox" 
+                    :checked="skill.enabled !== 'false'"
+                    @change="toggleSkillStatus(skill)"
+                    class="sr-only peer"
+                  >
+                  <div class="w-7 h-4 bg-gray-250 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
               </td>
               <td class="px-6 py-4 text-center whitespace-nowrap" @click.stop>
                 <div class="flex items-center justify-center space-x-2 whitespace-nowrap">

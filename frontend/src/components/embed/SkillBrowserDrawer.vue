@@ -74,10 +74,14 @@ const loadSkillsList = async () => {
       axios.get('/api/portal/skills/personal')
     ])
     if (globalRes.status === 'fulfilled' && globalRes.value.data?.status === 'success') {
-      skillsList.value = (globalRes.value.data.data || []).map((s: any) => ({ ...s, scope: 'global' }))
+      skillsList.value = (globalRes.value.data.data || [])
+        .map((s: any) => ({ ...s, scope: 'global' }))
+        .filter((s: any) => s.enabled !== 'false')
     }
     if (personalRes.status === 'fulfilled' && personalRes.value.data?.status === 'success') {
-      personalSkillsList.value = (personalRes.value.data.data || []).map((s: any) => ({ ...s, scope: 'personal' }))
+      personalSkillsList.value = (personalRes.value.data.data || [])
+        .map((s: any) => ({ ...s, scope: 'personal' }))
+        .filter((s: any) => s.enabled !== 'false')
     }
   } catch (err) {
     console.error('加载技能列表失败:', err)

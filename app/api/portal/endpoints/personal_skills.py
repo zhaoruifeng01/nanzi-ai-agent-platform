@@ -462,3 +462,27 @@ async def import_personal_skill_package(
     except Exception as e:
         logger.error("[PersonalSkills] Failed to import skill package: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{skill_id}/toggle", summary="启用或禁用个人技能")
+async def toggle_personal_skill(
+    skill_id: str,
+    enabled: bool,
+    user: dict = Depends(require_api_key),
+):
+    try:
+        skill_dir = _validate_personal_skill_path(user, skill_id)
+        if not os.path.exists(skill_dir):
+            raise HTTPException(status_code=404, detail="个人技能不存在")
+        skill_md_path = os.path.join(skill_dir, "SKILL.md")
+        
+        from app.utils.skill_metadata import toggle_skill_enabled_in_file
+        success = toggle_skill_enabled_in_file(skill_md_path, enabled)
+        if not success:
+            raise HTTPException(status_code=500, detail="切换状态失败，请确认技能文件格式正常")
+        return {"status": "success", "message": f"技能已{'启用' if enabled else '禁用'}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[PersonalSkills] Failed to toggle skill {skill_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

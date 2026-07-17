@@ -95,7 +95,8 @@ def parse_skill_metadata(skill_id: str, skill_md_path: str) -> dict:
         "id": skill_id,
         "name": skill_id,
         "description": "暂无技能描述",
-        "path": f"data/skills/{skill_id}"
+        "path": f"data/skills/{skill_id}",
+        "enabled": "true"
     }
     if not os.path.exists(skill_md_path):
         return metadata
@@ -128,6 +129,8 @@ def parse_skill_metadata(skill_id: str, skill_md_path: str) -> dict:
                 i += 1
     except Exception as e:
         logger.error(f"[Skills] Failed to parse SKILL.md for {skill_id}: {e}")
+    if "enabled" not in metadata:
+        metadata["enabled"] = "true"
     return metadata
 
 def get_file_tree(dir_path: str, base_path: str) -> list:
@@ -641,4 +644,28 @@ async def import_skill_package(
         raise
     except Exception as e:
         logger.error(f"[Skills] Failed to import skill package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{skill_id}/toggle", summary="启用或禁用平台技能")
+async def toggle_skill(
+    skill_id: str,
+    enabled: bool,
+    user: dict = Depends(require_permission("menu", "menu:skills_management")),
+):
+    try:
+        skill_dir = validate_secure_skill_path(skill_id)
+        if not os.path.exists(skill_dir):
+            raise HTTPException(status_code=404, detail="技能不存在")
+        skill_md_path = os.path.join(skill_dir, "SKILL.md")
+        
+        from app.utils.skill_metadata import toggle_skill_enabled_in_file
+        success = toggle_skill_enabled_in_file(skill_md_path, enabled)
+        if not success:
+            raise HTTPException(status_code=500, detail="切换状态失败，请确认技能文件格式正常")
+        return {"status": "success", "message": f"技能已{'启用' if enabled else '禁用'}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Skills] Failed to toggle skill {skill_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

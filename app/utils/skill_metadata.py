@@ -10,7 +10,7 @@ USER_MESSAGE_CONTEXT_DIVIDER = "\n\n---\n\n"
 
 def parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> Dict[str, str]:
     """从 SKILL.md 顶部 YAML Frontmatter 提取 name / description 等元数据。"""
-    meta: Dict[str, str] = {"id": skill_id, "name": skill_id, "description": ""}
+    meta: Dict[str, str] = {"id": skill_id, "name": skill_id, "description": "", "enabled": "true"}
     if not os.path.exists(skill_md_path):
         return meta
     try:
@@ -24,7 +24,45 @@ def parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> Dict[str, str]
                     meta[key.strip().lower()] = value.strip().strip('"').strip("'")
     except Exception:
         pass
+    if "enabled" not in meta:
+        meta["enabled"] = "true"
     return meta
+
+
+def toggle_skill_enabled_in_file(skill_md_path: str, enabled: bool) -> bool:
+    """在 SKILL.md 的 YAML Frontmatter 中修改或插入 enabled 状态。"""
+    if not os.path.exists(skill_md_path):
+        return False
+    try:
+        with open(skill_md_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        if match:
+            yaml_block = match.group(1)
+            rest_content = content[match.end():]
+            
+            new_lines = []
+            has_enabled = False
+            for line in yaml_block.splitlines():
+                if line.strip().lower().startswith("enabled:"):
+                    new_lines.append(f"enabled: {str(enabled).lower()}")
+                    has_enabled = True
+                else:
+                    new_lines.append(line)
+            
+            if not has_enabled:
+                new_lines.append(f"enabled: {str(enabled).lower()}")
+                
+            new_yaml_block = "\n".join(new_lines)
+            new_content = f"---\n{new_yaml_block}\n---\n{rest_content}"
+            
+            with open(skill_md_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def format_skill_meta_text(meta: Dict[str, str]) -> str:

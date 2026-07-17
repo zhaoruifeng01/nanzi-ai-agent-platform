@@ -109,9 +109,14 @@ def discover_platform_skill_paths(
         return []
 
     paths: list[str] = []
+    from app.utils.skill_metadata import parse_skill_frontmatter
     for entry in sorted(os.listdir(skills_root)):
         skill_dir = os.path.join(skills_root, entry)
         if os.path.isdir(skill_dir) and os.path.isfile(os.path.join(skill_dir, "SKILL.md")):
+            # 过滤禁用的技能
+            meta = parse_skill_frontmatter(entry, os.path.join(skill_dir, "SKILL.md"))
+            if meta.get("enabled", "true") == "false":
+                continue
             paths.append(os.path.abspath(skill_dir))
 
     # 追加用户个人技能路径
@@ -126,6 +131,9 @@ def discover_platform_skill_paths(
                     if os.path.isdir(skill_dir) and os.path.isfile(
                         os.path.join(skill_dir, "SKILL.md")
                     ):
+                        meta = parse_skill_frontmatter(entry, os.path.join(skill_dir, "SKILL.md"))
+                        if meta.get("enabled", "true") == "false":
+                            continue
                         abs_path = os.path.abspath(skill_dir)
                         if abs_path not in paths:
                             paths.append(abs_path)
