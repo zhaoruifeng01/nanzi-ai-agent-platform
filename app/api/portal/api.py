@@ -62,11 +62,11 @@ portal_router.include_router(mcp.router, prefix="/mcp", tags=["MCP管理"], depe
 # 16. 变更日志 (Changelog)
 portal_router.include_router(changelog.router, prefix="/changelog", tags=["变更日志"], dependencies=[Depends(require_api_key)])
 
-# 17. 智能体技能管理 (Skills Management)
-portal_router.include_router(skills.router, prefix="/skills", tags=["技能管理"], dependencies=[Depends(require_api_key)])
-
-# 17.1 个人技能管理 (Personal Skills)
+# 17. 个人技能管理 (Personal Skills) — 必须先于 /skills/{skill_id} 注册，避免 GET /skills/personal 被平台路由误匹配
 portal_router.include_router(personal_skills.router, prefix="/skills/personal", tags=["个人技能"], dependencies=[Depends(require_api_key)])
+
+# 17.1 智能体技能管理 (Skills Management)
+portal_router.include_router(skills.router, prefix="/skills", tags=["技能管理"], dependencies=[Depends(require_api_key)])
 
 # 18. 记忆管理中心 (Memory Management)
 portal_router.include_router(memory.router, prefix="/memory", tags=["记忆管理"], dependencies=[Depends(require_api_key)])

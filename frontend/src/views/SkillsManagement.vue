@@ -12,6 +12,7 @@ interface Skill {
   description: string
   path: string
   scope?: 'global' | 'personal'
+  modified_at?: number
 }
 
 interface FileNode {
@@ -19,6 +20,7 @@ interface FileNode {
   path: string
   is_dir: boolean
   size?: number
+  modified_at?: number
   children?: FileNode[]
 }
 
@@ -38,6 +40,10 @@ const activeScope = ref<'global' | 'personal'>('global')
 const loading = ref(false)
 const searchQuery = ref('')
 const viewMode = ref<'card' | 'list'>('card')
+const skillSortBy = ref<'name' | 'time'>('name')
+const skillSortOrder = ref<'asc' | 'desc'>('asc')
+const fileTreeSortBy = ref<'name' | 'time'>('name')
+const fileTreeSortOrder = ref<'asc' | 'desc'>('asc')
 
 // 新建技能相关
 const showCreateModal = ref(false)
@@ -171,6 +177,7 @@ const helpTab = ref<'web' | 'cli' | 'import'>('web')
 // 详情抽屉 (Drawer) 相关
 const showDrawer = ref(false)
 const activeSkillId = ref('')
+const activeSkillScope = ref<'global' | 'personal'>('global')
 const activeSkillName = ref('')
 const activeSkillDesc = ref('')
 const fileTree = ref<FileNode[]>([])
@@ -242,11 +249,31 @@ const fetchPersonalSkills = async () => {
     }
   } catch (e: any) {
     console.warn('获取个人技能失败', e)
+    showToast(e.response?.data?.detail || '获取个人技能列表失败', 'error')
   }
 }
 
 // 搜索过滤
 const currentScopeSkills = computed(() => activeScope.value === 'global' ? skills.value : personalSkills.value)
+
+const resolveSkillApiPrefix = (skillId?: string, scope?: 'global' | 'personal') => {
+  if (scope === 'personal') return '/api/portal/skills/personal'
+  if (scope === 'global') return '/api/portal/skills'
+  const id = skillId || activeSkillId.value
+  if (id && id === activeSkillId.value) {
+    return activeSkillScope.value === 'personal'
+      ? '/api/portal/skills/personal'
+      : '/api/portal/skills'
+  }
+  const matched = [...skills.value, ...personalSkills.value].find((s) => s.id === id)
+  if (matched?.scope === 'personal') return '/api/portal/skills/personal'
+  return activeScope.value === 'personal' ? '/api/portal/skills/personal' : '/api/portal/skills'
+}
+
+const importSkillApiUrl = computed(() =>
+  activeScope.value === 'personal' ? '/api/portal/skills/personal/import' : '/api/portal/skills/import'
+)
+
 const filteredSkills = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   if (!query) return currentScopeSkills.value
@@ -256,6 +283,39 @@ const filteredSkills = computed(() => {
     s.description.toLowerCase().includes(query)
   )
 })
+
+const sortedSkills = computed(() => {
+  const list = [...filteredSkills.value]
+  const dir = skillSortOrder.value === 'asc' ? 1 : -1
+  list.sort((a, b) => {
+    if (skillSortBy.value === 'time') {
+      return ((a.modified_at || 0) - (b.modified_at || 0)) * dir
+    }
+    const aKey = (a.name || a.id).toLowerCase()
+    const bKey = (b.name || b.id).toLowerCase()
+    return aKey.localeCompare(bKey, 'zh-CN') * dir
+  })
+  return list
+})
+
+const toggleSkillSortOrder = () => {
+  skillSortOrder.value = skillSortOrder.value === 'asc' ? 'desc' : 'asc'
+}
+
+const toggleFileTreeSortOrder = () => {
+  fileTreeSortOrder.value = fileTreeSortOrder.value === 'asc' ? 'desc' : 'asc'
+}
+
+const formatModifiedAt = (ts?: number) => {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
 
 // 复制 CLI 命令
 const copyCommand = async () => {
@@ -383,7 +443,8 @@ const fetchSkillDetail = async (skillId: string) => {
     // 根据当前技能的 scope 决定 API 路径
     const activeSkill = currentScopeSkills.value.find(s => s.id === skillId)
     const isPersonal = activeSkill?.scope === 'personal' || activeScope.value === 'personal'
-    const apiPrefix = isPersonal ? '/api/portal/skills/personal' : '/api/portal/skills'
+    activeSkillScope.value = isPersonal ? 'personal' : 'global'
+    const apiPrefix = resolveSkillApiPrefix(skillId, activeSkillScope.value)
     const response = await axios.get(`${apiPrefix}/${skillId}`)
     if (response.data && response.data.status === 'success') {
       const data = response.data.data
@@ -412,7 +473,8 @@ const fetchSkillDetail = async (skillId: string) => {
 const loadFileContent = async (skillId: string, filePath: string) => {
   fetchingDetail.value = true
   try {
-    const response = await axios.get(`/api/portal/skills/${skillId}/files`, {
+    const apiPrefix = resolveSkillApiPrefix(skillId)
+    const response = await axios.get(`${apiPrefix}/${skillId}/files`, {
       params: { path: filePath }
     })
     if (response.data && response.data.status === 'success') {
@@ -488,7 +550,8 @@ const createSkillAsset = async () => {
 
   creatingAsset.value = true
   try {
-    const response = await axios.post(`/api/portal/skills/${activeSkillId.value}/files`, {
+    const apiPrefix = resolveSkillApiPrefix(activeSkillId.value)
+    const response = await axios.post(`${apiPrefix}/${activeSkillId.value}/files`, {
       path,
       type: createAssetType.value
     })
@@ -569,7 +632,8 @@ const renderedMarkdown = computed(() => {
 const saveFileContent = async () => {
   saving.value = true
   try {
-    const response = await axios.put(`/api/portal/skills/${activeSkillId.value}/files`, {
+    const apiPrefix = resolveSkillApiPrefix(activeSkillId.value)
+    const response = await axios.put(`${apiPrefix}/${activeSkillId.value}/files`, {
       path: selectedFilePath.value,
       content: editingContent.value
     })
@@ -595,7 +659,8 @@ const deleteSkillFile = (filePath: string) => {
     type: 'danger',
     onConfirm: async () => {
       try {
-        const response = await axios.delete(`/api/portal/skills/${activeSkillId.value}/files`, {
+        const apiPrefix = resolveSkillApiPrefix(activeSkillId.value)
+        const response = await axios.delete(`${apiPrefix}/${activeSkillId.value}/files`, {
           params: { path: filePath }
         })
         if (response.data && response.data.status === 'success') {
@@ -669,11 +734,12 @@ const uploadFiles = async (files: FileList) => {
         formData.append('folder', uploadFolder.value.trim())
       }
 
+      const apiPrefix = resolveSkillApiPrefix(activeSkillId.value)
       if (isArchive) {
-        await axios.post(`/api/portal/skills/${activeSkillId.value}/upload-archive`, formData)
+        await axios.post(`${apiPrefix}/${activeSkillId.value}/upload-archive`, formData)
         showToast(`压缩包 ${file.name} 上传解压成功！`, 'success')
       } else {
-        await axios.post(`/api/portal/skills/${activeSkillId.value}/upload`, formData)
+        await axios.post(`${apiPrefix}/${activeSkillId.value}/upload`, formData)
         showToast(`文件 ${file.name} 上传成功！`, 'success')
       }
     }
@@ -957,13 +1023,18 @@ const submitImportSkill = async () => {
     formData.append('file', importFile.value)
     formData.append('overwrite', importOverwrite.value ? 'true' : 'false')
 
-    const response = await axios.post('/api/portal/skills/import', formData)
+    const isPersonal = activeScope.value === 'personal'
+    const response = await axios.post(importSkillApiUrl.value, formData)
     if (response.data?.status === 'success') {
-      showToast(response.data?.message || '技能导入成功！', 'success')
+      showToast(response.data?.message || `${isPersonal ? '个人' : ''}技能导入成功！`, 'success')
       showImportModal.value = false
       importFile.value = null
       importOverwrite.value = false
-      await fetchSkills()
+      if (isPersonal) {
+        await fetchPersonalSkills()
+      } else {
+        await fetchSkills()
+      }
     }
   } catch (e: any) {
     showToast(e.response?.data?.detail || '技能导入失败', 'error')
@@ -1023,6 +1094,34 @@ onUnmounted(() => {
             placeholder="搜索技能名称或描述..." 
             class="w-full pl-9 pr-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all shadow-sm"
           />
+        </div>
+        <!-- 排序 -->
+        <div class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
+          <button
+            @click="skillSortBy = 'name'"
+            class="px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :class="skillSortBy === 'name' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
+            title="按名称排序"
+          >
+            名称
+          </button>
+          <button
+            @click="skillSortBy = 'time'"
+            class="px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :class="skillSortBy === 'time' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
+            title="按更新时间排序"
+          >
+            时间
+          </button>
+          <button
+            @click="toggleSkillSortOrder"
+            class="p-1.5 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-150 transition-all"
+            :title="skillSortOrder === 'asc' ? '当前升序，点击切换降序' : '当前降序，点击切换升序'"
+          >
+            <svg class="w-4 h-4 transition-transform" :class="skillSortOrder === 'desc' ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0v4m0 0l-3-3m3 3l3-3" />
+            </svg>
+          </button>
         </div>
         <!-- 视图切换按钮 -->
         <div class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
@@ -1111,7 +1210,7 @@ onUnmounted(() => {
       <p class="text-sm text-gray-500 mt-4 font-medium">智能检索系统文件夹中...</p>
     </div>
 
-    <div v-else-if="filteredSkills.length === 0" class="flex flex-col items-center justify-center min-h-[360px] bg-white border border-gray-200 rounded-lg shadow-sm">
+    <div v-else-if="sortedSkills.length === 0" class="flex flex-col items-center justify-center min-h-[360px] bg-white border border-gray-200 rounded-lg shadow-sm">
       <svg class="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
@@ -1123,7 +1222,7 @@ onUnmounted(() => {
     <div v-else-if="viewMode === 'card'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
       <!-- 磨砂玻璃质感卡片 -->
       <div 
-        v-for="skill in filteredSkills" 
+        v-for="skill in sortedSkills" 
         :key="skill.id"
         @click="openSkillDetail(skill.id)"
         class="group relative flex flex-col bg-white border border-gray-200 hover:border-blue-400 hover:shadow-lg hover:-translate-y-0.5 rounded-lg p-5 cursor-pointer transition-all duration-200"
@@ -1192,11 +1291,14 @@ onUnmounted(() => {
         </p>
 
         <!-- 卡片底部路径信息 -->
-        <div class="flex items-center gap-1.5 text-[11px] text-gray-400 font-mono mt-5 border-t border-gray-100 pt-3">
-          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          <span class="truncate" :title="skill.path">{{ skill.path }}</span>
+        <div class="flex items-center justify-between gap-2 text-[11px] text-gray-400 font-mono mt-5 border-t border-gray-100 pt-3">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <span class="truncate" :title="skill.path">{{ skill.path }}</span>
+          </div>
+          <span class="shrink-0 text-[10px] text-gray-400">{{ formatModifiedAt(skill.modified_at) }}</span>
         </div>
       </div>
     </div>
@@ -1209,13 +1311,14 @@ onUnmounted(() => {
             <tr>
               <th class="px-6 py-4">技能名称与描述</th>
               <th class="px-6 py-4 text-center">物理映射路径</th>
+              <th class="px-6 py-4 text-center">更新时间</th>
               <th class="px-6 py-4 text-center">状态</th>
               <th class="px-6 py-4 text-center">操作</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-200 text-sm">
             <tr 
-              v-for="skill in filteredSkills" 
+              v-for="skill in sortedSkills" 
               :key="skill.id"
               @click="openSkillDetail(skill.id)"
               class="hover:bg-blue-50/20 cursor-pointer transition-colors group"
@@ -1241,6 +1344,9 @@ onUnmounted(() => {
               </td>
               <td class="px-6 py-4 text-center font-mono text-xs text-gray-500 max-w-xs truncate" :title="skill.path">
                 {{ skill.path }}
+              </td>
+              <td class="px-6 py-4 text-center text-xs text-gray-500 whitespace-nowrap">
+                {{ formatModifiedAt(skill.modified_at) }}
               </td>
               <td class="px-6 py-4 text-center whitespace-nowrap" @click.stop>
                 <!-- Switch 开关 -->
@@ -1668,13 +1774,40 @@ onUnmounted(() => {
 
               <div class="flex items-center justify-between gap-3 mb-3 select-none shrink-0">
                 <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">技能资产物理树</h3>
-                <span class="flex items-center gap-1.5 text-[10px] text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-medium shadow-sm transition-all hover:border-slate-350" title="鼠标右键点击文件或空白区域可进行新建或上传">
+                <div class="flex items-center gap-2">
+                  <div class="flex items-center bg-white border border-slate-200 rounded-lg p-0.5">
+                    <button
+                      @click="fileTreeSortBy = 'name'"
+                      class="px-2 py-1 rounded-md text-[10px] font-medium transition-all"
+                      :class="fileTreeSortBy === 'name' ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'"
+                    >
+                      名称
+                    </button>
+                    <button
+                      @click="fileTreeSortBy = 'time'"
+                      class="px-2 py-1 rounded-md text-[10px] font-medium transition-all"
+                      :class="fileTreeSortBy === 'time' ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'"
+                    >
+                      时间
+                    </button>
+                    <button
+                      @click="toggleFileTreeSortOrder"
+                      class="p-1 rounded-md text-slate-400 hover:text-slate-600 transition-all"
+                      :title="fileTreeSortOrder === 'asc' ? '升序' : '降序'"
+                    >
+                      <svg class="w-3.5 h-3.5 transition-transform" :class="fileTreeSortOrder === 'desc' ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0v4m0 0l-3-3m3 3l3-3" />
+                      </svg>
+                    </button>
+                  </div>
+                  <span class="flex items-center gap-1.5 text-[10px] text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full font-medium shadow-sm transition-all hover:border-slate-350" title="鼠标右键点击文件或空白区域可进行新建或上传">
                   <span class="relative flex h-1.5 w-1.5">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                   </span>
                   右键菜单操作
                 </span>
+                </div>
               </div>
 
               <!-- 精致路径定位面包屑 -->
@@ -1709,6 +1842,8 @@ onUnmounted(() => {
                 <SkillFileTree 
                   v-else
                   :tree-data="fileTree" 
+                  :sort-by="fileTreeSortBy"
+                  :sort-order="fileTreeSortOrder"
                   :selected-path="selectedFilePath"
                   :selected-directory-path="selectedDirectoryPath"
                   @select-file="selectFileForEdit"
@@ -1816,7 +1951,7 @@ onUnmounted(() => {
     @click.self="showImportModal = false"
   >
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-gray-150 relative">
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center justify-between mb-2">
         <h2 class="text-base font-bold text-gray-800 flex items-center gap-1.5">
           <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -1833,6 +1968,9 @@ onUnmounted(() => {
           </svg>
         </button>
       </div>
+      <p class="text-xs text-gray-500 mb-4">
+        将导入至<strong>{{ activeScope === 'personal' ? '我的技能（个人）' : '平台技能（全局）' }}</strong>目录
+      </p>
 
       <!-- 拖拽上传区域 -->
       <div

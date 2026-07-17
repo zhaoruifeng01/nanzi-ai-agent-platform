@@ -22,6 +22,7 @@ from app.api.portal.endpoints.skills import (
     EDITABLE_TEXT_EXTENSIONS,
     parse_skill_metadata,
     get_file_tree,
+    get_skill_modified_at,
     safe_extract_archive,
 )
 
@@ -84,6 +85,7 @@ async def list_personal_skills(user: dict = Depends(require_api_key)):
                 skill_md = os.path.join(item_path, "SKILL.md")
                 meta = parse_skill_metadata(item, skill_md)
                 meta["scope"] = "personal"
+                meta["modified_at"] = get_skill_modified_at(item_path, skill_md)
                 skills_list.append(meta)
     except Exception as e:
         logger.error("[PersonalSkills] Failed to list skills: %s", e)
@@ -333,6 +335,30 @@ async def upload_personal_skill_file(
         raise
     except Exception as e:
         logger.error("[PersonalSkills] Failed to upload file in %s: %s", skill_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{skill_id}/upload-archive", summary="上传压缩包并解压到个人技能目录")
+async def upload_personal_skill_archive(
+    skill_id: str,
+    folder: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_api_key),
+):
+    try:
+        sub_dir = folder if folder else ""
+        target_dir = _validate_personal_skill_path(user, skill_id, sub_dir)
+        content = await file.read()
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="上传的压缩文件大小不能超出 20MB 限制")
+
+        file_name = file.filename if file.filename else "archive.zip"
+        safe_extract_archive(content, file_name, target_dir)
+        return {"status": "success", "message": f"技能压缩包 {file_name} 上传解压成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[PersonalSkills] Failed to upload archive in %s: %s", skill_id, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -41,6 +41,9 @@ EDITABLE_TEXT_EXTENSIONS = {
     ".ini", ".conf", ".sql", ".sh",
 }
 
+_RESERVED_SKILL_IDS = frozenset({"personal"})
+
+
 def validate_secure_skill_path(skill_id: str, relative_path: str = "") -> str:
     """
     严格校验 skill_id 和 relative_path，防御路径穿越漏洞。
@@ -48,6 +51,8 @@ def validate_secure_skill_path(skill_id: str, relative_path: str = "") -> str:
     """
     if not skill_id or "/" in skill_id or "\\" in skill_id or ".." in skill_id:
         raise HTTPException(status_code=400, detail="非法智能体技能ID格式")
+    if skill_id in _RESERVED_SKILL_IDS:
+        raise HTTPException(status_code=400, detail=f"技能 ID「{skill_id}」为系统保留字，请更换")
         
     skills_dir_abs = os.path.abspath(settings.SKILLS_DIR)
     skill_base_dir = os.path.abspath(os.path.join(skills_dir_abs, skill_id))
@@ -133,6 +138,17 @@ def parse_skill_metadata(skill_id: str, skill_md_path: str) -> dict:
         metadata["enabled"] = "true"
     return metadata
 
+def get_path_modified_at(path: str) -> int:
+    try:
+        if os.path.exists(path):
+            return int(os.path.getmtime(path))
+    except OSError:
+        pass
+    return 0
+
+def get_skill_modified_at(skill_dir: str, skill_md_path: str) -> int:
+    return max(get_path_modified_at(skill_dir), get_path_modified_at(skill_md_path))
+
 def get_file_tree(dir_path: str, base_path: str) -> list:
     """
     递归读取技能文件夹物理文件树结构
@@ -151,7 +167,8 @@ def get_file_tree(dir_path: str, base_path: str) -> list:
             node = {
                 "name": item,
                 "path": rel_path,
-                "is_dir": is_dir
+                "is_dir": is_dir,
+                "modified_at": get_path_modified_at(full_path),
             }
             if is_dir:
                 node["children"] = get_file_tree(full_path, base_path)
@@ -184,6 +201,7 @@ async def list_skills(
             if os.path.isdir(item_path) and not item.startswith("."):
                 skill_md = os.path.join(item_path, "SKILL.md")
                 meta = parse_skill_metadata(item, skill_md)
+                meta["modified_at"] = get_skill_modified_at(item_path, skill_md)
                 skills_list.append(meta)
     except Exception as e:
         logger.error(f"[Skills] Failed to list skills: {e}")

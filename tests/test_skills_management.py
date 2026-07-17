@@ -38,6 +38,7 @@ def test_list_skills_without_menu_permission(mock_skills_dir):
     assert len(response["data"]) == 1
     assert response["data"][0]["id"] == "public-skill"
     assert response["data"][0]["name"] == "公开技能"
+    assert response["data"][0]["modified_at"] > 0
 
     preview = run(skills.preview_skill_md(skill_id="public-skill", user=user))
     assert preview["status"] == "success"
