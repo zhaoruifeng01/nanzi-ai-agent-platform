@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func, desc
@@ -37,6 +37,9 @@ class SsoSyncRequest(BaseModel):
     usernames: List[str]
     role: str = "user"
     role_ids: Optional[List[int]] = []
+
+class SetPasswordRequest(BaseModel):
+    password: str = Field(..., min_length=6, description="新密码")
 
 # ... existing code ...
 
@@ -691,6 +694,33 @@ async def reset_user_api_key(
         "user_id": user_id,
         "api_key": new_api_key
     }
+
+@router.post("/users/{user_id}/set-password")
+async def set_user_password(
+    user_id: int,
+    request: SetPasswordRequest,
+    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    管理员为指定用户设置/重置登录密码。
+    """
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # bcrypt 限制密码长度为 72 字节
+    password_bytes = request.password.encode('utf-8')
+    if len(password_bytes) > 72:
+        password = password_bytes[:72].decode('utf-8', errors='ignore')
+    else:
+        password = request.password
+
+    success = await AuthService.set_user_password(user_id, password, db=db)
+    if not success:
+        raise HTTPException(status_code=500, detail="密码设置失败")
+
+    return {"status": "success", "message": "密码设置成功", "user_id": user_id}
 
 @router.get("/resources/available")
 async def get_available_resources(

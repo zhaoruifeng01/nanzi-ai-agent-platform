@@ -221,6 +221,13 @@
                       <PencilSquareIcon class="w-5 h-5" />
                     </button>
                     <button
+                      @click="openSetPasswordDialog(user)"
+                      class="text-emerald-600 hover:text-emerald-900 transition-colors p-1"
+                      title="设置密码"
+                    >
+                      <LockClosedIcon class="w-5 h-5" />
+                    </button>
+                    <button
                       @click="regenerateApiKey(user)"
                       class="text-amber-600 hover:text-amber-900 transition-colors p-1"
                       title="重置 API Key"
@@ -324,6 +331,12 @@
               </button>
             </div>
             <div class="flex gap-4">
+              <button
+                @click="openSetPasswordDialog(user)"
+                class="text-emerald-600 flex items-center gap-1 text-xs"
+              >
+                <LockClosedIcon class="w-4 h-4" /> 密码
+              </button>
               <button
                 @click="regenerateApiKey(user)"
                 class="text-amber-600 flex items-center gap-1 text-xs"
@@ -1114,6 +1127,64 @@
       </div>
     </div>
 
+    <!-- Set Password Dialog -->
+    <div
+      v-if="showSetPasswordDialog"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9990]"
+      @click.self="closeSetPasswordDialog"
+    >
+      <div class="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+        <h2 class="text-xl font-bold mb-2 text-emerald-700">设置密码</h2>
+        <p class="text-sm text-gray-500 mb-4">
+          为用户
+          <strong class="text-gray-800">{{ userToSetPassword?.user_name }}</strong>
+          设置登录密码
+        </p>
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1"
+              >新密码</label
+            >
+            <input
+              v-model="setPasswordForm.password"
+              type="password"
+              placeholder="输入新密码（至少 6 位）"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              @keyup.enter="executeSetPassword"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-1"
+              >确认密码</label
+            >
+            <input
+              v-model="setPasswordForm.confirm"
+              type="password"
+              placeholder="再次输入新密码"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              @keyup.enter="executeSetPassword"
+            />
+          </div>
+        </div>
+        <div class="flex justify-end gap-3 mt-6">
+          <button
+            @click="closeSetPasswordDialog"
+            class="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+            :disabled="settingPassword"
+          >
+            取消
+          </button>
+          <button
+            @click="executeSetPassword"
+            class="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium disabled:opacity-50"
+            :disabled="settingPassword"
+          >
+            {{ settingPassword ? "提交中..." : "确认设置" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Regenerate Key Dialog -->
     <div
       v-if="showRegenerateDialog"
@@ -1461,6 +1532,7 @@ import {
   TrashIcon,
   PlusIcon,
   UserGroupIcon,
+  LockClosedIcon,
 } from "@heroicons/vue/24/outline";
 
 const { showToast } = useToast();
@@ -1503,15 +1575,19 @@ const showCreateDialog = ref(false);
 const showEditDialog = ref(false);
 const showDeleteDialog = ref(false);
 const showRegenerateDialog = ref(false);
+const showSetPasswordDialog = ref(false);
 const showViewKeyDialog = ref(false);
 const showSsoModal = ref(false);
 const showThirdPartyDrawer = ref(false);
 const showSystemQuotaModal = ref(false);
 const userToDelete = ref<any>(null);
 const userToRegenerate = ref<any>(null);
+const userToSetPassword = ref<any>(null);
 const userToViewKey = ref<any>(null);
 const loadingViewKey = ref(false);
+const settingPassword = ref(false);
 const viewedApiKey = ref("");
+const setPasswordForm = ref({ password: "", confirm: "" });
 
 // SSO Sync State
 const ssoUsers = ref<any[]>([]);
@@ -2116,6 +2192,43 @@ const executeRegenerateApiKey = async () => {
     fetchUsers();
   } catch (e) {
     showToast("重置失败", "error");
+  }
+};
+
+const openSetPasswordDialog = (user: any) => {
+  userToSetPassword.value = user;
+  setPasswordForm.value = { password: "", confirm: "" };
+  showSetPasswordDialog.value = true;
+};
+const closeSetPasswordDialog = () => {
+  showSetPasswordDialog.value = false;
+  userToSetPassword.value = null;
+  setPasswordForm.value = { password: "", confirm: "" };
+  settingPassword.value = false;
+};
+const executeSetPassword = async () => {
+  if (!userToSetPassword.value) return;
+  const password = setPasswordForm.value.password;
+  if (!password || password.length < 6) {
+    showToast("密码长度至少需要6位", "warning");
+    return;
+  }
+  if (password !== setPasswordForm.value.confirm) {
+    showToast("两次输入的密码不一致", "warning");
+    return;
+  }
+  settingPassword.value = true;
+  try {
+    await axios.post(
+      `/api/portal/management/users/${userToSetPassword.value.id}/set-password`,
+      { password },
+    );
+    showToast("密码设置成功", "success");
+    closeSetPasswordDialog();
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || "密码设置失败", "error");
+  } finally {
+    settingPassword.value = false;
   }
 };
 
