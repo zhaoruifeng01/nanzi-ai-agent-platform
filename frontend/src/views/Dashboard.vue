@@ -396,7 +396,7 @@ const filteredMenuGroups = computed(() => {
         />
         <transition name="fade">
           <div v-if="!isCollapsed" class="ml-2.5 flex flex-col justify-center -translate-y-0.5">
-            <span class="text-[15px] font-bold tracking-wide leading-tight">{{ branding.product_name }}</span>
+            <span class="text-[13px] font-semibold leading-tight">{{ branding.product_name }}</span>
             <component
               :is="repoUrl ? 'a' : 'span'"
               :href="repoUrl || undefined"

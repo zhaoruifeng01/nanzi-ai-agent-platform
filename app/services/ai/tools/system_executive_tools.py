@@ -520,7 +520,13 @@ def manage_process(action: str, pid: int = None) -> str:
 
 
 @tool
-def create_skills(skill_id: str, name: str, description: str, skill_md_content: str) -> str:
+def create_skills(
+    skill_id: str,
+    name: str,
+    description: str,
+    skill_md_content: str,
+    scope: str = "personal",
+) -> str:
     """
     根据当前的聊天会话内容与用户意图，按照 Anthropic Skills 生态规范在 skills 目录下物理创建或初始化一个智能体技能（Skill）。
     这会创建一个技能文件夹，并强制写入包含 Frontmatter 触发定义的 SKILL.md 规范守则文件。
@@ -531,6 +537,7 @@ def create_skills(skill_id: str, name: str, description: str, skill_md_content: 
         description: 技能的核心应用场景与触发场景说明。
         skill_md_content: 该技能核心 SKILL.md 文件的完整 Markdown 文本。
                           必须符合规范：开头需包含 YAML Frontmatter 描述（以 --- 包裹，内含 name: <名称> 与 description: <描述> 属性），随后为 imperative 操作指令。
+        scope: 技能的共享范围：'personal'（个人独享，默认）或 'global'（平台全局，仅管理员可创建）。
     """
     try:
         import re
@@ -538,12 +545,34 @@ def create_skills(skill_id: str, name: str, description: str, skill_md_content: 
             return "错误：非法技能 ID 格式。禁止包含路径分隔符或穿越符。"
         if not re.match(r"^[a-zA-Z0-9_-]+$", skill_id):
             return "错误：技能 ID 仅允许包含英文字母、数字、中划线和下划线。"
-            
-        from app.core.config import settings
-        skills_dir = settings.SKILLS_DIR
-        if not skills_dir:
-            return "错误：未配置 SKILLS_DIR 目录。"
-            
+
+        # 获取当前运行上下文中的用户信息
+        from app.utils.context import current_user_info
+        user_info = current_user_info.get()
+
+        is_admin = False
+        if user_info:
+            role = user_info.get("role", "")
+            is_admin = (role == "admin" or "admin" in str(role).lower())
+
+        # 决定写入目录
+        resolved_scope = scope.lower()
+        if resolved_scope == "global":
+            if user_info and not is_admin:
+                return "错误：权限不足，仅系统管理员有权创建或修改平台全局技能（global）。已自动拦截。"
+            from app.core.config import settings
+            skills_dir = settings.SKILLS_DIR
+            if not skills_dir:
+                return "错误：未配置全局 SKILLS_DIR 目录。"
+        else:
+            # 默认为个人技能
+            if not user_info:
+                return "错误：未在当前会话中检测到有效的用户身份，无法创建个人技能。"
+            from app.services.ai.skill_resolver import get_user_personal_skills_dir
+            skills_dir = get_user_personal_skills_dir(user_info)
+            if not skills_dir:
+                return "错误：无法解析个人技能目录，请确认账号工作区已正确初始化。"
+
         # 拼接物理路径
         skill_path = os.path.join(skills_dir, skill_id)
         
@@ -557,6 +586,7 @@ def create_skills(skill_id: str, name: str, description: str, skill_md_content: 
         with open(skill_md_path, "w", encoding="utf-8") as f:
             f.write(skill_md_content)
             
-        return f"成功：技能 {skill_id} 创建成功。SKILL.md 规范文件已物理写入路径 {skill_md_path}。"
+        scope_desc = "平台全局" if resolved_scope == "global" else "个人专属"
+        return f"成功：{scope_desc}技能 {skill_id} 创建成功。SKILL.md 规范文件已物理写入路径 {skill_md_path}。"
     except Exception as e:
         return f"错误：创建技能失败，原因: {str(e)}"

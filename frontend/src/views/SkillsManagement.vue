@@ -11,6 +11,7 @@ interface Skill {
   name: string
   description: string
   path: string
+  scope?: 'global' | 'personal'
 }
 
 interface FileNode {
@@ -32,6 +33,8 @@ const confirmState = ref({
 })
 
 const skills = ref<Skill[]>([])
+const personalSkills = ref<Skill[]>([])
+const activeScope = ref<'global' | 'personal'>('global')
 const loading = ref(false)
 const searchQuery = ref('')
 const viewMode = ref<'card' | 'list'>('card')
@@ -163,6 +166,7 @@ const loadSkillDrawerStats = async () => {
 // 帮助弹窗相关
 const showHelpModal = ref(false)
 const commandCopied = ref(false)
+const helpTab = ref<'web' | 'cli' | 'import'>('web')
 
 // 详情抽屉 (Drawer) 相关
 const showDrawer = ref(false)
@@ -214,26 +218,39 @@ const importingSkill = ref(false)
 const importFile = ref<File | null>(null)
 const importDragActive = ref(false)
 
-// 获取技能列表
+// 获取平台技能列表
 const fetchSkills = async () => {
   loading.value = true
   try {
     const response = await axios.get('/api/portal/skills')
     if (response.data && response.data.status === 'success') {
-      skills.value = response.data.data || []
+      skills.value = (response.data.data || []).map((s: Skill) => ({ ...s, scope: 'global' as const }))
     }
   } catch (e: any) {
-    showToast(e.response?.data?.detail || '获取技能列表失败', 'error')
+    showToast(e.response?.data?.detail || '获取平台技能列表失败', 'error')
   } finally {
     loading.value = false
   }
 }
 
+// 获取个人技能列表
+const fetchPersonalSkills = async () => {
+  try {
+    const response = await axios.get('/api/portal/skills/personal')
+    if (response.data && response.data.status === 'success') {
+      personalSkills.value = (response.data.data || []).map((s: Skill) => ({ ...s, scope: 'personal' as const }))
+    }
+  } catch (e: any) {
+    console.warn('获取个人技能失败', e)
+  }
+}
+
 // 搜索过滤
+const currentScopeSkills = computed(() => activeScope.value === 'global' ? skills.value : personalSkills.value)
 const filteredSkills = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return skills.value
-  return skills.value.filter(s => 
+  if (!query) return currentScopeSkills.value
+  return currentScopeSkills.value.filter(s => 
     s.id.toLowerCase().includes(query) ||
     s.name.toLowerCase().includes(query) ||
     s.description.toLowerCase().includes(query)
@@ -278,15 +295,20 @@ const createSkill = async () => {
 
   creating.value = true
   try {
-    const response = await axios.post('/api/portal/skills', {
+    const apiPrefix = activeScope.value === 'personal' ? '/api/portal/skills/personal' : '/api/portal/skills'
+    const response = await axios.post(apiPrefix, {
       id: newSkill.value.id.trim(),
       name: newSkill.value.name.trim(),
       description: newSkill.value.description.trim()
     })
     if (response.data && response.data.status === 'success') {
-      showToast('技能创建成功！', 'success')
+      showToast(`${activeScope.value === 'personal' ? '个人' : ''}技能创建成功！`, 'success')
       showCreateModal.value = false
-      fetchSkills()
+      if (activeScope.value === 'personal') {
+        fetchPersonalSkills()
+      } else {
+        fetchSkills()
+      }
     }
   } catch (e: any) {
     showToast(e.response?.data?.detail || '新建技能失败', 'error')
@@ -297,17 +319,23 @@ const createSkill = async () => {
 
 // 物理删除整个技能（注销）
 const deleteSkill = (skillId: string) => {
+  const isPersonal = activeScope.value === 'personal'
   confirmState.value = {
     show: true,
-    title: '彻底删除技能',
-    message: `确定要彻底删除技能 [${skillId}] 吗？\n该操作会物理删除对应的技能目录及其所有子资产脚本，且不可恢复！`,
+    title: isPersonal ? '删除个人技能' : '彻底删除技能',
+    message: `确定要彻底删除${isPersonal ? '个人' : ''}技能 [${skillId}] 吗？\n该操作会物理删除对应的技能目录及其所有子资产脚本，且不可恢复！`,
     type: 'danger',
     onConfirm: async () => {
       try {
-        const response = await axios.delete(`/api/portal/skills/${skillId}`)
+        const apiPrefix = isPersonal ? '/api/portal/skills/personal' : '/api/portal/skills'
+        const response = await axios.delete(`${apiPrefix}/${skillId}`)
         if (response.data && response.data.status === 'success') {
           showToast(`技能 ${skillId} 已成功物理删除`, 'success')
-          fetchSkills()
+          if (isPersonal) {
+            fetchPersonalSkills()
+          } else {
+            fetchSkills()
+          }
           if (activeSkillId.value === skillId) {
             showDrawer.value = false
           }
@@ -336,7 +364,11 @@ const openSkillDetail = async (skillId: string) => {
 const fetchSkillDetail = async (skillId: string) => {
   fetchingDetail.value = true
   try {
-    const response = await axios.get(`/api/portal/skills/${skillId}`)
+    // 根据当前技能的 scope 决定 API 路径
+    const activeSkill = currentScopeSkills.value.find(s => s.id === skillId)
+    const isPersonal = activeSkill?.scope === 'personal' || activeScope.value === 'personal'
+    const apiPrefix = isPersonal ? '/api/portal/skills/personal' : '/api/portal/skills'
+    const response = await axios.get(`${apiPrefix}/${skillId}`)
     if (response.data && response.data.status === 'success') {
       const data = response.data.data
       activeSkillName.value = data.name
@@ -926,6 +958,7 @@ const submitImportSkill = async () => {
 
 onMounted(() => {
   fetchSkills()
+  fetchPersonalSkills()
   document.addEventListener('click', closeContextMenu)
 })
 
@@ -1028,6 +1061,34 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- Scope Tab 切换 -->
+    <div class="flex items-center border-b border-gray-200">
+      <button
+        id="tab-global-skills"
+        @click="activeScope = 'global'"
+        class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+        :class="activeScope === 'global' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064" />
+        </svg>
+        平台技能
+        <span class="ml-1 px-1.5 py-0.5 text-[10px] rounded-full font-semibold" :class="activeScope === 'global' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'">{{ skills.length }}</span>
+      </button>
+      <button
+        id="tab-personal-skills"
+        @click="activeScope = 'personal'"
+        class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+        :class="activeScope === 'personal' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+        </svg>
+        我的技能
+        <span class="ml-1 px-1.5 py-0.5 text-[10px] rounded-full font-semibold" :class="activeScope === 'personal' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'">{{ personalSkills.length }}</span>
+      </button>
+    </div>
+
     <!-- 技能列表网格 -->
     <div v-if="loading" class="flex flex-col items-center justify-center py-16">
       <div class="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
@@ -1054,15 +1115,29 @@ onUnmounted(() => {
         <!-- 卡片顶部 -->
         <div class="flex items-start justify-between">
           <div class="flex items-center space-x-3 min-w-0">
-            <div class="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/10 to-indigo-500/10 text-blue-600 group-hover:scale-110 transition-transform">
+            <div
+              class="flex items-center justify-center w-10 h-10 rounded-xl transition-transform group-hover:scale-110"
+              :class="skill.scope === 'personal' ? 'bg-gradient-to-br from-emerald-500/10 to-teal-500/10 text-emerald-600' : 'bg-gradient-to-br from-blue-500/10 to-indigo-500/10 text-blue-600'"
+            >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
             <div class="min-w-0">
-              <h3 class="font-bold text-gray-800 truncate group-hover:text-blue-600 transition-colors">
-                {{ skill.name }}
-              </h3>
+              <div class="flex items-center gap-1.5">
+                <h3 class="font-bold text-gray-800 truncate group-hover:text-blue-600 transition-colors">
+                  {{ skill.name }}
+                </h3>
+                <!-- Scope 徽章 -->
+                <span
+                  v-if="skill.scope === 'personal'"
+                  class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-emerald-100 text-emerald-700"
+                >个人</span>
+                <span
+                  v-else
+                  class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-blue-100 text-blue-700"
+                >平台</span>
+              </div>
               <p class="text-[10px] text-gray-400 font-mono tracking-wider uppercase mt-0.5">
                 ID: {{ skill.id }}
               </p>
@@ -1177,53 +1252,135 @@ onUnmounted(() => {
           </svg>
         </button>
 
-        <div class="space-y-6">
-          <div class="flex items-center space-x-3 border-b border-gray-100 pb-4">
-            <div class="w-8 h-8 rounded-lg bg-blue-500 text-white flex items-center justify-center font-black">?</div>
-            <h2 class="text-xl font-bold text-gray-800">使用生态技能扩展智能体能力</h2>
+        <div class="space-y-5">
+          <div class="flex items-center space-x-3 border-b border-gray-100 pb-3">
+            <div class="w-7 h-7 rounded-lg bg-blue-500 text-white flex items-center justify-center font-bold text-sm">?</div>
+            <h2 class="text-lg font-bold text-gray-800">使用生态技能扩展智能体能力</h2>
           </div>
 
-          <!-- Section 1 -->
-          <div>
-            <h3 class="text-sm font-bold text-gray-900 mb-1.5 flex items-center gap-1.5">
-              <span class="w-1.5 h-3 bg-blue-500 rounded-full"></span> 什么是 Skills 技能
-            </h3>
-            <p class="text-xs text-gray-600 leading-relaxed pl-3">
-              Skills 是面向 AI 智能体的一套高阶执行规范与指令约束。南孜智能体平台支持在宿主机物理装载技能。通过物理装载与感知，大模型能够感知技能内部的脚本和守则，完成如网页渲染快照、子进程管理、沙箱 SQL 分析等底层任务。
+          <!-- Section 0: 什么是 Skills -->
+          <div class="bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30 rounded-xl p-3">
+            <p class="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+              <strong>什么是 Skills 技能？</strong> Skills 是面向 AI 智能体的一套高阶执行规范与指令约束（`SKILL.md`）。装载后，大模型可以感知其内部的脚本、API 动作与业务守则，完成如网页渲染、子进程管理、沙箱 SQL 分析等底层任务。
             </p>
           </div>
 
-          <!-- Section 2 -->
-          <div>
-            <h3 class="text-sm font-bold text-gray-900 mb-1.5 flex items-center gap-1.5">
-              <span class="w-1.5 h-3 bg-blue-500 rounded-full"></span> 命令行快捷下载安装 (宿主机)
-            </h3>
-            <p class="text-xs text-gray-600 leading-relaxed pl-3 mb-2.5">
-              本平台的技能目录已映射到宿主机的 <code class="bg-gray-100 px-1 py-0.5 rounded font-mono text-blue-600">~/.agents/skills/</code> 路径。您可以使用 <code class="bg-gray-100 px-1 py-0.5 rounded font-mono text-indigo-600">npx skills</code> 命令在此目录下下载生态内的高质量共享技能：
-            </p>
-            
-            <!-- 演示指令框 -->
-            <div class="bg-slate-950 text-slate-200 rounded-xl p-4 font-mono text-[11px] sm:text-xs flex items-center justify-between border border-slate-800 relative group">
-              <div class="overflow-x-auto pr-10 whitespace-nowrap select-all leading-relaxed">
-                <span class="text-slate-500">$</span> npx skills add https://github.com/vercel-labs/skills --skill find-skills
+          <!-- 子 Tabs 切换 -->
+          <div class="flex items-center bg-gray-100 dark:bg-gray-800 p-0.5 rounded-lg gap-0.5 shrink-0 border border-gray-200 dark:border-gray-700 select-none">
+            <button 
+              type="button"
+              @click="helpTab = 'web'"
+              class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1"
+              :class="helpTab === 'web' ? 'bg-white dark:bg-gray-750 text-blue-600 dark:text-blue-400 shadow-xs border border-gray-200/50 dark:border-gray-700' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'"
+            >
+              🖥️ 控制台/AI 新增
+            </button>
+            <button 
+              type="button"
+              @click="helpTab = 'cli'"
+              class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1"
+              :class="helpTab === 'cli' ? 'bg-white dark:bg-gray-750 text-blue-600 dark:text-blue-400 shadow-xs border border-gray-200/50 dark:border-gray-700' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'"
+            >
+              💻 命令行/宿主机
+            </button>
+            <button 
+              type="button"
+              @click="helpTab = 'import'"
+              class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1"
+              :class="helpTab === 'import' ? 'bg-white dark:bg-gray-750 text-blue-600 dark:text-blue-400 shadow-xs border border-gray-200/50 dark:border-gray-700' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'"
+            >
+              📦 技能压缩包导入
+            </button>
+          </div>
+
+          <!-- Tab 内容展示区 -->
+          <div class="min-h-[160px] text-xs">
+            <!-- 1. Web / AI 自动创建 -->
+            <div v-if="helpTab === 'web'" class="space-y-3 animate-fade-in">
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> 网页可视化创建
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5">
+                  通过切换<strong>「平台技能」</strong>和<strong>「我的技能」</strong>Tab，点击右上角<strong>「新建技能」</strong>即可完成相应作用域下的技能初始化。初始化后可通过右侧的在线编辑器编写核心规范守则及 Python 动作。
+                </p>
               </div>
-              <button 
-                @click="copyCommand"
-                class="absolute right-3 top-3 p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded border border-slate-800 transition-colors flex items-center justify-center"
-                title="复制命令"
-              >
-                <svg v-if="!commandCopied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                </svg>
-                <svg v-else class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                </svg>
-              </button>
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> AI 在对话中直接创建
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5">
+                  智能体具备内置 `create_skills` 动作。您可以在对话输入框直接对 AI 说 <em>“帮我生成一个用来分析用户日志的技能，名为 log-analyser”</em>，AI 将在后台自动为您生成并安装至您的**个人技能**目录中，开箱即用。
+                </p>
+              </div>
+            </div>
+
+            <!-- 2. CLI / Git 本地安装 -->
+            <div v-if="helpTab === 'cli'" class="space-y-3 animate-fade-in">
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> 平台全局技能安装 (npx CLI)
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5 mb-2">
+                  平台的技能目录已映射到宿主机的 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded font-mono text-blue-600 dark:text-blue-400">~/.agents/skills/</code>。开发者可在本地终端使用 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded font-mono text-indigo-600 dark:text-indigo-400">npx skills</code> 命令从外部开源库下载安装全局技能：
+                </p>
+                <!-- 演示指令框 -->
+                <div class="bg-slate-950 text-slate-200 rounded-xl p-3 font-mono text-[10px] sm:text-xs flex items-center justify-between border border-slate-800 relative group">
+                  <div class="overflow-x-auto pr-10 whitespace-nowrap select-all leading-relaxed">
+                    <span class="text-slate-500">$</span> npx skills add https://github.com/vercel-labs/skills --skill find-skills
+                  </div>
+                  <button 
+                    type="button"
+                    @click="copyCommand"
+                    class="absolute right-2 top-2 p-1 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded border border-slate-800 transition-colors flex items-center justify-center"
+                    title="复制命令"
+                  >
+                    <svg v-if="!commandCopied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                    </svg>
+                    <svg v-else class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> 个人专属技能克隆 (Git clone)
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5">
+                  若要在本地开发环境为某特定用户安装离线技能包，可以直接使用 Git 命令将技能目录 Clone 克隆到其个人隔离目录中：
+                  <code class="block bg-gray-100 dark:bg-gray-800 p-2 rounded font-mono text-[10px] text-gray-700 dark:text-gray-300 mt-1">
+                    git clone [仓库地址] ./data/agent_workspaces/[user_key]/skills/[skill_id]
+                  </code>
+                </p>
+              </div>
+            </div>
+
+            <!-- 3. Import 导入技能 -->
+            <div v-if="helpTab === 'import'" class="space-y-3 animate-fade-in">
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> 压缩包导入规范
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5">
+                  在技能工作台，点击 <strong>「导入技能 (Zip/Tar)」</strong> 上传压缩文件。系统会自动解压并在指定目录中进行配置。
+                  <strong class="text-red-500 dark:text-red-400">导入限制：</strong> 压缩包的根目录（或者平铺的二级目录）下必须包含核心指令定义文件 <code class="bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded font-mono text-blue-600 dark:text-blue-400">SKILL.md</code>，否则会抛出错误并取消安装。
+                </p>
+              </div>
+              <div>
+                <h4 class="font-bold text-gray-800 dark:text-gray-200 mb-1 flex items-center gap-1.5">
+                  <span class="w-1 h-2.5 bg-blue-500 rounded-full"></span> 覆盖模式与安全策略
+                </h4>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed pl-2.5">
+                  如果您导入的技能 ID 已经在列表中存在，您可以勾选**“允许覆盖原有技能”**，系统会首先清空同名的物理文件夹然后重新覆盖解压写入。个人专属的技能导入只对您本人账号可见。
+                </p>
+              </div>
             </div>
           </div>
 
-          <!-- Section 3 生态外链按钮 -->
-          <div class="border-t border-gray-100 pt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <!-- 生态外链 -->
+          <div class="border-t border-gray-100 dark:border-gray-800 pt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shrink-0">
             <span class="text-[11px] text-gray-400">想寻找更多好玩的 AI 技能？前往官方市场发现并下载</span>
             <a 
               href="https://www.skills.sh/" 

@@ -303,6 +303,9 @@ class AgentService:
         """
         Main entry point for streaming chat.
         """
+        from app.utils.context import current_user_info
+        current_user_info.set(user_info)
+
         trace_id = str(uuid.uuid4())
         trace_buffer: List[AgentExecutionStep] = []
         agent_config = None
@@ -579,6 +582,7 @@ class AgentService:
         messages: list[dict[str, str]],
         user_query: str,
         agent_config: Any,
+        user_info: Optional[dict[str, Any]] = None,
         skills_log_callback: Optional[callable] = None,
     ) -> list[str]:
         """挂载与自动匹配技能，返回 skills_injection。"""
@@ -651,7 +655,7 @@ class AgentService:
                     resolve_skills_from_query,
                 )
 
-                for skill_meta in resolve_skills_from_query(user_query):
+                for skill_meta in resolve_skills_from_query(user_query, user_info=user_info):
                     skill_id = skill_meta.get("id")
                     if not skill_id or skill_id in mounted_skill_ids:
                         continue
@@ -728,6 +732,7 @@ class AgentService:
                         if should_scan_skills_for_query(user_query):
                             scanned_skills = scan_relevant_skills(
                                 user_query,
+                                user_info=user_info,
                                 exclude_ids=mounted_skill_ids,
                                 max_results=max_scan_results,
                                 min_score=min_score,
@@ -1078,6 +1083,7 @@ class AgentService:
                 messages=messages,
                 user_query=user_query,
                 agent_config=agent_config,
+                user_info=user_info,
                 skills_log_callback=skills_log_callback,
             )
 

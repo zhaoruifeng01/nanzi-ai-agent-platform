@@ -8,6 +8,9 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
+SCOPE_GLOBAL = "global"
+SCOPE_PERSONAL = "personal"
+
 MAIN_GENERAL_AGENT_ID = "sys-agent-chat"
 # 与 RouterService.FALLBACK_AGENT_NAMES 保持一致（主助手 slug 别名）
 MAIN_GENERAL_AGENT_SLUGS = frozenset({"assistant", "main", "general-chat"})
@@ -44,19 +47,32 @@ def _parse_skill_frontmatter(skill_id: str, skill_md_path: str) -> Dict[str, str
     return parse_skill_frontmatter(skill_id, skill_md_path)
 
 
-def list_skill_metas() -> List[Dict[str, str]]:
-    """扫描技能目录，返回 id/name/description 摘要列表。"""
+def get_user_personal_skills_dir(user_info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """推导当前用户的个人技能目录路径（agent_workspaces/{user_key}/skills/）。"""
+    if not user_info:
+        return None
     try:
-        from app.core.config import settings
+        from app.services.ai.runtime.agentscope.workspace import (
+            default_workspace_root,
+            extract_workspace_identity,
+            resolve_workspace_user_key,
+        )
 
-        skills_dir = settings.SKILLS_DIR
-    except Exception:
-        return []
+        user_id, user_name = extract_workspace_identity(user_info=user_info)
+        if user_id is None:
+            return None
+        user_key = resolve_workspace_user_key(user_id=user_id, user_name=user_name)
+        return os.path.join(default_workspace_root(), user_key, "skills")
+    except Exception as e:
+        logger.debug("[Skills] Failed to resolve personal skills dir: %s", e)
+        return None
 
-    if not skills_dir or not os.path.exists(skills_dir):
-        return []
 
+def _scan_skill_dir(skills_dir: str, scope: str) -> List[Dict[str, str]]:
+    """扫描单个技能根目录，返回带 scope 的 meta 列表。"""
     metas: List[Dict[str, str]] = []
+    if not skills_dir or not os.path.exists(skills_dir):
+        return metas
     for item in sorted(os.listdir(skills_dir)):
         if item.startswith("."):
             continue
@@ -68,8 +84,37 @@ def list_skill_metas() -> List[Dict[str, str]]:
         skill_md_path = os.path.join(item_path, "SKILL.md")
         meta = _parse_skill_frontmatter(item, skill_md_path)
         meta["skill_md_path"] = skill_md_path
+        meta["scope"] = scope
         metas.append(meta)
     return metas
+
+
+def list_skill_metas(user_info: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
+    """扫描技能目录，返回 id/name/description/scope 摘要列表。
+
+    合并顺序：全局平台技能（scope=global）+ 当前用户个人技能（scope=personal）。
+    若 ID 冲突，个人技能优先覆盖全局同 ID 技能。
+    """
+    try:
+        from app.core.config import settings
+
+        skills_dir = settings.SKILLS_DIR
+    except Exception:
+        return []
+
+    global_metas = _scan_skill_dir(skills_dir, SCOPE_GLOBAL)
+
+    personal_metas: List[Dict[str, str]] = []
+    personal_dir = get_user_personal_skills_dir(user_info)
+    if personal_dir:
+        personal_metas = _scan_skill_dir(personal_dir, SCOPE_PERSONAL)
+
+    # 合并：个人技能优先（同 ID 覆盖全局）
+    merged: Dict[str, Dict[str, str]] = {m["id"]: m for m in global_metas}
+    for m in personal_metas:
+        merged[m["id"]] = m
+
+    return list(merged.values())
 
 
 def load_skill_md_content(skill_id: str, max_bytes: int = 262144) -> Optional[str]:
@@ -222,6 +267,7 @@ def should_scan_skills_for_query(user_query: str) -> bool:
 def scan_relevant_skills(
     user_query: str,
     *,
+    user_info: Optional[Dict[str, Any]] = None,
     exclude_ids: Optional[Set[str]] = None,
     max_results: int = 1,
     min_score: float = 0.45,
@@ -229,12 +275,13 @@ def scan_relevant_skills(
     """扫描技能库，按关键词相关度返回候选技能（流程化自动匹配，非语义向量）。
 
     在每轮用户提问后、挂载/口头解析均未命中时由 AgentService 调用。
+    个人技能（scope=personal）相关度加权 +0.05，优先被匹配。
     """
     query = (user_query or "").strip()
     if not query or not should_scan_skills_for_query(query):
         return []
 
-    metas = list_skill_metas()
+    metas = list_skill_metas(user_info=user_info)
     if not metas:
         return []
 
@@ -245,6 +292,9 @@ def scan_relevant_skills(
         if not skill_id or skill_id in excluded:
             continue
         score = lexical_relevance_score(query, meta)
+        # 个人技能加权，鼓励优先匹配用户自定义技能
+        if meta.get("scope") == SCOPE_PERSONAL and score > 0:
+            score = min(1.0, score + 0.05)
         if score >= min_score:
             scored.append((score, meta))
 
@@ -260,7 +310,12 @@ def scan_relevant_skills(
     return results
 
 
-def resolve_skills_from_query(user_query: str, max_results: int = 2) -> List[Dict[str, Any]]:
+def resolve_skills_from_query(
+    user_query: str,
+    *,
+    user_info: Optional[Dict[str, Any]] = None,
+    max_results: int = 2,
+) -> List[Dict[str, Any]]:
     """从用户问题中解析技能引用并按 name/id 匹配可用技能。
 
     例如「使用用户列表查询技能查询一次」→ 匹配 name 含「用户列表查询」的技能。
@@ -273,7 +328,7 @@ def resolve_skills_from_query(user_query: str, max_results: int = 2) -> List[Dic
     if not hints and not any(token in query.lower() for token in ("技能", "skill")):
         return []
 
-    metas = list_skill_metas()
+    metas = list_skill_metas(user_info=user_info)
     if not metas:
         return []
 

@@ -28,9 +28,12 @@ interface SkillItem {
   name: string
   description?: string
   path?: string
+  scope?: 'global' | 'personal'
 }
 
 const skillsList = ref<SkillItem[]>([])
+const personalSkillsList = ref<SkillItem[]>([])
+const activeScope = ref<'global' | 'personal'>('global')
 const isLoadingSkillsList = ref(false)
 const skillSearchQuery = ref('')
 const showSkillPreviewModal = ref(false)
@@ -46,10 +49,12 @@ const syncMobile = () => {
 
 const attachedIdSet = computed(() => new Set(props.attachedSkillIds))
 
+const currentScopeSkills = computed(() => activeScope.value === 'global' ? skillsList.value : personalSkillsList.value)
+
 const filteredSkillsList = computed(() => {
   const query = skillSearchQuery.value.trim().toLowerCase()
-  if (!query) return skillsList.value
-  return skillsList.value.filter((s) =>
+  if (!query) return currentScopeSkills.value
+  return currentScopeSkills.value.filter((s) =>
     s.name?.toLowerCase().includes(query) ||
     s.id?.toLowerCase().includes(query) ||
     s.description?.toLowerCase().includes(query) ||
@@ -61,11 +66,18 @@ const renderedPreviewHtml = computed(() => renderMarkdownPreview(previewMarkdown
 
 const loadSkillsList = async () => {
   skillsList.value = []
+  personalSkillsList.value = []
   isLoadingSkillsList.value = true
   try {
-    const res = await axios.get('/api/portal/skills')
-    if (res.data?.status === 'success') {
-      skillsList.value = res.data.data || []
+    const [globalRes, personalRes] = await Promise.allSettled([
+      axios.get('/api/portal/skills'),
+      axios.get('/api/portal/skills/personal')
+    ])
+    if (globalRes.status === 'fulfilled' && globalRes.value.data?.status === 'success') {
+      skillsList.value = (globalRes.value.data.data || []).map((s: any) => ({ ...s, scope: 'global' }))
+    }
+    if (personalRes.status === 'fulfilled' && personalRes.value.data?.status === 'success') {
+      personalSkillsList.value = (personalRes.value.data.data || []).map((s: any) => ({ ...s, scope: 'personal' }))
     }
   } catch (err) {
     console.error('加载技能列表失败:', err)
@@ -93,7 +105,9 @@ const openSkillPreview = async (skill: SkillItem) => {
   showSkillPreviewModal.value = true
   previewLoading.value = true
   try {
-    const res = await axios.get(`/api/portal/skills/${skill.id}/preview`)
+    const isPersonal = skill.scope === 'personal'
+    const url = isPersonal ? `/api/portal/skills/personal/${skill.id}/preview` : `/api/portal/skills/${skill.id}/preview`
+    const res = await axios.get(url)
     if (res.data?.status === 'success') {
       const data = res.data.data || {}
       previewMarkdown.value = data.skill_md_content || '（SKILL.md 为空）'
@@ -344,6 +358,28 @@ onUnmounted(() => {
             </div>
 
             <div class="flex-1 overflow-y-auto overscroll-y-contain p-3 sm:p-4 bg-white dark:bg-gray-900/60 min-h-0 touch-pan-y flex flex-col">
+              <!-- Scope Tabs 切换 -->
+              <div class="flex items-center border-b border-gray-150 dark:border-gray-800 mb-3 shrink-0 gap-1">
+                <button
+                  type="button"
+                  @click="activeScope = 'global'"
+                  class="flex-1 py-1.5 text-center text-xs font-bold border-b-2 transition-colors flex items-center justify-center gap-1.5"
+                  :class="activeScope === 'global' ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'"
+                >
+                  ⚙️ 平台技能
+                  <span class="px-1.5 py-0.2 text-[9px] rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 font-normal">{{ skillsList.length }}</span>
+                </button>
+                <button
+                  type="button"
+                  @click="activeScope = 'personal'"
+                  class="flex-1 py-1.5 text-center text-xs font-bold border-b-2 transition-colors flex items-center justify-center gap-1.5"
+                  :class="activeScope === 'personal' ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'"
+                >
+                  👤 我的技能
+                  <span class="px-1.5 py-0.2 text-[9px] rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 font-normal">{{ personalSkillsList.length }}</span>
+                </button>
+              </div>
+
               <div class="relative mb-3 shrink-0">
                 <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -383,24 +419,35 @@ onUnmounted(() => {
                     class="w-8 h-8 rounded-lg flex items-center justify-center text-sm flex-shrink-0 transition-transform font-mono"
                     :class="attachedIdSet.has(skill.id)
                       ? 'bg-gray-200 dark:bg-gray-700 text-gray-500'
-                      : 'bg-primary/10 dark:bg-primary/20 text-primary group-hover:scale-105'"
+                      : skill.scope === 'personal'
+                        ? 'bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 group-hover:scale-105'
+                        : 'bg-primary/10 dark:bg-primary/20 text-primary group-hover:scale-105'"
                   >
                     ⚙️
                   </div>
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center justify-between gap-2">
-                      <span
-                        class="text-xs font-bold truncate pr-2 transition-colors"
-                        :class="attachedIdSet.has(skill.id)
-                          ? 'text-gray-500 dark:text-gray-400'
-                          : 'text-gray-800 dark:text-gray-100 group-hover:text-primary'"
-                      >
-                        {{ skill.name }}
-                      </span>
+                      <div class="flex items-center gap-1.5 min-w-0">
+                        <span
+                          class="text-xs font-bold truncate pr-1 transition-colors"
+                          :class="attachedIdSet.has(skill.id)
+                            ? 'text-gray-500 dark:text-gray-400'
+                            : skill.scope === 'personal'
+                              ? 'text-gray-800 dark:text-gray-100 group-hover:text-emerald-600'
+                              : 'text-gray-800 dark:text-gray-100 group-hover:text-primary'"
+                        >
+                          {{ skill.name }}
+                        </span>
+                        <span
+                          v-if="skill.scope === 'personal'"
+                          class="shrink-0 px-1 py-0.2 text-[8px] font-semibold rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400 scale-90 origin-left"
+                        >个人</span>
+                      </div>
                       <div class="flex items-center gap-2 flex-shrink-0">
                         <button
                           type="button"
                           class="text-[10px] text-primary hover:text-primary-dark hover:underline flex items-center space-x-0.5"
+                          :class="{ 'text-emerald-600 hover:text-emerald-700': skill.scope === 'personal' }"
                           @click.stop="openSkillPreview(skill)"
                         >
                           <span>详情</span>
@@ -432,7 +479,8 @@ onUnmounted(() => {
                         <button
                           v-else
                           type="button"
-                          class="px-2 py-0.5 text-[9px] font-medium bg-green-500 hover:bg-green-600 text-white rounded transition-all active:scale-95 flex items-center space-x-0.5 shadow-sm"
+                          class="px-2 py-0.5 text-[9px] font-medium text-white rounded transition-all active:scale-95 flex items-center space-x-0.5 shadow-sm"
+                          :class="skill.scope === 'personal' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-green-500 hover:bg-green-600'"
                           @click.stop="mountSkill(skill)"
                         >
                           <span>加载技能</span>

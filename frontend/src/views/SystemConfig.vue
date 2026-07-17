@@ -306,7 +306,7 @@ const showSecrets = ref<{ [key: string]: boolean }>({})
 
 const brandingConfig = ref({
   enabled: false,
-  product_name: '南孜 · 智能体平台',
+  product_name: 'NanZi·智能体平台',
   login_subtitle: 'NanZi Intelligent Agent Platform',
   icon_url: '/favicon.png',
   hide_login_sso: false,
@@ -323,7 +323,7 @@ const fetchBrandingConfig = async () => {
     const data = res.data || {}
     brandingConfig.value = {
       enabled: !!data.enabled,
-      product_name: data.product_name || '南孜 · 智能体平台',
+      product_name: data.product_name || 'NanZi·智能体平台',
       login_subtitle: data.login_subtitle || 'NanZi Intelligent Agent Platform',
       icon_url: data.icon_url || '/favicon.png',
       hide_login_sso: !!data.hide_login_sso,
@@ -1565,7 +1565,7 @@ onMounted(() => {
                 v-model="brandingConfig.product_name"
                 type="text"
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                placeholder="南孜 · 智能体平台"
+                placeholder="NanZi·智能体平台"
               />
               <p class="text-xs text-gray-400 mt-1">影响浏览器标题、左侧菜单栏名称、登录页</p>
             </div>

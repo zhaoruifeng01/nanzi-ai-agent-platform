@@ -95,8 +95,10 @@ def default_workspace_root() -> str:
     return os.path.abspath("data/agent_workspaces")
 
 
-def discover_platform_skill_paths() -> list[str]:
-    """Collect platform skill directories that contain SKILL.md."""
+def discover_platform_skill_paths(
+    user_info: dict[str, Any] | None = None,
+) -> list[str]:
+    """Collect skill directories: global platform skills + user personal skills."""
     try:
         from app.core.config import settings
 
@@ -111,6 +113,25 @@ def discover_platform_skill_paths() -> list[str]:
         skill_dir = os.path.join(skills_root, entry)
         if os.path.isdir(skill_dir) and os.path.isfile(os.path.join(skill_dir, "SKILL.md")):
             paths.append(os.path.abspath(skill_dir))
+
+    # 追加用户个人技能路径
+    if user_info:
+        try:
+            from app.services.ai.skill_resolver import get_user_personal_skills_dir
+
+            personal_dir = get_user_personal_skills_dir(user_info)
+            if personal_dir and os.path.isdir(personal_dir):
+                for entry in sorted(os.listdir(personal_dir)):
+                    skill_dir = os.path.join(personal_dir, entry)
+                    if os.path.isdir(skill_dir) and os.path.isfile(
+                        os.path.join(skill_dir, "SKILL.md")
+                    ):
+                        abs_path = os.path.abspath(skill_dir)
+                        if abs_path not in paths:
+                            paths.append(abs_path)
+        except Exception as exc:
+            logger.debug("[workspace] Failed to load personal skill paths: %s", exc)
+
     return paths
 
 
@@ -266,7 +287,7 @@ async def get_local_workspace(
 
     workspace = LocalWorkspace(
         workdir=workdir,
-        skill_paths=discover_platform_skill_paths(),
+        skill_paths=discover_platform_skill_paths(user_info=user_info),
     )
     try:
         await workspace.initialize()
