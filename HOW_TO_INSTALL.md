@@ -78,7 +78,7 @@
         ./db-prod/apply-sql-native.sh db-prod/INIT-USER-ADMIN.sql
         ```
 
-详细的库表结构说明，请参考：[db-prod/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/db-prod/README.md)。
+详细的库表结构说明，请参考：[db-prod/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform/db-prod/README.md)。
 
 ---
 
@@ -88,7 +88,7 @@
 1.  **获取离线镜像包（提供以下两种途径）**：
 
     *   **途径一：直接下载官方预编译镜像包（推荐，最便捷）**
-        直接前往 [GitHub Releases](https://github.com/RandyChen1985/yunshu-ai-agent-platform/releases) 页面，下载对应版本以及适合您服务器 CPU 架构（如 `linux-amd64` / `linux-arm64`）的离线 Docker 镜像归档 tar 包。
+        直接前往 [GitHub Releases](https://github.com/RandyChen1985/nanzi-ai-agent-platform/releases) 页面，下载对应版本以及适合您服务器 CPU 架构（如 `linux-amd64` / `linux-arm64`）的离线 Docker 镜像归档 tar 包。
         
     *   **途径二：本地自行编译并导出镜像包（适合二次开发与定制）**
         执行入口构建脚本时，**必须显式在第一位传入版本号参数**（如 `1.0.0`）：
@@ -122,7 +122,7 @@
         ```
         *注：因容器是网络隔离的沙箱，`MYSQL_HOST` 与 `REDIS_HOST` 严禁配置为 `localhost` 或 `127.0.0.1`，必须设置为宿主机的局域网 IP（在 Mac 系统上可通过 `ipconfig getifaddr en0` 查询，或使用 `host.docker.internal`）。*
 
-    *   **检查与修改 Docker Compose 编排文件（[docker-compose.ai-agent.yml](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/docker/docker-compose.ai-agent.yml)）**：
+    *   **检查与修改 Docker Compose 编排文件（[docker-compose.ai-agent.yml](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform/docker/docker-compose.ai-agent.yml)）**：
         在启动前，您可以根据实际运行环境修改该配置文件：
         1.  **镜像版本校准**：YAML 中默认使用 `image: nanzi-ai-agent:latest`。如果您下载或编译出来的镜像是带具体版本号的（如 `nanzi-ai-agent:1.0.0`），您需要将 YAML 中 `image:` 指向对应标签；或直接在终端为该镜像重新打上 `latest` 标签，即可免除文件修改：
             ```bash
@@ -140,7 +140,7 @@
     ./stop-nanzi-ai-agent.sh
     ```
 
-详细的 Docker 编排配置，请参考：[docker/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/docker/README.md)。
+详细的 Docker 编排配置，请参考：[docker/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform/docker/README.md)。
 
 ---
 

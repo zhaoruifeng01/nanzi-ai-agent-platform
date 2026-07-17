@@ -179,7 +179,7 @@
    - 职责：多数据源统一 API 封装、权限控制、查询编排
    - 负责团队：API 服务团队
 
-2. **yovole-yunshu-ai-agent-platform**
+2. **yovole-nanzi-ai-agent-platform**
    - 系统：南孜・智能体平台（AI Agent Platform）
    - 技术栈：Python 3.11 + FastAPI + AgentScope
    - 职责：ChatBI、RAG 知识库、多 Agent、工作流

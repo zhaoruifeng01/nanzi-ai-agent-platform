@@ -120,7 +120,7 @@ transforming (6423) node_modules/zrender/lib/Element.js
 🔥 [3/3] 正在启动后端服务 (Starting Backend in Foreground)...
 提示：您将在此看到实时运行日志，按 Ctrl+C 可停止服务。
 ------------------------------------------------
-INFO:     Will watch for changes in these directories: ['/Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform']
+INFO:     Will watch for changes in these directories: ['/Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform']
 INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
 INFO:     Started reloader process [45012] using StatReload
 INFO:     Started server process [45014]
@@ -179,7 +179,7 @@ npm run dev
 ## 项目结构
 
 ```
-yovole-yunshu-ai-agent-platform/
+yovole-nanzi-ai-agent-platform/
 ├── app/                          # 后端核心代码
 │   ├── api/                      # API 路由层
 │   │   ├── portal/               # 管理后台接口
@@ -295,19 +295,19 @@ git commit -m "feat: 添加 MCP 工具实时测试功能
 
 凡涉及数据库 Schema 或数据的变更，必须严格遵守以下规范：
 
-1. **执行边界**：开发人员与 AI 助手**仅负责**在 [db-prod/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-yunshu-ai-agent-platform/db-prod/) 目录下创建 SQL 脚本。**严禁**自动执行 SQL 语句或通过 Python 脚本直接修改本地/线上数据库。
+1. **执行边界**：开发人员与 AI 助手**仅负责**在 [db-prod/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-nanzi-ai-agent-platform/db-prod/) 目录下创建 SQL 脚本。**严禁**自动执行 SQL 语句或通过 Python 脚本直接修改本地/线上数据库。
 2. **命名规范**：使用 `V` 开头 + 自增序号 + 描述。例如 `V60-create_scheduler_job_store.sql`。在创建前必须检查目录下的当前最大序号并自增 +1。
 
 ### 系统提示词变更规范
 
-凡涉及系统提示词 (Prompts) 的新增或更新，必须在 [architech/prompts/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-yunshu-ai-agent-platform/architech/prompts/) 目录下进行并纳入 Git 版本控制。
+凡涉及系统提示词 (Prompts) 的新增或更新，必须在 [architech/prompts/](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-nanzi-ai-agent-platform/architech/prompts/) 目录下进行并纳入 Git 版本控制。
 
 > [!NOTE]
 > 开发人员或 AI 助手仅负责创建/更新对应的 Prompt 文件，不负责自动同步到系统内部运行环境中。
 
 ### 自动化测试清单更新规范
 
-为确保代码逻辑和接口的稳定性，在实现新功能或接口时，必须自动更新 [tests/CHECKLIST.md](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-yunshu-ai-agent-platform/tests/CHECKLIST.md) 中的自动化测试清单，记录测试用例。
+为确保代码逻辑和接口的稳定性，在实现新功能或接口时，必须自动更新 [tests/CHECKLIST.md](file:///Users/chenxiaolong/%E8%B5%84%E6%96%99/%E6%9C%89%E5%AD%9A%E7%BD%91%E7%BB%9C/1%E4%BA%91%E6%9E%A2%E4%B8%AD%E5%8F%B0/yovole-nanzi-ai-agent-platform/tests/CHECKLIST.md) 中的自动化测试清单，记录测试用例。
 
 ### 代码已合本地同步与重启流程
 
@@ -559,7 +559,7 @@ async def get_user(
 
 ## 测试指南
 
-本项目使用 `pytest` + `httpx` (AsyncClient) 构建自动化集成测试框架。更详细的测试方法与环境配置说明，请查阅 [tests/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/tests/README.md)。
+本项目使用 `pytest` + `httpx` (AsyncClient) 构建自动化集成测试框架。更详细的测试方法与环境配置说明，请查阅 [tests/README.md](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform/tests/README.md)。
 
 ### 后端测试
 
@@ -575,7 +575,7 @@ async def get_user(
 ./tests/run_tests.sh
 ```
 
-该脚本会自动配置 `PYTHONPATH` 环境变量并检索依赖，自动执行所有集成测试。脚本源码细节详见 [tests/run_tests.sh](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-yunshu-ai-agent-platform/tests/run_tests.sh)。
+该脚本会自动配置 `PYTHONPATH` 环境变量并检索依赖，自动执行所有集成测试。脚本源码细节详见 [tests/run_tests.sh](file:///Users/chenxiaolong/资料/有孚网络/1南孜中台/yovole-nanzi-ai-agent-platform/tests/run_tests.sh)。
 
 **方式二：手动执行 pytest**
 在项目根目录下执行：
