@@ -1,11 +1,15 @@
 <template>
   <div class="relative space-y-4 sm:space-y-5">
+    <!-- 进度条始终占位，用透明度切换，避免出现/消失时视觉跳动 -->
     <div
-      v-if="refreshing"
-      class="absolute inset-x-0 top-0 h-0.5 overflow-hidden rounded-full bg-blue-100"
+      class="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden rounded-full transition-opacity duration-150"
+      :class="refreshing ? 'opacity-100' : 'opacity-0'"
       aria-hidden="true"
     >
-      <div class="h-full w-1/3 animate-pulse bg-blue-500" />
+      <div
+        class="h-full w-1/3 rounded-full bg-blue-500 transition-transform"
+        :class="refreshing ? 'animate-pulse' : ''"
+      />
     </div>
 
     <header class="space-y-3">
@@ -16,25 +20,28 @@
         </div>
         <button
           type="button"
-          class="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
-          :disabled="loading || refreshing"
+          class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+          :disabled="loading"
+          :aria-busy="refreshing || loading"
           :title="refreshing || loading ? '刷新中' : '刷新'"
           @click="refresh"
         >
-          <svg
-            class="h-4 w-4"
-            :class="{ 'animate-spin': refreshing || loading }"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M4 4v5h.6m14.8 2A8 8 0 004.6 9m0 0H9m11 11v-5h-.6m0 0A8 8 0 014.6 13m14.8 2H15"
-            />
-          </svg>
+          <span class="inline-flex h-4 w-4 items-center justify-center">
+            <svg
+              class="h-4 w-4 origin-center will-change-transform"
+              :class="{ 'animate-spin': refreshing || loading }"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 4v5h.6m14.8 2A8 8 0 004.6 9m0 0H9m11 11v-5h-.6m0 0A8 8 0 014.6 13m14.8 2H15"
+              />
+            </svg>
+          </span>
         </button>
       </div>
 

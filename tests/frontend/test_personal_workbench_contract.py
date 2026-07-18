@@ -15,11 +15,13 @@ def test_workbench_composable_uses_one_aggregate_endpoint_and_keeps_stale_data()
     source = _read("frontend/src/composables/useWorkbenchHome.ts")
 
     assert '"/api/portal/workbench/home"' in source
-    assert "payload.value = response.data?.data" in source
+    assert "payload.value = next" in source
     assert "payload.value = null" not in source
     assert "工作台暂时无法更新，已保留最近一次成功内容。" in source
     assert "refreshing" in source
     assert "silent" in source
+    assert "stableSnapshot" in source
+    assert "generated_at" in source
     for fragment in ("loading", "error", "refresh"):
         assert fragment in source
 
