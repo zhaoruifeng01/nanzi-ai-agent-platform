@@ -3152,6 +3152,9 @@ const generateNewConversation = () => {
   if (previousId) {
     finalizeConversationInBackground(previousId);
   }
+  // 工作台等入口通过 INIT_CONFIG 写入的 resume id，新会话时必须清掉，
+  // 否则随后 initChat() 会再次强制切回旧会话并重载历史。
+  requestedConversationId = "";
   conversationId.value = createConversationId();
   localStorage.setItem("yovole_embed_conv_id", conversationId.value);
   updateActiveConversationOnServer(conversationId.value);
@@ -4389,6 +4392,7 @@ const handlePostMessage = (event: MessageEvent) => {
             // 未指定会话：新开对话，避免仍停在上一会话内容
             messages.value = [];
             generateNewConversation();
+            // 钉住本次新会话，供紧随其后的 initChat 加载空历史（而非服务端旧 active）
             requestedConversationId = conversationId.value;
           }
         }
@@ -4396,6 +4400,9 @@ const handlePostMessage = (event: MessageEvent) => {
           requestedConversationId = String(data.conversation_id);
           conversationId.value = requestedConversationId;
           localStorage.setItem("yovole_embed_conv_id", requestedConversationId);
+        } else if (!data.agent_id) {
+          // 父页已取消会话钉选时，勿保留陈旧 resume id
+          requestedConversationId = "";
         }
         if (data.instance_id) config.instanceId = data.instance_id;
         if (data.theme) applyTheme(data.theme, data.styleVars);
@@ -4508,6 +4515,12 @@ const resetSession = (newToken?: string) => {
     axios.defaults.headers.common["X-API-Key"] = newToken;
   }
   initChat();
+  // 通知门户父页去掉 URL 中的 conversation_id，避免再次 INIT 或刷新又钉回旧会话
+  postMessageToHost({
+    type: "CONVERSATION_CHANGED",
+    conversation_id: conversationId.value,
+    clear_host_conversation_pin: true,
+  });
 };
 const handleConfirmClearSession = () => {
   resetSession();
