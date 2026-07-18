@@ -461,98 +461,113 @@ onMounted(() => { fetchTasks(true); fetchAgents() })
 </script>
 
 <template>
-  <div class="space-y-6">
-    <!-- Header Section -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900">任务调度台</h1>
-        <p class="text-gray-500 mt-1 text-sm hidden sm:block">管理并监控智能体的定时自动化巡检与报表任务</p>
-        <p class="text-gray-500 mt-1 text-xs sm:hidden">智能体定时任务与巡检管理</p>
-      </div>
+  <div class="space-y-5">
+    <!-- Header：与技能工作台一致，筛选进顶栏 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
       <div class="flex items-center space-x-3">
-        <button 
+        <h1 class="text-xl sm:text-2xl font-bold text-gray-900">任务调度台</h1>
+        <button
+          @click="showSpecsModal = true"
+          class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm"
+          title="设计规范"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="relative w-full sm:w-56 lg:w-64">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜索任务名称或指令..."
+            class="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none text-sm transition-all shadow-sm"
+          />
+        </div>
+
+        <select
+          v-model="statusFilter"
+          class="text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none shrink-0"
+          title="按状态筛选"
+        >
+          <option value="all">状态：全部</option>
+          <option value="running">状态：运行中</option>
+          <option value="stopped">状态：已停止</option>
+        </select>
+
+        <div class="hidden md:flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
+          <button
+            @click="viewMode = 'grid'"
+            class="p-1.5 rounded-md transition-all"
+            :class="currentViewMode === 'grid' ? 'bg-white shadow-sm text-primary border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
+            title="网格视图"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+          </button>
+          <button
+            @click="viewMode = 'list'"
+            class="p-1.5 rounded-md transition-all"
+            :class="currentViewMode === 'list' ? 'bg-white shadow-sm text-primary border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
+            title="列表视图"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+
+        <button
           @click="fetchTasks(false)"
-          class="p-2 text-gray-500 hover:text-primary hover:bg-gray-100 rounded-lg transition-colors"
+          class="p-2 text-gray-500 hover:text-primary bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0"
           title="刷新列表"
         >
-           <svg class="w-5 h-5" :class="loading ? 'animate-spin' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+          <svg class="w-4 h-4" :class="loading ? 'animate-spin' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
         </button>
-        <button 
-          @click="showSpecsModal = true"
-          class="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg shadow-sm hover:bg-gray-50 transition-all flex items-center text-sm font-medium"
-        >
-          <svg class="w-4 h-4 mr-1.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-          设计规范
-        </button>
-        <button 
+
+        <button
           v-if="canManage"
           @click="openCreateModal"
-          class="px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-all flex items-center"
+          class="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-all font-medium text-sm shrink-0"
         >
-          <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
           <span class="hidden sm:inline">新建任务</span>
           <span class="sm:hidden">新建</span>
         </button>
       </div>
     </div>
 
-    <div class="flex items-center gap-1 overflow-x-auto rounded-xl border border-gray-100 bg-white p-1.5 shadow-sm">
-      <button
-        v-for="tab in taskTypeTabs"
-        :key="tab.value"
-        type="button"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold transition-colors"
-        :class="taskTypeFilter === tab.value ? 'bg-primary text-white shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'"
-        @click="taskTypeFilter = tab.value"
-      >
-        <span>{{ tab.label }}</span>
-        <span class="min-w-5 rounded-full px-1.5 py-0.5 text-[9px] text-center" :class="taskTypeFilter === tab.value ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'">
-          {{ taskTypeCounts[tab.value] }}
-        </span>
-      </button>
-    </div>
-
-    <!-- Filters & Toolbar -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap items-center justify-between gap-4">
-      <div class="flex items-center space-x-4">
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-500">状态:</span>
-          <select v-model="statusFilter" class="text-sm border-gray-300 rounded-md focus:ring-primary focus:border-primary">
-            <option value="all">全部</option>
-            <option value="running">运行中</option>
-            <option value="stopped">已停止</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="flex items-center space-x-3">
-        <!-- Search -->
-        <div class="relative w-64">
-          <input 
-            v-model="searchQuery"
-            placeholder="搜索任务名称或指令..."
-            class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
-          />
-          <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-        </div>
-
-        <!-- View Mode Switch -->
-        <div class="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200 hidden md:flex">
-          <button 
-            @click="viewMode = 'grid'"
-            class="p-1.5 rounded-md transition-all"
-            :class="currentViewMode === 'grid' ? 'bg-white shadow-sm text-primary' : 'text-gray-400'"
+    <!-- 类型 Tab：全宽底边 -->
+    <div class="border-b border-gray-200 -mt-1">
+      <div class="flex gap-1 overflow-x-auto -mb-px" style="-webkit-overflow-scrolling: touch;">
+        <button
+          v-for="tab in taskTypeTabs"
+          :key="tab.value"
+          type="button"
+          class="inline-flex shrink-0 items-center gap-1.5 px-3 sm:px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap"
+          :class="taskTypeFilter === tab.value ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+          @click="taskTypeFilter = tab.value"
+        >
+          <span>{{ tab.label }}</span>
+          <span
+            class="min-w-5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-center"
+            :class="taskTypeFilter === tab.value ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'"
           >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
-          </button>
-          <button 
-            @click="viewMode = 'list'"
-            class="p-1.5 rounded-md transition-all ml-0.5"
-            :class="currentViewMode === 'list' ? 'bg-white shadow-sm text-primary' : 'text-gray-400'"
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
-          </button>
-        </div>
+            {{ taskTypeCounts[tab.value] }}
+          </span>
+        </button>
       </div>
     </div>
 

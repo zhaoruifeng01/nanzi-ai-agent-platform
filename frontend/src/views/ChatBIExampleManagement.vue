@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import axios from "@/utils/axios";
 import { useToast } from "../composables/useToast";
 import { useUser } from "../composables/useUser";
@@ -15,11 +15,11 @@ import {
   TrashIcon,
   InformationCircleIcon,
   ArrowPathIcon,
-  FunnelIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  DocumentDuplicateIcon
+  DocumentDuplicateIcon,
+  MagnifyingGlassIcon
 } from "@heroicons/vue/24/outline";
 
 const { hasPermission } = useUser();
@@ -63,14 +63,36 @@ const actionLoading = ref<Record<number, boolean>>({}); // 记录每一行的操
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(10);
-const showFilters = ref(true);
 const showSyncAllConfirm = ref(false);
 
-const filterStatus = ref("");
+/** 默认进入待审核，便于审核工作流 */
+const filterStatus = ref("pending");
 const filterId = ref<number | null>(null);
 const filterAgentId = ref("");
 const filterDatasetId = ref<number | null>(null);
 const searchQuery = ref("");
+
+const statusTabs = [
+  { value: "pending", label: "待审核" },
+  { value: "approved", label: "已通过" },
+  { value: "rejected", label: "已驳回" },
+  { value: "deprecated", label: "已废弃" },
+  { value: "", label: "全部" },
+] as const;
+
+const hasExtraFilters = computed(() =>
+  Boolean(
+    searchQuery.value.trim() ||
+    filterId.value ||
+    filterAgentId.value.trim() ||
+    filterDatasetId.value
+  )
+);
+
+/** 相对默认「待审核」是否偏离，用于显示「重置」 */
+const hasActiveFilters = computed(
+  () => hasExtraFilters.value || filterStatus.value !== "pending"
+);
 
 const fetchExamples = async () => {
   loading.value = true;
@@ -81,9 +103,9 @@ const fetchExamples = async () => {
     };
     if (filterId.value) params.id = filterId.value;
     if (filterStatus.value) params.status = filterStatus.value;
-    if (filterAgentId.value) params.agent_id = filterAgentId.value;
+    if (filterAgentId.value.trim()) params.agent_id = filterAgentId.value.trim();
     if (filterDatasetId.value) params.dataset_id = filterDatasetId.value;
-    if (searchQuery.value) params.search = searchQuery.value;
+    if (searchQuery.value.trim()) params.search = searchQuery.value.trim();
 
     const res = await axios.get("/api/portal/chatbi-examples", { params });
     if (res.data.code === 200) {
@@ -96,6 +118,34 @@ const fetchExamples = async () => {
     loading.value = false;
   }
 };
+
+let fetchTimer: ReturnType<typeof setTimeout> | null = null;
+const scheduleFetch = (resetPage = true) => {
+  if (fetchTimer) clearTimeout(fetchTimer);
+  fetchTimer = setTimeout(() => {
+    if (resetPage) page.value = 1;
+    fetchExamples();
+  }, 300);
+};
+
+const selectStatusTab = (value: string) => {
+  filterStatus.value = value;
+  page.value = 1;
+  fetchExamples();
+};
+
+const resetFilters = () => {
+  filterId.value = null;
+  filterAgentId.value = "";
+  filterDatasetId.value = null;
+  searchQuery.value = "";
+  filterStatus.value = "pending";
+  page.value = 1;
+  fetchExamples();
+};
+
+watch([searchQuery, filterAgentId], () => scheduleFetch(true));
+watch([filterId, filterDatasetId], () => scheduleFetch(true));
 
 const auditExample = async (id: number, status: string) => {
   if (actionLoading.value[id]) return;
@@ -324,55 +374,86 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <!-- Header Section -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm mb-6">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900 tracking-tight">案例集管理</h1>
-        <p class="text-sm text-gray-500 mt-1">管理 AI 执行的 ChatBI 问答经验样本及 RAG 语义对齐案例。</p>
-      </div>
-      <div class="flex items-center gap-3">
-        <!-- 引擎连接指示器 -->
-        <div
-          class="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border transition-colors shrink-0 group relative cursor-pointer"
-          :class="{
-            'border-blue-200 bg-blue-50/50 text-blue-700': !isLocalMode && engineStatus === 'checking',
-            'border-emerald-200 bg-emerald-50/50 text-emerald-700': isLocalMode || engineStatus === 'connected',
-            'border-amber-200 bg-amber-50/50 text-amber-700': !isLocalMode && engineStatus === 'disconnected'
-          }"
-        >
-          <span
-            class="inline-block w-2 h-2 rounded-full"
+  <div class="space-y-5">
+    <!-- Header：与任务/技能工作台一致 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-3">
+          <h1 class="text-xl sm:text-2xl font-bold text-gray-900">案例集管理</h1>
+          <div
+            class="flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs border transition-colors shrink-0 group relative cursor-default"
             :class="{
-              'bg-blue-500 animate-pulse': !isLocalMode && engineStatus === 'checking',
-              'bg-emerald-500': isLocalMode || engineStatus === 'connected',
-              'bg-amber-500': !isLocalMode && engineStatus === 'disconnected'
+              'border-blue-200 bg-blue-50/50 text-blue-700': !isLocalMode && engineStatus === 'checking',
+              'border-emerald-200 bg-emerald-50/50 text-emerald-700': isLocalMode || engineStatus === 'connected',
+              'border-amber-200 bg-amber-50/50 text-amber-700': !isLocalMode && engineStatus === 'disconnected'
             }"
-          ></span>
-          <span class="font-medium">引擎 {{ engineStatusText }}</span>
-
-          <!-- 悬浮 Tooltip 提示引擎详细配置 -->
-          <span class="absolute top-full right-0 mt-2 hidden group-hover:block bg-slate-900 text-white text-xs p-2.5 rounded-lg shadow-xl z-50 text-left font-sans font-normal pointer-events-none">
-            <div class="font-medium mb-1 border-b border-white/10 pb-1">知识库引擎信息</div>
-            <template v-if="isLocalMode">
-              <div class="opacity-80">运行模式: 本地 Redis 向量检索</div>
-              <div class="opacity-80 mt-0.5 text-emerald-400 font-medium">无需连接外部 RAGFlow</div>
-            </template>
-            <template v-else>
-              <div class="opacity-80">地址: {{ ragflowApiUrl }}</div>
-              <div class="opacity-80 mt-1">
-                API Key: 
-                <span v-if="ragflowConfig?.api_key_configured" class="text-emerald-400">已配置</span>
-                <span v-else class="text-amber-400">未配置</span>
-              </div>
-            </template>
-          </span>
+          >
+            <span
+              class="inline-block w-2 h-2 rounded-full"
+              :class="{
+                'bg-blue-500 animate-pulse': !isLocalMode && engineStatus === 'checking',
+                'bg-emerald-500': isLocalMode || engineStatus === 'connected',
+                'bg-amber-500': !isLocalMode && engineStatus === 'disconnected'
+              }"
+            ></span>
+            <span class="font-medium">引擎 {{ engineStatusText }}</span>
+            <span class="absolute top-full left-0 mt-2 hidden group-hover:block bg-slate-900 text-white text-xs p-2.5 rounded-lg shadow-xl z-50 text-left font-sans font-normal pointer-events-none w-56">
+              <div class="font-medium mb-1 border-b border-white/10 pb-1">知识库引擎信息</div>
+              <template v-if="isLocalMode">
+                <div class="opacity-80">运行模式: 本地 Redis 向量检索</div>
+                <div class="opacity-80 mt-0.5 text-emerald-400 font-medium">无需连接外部 RAGFlow</div>
+              </template>
+              <template v-else>
+                <div class="opacity-80 truncate">地址: {{ ragflowApiUrl }}</div>
+                <div class="opacity-80 mt-1">
+                  API Key:
+                  <span v-if="ragflowConfig?.api_key_configured" class="text-emerald-400">已配置</span>
+                  <span v-else class="text-amber-400">未配置</span>
+                </div>
+              </template>
+            </span>
+          </div>
         </div>
+        <p class="text-sm text-gray-500 mt-1">管理 ChatBI 问答经验样本及 RAG 语义对齐案例</p>
+      </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
+        <div class="relative w-full sm:w-56 lg:w-72">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <MagnifyingGlassIcon class="h-4 w-4 text-gray-400" />
+          </span>
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜索提问内容..."
+            class="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none text-sm transition-all shadow-sm"
+          />
+        </div>
+
+        <button
+          @click="fetchExamples"
+          class="p-2 text-gray-500 hover:text-primary bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0 self-start sm:self-auto"
+          title="刷新列表"
+        >
+          <ArrowPathIcon class="w-4 h-4" :class="{ 'animate-spin': loading }" />
+        </button>
+
+        <button
+          v-if="hasPermission('element:chatbi_example:sync') && !isLocalMode"
+          @click="isEngineReady && (showSyncAllConfirm = true)"
+          :disabled="loading || !isEngineReady"
+          class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 border border-indigo-200 rounded-lg shadow-sm text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          :title="!isEngineReady ? 'RAGFlow 服务未就绪' : '一键同步至 RAGFlow'"
+        >
+          <CloudArrowUpIcon class="h-4 w-4 text-indigo-600" />
+          <span class="hidden sm:inline">一键同步</span>
+          <span class="sm:hidden">同步</span>
+        </button>
       </div>
     </div>
 
     <!-- Error Banner -->
-    <div v-if="errorMessage && showErrorBanner && !isLocalMode" class="relative rounded-2xl border border-amber-200 bg-amber-50 p-4 pr-10 text-sm text-amber-800 shadow-sm flex items-start gap-3 mb-6">
+    <div v-if="errorMessage && showErrorBanner && !isLocalMode" class="relative rounded-2xl border border-amber-200 bg-amber-50 p-4 pr-10 text-sm text-amber-800 shadow-sm flex items-start gap-3">
       <svg class="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
       </svg>
@@ -384,7 +465,6 @@ onMounted(async () => {
           <div class="mt-0.5">错误日志: {{ errorMessage }}</div>
         </div>
       </div>
-      <!-- 右上角关闭按钮 -->
       <button @click="showErrorBanner = false" class="absolute top-4 right-4 text-amber-500 hover:text-amber-700 transition-colors" title="关闭">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -392,76 +472,59 @@ onMounted(async () => {
       </button>
     </div>
 
-    <!-- Filters -->
-    <div class="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
-      <div @click="showFilters = !showFilters" class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 active:bg-gray-100 transition-all duration-200 border-b border-gray-200 select-none">
-        <div class="flex items-center space-x-2">
-          <FunnelIcon class="h-5 w-5 text-gray-500" />
-          <h3 class="text-sm font-medium text-gray-900">筛选条件</h3>
-        </div>
-        <ChevronDownIcon class="h-5 w-5 text-gray-400 transition-transform duration-300" :class="{ 'rotate-180': showFilters }" />
+    <!-- 审核状态 Tab -->
+    <div class="border-b border-gray-200">
+      <div class="flex gap-1 overflow-x-auto -mb-px" style="-webkit-overflow-scrolling: touch;">
+        <button
+          v-for="tab in statusTabs"
+          :key="tab.value || 'all'"
+          type="button"
+          class="inline-flex shrink-0 items-center px-3 sm:px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap"
+          :class="filterStatus === tab.value ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+          @click="selectStatusTab(tab.value)"
+        >
+          {{ tab.label }}
+        </button>
       </div>
+    </div>
 
-      <div v-show="showFilters" class="p-4">
-        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">序号 ID</label>
-            <input type="number" v-model="filterId" @input="fetchExamples" placeholder="输入 ID" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">审核状态</label>
-            <select v-model="filterStatus" @change="fetchExamples" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none">
-              <option value="">全部状态</option>
-              <option value="pending">待审核</option>
-              <option value="approved">已通过</option>
-              <option value="rejected">已驳回</option>
-              <option value="deprecated">已废弃</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">数据集 ID</label>
-            <input type="number" v-model="filterDatasetId" @input="fetchExamples" placeholder="输入 ID" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Agent ID</label>
-            <input type="text" v-model="filterAgentId" @input="fetchExamples" placeholder="搜索 Agent" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">每页条数</label>
-            <select v-model.number="pageSize" @change="page = 1; fetchExamples();" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none">
-              <option :value="10">10 条</option>
-              <option :value="20">20 条</option>
-              <option :value="50">50 条</option>
-            </select>
-          </div>
-        </div>
-        <div class="flex items-center space-x-3 mt-4">
-          <button @click="fetchExamples" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 active:scale-95 shadow-sm transition-all duration-200">
-            应用筛选
-          </button>
-          <button @click="filterId = null; filterStatus = ''; filterAgentId = ''; filterDatasetId = null; page = 1; fetchExamples();" class="inline-flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md text-sm font-medium hover:bg-gray-50 active:scale-95 transition-all duration-200">
-            重置
-          </button>
-          <div class="flex-1"></div>
-          <button
-            @click="fetchExamples"
-            class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 active:scale-95 transition-all duration-200"
-          >
-            <ArrowPathIcon class="h-5 w-5 text-gray-500 mr-2" :class="{ 'animate-spin': loading }" />
-            刷新
-          </button>
-          <button
-            v-if="hasPermission('element:chatbi_example:sync')"
-            @click="isEngineReady && !isLocalMode && (showSyncAllConfirm = true)"
-            :disabled="loading || !isEngineReady || isLocalMode"
-            class="inline-flex items-center px-4 py-2 border border-indigo-200 rounded-md shadow-sm text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 active:scale-95 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-            :title="isLocalMode ? '本地向量模式下已自动同步，无需手动上传' : (!isEngineReady ? 'RAGFlow 服务未就绪' : '一键同步至 RAGFlow')"
-          >
-            <CloudArrowUpIcon class="h-5 w-5 text-indigo-600 mr-2" :class="{ 'animate-pulse': loading }" />
-            一键同步至 RAGFlow
-          </button>
-        </div>
+    <!-- 次级筛选：ID / 数据集 / Agent -->
+    <div class="flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-2.5 sm:gap-3">
+      <div class="w-full sm:w-28">
+        <label class="block text-xs font-medium text-gray-500 mb-1">序号 ID</label>
+        <input
+          type="number"
+          v-model="filterId"
+          placeholder="ID"
+          class="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+        />
       </div>
+      <div class="w-full sm:w-28">
+        <label class="block text-xs font-medium text-gray-500 mb-1">数据集 ID</label>
+        <input
+          type="number"
+          v-model="filterDatasetId"
+          placeholder="Dataset"
+          class="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+        />
+      </div>
+      <div class="w-full sm:w-40">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Agent ID</label>
+        <input
+          type="text"
+          v-model="filterAgentId"
+          placeholder="搜索 Agent"
+          class="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+        />
+      </div>
+      <button
+        v-if="hasActiveFilters"
+        type="button"
+        @click="resetFilters"
+        class="text-sm text-gray-500 hover:text-gray-800 px-2 py-1.5 transition-colors shrink-0"
+      >
+        重置筛选
+      </button>
     </div>
 
     <!-- Table Card -->
@@ -470,45 +533,74 @@ onMounted(async () => {
         <table class="min-w-full divide-y divide-gray-200">
           <thead class="bg-gray-50">
             <tr>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">ID</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">用户提问</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">反馈/质量</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状态</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">RAG 同步</th>
-              <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">时间</th>
-              <th scope="col" class="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">ID</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider min-w-[12rem]">用户提问</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">反馈</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状态</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">RAG 同步</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">智能体</th>
+              <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">时间</th>
+              <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
             </tr>
           </thead>
           <tbody class="bg-white divide-y divide-gray-200">
-            <tr v-if="examples.length === 0" class="text-center">
-              <td colspan="6" class="px-6 py-12 text-gray-400 italic text-sm">暂无反馈数据</td>
+            <tr v-if="!loading && examples.length === 0">
+              <td colspan="8" class="px-6 py-14 text-center">
+                <p class="text-sm text-gray-500 font-medium">
+                  <template v-if="hasExtraFilters || filterStatus !== 'pending'">
+                    没有符合当前筛选条件的案例
+                  </template>
+                  <template v-else-if="filterStatus === 'pending'">
+                    暂无待审核案例
+                  </template>
+                  <template v-else>
+                    暂无案例数据
+                  </template>
+                </p>
+                <p v-if="hasActiveFilters" class="text-xs text-gray-400 mt-1.5">可调整关键词、状态或 ID 后重试</p>
+                <button
+                  v-if="hasActiveFilters"
+                  type="button"
+                  @click="resetFilters"
+                  class="mt-4 inline-flex items-center px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                >
+                  清除筛选
+                </button>
+              </td>
             </tr>
             <tr v-for="ex in examples" :key="ex.id" class="hover:bg-gray-50/80 transition-colors">
-              <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-500">
+              <td class="px-4 py-3.5 whitespace-nowrap text-sm font-mono text-gray-500">
                 #{{ ex.id }}
               </td>
-              <td class="px-6 py-4">
-                <div class="flex items-start group">
-                  <div class="text-sm font-medium text-gray-900 line-clamp-2 max-w-md flex-1">{{ ex.user_query }}</div>
-                  <button @click="copyToClipboard(ex.user_query)" class="ml-2 p-1 text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-all duration-200" title="复制提问内容">
+              <td class="px-4 py-3.5">
+                <div class="flex items-start group max-w-md">
+                  <div class="text-sm font-medium text-gray-900 line-clamp-2 flex-1">{{ ex.user_query }}</div>
+                  <button @click="copyToClipboard(ex.user_query)" class="ml-1.5 p-1 text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-all shrink-0" title="复制提问">
                     <DocumentDuplicateIcon class="w-4 h-4" />
                   </button>
                 </div>
-                <div class="text-[10px] text-gray-400 font-mono mt-1">Trace: {{ ex.trace_id.substring(0, 8) }}... | Dataset: {{ ex.dataset_id }}</div>
+                <button
+                  type="button"
+                  class="mt-1 text-[10px] text-gray-400 font-mono hover:text-blue-600 transition-colors"
+                  :title="'点击复制完整 Trace: ' + ex.trace_id"
+                  @click="copyToClipboard(ex.trace_id)"
+                >
+                  Trace {{ ex.trace_id.substring(0, 8) }}…
+                </button>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <div class="flex items-center space-x-1">
+              <td class="px-4 py-3.5 whitespace-nowrap">
+                <div class="flex items-center gap-1.5">
                   <HandThumbUpIcon v-if="ex.feedback_type === 'up'" class="w-5 h-5 text-green-500" />
                   <HandThumbDownIcon v-else class="w-5 h-5 text-red-500" />
-                  <span class="text-xs text-gray-600 font-medium">引用: {{ ex.use_count }}</span>
+                  <span class="text-xs text-gray-500">引用 {{ ex.use_count }}</span>
                 </div>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <span :class="['px-2.5 py-0.5 text-xs rounded-full font-medium border transition-all duration-300', getStatusLabel(ex.status).color]">
+              <td class="px-4 py-3.5 whitespace-nowrap">
+                <span :class="['px-2.5 py-0.5 text-xs rounded-full font-medium border', getStatusLabel(ex.status).color]">
                   {{ getStatusLabel(ex.status).label }}
                 </span>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
+              <td class="px-4 py-3.5 whitespace-nowrap">
                 <div class="flex flex-col">
                   <span :class="['text-xs font-semibold', getRagStatusDisplay(ex).color]">
                     {{ getRagStatusDisplay(ex).label }}
@@ -516,36 +608,35 @@ onMounted(async () => {
                   <span v-if="ex.rag_synced_at" class="text-[10px] text-gray-400 font-mono">{{ new Date(ex.rag_synced_at).toLocaleString() }}</span>
                 </div>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-xs text-gray-500">
-                <div class="font-mono">{{ new Date(ex.created_at).toLocaleString() }}</div>
-                <div class="mt-1 text-gray-400 flex items-center space-x-1">
-                  <span class="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-medium">{{ ex.agent_display_name || '未知智能体' }}</span>
-                  <span class="text-gray-300">/</span>
-                  <span class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px]">{{ ex.user_real_name || '系统' }}</span>
-                </div>
+              <td class="px-4 py-3.5 whitespace-nowrap">
+                <div class="text-xs font-medium text-gray-800">{{ ex.agent_display_name || '未知智能体' }}</div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ ex.user_real_name || '系统' }} · Dataset {{ ex.dataset_id }}</div>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+              <td class="px-4 py-3.5 whitespace-nowrap text-xs text-gray-500 font-mono">
+                {{ new Date(ex.created_at).toLocaleString() }}
+              </td>
+              <td class="px-4 py-3.5 whitespace-nowrap text-right text-sm font-medium">
                 <div class="flex justify-end space-x-1">
-                  <button @click="viewDetail(ex)" class="p-1.5 rounded-full text-blue-600 hover:bg-blue-50 active:scale-90 transition-all duration-200" title="查看详情">
+                  <button @click="viewDetail(ex)" class="p-1.5 rounded-full text-blue-600 hover:bg-blue-50 active:scale-90 transition-all" title="查看详情">
                     <InformationCircleIcon class="w-5 h-5" />
                   </button>
-                  
+
                   <template v-if="actionLoading[ex.id]">
                     <div class="p-1.5">
                       <ArrowPathIcon class="w-5 h-5 text-gray-400 animate-spin" />
                     </div>
                   </template>
                   <template v-else>
-                    <button v-if="hasPermission('element:chatbi_example:audit') && ex.status === 'pending'" @click="auditExample(ex.id, 'approved')" class="p-1.5 rounded-full text-green-600 hover:bg-green-50 active:scale-90 transition-all duration-200" title="批准">
+                    <button v-if="hasPermission('element:chatbi_example:audit') && ex.status === 'pending'" @click="auditExample(ex.id, 'approved')" class="p-1.5 rounded-full text-green-600 hover:bg-green-50 active:scale-90 transition-all" title="批准">
                       <CheckCircleIcon class="w-5 h-5" />
                     </button>
-                    <button v-if="hasPermission('element:chatbi_example:audit') && ex.status === 'pending'" @click="auditExample(ex.id, 'rejected')" class="p-1.5 rounded-full text-red-600 hover:bg-red-50 active:scale-90 transition-all duration-200" title="驳回">
+                    <button v-if="hasPermission('element:chatbi_example:audit') && ex.status === 'pending'" @click="auditExample(ex.id, 'rejected')" class="p-1.5 rounded-full text-red-600 hover:bg-red-50 active:scale-90 transition-all" title="驳回">
                       <XCircleIcon class="w-5 h-5" />
                     </button>
-                    <button v-if="hasPermission('element:chatbi_example:sync') && ex.status === 'approved'" @click="isEngineReady && !isLocalMode && syncToRag(ex.id)" :disabled="!isEngineReady || isLocalMode" class="p-1.5 rounded-full text-indigo-600 hover:bg-indigo-50 active:scale-90 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed" :title="isLocalMode ? '本地向量模式下已自动同步，无需手动上传' : (!isEngineReady ? 'RAGFlow 服务未就绪' : '同步到 RAGFlow')">
+                    <button v-if="hasPermission('element:chatbi_example:sync') && ex.status === 'approved' && !isLocalMode" @click="isEngineReady && syncToRag(ex.id)" :disabled="!isEngineReady" class="p-1.5 rounded-full text-indigo-600 hover:bg-indigo-50 active:scale-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed" :title="!isEngineReady ? 'RAGFlow 服务未就绪' : '同步到 RAGFlow'">
                       <CloudArrowUpIcon class="w-5 h-5" />
                     </button>
-                    <button v-if="hasPermission('element:chatbi_example:delete') && ex.status !== 'deprecated'" @click="auditExample(ex.id, 'deprecated')" class="p-1.5 rounded-full text-gray-400 hover:bg-gray-100 active:scale-90 transition-all duration-200" title="废弃">
+                    <button v-if="hasPermission('element:chatbi_example:delete') && ex.status !== 'deprecated'" @click="auditExample(ex.id, 'deprecated')" class="p-1.5 rounded-full text-gray-400 hover:bg-gray-100 active:scale-90 transition-all" title="废弃">
                       <TrashIcon class="w-5 h-5" />
                     </button>
                   </template>
@@ -557,32 +648,37 @@ onMounted(async () => {
       </div>
 
       <!-- Footer/Pagination -->
-      <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex items-center justify-between sm:px-6">
-        <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-          <div>
-            <p class="text-sm text-gray-700">
-              第 <span class="font-medium">{{ page }}</span> 页，共 <span class="font-medium">{{ total }}</span> 条结果
-            </p>
-          </div>
-          <div>
-            <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
-              <button 
-                @click="page > 1 && (page--, fetchExamples())" 
-                :disabled="page <= 1"
-                class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 active:bg-gray-100 active:scale-90 disabled:opacity-50 transition-all duration-200"
-              >
-                <ChevronLeftIcon class="h-5 w-5" />
-              </button>
-              <button 
-                @click="page * pageSize < total && (page++, fetchExamples())" 
-                :disabled="page * pageSize >= total"
-                class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 active:bg-gray-100 active:scale-90 disabled:opacity-50 transition-all duration-200"
-              >
-                <ChevronRightIcon class="h-5 w-5" />
-              </button>
-            </nav>
-          </div>
+      <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-3 text-sm text-gray-700">
+          <p>
+            第 <span class="font-medium">{{ page }}</span> 页，共 <span class="font-medium">{{ total }}</span> 条
+          </p>
+          <select
+            v-model.number="pageSize"
+            @change="page = 1; fetchExamples()"
+            class="text-sm border border-gray-300 rounded-lg py-1.5 px-2 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+          >
+            <option :value="10">10 条/页</option>
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+          </select>
         </div>
+        <nav class="inline-flex rounded-md shadow-sm -space-x-px">
+          <button
+            @click="page > 1 && (page--, fetchExamples())"
+            :disabled="page <= 1"
+            class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-all"
+          >
+            <ChevronLeftIcon class="h-5 w-5" />
+          </button>
+          <button
+            @click="page * pageSize < total && (page++, fetchExamples())"
+            :disabled="page * pageSize >= total"
+            class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-all"
+          >
+            <ChevronRightIcon class="h-5 w-5" />
+          </button>
+        </nav>
       </div>
     </div>
 

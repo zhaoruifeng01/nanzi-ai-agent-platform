@@ -1943,9 +1943,31 @@ const handleReorderCommands = async (reorderData: any[]) => {
 };
 
 const isFullScreen = ref(false);
+const FULLSCREEN_TIP_KEY = "agent_debug_fullscreen_tip_dismissed";
+const showFullscreenTip = ref(
+  typeof localStorage !== "undefined" &&
+    localStorage.getItem(FULLSCREEN_TIP_KEY) !== "1"
+);
 
 const toggleFullScreen = () => {
   isFullScreen.value = !isFullScreen.value;
+  if (isFullScreen.value) {
+    dismissFullscreenTip();
+  }
+};
+
+const dismissFullscreenTip = () => {
+  showFullscreenTip.value = false;
+  try {
+    localStorage.setItem(FULLSCREEN_TIP_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+};
+
+const enterFullScreenFromTip = () => {
+  isFullScreen.value = true;
+  dismissFullscreenTip();
 };
 
 const userInput = ref("");
@@ -3360,6 +3382,43 @@ onUnmounted(() => {
       class="flex-1 flex flex-col bg-white shadow-sm overflow-hidden mr-px transition-[margin] duration-300 relative"
       :style="pinnedDrawerMarginStyle"
     >
+      <!-- 模块说明提示（含一次性全屏引导，避免每次 toast） -->
+      <div
+        v-if="!isFullScreen"
+        class="px-4 sm:px-6 py-2 bg-sky-50 border-b border-sky-100 flex items-start sm:items-center gap-2 flex-shrink-0"
+      >
+        <svg class="w-4 h-4 text-sky-600 shrink-0 mt-0.5 sm:mt-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <p class="text-xs sm:text-sm text-sky-800 leading-relaxed">
+            当前是<strong class="font-semibold">智能体开发调试</strong>模块，可展示更详尽的运行日志与链路信息，便于开发排查与调试。
+            <template v-if="showFullscreenTip">
+              建议使用右上角<strong class="font-semibold">全屏</strong>，调试视野更完整。
+            </template>
+          </p>
+          <div v-if="showFullscreenTip" class="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              @click="enterFullScreenFromTip"
+              class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-md transition-colors"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4M20 4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+              进入全屏
+            </button>
+            <button
+              type="button"
+              @click="dismissFullscreenTip"
+              class="text-xs text-sky-600/80 hover:text-sky-900 px-1.5 py-1 transition-colors"
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Header -->
       <div
         class="h-14 px-6 border-b border-gray-200 flex items-center justify-between bg-white flex-shrink-0"
@@ -3421,11 +3480,13 @@ onUnmounted(() => {
           <!-- 1. 全屏 -->
           <button
             @click="toggleFullScreen"
-            class="flex items-center transition-all"
+            class="flex items-center gap-1.5 transition-all"
             :class="isFullScreen
-              ? 'bg-primary/10 text-primary border border-primary/20 p-1.5 rounded-lg hover:bg-primary/20'
-              : 'text-gray-500 hover:text-blue-600 p-1.5 rounded-lg hover:bg-gray-50'"
-            :title="isFullScreen ? '退出全屏' : '全屏调试'"
+              ? 'bg-primary/10 text-primary border border-primary/20 px-2.5 py-1.5 rounded-lg hover:bg-primary/20'
+              : showFullscreenTip
+                ? 'bg-sky-50 text-sky-700 border border-sky-200 px-2.5 py-1.5 rounded-lg hover:bg-sky-100 ring-2 ring-sky-200/60 animate-pulse'
+                : 'text-gray-500 hover:text-blue-600 px-2 py-1.5 rounded-lg hover:bg-gray-50'"
+            :title="isFullScreen ? '退出全屏（Esc）' : '全屏调试，获得更大视野'"
           >
             <svg
               class="w-5 h-5"
@@ -3448,6 +3509,7 @@ onUnmounted(() => {
                 d="M4 14h6v6m0-6l-6 6m16-6h-6v6m0-6l6 6M4 10h6V4m0 6L4 4m16 6h-6V4m0 6l6-6"
               />
             </svg>
+            <span class="text-xs font-medium hidden sm:inline">{{ isFullScreen ? '退出全屏' : '全屏' }}</span>
           </button>
 
           <div class="h-4 w-px bg-gray-200"></div>

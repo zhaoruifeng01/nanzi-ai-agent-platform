@@ -645,13 +645,17 @@ onMounted(async () => {
 
 <template>
   <div class="space-y-5">
-    <!-- Header（与技能管理顶格一致，由 Dashboard main 统一留白） -->
-    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-      <div class="min-w-0">
-        <h1 class="text-2xl font-bold tracking-normal text-gray-900 dark:text-white">记忆工作台</h1>
-        <p class="text-sm text-gray-500 mt-1">跨会话摘要、向量检索与 Redis 会话明细管理（配置独立于系统设置）</p>
-      </div>
-      <div class="flex gap-1 border-b border-gray-200 dark:border-gray-700 shrink-0">
+    <!-- Header：标题左，与技能/智能体中心一致 -->
+    <div class="flex items-center space-x-3">
+      <h1 class="text-xl sm:text-2xl font-bold tracking-normal text-gray-900 dark:text-white">记忆工作台</h1>
+      <span class="hidden sm:inline text-xs text-gray-400 truncate max-w-md">
+        跨会话摘要 · 向量检索 · Redis 会话明细
+      </span>
+    </div>
+
+    <!-- Tab：全宽底边，移动端可横滑 -->
+    <div class="border-b border-gray-200 dark:border-gray-700 -mt-1">
+      <div class="flex gap-1 overflow-x-auto -mb-px" style="-webkit-overflow-scrolling: touch;">
         <button
           v-for="t in [
             { id: 'config', label: '服务配置' },
@@ -660,7 +664,7 @@ onMounted(async () => {
           ]"
           :key="t.id"
           type="button"
-          class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+          class="px-3 sm:px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
           :class="activeTab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
           :disabled="!memoryFeaturesEnabled && !vectorChecking"
           @click="activeTab = t.id as any"
@@ -681,20 +685,20 @@ onMounted(async () => {
 
     <div
       v-else-if="!vectorReady && vectorHealth"
-      class="bg-amber-50 border border-amber-200 rounded-lg p-5 shadow-sm space-y-4"
+      class="bg-amber-50 border border-amber-200 rounded-lg p-4 sm:p-5 shadow-sm space-y-4"
     >
-      <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
+      <div class="flex flex-col gap-3">
+        <div class="min-w-0">
           <h2 class="text-base font-semibold text-amber-900">记忆服务不可用</h2>
-          <p class="text-sm text-amber-800 mt-1">{{ vectorHealth.message }}</p>
-          <p class="text-xs text-amber-700 mt-2 font-mono">
+          <p class="text-sm text-amber-800 mt-1 break-words">{{ vectorHealth.message }}</p>
+          <p class="text-xs text-amber-700 mt-2 font-mono break-all">
             当前连接：{{ vectorHealth.redis_host }}:{{ vectorHealth.redis_port }} / db
             {{ vectorHealth.redis_db }}
           </p>
         </div>
         <button
           type="button"
-          class="shrink-0 px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 shadow-sm"
+          class="w-full sm:w-auto self-start px-4 py-2.5 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 shadow-sm"
           @click="runVectorTest(true)"
         >
           重新检测
@@ -704,26 +708,28 @@ onMounted(async () => {
         <li v-for="(hint, i) in vectorHealth.hints" :key="i">{{ hint }}</li>
       </ul>
       <div v-if="vectorHealth.checks?.length" class="border border-amber-200 rounded-lg overflow-hidden bg-white">
-        <table class="w-full text-xs">
-          <thead class="bg-amber-100/80">
-            <tr>
-              <th class="text-left p-2 font-medium">检查项</th>
-              <th class="text-left p-2 font-medium">结果</th>
-              <th class="text-left p-2 font-medium">说明</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in vectorHealth.checks" :key="c.name" class="border-t border-amber-100">
-              <td class="p-2 font-mono">{{ c.name }}</td>
-              <td class="p-2">
-                <span :class="c.passed ? 'text-green-600' : 'text-red-600'">
-                  {{ c.passed ? '通过' : '失败' }}
-                </span>
-              </td>
-              <td class="p-2 text-gray-700">{{ c.message }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs min-w-[320px]">
+            <thead class="bg-amber-100/80">
+              <tr>
+                <th class="text-left p-2 font-medium">检查项</th>
+                <th class="text-left p-2 font-medium">结果</th>
+                <th class="text-left p-2 font-medium">说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in vectorHealth.checks" :key="c.name" class="border-t border-amber-100">
+                <td class="p-2 font-mono whitespace-nowrap">{{ c.name }}</td>
+                <td class="p-2 whitespace-nowrap">
+                  <span :class="c.passed ? 'text-green-600' : 'text-red-600'">
+                    {{ c.passed ? '通过' : '失败' }}
+                  </span>
+                </td>
+                <td class="p-2 text-gray-700">{{ c.message }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
       <p class="text-xs text-amber-800">
         在检测通过前，本页配置、记忆数据、检索测试等功能均已禁用。线上对话中的 memory_search 摘要写入也会受影响。
@@ -732,12 +738,12 @@ onMounted(async () => {
 
     <div
       v-else-if="vectorReady"
-      class="bg-green-50 border border-green-200 rounded-lg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-sm"
+      class="bg-green-50 border border-green-200 rounded-lg px-3 sm:px-4 py-2 flex flex-col xs:flex-row sm:flex-row sm:items-center sm:justify-between gap-2 text-sm"
     >
-      <span class="text-green-800">{{ vectorHealth?.message || 'Redis 向量环境正常' }}</span>
+      <span class="text-green-800 text-xs sm:text-sm leading-relaxed">{{ vectorHealth?.message || 'Redis 向量环境正常' }}</span>
       <button
         type="button"
-        class="text-green-700 hover:text-green-900 text-xs underline"
+        class="self-start sm:self-auto shrink-0 px-2.5 py-1 text-green-700 hover:text-green-900 text-xs font-medium border border-green-200 rounded-md hover:bg-green-100/60 transition-colors"
         @click="runVectorTest(true)"
       >
         重新检测
@@ -751,54 +757,60 @@ onMounted(async () => {
     >
     <!-- 服务配置 -->
     <div v-show="activeTab === 'config' && memoryFeaturesEnabled" class="space-y-5">
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-col sm:flex-row sm:flex-wrap gap-2">
         <button
           v-if="canSave"
           type="button"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 shadow-sm"
+          class="w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 shadow-sm order-1"
           :disabled="savingConfig"
           @click="saveConfigs"
         >
-          保存配置
+          {{ savingConfig ? '保存中…' : '保存配置' }}
         </button>
-        <button
-          v-if="canSave && summaryEnabled"
-          type="button"
-          class="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 shadow-sm disabled:opacity-40"
-          @click="testEmbedding"
-        >
-          测试 Embedding
-        </button>
-        <button
-          v-if="canIndex && summaryEnabled"
-          type="button"
-          class="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 shadow-sm"
-          @click="loadIndexStatus"
-        >
-          刷新索引状态
-        </button>
-        <button
-          v-if="canIndex && summaryEnabled"
-          type="button"
-          class="px-4 py-2 bg-white border border-amber-200 text-amber-700 rounded-lg text-sm hover:bg-amber-50 shadow-sm"
-          @click="requestRebuildIndex"
-        >
-          检查/创建索引
-        </button>
+        <div class="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 order-2">
+          <button
+            v-if="canSave && summaryEnabled"
+            type="button"
+            class="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 shadow-sm disabled:opacity-40"
+            @click="testEmbedding"
+          >
+            测试 Embedding
+          </button>
+          <button
+            v-if="canIndex && summaryEnabled"
+            type="button"
+            class="px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 shadow-sm"
+            @click="loadIndexStatus"
+          >
+            刷新索引状态
+          </button>
+          <button
+            v-if="canIndex && summaryEnabled"
+            type="button"
+            class="col-span-2 sm:col-span-1 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50 shadow-sm text-gray-700"
+            @click="requestRebuildIndex"
+          >
+            检查/创建索引
+          </button>
+        </div>
       </div>
 
       <div
         v-if="summaryEnabled && indexStatus"
-        class="bg-white border border-gray-200 rounded-lg px-4 py-3 shadow-sm flex flex-wrap items-center gap-3 text-sm"
+        class="bg-white border border-gray-200 rounded-lg px-4 py-3 shadow-sm flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3 text-sm"
       >
         <span
-          class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+          class="inline-flex self-start items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
           :class="indexStatus.available ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'"
         >
           {{ indexStatus.available ? '索引正常' : '索引未就绪' }}
         </span>
-        <span class="text-gray-600">{{ indexStatusLabel }}</span>
-        <span v-if="indexStatus.index_name" class="text-gray-400 font-mono text-xs">{{ indexStatus.index_name }}</span>
+        <span class="text-gray-600 text-xs sm:text-sm">{{ indexStatusLabel }}</span>
+        <span
+          v-if="indexStatus.index_name"
+          class="text-gray-400 font-mono text-[11px] sm:text-xs break-all"
+          :title="indexStatus.index_name"
+        >{{ indexStatus.index_name }}</span>
       </div>
 
       <div v-if="configLoading" class="flex flex-col items-center justify-center py-16">
@@ -845,11 +857,10 @@ onMounted(async () => {
                           </svg>
                         </button>
                         <!-- 悬浮提示框 -->
-                        <div class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 hidden group-hover:block w-72 p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
+                        <div class="absolute left-0 top-full mt-2 hidden group-hover:block group-focus-within:block w-[min(18rem,calc(100vw-2rem))] p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
                            <div class="leading-relaxed text-left font-normal normal-case break-words whitespace-normal font-sans">
                               {{ CONFIG_TIPS[key] || getConfigItem(key)!.description }}
                            </div>
-                           <div class="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-gray-900/95 dark:border-r-gray-950/95"></div>
                         </div>
                       </div>
                     </div>
@@ -884,11 +895,10 @@ onMounted(async () => {
                         </svg>
                       </button>
                       <!-- 悬浮提示框 -->
-                      <div class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 hidden group-hover:block w-72 p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
+                      <div class="absolute left-0 top-full mt-2 hidden group-hover:block group-focus-within:block w-[min(18rem,calc(100vw-2rem))] p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
                          <div class="leading-relaxed text-left font-normal normal-case break-words whitespace-normal font-sans">
                             {{ CONFIG_TIPS[key] || getConfigItem(key)!.description }}
                          </div>
-                         <div class="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-gray-900/95 dark:border-r-gray-950/95"></div>
                       </div>
                     </div>
                   </div>
@@ -919,11 +929,10 @@ onMounted(async () => {
                         </svg>
                       </button>
                       <!-- 悬浮提示框 -->
-                      <div class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 hidden group-hover:block w-72 p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
+                      <div class="absolute left-0 top-full mt-2 hidden group-hover:block group-focus-within:block w-[min(18rem,calc(100vw-2rem))] p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
                          <div class="leading-relaxed text-left font-normal normal-case break-words whitespace-normal font-sans">
                             {{ CONFIG_TIPS[key] || getConfigItem(key)!.description }}
                          </div>
-                         <div class="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-gray-900/95 dark:border-r-gray-950/95"></div>
                       </div>
                     </div>
                   </div>
@@ -961,11 +970,10 @@ onMounted(async () => {
                         </svg>
                       </button>
                       <!-- 悬浮提示框 -->
-                      <div class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 hidden group-hover:block w-72 p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
+                      <div class="absolute left-0 top-full mt-2 hidden group-hover:block group-focus-within:block w-[min(18rem,calc(100vw-2rem))] p-3 bg-gray-900/95 dark:bg-gray-950/95 text-white text-xs rounded-xl shadow-xl border border-gray-800 dark:border-gray-800 backdrop-blur-sm z-[100] pointer-events-none">
                          <div class="leading-relaxed text-left font-normal normal-case break-words whitespace-normal font-sans">
                             {{ CONFIG_TIPS[key] || getConfigItem(key)!.description }}
                          </div>
-                         <div class="absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-gray-900/95 dark:border-r-gray-950/95"></div>
                       </div>
                     </div>
                   </div>
@@ -997,9 +1005,9 @@ onMounted(async () => {
     <div v-show="activeTab === 'data' && memoryFeaturesEnabled" class="space-y-4">
       <div v-if="!canViewData" class="text-gray-500 text-sm">无「查看记忆数据」权限</div>
       <template v-else>
-        <div class="flex flex-col gap-3">
-          <div class="flex items-center gap-3">
-            <div class="inline-flex w-fit rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
+          <div class="flex flex-col gap-3">
+          <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div class="inline-flex w-full sm:w-fit rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
               <button
                 v-for="view in [
                   { id: 'daily', label: '每日摘要' },
@@ -1007,7 +1015,7 @@ onMounted(async () => {
                 ]"
                 :key="view.id"
                 type="button"
-                class="px-3 py-1.5 text-sm font-medium rounded-md transition-colors"
+                class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-sm font-medium rounded-md transition-colors"
                 :class="dataView === view.id ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'"
                 @click="switchDataView(view.id as 'daily' | 'session')"
               >
@@ -1019,7 +1027,7 @@ onMounted(async () => {
             <button
               v-if="dataView === 'session' && canIndex"
               type="button"
-              class="px-3.5 py-2 text-sm font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              class="w-full sm:w-auto px-3.5 py-2 text-sm font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
               :disabled="consolidating"
               @click="runConsolidation"
             >
@@ -1029,40 +1037,40 @@ onMounted(async () => {
             </button>
           </div>
           <div class="flex flex-wrap gap-3 items-end">
-            <div v-if="canViewAllUsers">
+            <div v-if="canViewAllUsers" class="w-[calc(50%-0.375rem)] sm:w-auto">
               <label class="text-xs text-gray-500 block mb-1">用户 ID</label>
               <input
                 v-model.number="filterUserId"
                 type="number"
-                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-28 bg-white shadow-sm dark:bg-gray-800"
+                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-28 bg-white shadow-sm dark:bg-gray-800"
                 placeholder="可选"
               />
             </div>
-            <div v-if="canViewAllUsers">
+            <div v-if="canViewAllUsers" class="w-[calc(50%-0.375rem)] sm:w-auto">
               <label class="text-xs text-gray-500 block mb-1">用户名</label>
               <input
                 v-model="filterUsername"
-                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-36 bg-white shadow-sm dark:bg-gray-800"
+                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-36 bg-white shadow-sm dark:bg-gray-800"
                 placeholder="登录名/姓名"
               />
             </div>
-            <div v-if="dataView === 'daily'">
+            <div v-if="dataView === 'daily'" class="w-[calc(50%-0.375rem)] sm:w-auto">
               <label class="text-xs text-gray-500 block mb-1">开始日期</label>
               <input
                 v-model="filterDateFrom"
                 type="date"
-                class="border border-gray-300 rounded-lg px-2 py-2 text-sm bg-white shadow-sm dark:bg-gray-800"
+                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full bg-white shadow-sm dark:bg-gray-800"
               />
             </div>
-            <div v-if="dataView === 'daily'">
+            <div v-if="dataView === 'daily'" class="w-[calc(50%-0.375rem)] sm:w-auto">
               <label class="text-xs text-gray-500 block mb-1">结束日期</label>
               <input
                 v-model="filterDateTo"
                 type="date"
-                class="border border-gray-300 rounded-lg px-2 py-2 text-sm bg-white shadow-sm dark:bg-gray-800"
+                class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full bg-white shadow-sm dark:bg-gray-800"
               />
             </div>
-            <div class="flex-1 min-w-[12rem]">
+            <div class="w-full sm:flex-1 sm:min-w-[12rem]">
               <label class="text-xs text-gray-500 block mb-1">关键词</label>
               <input
                 v-model="filterKeyword"
@@ -1073,7 +1081,7 @@ onMounted(async () => {
             </div>
             <button
               type="button"
-              class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm disabled:opacity-50"
+              class="w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm disabled:opacity-50"
               :disabled="dataLoading"
               @click="fetchMemoryData"
             >
@@ -1251,53 +1259,53 @@ onMounted(async () => {
       <div v-if="!canTestSearch" class="text-gray-500 text-sm">无「记忆检索测试」权限</div>
       <template v-else>
         <div class="flex flex-wrap gap-3 items-end">
-          <div v-if="canViewAllUsers">
+          <div v-if="canViewAllUsers" class="w-[calc(50%-0.375rem)] sm:w-auto">
             <label class="text-xs text-gray-500 block mb-1">用户 ID</label>
             <input
               v-model.number="searchUserId"
               type="number"
-              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-28 bg-white shadow-sm dark:bg-gray-800"
+              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-28 bg-white shadow-sm dark:bg-gray-800"
               placeholder="可选"
             />
           </div>
-          <div v-if="canViewAllUsers">
+          <div v-if="canViewAllUsers" class="w-[calc(50%-0.375rem)] sm:w-auto">
             <label class="text-xs text-gray-500 block mb-1">用户名</label>
             <input
               v-model="searchUsername"
-              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-36 bg-white shadow-sm dark:bg-gray-800"
+              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-36 bg-white shadow-sm dark:bg-gray-800"
               placeholder="登录名/姓名"
             />
           </div>
-          <div>
+          <div class="w-[calc(50%-0.375rem)] sm:w-auto">
             <label class="text-xs text-gray-500 block mb-1">scope</label>
             <select
               v-model="searchScope"
-              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-32 bg-white shadow-sm dark:bg-gray-800"
+              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-32 bg-white shadow-sm dark:bg-gray-800"
             >
               <option value="summary">summary</option>
               <option value="history">history</option>
               <option value="both">both</option>
             </select>
           </div>
-          <div>
-            <label class="text-xs text-gray-500 block mb-1">conversation_id</label>
-            <input
-              v-model="searchConvId"
-              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-56 bg-white shadow-sm dark:bg-gray-800 font-mono text-xs"
-            />
-          </div>
-          <div>
+          <div class="w-[calc(50%-0.375rem)] sm:w-auto">
             <label class="text-xs text-gray-500 block mb-1">limit</label>
             <input
               v-model.number="searchLimit"
               type="number"
               min="1"
-              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-20 bg-white shadow-sm dark:bg-gray-800"
+              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-20 bg-white shadow-sm dark:bg-gray-800"
+            />
+          </div>
+          <div class="w-full sm:w-auto sm:flex-1 sm:min-w-[14rem]">
+            <label class="text-xs text-gray-500 block mb-1">conversation_id</label>
+            <input
+              v-model="searchConvId"
+              class="border border-gray-300 rounded-lg px-2 py-2 text-sm w-full sm:w-56 bg-white shadow-sm dark:bg-gray-800 font-mono text-xs"
             />
           </div>
           <button
             type="button"
-            class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm disabled:opacity-50"
+            class="w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm disabled:opacity-50"
             :disabled="searchLoading"
             @click="runSearchTest"
           >
@@ -1316,7 +1324,7 @@ onMounted(async () => {
         </div>
         <pre
           v-if="searchResult"
-          class="text-xs bg-white border border-gray-200 p-4 rounded-lg overflow-auto max-h-96 shadow-sm"
+          class="text-xs bg-white border border-gray-200 p-3 sm:p-4 rounded-lg overflow-auto max-h-96 shadow-sm break-all whitespace-pre-wrap sm:whitespace-pre sm:break-normal"
         >{{ JSON.stringify(searchResult, null, 2) }}</pre>
       </template>
     </div>

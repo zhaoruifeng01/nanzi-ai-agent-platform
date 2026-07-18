@@ -1,5 +1,5 @@
 <template>
-  <div class="space-y-6 relative">
+  <div class="space-y-5 relative" @click="closeMenus">
     <!-- Full-page Sync Overlay -->
     <div
       v-if="syncingSso"
@@ -10,169 +10,200 @@
       <p class="text-gray-300 mt-2 text-sm">正在为您生成 API Key 并同步权限，请勿刷新页面</p>
     </div>
 
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <h1 class="text-2xl font-bold text-gray-900">用户管理</h1>
-      <div class="flex gap-2">
-        <button
-          v-if="showSsoSync"
-          @click="openSsoModal"
-          class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2 shadow-sm"
-        >
-          <UserGroupIcon class="w-5 h-5" />
-          同步 SSO 用户
-        </button>
-        <button
-          @click="showThirdPartyDrawer = true"
-          class="bg-violet-600 text-white px-4 py-2 rounded-lg hover:bg-violet-700 transition flex items-center gap-2 shadow-sm"
-        >
-          <ArrowPathIcon class="w-5 h-5" />
-          同步第三方用户
-        </button>
-        <button
-          @click="showSystemQuotaModal = true"
-          class="bg-amber-600 text-white px-4 py-2 rounded-lg hover:bg-amber-700 transition flex items-center gap-2 shadow-sm"
-        >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-          系统默认额度
-        </button>
-        <button
-          @click="openCreateDialog"
-          class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-        >
-          <PlusIcon class="w-5 h-5" />
-          创建用户
-        </button>
+    <!-- Header：筛选进顶栏，低频操作用「更多」收纳 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div class="min-w-0">
+        <h1 class="text-xl sm:text-2xl font-bold text-gray-900">用户管理</h1>
+        <p class="text-sm text-gray-500 mt-1">管理账号、身份角色与 API 访问凭证</p>
       </div>
-    </div>
 
-    <!-- Filters -->
-    <div class="bg-white shadow rounded-lg p-4">
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <input
-          v-model="searchQuery"
-          @input="debouncedSearch"
-          type="text"
-          placeholder="搜索用户名或姓名..."
-          class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-        />
+      <div class="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2.5 sm:gap-3">
+        <div class="relative w-full sm:w-52 lg:w-60">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input
+            v-model="searchQuery"
+            @input="debouncedSearch"
+            type="text"
+            placeholder="搜索用户名或姓名..."
+            class="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none text-sm shadow-sm"
+          />
+        </div>
+
         <select
           v-model="roleFilter"
-          @change="fetchUsers"
-          class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+          @change="page = 1; fetchUsers()"
+          class="w-full sm:w-auto text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none shrink-0"
         >
-          <option value="">所有身份</option>
+          <option value="">身份：全部</option>
           <option value="admin">管理员</option>
           <option value="user">普通用户</option>
         </select>
+
         <select
           v-model="statusFilter"
-          @change="fetchUsers"
-          class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+          @change="page = 1; fetchUsers()"
+          class="w-full sm:w-auto text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none shrink-0"
         >
-          <option value="">所有状态</option>
+          <option value="">状态：全部</option>
           <option value="1">启用</option>
           <option value="0">禁用</option>
         </select>
+
         <button
+          v-if="hasActiveFilters"
+          type="button"
           @click="resetFilters"
-          class="border border-gray-300 rounded-lg px-4 py-2 hover:bg-gray-50 transition text-sm font-medium"
+          class="px-3 py-2 text-sm text-gray-500 hover:text-gray-800 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0"
         >
-          重置
+          清除
+        </button>
+
+        <button
+          type="button"
+          @click="fetchUsers"
+          class="p-2 text-gray-500 hover:text-primary bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0 self-start sm:self-auto"
+          title="刷新列表"
+        >
+          <ArrowPathIcon class="w-4 h-4" :class="{ 'animate-spin': loading }" />
+        </button>
+
+        <div class="relative shrink-0" @click.stop>
+          <button
+            type="button"
+            @click="showMoreMenu = !showMoreMenu; openRowMenuId = null"
+            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors"
+          >
+            更多
+            <ChevronDownIcon class="w-4 h-4 text-gray-400" :class="{ 'rotate-180': showMoreMenu }" />
+          </button>
+          <div
+            v-if="showMoreMenu"
+            class="absolute right-0 mt-1.5 w-52 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-30"
+          >
+            <button
+              v-if="showSsoSync"
+              type="button"
+              class="w-full text-left px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              @click="showMoreMenu = false; openSsoModal()"
+            >
+              <UserGroupIcon class="w-4 h-4 text-indigo-500" />
+              同步 SSO 用户
+            </button>
+            <button
+              type="button"
+              class="w-full text-left px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              @click="showMoreMenu = false; showThirdPartyDrawer = true"
+            >
+              <ArrowPathIcon class="w-4 h-4 text-violet-500" />
+              同步第三方用户
+            </button>
+            <button
+              type="button"
+              class="w-full text-left px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              @click="showMoreMenu = false; showSystemQuotaModal = true"
+            >
+              <ChartBarIcon class="w-4 h-4 text-amber-500" />
+              系统默认额度
+            </button>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          @click="openCreateDialog"
+          class="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-all font-medium text-sm shrink-0"
+        >
+          <PlusIcon class="w-4 h-4" />
+          <span class="hidden sm:inline">创建用户</span>
+          <span class="sm:hidden">创建</span>
         </button>
       </div>
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="bg-white shadow rounded-lg p-12 text-center">
-      <div
-        class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
-      ></div>
-      <p class="mt-2 text-gray-500">加载中...</p>
+    <div v-if="loading" class="flex flex-col items-center justify-center py-16">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-sm text-gray-500 mt-4 font-medium">加载用户列表...</p>
+    </div>
+
+    <!-- Empty -->
+    <div
+      v-else-if="users.length === 0"
+      class="flex flex-col items-center justify-center min-h-[320px] bg-white border border-gray-200 rounded-lg shadow-sm px-6"
+    >
+      <svg class="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+      </svg>
+      <template v-if="isSearchEmpty">
+        <p class="text-sm text-gray-500 mt-4 font-semibold">没有符合当前筛选条件的用户</p>
+        <p class="text-xs text-gray-400 mt-1">可调整关键词、身份或状态后重试</p>
+        <button
+          type="button"
+          @click="resetFilters"
+          class="mt-5 px-4 py-2 text-sm font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+        >
+          清除筛选
+        </button>
+      </template>
+      <template v-else>
+        <p class="text-sm text-gray-500 mt-4 font-semibold">暂无用户</p>
+        <p class="text-xs text-gray-400 mt-1">创建账号，或从「更多」同步 SSO / 第三方用户</p>
+        <button
+          type="button"
+          @click="openCreateDialog"
+          class="mt-5 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary-dark rounded-lg transition-colors"
+        >
+          创建用户
+        </button>
+      </template>
     </div>
 
     <!-- User List -->
-    <div v-else-if="users.length > 0">
+    <div v-else>
       <!-- Desktop Table -->
-      <div v-if="!isMobile" class="bg-white shadow rounded-lg overflow-hidden">
+      <div v-if="!isMobile" class="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
         <div class="overflow-x-auto">
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
               <tr>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  ID
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  用户名
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  真实姓名
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  系统身份/角色
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  备注
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  状态
-                </th>
-                <th
-                  class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  创建时间
-                </th>
-                <th
-                  class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  操作
-                </th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">用户</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">身份 / 角色</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">备注</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状态</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">创建时间</th>
+                <th class="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
               </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
-              <tr v-for="user in users" :key="user.id" class="hover:bg-gray-50">
-                <td
-                  class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono"
-                >
-                  {{ user.id }}
+              <tr v-for="user in users" :key="user.id" class="group hover:bg-gray-50/80 transition-colors">
+                <td class="px-5 py-4 whitespace-nowrap">
+                  <div class="min-w-0">
+                    <div class="text-sm font-semibold text-gray-900 truncate max-w-[14rem]" :title="user.user_name">
+                      {{ user.user_name }}
+                    </div>
+                    <div class="mt-0.5 flex items-center gap-1.5 text-xs text-gray-400">
+                      <span>{{ user.real_name || "未设置姓名" }}</span>
+                      <span class="text-gray-300">·</span>
+                      <span class="font-mono">#{{ user.id }}</span>
+                    </div>
+                  </div>
                 </td>
-                <td
-                  class="px-6 py-4 whitespace-nowrap font-medium text-gray-900"
-                >
-                  {{ user.user_name }}
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {{ user.real_name || "-" }}
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                <td class="px-5 py-4 whitespace-nowrap text-sm">
                   <div class="flex flex-col gap-1.5 items-start">
-                    <!-- System Role -->
                     <span
                       :class="
                         user.role === 'admin'
-                          ? 'bg-purple-100 text-purple-800 border-purple-200'
-                          : 'bg-blue-100 text-blue-800 border-blue-200'
+                          ? 'bg-purple-50 text-purple-700 border-purple-100'
+                          : 'bg-blue-50 text-blue-700 border-blue-100'
                       "
-                      class="px-2 py-0.5 text-[11px] font-bold rounded-md border"
+                      class="px-2 py-0.5 text-[11px] font-semibold rounded-md border"
                     >
                       {{ user.role === "admin" ? "系统管理员" : "普通用户" }}
                     </span>
-
-                    <!-- Business Roles -->
                     <RoleList
                       v-if="user.role_names && user.role_names.length > 0"
                       :roles="user.role_names"
@@ -180,10 +211,10 @@
                     />
                   </div>
                 </td>
-                <td class="px-6 py-4 text-sm text-gray-500 max-w-xs truncate">
-                  {{ user.remark || "-" }}
+                <td class="px-5 py-4 text-sm text-gray-500 max-w-[10rem] truncate" :title="user.remark">
+                  {{ user.remark || "—" }}
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap">
+                <td class="px-5 py-4 whitespace-nowrap">
                   <div class="flex items-center">
                     <Switch
                       :model-value="user.status === 1"
@@ -191,89 +222,125 @@
                     />
                     <span
                       class="ml-2 text-xs"
-                      :class="
-                        user.status === 1 ? 'text-green-600' : 'text-gray-400'
-                      "
+                      :class="user.status === 1 ? 'text-emerald-600' : 'text-gray-400'"
                     >
                       {{ user.status === 1 ? "已启用" : "已禁用" }}
                     </span>
                   </div>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                <td class="px-5 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
                   {{ formatDate(user.created_at) }}
                 </td>
-                <td
-                  class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"
-                >
-                  <div class="flex justify-end items-center gap-3">
-                    <button
-                      @click="viewApiKey(user)"
-                      class="text-indigo-600 hover:text-indigo-900 transition-colors p-1"
-                      title="查看 API Key"
-                    >
-                      <KeyIcon class="w-5 h-5" />
-                    </button>
+                <td class="px-5 py-4 whitespace-nowrap text-right text-sm font-medium">
+                  <div class="flex justify-end items-center gap-0.5">
                     <button
                       @click="editUser(user)"
-                      class="text-blue-600 hover:text-blue-900 transition-colors p-1"
-                      title="编辑用户/权限"
+                      class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
+                      title="编辑用户"
                     >
-                      <PencilSquareIcon class="w-5 h-5" />
+                      <PencilSquareIcon class="w-4 h-4" />
                     </button>
                     <button
-                      @click="openSetPasswordDialog(user)"
-                      class="text-emerald-600 hover:text-emerald-900 transition-colors p-1"
-                      title="设置密码"
+                      @click="viewApiKey(user)"
+                      class="p-1.5 rounded-lg text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                      title="查看 API Key"
                     >
-                      <LockClosedIcon class="w-5 h-5" />
+                      <KeyIcon class="w-4 h-4" />
                     </button>
-                    <button
-                      @click="regenerateApiKey(user)"
-                      class="text-amber-600 hover:text-amber-900 transition-colors p-1"
-                      title="重置 API Key"
-                    >
-                      <ArrowPathIcon class="w-5 h-5" />
-                    </button>
-                    <button
-                      v-if="user.user_name !== 'admin'"
-                      @click="confirmDelete(user)"
-                      class="text-red-600 hover:text-red-900 transition-colors p-1"
-                      title="删除用户"
-                    >
-                      <TrashIcon class="w-5 h-5" />
-                    </button>
+                    <div class="relative" @click.stop>
+                      <button
+                        type="button"
+                        @click="toggleRowMenu(user.id)"
+                        class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                        title="更多操作"
+                      >
+                        <EllipsisHorizontalIcon class="w-4 h-4" />
+                      </button>
+                      <div
+                        v-if="openRowMenuId === user.id"
+                        class="absolute right-0 mt-1 w-40 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-20"
+                      >
+                        <button
+                          type="button"
+                          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          @click="openRowMenuId = null; openSetPasswordDialog(user)"
+                        >
+                          <LockClosedIcon class="w-4 h-4 text-emerald-500" />
+                          设置密码
+                        </button>
+                        <button
+                          type="button"
+                          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          @click="openRowMenuId = null; regenerateApiKey(user)"
+                        >
+                          <ArrowPathIcon class="w-4 h-4 text-amber-500" />
+                          重置 API Key
+                        </button>
+                        <button
+                          v-if="user.user_name !== 'admin'"
+                          type="button"
+                          class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                          @click="openRowMenuId = null; confirmDelete(user)"
+                        >
+                          <TrashIcon class="w-4 h-4" />
+                          删除用户
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="text-sm text-gray-700">
+            共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
+          </div>
+          <div class="flex gap-2 w-full sm:w-auto">
+            <button
+              @click="page > 1 && (page--, fetchUsers())"
+              :disabled="page <= 1"
+              class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+            >
+              上一页
+            </button>
+            <button
+              @click="page < totalPages && (page++, fetchUsers())"
+              :disabled="page >= totalPages"
+              class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Mobile Card List -->
-      <div v-else class="space-y-4">
+      <div v-else class="space-y-3">
         <div
           v-for="user in users"
           :key="user.id"
-          class="bg-white shadow rounded-lg p-4 space-y-3"
+          class="bg-white border border-gray-200 rounded-lg p-4 shadow-sm"
         >
-          <div class="flex justify-between items-start">
-            <div class="flex-1 min-w-0">
-              <h3 class="text-base font-bold text-gray-900 truncate">
+          <div class="flex justify-between items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <h3 class="text-base font-semibold text-gray-900 truncate">
                 {{ user.user_name }}
               </h3>
-              <p class="text-xs text-gray-500">
-                {{ user.real_name || "无真实姓名" }}
+              <p class="text-xs text-gray-500 mt-0.5">
+                {{ user.real_name || "未设置姓名" }} · #{{ user.id }}
               </p>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 shrink-0">
               <span
                 :class="
                   user.role === 'admin'
-                    ? 'bg-purple-100 text-purple-800'
-                    : 'bg-blue-100 text-blue-800'
+                    ? 'bg-purple-50 text-purple-700'
+                    : 'bg-blue-50 text-blue-700'
                 "
-                class="px-2 py-0.5 text-[10px] font-bold rounded"
+                class="px-2 py-0.5 text-[10px] font-semibold rounded"
               >
                 {{ user.role === "admin" ? "管理员" : "普通用户" }}
               </span>
@@ -284,25 +351,11 @@
             </div>
           </div>
 
-          <div
-            class="grid grid-cols-2 gap-2 text-[11px] text-gray-500 border-t border-gray-50 pt-2"
-          >
-            <div>
-              <span class="opacity-60">ID:</span>
-              <span class="font-mono">{{ user.id }}</span>
-            </div>
-            <div>
-              <span class="opacity-60">创建:</span>
-              {{ formatDate(user.created_at).split(" ")[0] }}
-            </div>
-            <div class="col-span-2 truncate">
-              <span class="opacity-60">备注:</span> {{ user.remark || "-" }}
-            </div>
-          </div>
+          <p v-if="user.remark" class="mt-2 text-xs text-gray-500 truncate">{{ user.remark }}</p>
 
           <div
             v-if="user.role_names && user.role_names.length > 0"
-            class="flex flex-wrap gap-1"
+            class="flex flex-wrap gap-1 mt-2"
           >
             <span
               v-for="(rname, idx) in user.role_names"
@@ -313,80 +366,55 @@
             </span>
           </div>
 
-          <div
-            class="flex justify-between items-center pt-2 border-t border-gray-50"
-          >
-            <div class="flex gap-4">
-              <button
-                @click="viewApiKey(user)"
-                class="text-indigo-600 flex items-center gap-1 text-xs"
-              >
-                <KeyIcon class="w-4 h-4" /> 密钥
+          <div class="flex justify-between items-center pt-3 mt-3 border-t border-gray-100">
+            <span class="text-[10px] text-gray-400 font-mono">{{ formatDate(user.created_at).split(" ")[0] }}</span>
+            <div class="flex items-center gap-1">
+              <button @click="editUser(user)" class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="编辑">
+                <PencilSquareIcon class="w-4 h-4" />
               </button>
-              <button
-                @click="editUser(user)"
-                class="text-blue-600 flex items-center gap-1 text-xs"
-              >
-                <PencilSquareIcon class="w-4 h-4" /> 编辑
+              <button @click="viewApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-indigo-50" title="密钥">
+                <KeyIcon class="w-4 h-4" />
               </button>
-            </div>
-            <div class="flex gap-4">
-              <button
-                @click="openSetPasswordDialog(user)"
-                class="text-emerald-600 flex items-center gap-1 text-xs"
-              >
-                <LockClosedIcon class="w-4 h-4" /> 密码
+              <button @click="openSetPasswordDialog(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-emerald-50" title="密码">
+                <LockClosedIcon class="w-4 h-4" />
               </button>
-              <button
-                @click="regenerateApiKey(user)"
-                class="text-amber-600 flex items-center gap-1 text-xs"
-              >
-                <ArrowPathIcon class="w-4 h-4" /> 重置
+              <button @click="regenerateApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-amber-50" title="重置 Key">
+                <ArrowPathIcon class="w-4 h-4" />
               </button>
               <button
                 v-if="user.user_name !== 'admin'"
                 @click="confirmDelete(user)"
-                class="text-red-600 flex items-center gap-1 text-xs"
+                class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50"
+                title="删除"
               >
-                <TrashIcon class="w-4 h-4" /> 删除
+                <TrashIcon class="w-4 h-4" />
               </button>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Pagination -->
-      <div
-        class="bg-white sm:bg-gray-50 px-4 py-3 flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 mt-4 rounded-lg shadow sm:shadow-none"
-      >
-        <div class="text-sm text-gray-700 mb-3 sm:mb-0">
-          共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
-        </div>
-        <div class="flex gap-2 w-full sm:w-auto">
-          <button
-            @click="page > 1 && (page--, fetchUsers())"
-            :disabled="page <= 1"
-            class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 text-sm font-medium transition-colors"
-          >
-            上一页
-          </button>
-          <button
-            @click="page < totalPages && (page++, fetchUsers())"
-            :disabled="page >= totalPages"
-            class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 text-sm font-medium transition-colors"
-          >
-            下一页
-          </button>
+        <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="text-sm text-gray-700">
+            共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
+          </div>
+          <div class="flex gap-2 w-full sm:w-auto">
+            <button
+              @click="page > 1 && (page--, fetchUsers())"
+              :disabled="page <= 1"
+              class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+            >
+              上一页
+            </button>
+            <button
+              @click="page < totalPages && (page++, fetchUsers())"
+              :disabled="page >= totalPages"
+              class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+            >
+              下一页
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-
-    <!-- Empty State -->
-    <div
-      v-else
-      class="bg-white shadow rounded-lg p-12 text-center text-gray-500"
-    >
-      没有找到用户
     </div>
 
     <!-- Create/Edit Dialog -->
@@ -1533,6 +1561,9 @@ import {
   PlusIcon,
   UserGroupIcon,
   LockClosedIcon,
+  ChevronDownIcon,
+  EllipsisHorizontalIcon,
+  ChartBarIcon,
 } from "@heroicons/vue/24/outline";
 
 const { showToast } = useToast();
@@ -1546,9 +1577,11 @@ const handleResize = () => {
 
 onMounted(() => {
   window.addEventListener("resize", handleResize);
+  document.addEventListener("click", closeMenus);
 });
 onUnmounted(() => {
   window.removeEventListener("resize", handleResize);
+  document.removeEventListener("click", closeMenus);
 });
 
 // State
@@ -1569,6 +1602,27 @@ const searchQuery = ref("");
 const roleFilter = ref("");
 const statusFilter = ref("");
 const roleSearchQuery = ref("");
+const showMoreMenu = ref(false);
+const openRowMenuId = ref<number | null>(null);
+
+const hasActiveFilters = computed(
+  () =>
+    Boolean(searchQuery.value.trim()) ||
+    Boolean(roleFilter.value) ||
+    Boolean(statusFilter.value)
+);
+const isSearchEmpty = computed(
+  () => hasActiveFilters.value && users.value.length === 0
+);
+
+const closeMenus = () => {
+  showMoreMenu.value = false;
+  openRowMenuId.value = null;
+};
+const toggleRowMenu = (id: number) => {
+  openRowMenuId.value = openRowMenuId.value === id ? null : id;
+  showMoreMenu.value = false;
+};
 
 // Dialogs
 const showCreateDialog = ref(false);
