@@ -172,12 +172,21 @@ async def yield_non_data_guidance(
     *,
     user_question: str,
 ) -> AsyncGenerator[Dict[str, Any], None]:
+    is_greeting = DataQueryPrompts._looks_like_greeting_or_capability_question(
+        user_question, ""
+    )
+    if is_greeting:
+        title = "友好回应并介绍能力"
+        details = "识别为寒暄或能力咨询，先友好承接，再引导查数或切换智能体"
+    else:
+        title = "引导至更合适的智能体"
+        details = "当前请求更偏通用问答，已提供切换入口与查数引导"
     yield {
         "type": "log",
         "id": f"non_data_{uuid.uuid4().hex[:8]}",
-        "title": "当前问题更适合其他智能体",
-        "details": "当前请求不属于业务数据查询，已提供智能体切换入口",
-        "status": "warning",
+        "title": title,
+        "details": details,
+        "status": "info" if is_greeting else "warning",
         "category": "intent",
     }
     yield {

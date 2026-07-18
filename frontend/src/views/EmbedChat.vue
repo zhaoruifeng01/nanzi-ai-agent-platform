@@ -52,7 +52,7 @@
                             {{ currentExpertAgent.display_name || currentExpertAgent.name }}
                         </template>
                         <template v-else>
-                            {{ branding.default_agent_name || '南孜智能助手' }}
+                            {{ branding.default_agent_name || 'NanZi · AI' }}
                         </template>
                     </span>
                     <span v-if="isProcessing" class="flex h-1.5 w-1.5 relative">

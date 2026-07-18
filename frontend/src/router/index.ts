@@ -136,6 +136,24 @@ const router = createRouter({
           meta: { perm: 'menu:agent_management' }
         },
         {
+          path: 'scenario-templates',
+          name: 'ScenarioTemplates',
+          component: () => import('../views/ScenarioTemplates.vue'),
+          meta: { perm: 'menu:agent_management', title: '场景模板' }
+        },
+        {
+          path: 'scenario-templates/:templateId',
+          name: 'ScenarioTemplateDetail',
+          component: () => import('../views/ScenarioTemplateDetail.vue'),
+          meta: { perm: 'menu:agent_management', title: '模板详情' }
+        },
+        {
+          path: 'scenario-templates/:templateId/install',
+          name: 'ScenarioTemplateInstall',
+          component: () => import('../views/ScenarioTemplateInstall.vue'),
+          meta: { perm: 'menu:agent_management', title: '交付向导' }
+        },
+        {
           path: 'chatbi-examples',
           name: 'ChatBIExampleManagement',
           component: () => import('../views/ChatBIExampleManagement.vue'),

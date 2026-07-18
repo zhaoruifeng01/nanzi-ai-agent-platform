@@ -64,9 +64,23 @@ def test_build_non_data_response_only_guides_agent_switch():
 
     assert "切换智能体" in content
     assert "/switch_to_auto" in content
+    assert "更擅长" in content or "帮不上" in content
+    assert "更适合其他智能体" not in content
     assert "补充时间" not in content
     assert "指标口径" not in content
     assert "统计对象" not in content
+
+
+def test_build_non_data_response_greeting_is_friendly():
+    content = DataQueryPrompts.build_non_data_response("你好")
+
+    assert "你好" in content or "数据智能助手" in content
+    assert "更适合其他智能体" not in content
+    assert "不属于业务数据查询" not in content
+    assert "查看我能查哪些数据" in content
+    assert "切换智能体" in content
+    # 寒暄场景优先引导探索数据，切换放后面
+    assert content.index("查看我能查哪些数据") < content.index("切换智能体")
 
 
 def test_structured_clarification_only_builds_requested_gap_buttons():

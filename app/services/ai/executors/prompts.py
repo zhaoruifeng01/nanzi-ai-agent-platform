@@ -713,16 +713,38 @@ XML 示例：
     @classmethod
     def build_non_data_response(cls, user_question: str) -> str:
         """Guide an unrelated request away from ChatBI without inventing data gaps."""
-        topic = cls._truncate_for_display(user_question, 40)
-        intro = (
-            f"您当前的问题“{topic}”不属于业务数据查询。"
-            if topic
-            else "您当前的问题不属于业务数据查询。"
-        )
+        q = str(user_question or "").strip()
+        is_greeting = cls._looks_like_greeting_or_capability_question(q, "")
+
+        if is_greeting:
+            # 寒暄 / 能力咨询：先友好承接，再轻量引导查数或切换
+            if any(signal in q for signal in ("谢谢", "感谢", "辛苦了")):
+                lead = "不客气。我是数据智能助手，随时可以帮你查业务数据、做统计或可视化。"
+            elif any(signal in q for signal in ("你是谁", "你能做什么")):
+                lead = (
+                    "我是数据智能助手，主要帮你查询业务数据、做统计分析和结果可视化。"
+                    "把想查的对象说清楚就行，例如「本月各区域销售额」。"
+                )
+            else:
+                lead = (
+                    "你好！我是数据智能助手，可以帮你查业务数据、做统计和可视化。"
+                    "直接告诉我想看什么数据就行。"
+                )
+            return (
+                f"{lead}\n\n"
+                "### 💬 你可以这样继续\n"
+                f"{cls.quick_button('查看我能查哪些数据', DATASET_PORTAL_SLASH_COMMAND)}\n"
+                f"{cls.quick_button('切换智能体', '/switch_to_auto')}"
+            )
+
+        topic = cls._truncate_for_display(q, 40)
+        topic_bit = f"「{topic}」" if topic else "这个问题"
         return (
-            "### ℹ️ 当前问题更适合其他智能体\n"
-            f"{intro}数据智能助手主要负责业务数据查询、统计分析和结果可视化。\n\n"
-            "### 💬 您可以这样继续\n"
+            f"关于{topic_bit}，我这边帮不上太多——"
+            "我更擅长业务数据查询、统计分析和结果可视化。\n\n"
+            "若是闲聊、写作、翻译或通用问答，建议切换到其他智能体；"
+            "若想查数，可以直接问业务问题，或先看看我能查哪些数据。\n\n"
+            "### 💬 你可以这样继续\n"
             f"{cls.quick_button('切换智能体', '/switch_to_auto')}\n"
             f"{cls.quick_button('查看我能查哪些数据', DATASET_PORTAL_SLASH_COMMAND)}"
         )

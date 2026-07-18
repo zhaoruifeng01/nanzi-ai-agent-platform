@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from app.core.dependencies import require_admin, require_api_key
-from app.api.portal.endpoints import auth, audit, management, keys, dashboard, system, chat, metadata, agents, prompts, slash_commands, health, models, tools, ragflow, roles, mcp, changelog, chat_feedback, chatbi_examples, skills, personal_skills, memory, saved_reports, portal_prefs, quota, notifications, inbox, data_portal
+from app.api.portal.endpoints import auth, audit, management, keys, dashboard, system, chat, metadata, agents, prompts, slash_commands, health, models, tools, ragflow, roles, mcp, changelog, chat_feedback, chatbi_examples, skills, personal_skills, memory, saved_reports, portal_prefs, quota, notifications, inbox, data_portal, scenario_templates
 
 portal_router = APIRouter()
 
@@ -12,6 +12,7 @@ portal_router.include_router(dashboard.router, prefix="/dashboard", tags=["仪�
 
 # 3. 智能体管理 (Agents)
 portal_router.include_router(agents.router, prefix="/agents", tags=["智能体管理"], dependencies=[Depends(require_api_key)])
+portal_router.include_router(scenario_templates.router, prefix="/scenario-templates", tags=["场景模板"], dependencies=[Depends(require_api_key)])
 
 # 4. 智能体对话 (Chat)
 portal_router.include_router(chat.router, prefix="/chat", tags=["智能体对话"], dependencies=[Depends(require_api_key)])

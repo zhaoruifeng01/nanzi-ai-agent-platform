@@ -12,6 +12,7 @@ class ToolConfigItem(BaseModel):
     temperature: Optional[float] = None # Override Agent's temperature
     description_override: Optional[str] = None # Optional: Allow prompting tuning
     engine_config_override: Optional[Dict[str, Any]] = None
+    metadata_dataset_ids: Optional[List[str]] = None  # get_dataset_schema 可见元数据集范围
 
 class AIAgentVersionBase(BaseModel):
     version_number: Optional[int] = None
