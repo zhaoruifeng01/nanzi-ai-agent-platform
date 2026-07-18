@@ -84,6 +84,14 @@ class AIAgentResponse(AIAgentBase):
     owner_group: Optional[str] = None
     is_editable: bool = True # Computed field: true if user is owner or admin
     execution_count: int = 0
+    # 已发布版本能力摘要（列表卡片展示用；无发布版时为 null）
+    tool_count: Optional[int] = None
+    mcp_count: Optional[int] = None
+    skill_count: Optional[int] = None
+    skills_custom: Optional[bool] = None
+    # 仅在智能体显式绑定（非全局策略）时返回计数，否则为 null
+    metadata_dataset_count: Optional[int] = None
+    knowledge_base_count: Optional[int] = None
     # versions: List[AIAgentVersionResponse] = [] # Optional
 
     model_config = ConfigDict(from_attributes=True)

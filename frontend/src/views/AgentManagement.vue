@@ -1460,6 +1460,24 @@ const formatDate = (dateStr: string) => {
     minute: "2-digit",
   });
 };
+
+/** LOCAL 引擎且有已发布版本才展示工具能力摘要 */
+const hasCapabilitySummary = (agent: AIAgent) =>
+  (agent.engine_type || "LOCAL") === "LOCAL" && agent.tool_count != null;
+
+/** 显式绑定了数据集或知识库（非全局策略） */
+const hasResourceBindings = (agent: AIAgent) =>
+  (agent.metadata_dataset_count != null && agent.metadata_dataset_count > 0) ||
+  (agent.knowledge_base_count != null && agent.knowledge_base_count > 0);
+
+const showCapabilityChips = (agent: AIAgent) =>
+  hasCapabilitySummary(agent) || hasResourceBindings(agent);
+
+const formatSkillCountLabel = (agent: AIAgent) => {
+  if (!hasCapabilitySummary(agent)) return "—";
+  if (!agent.skills_custom) return "全部";
+  return String(agent.skill_count ?? 0);
+};
 </script>
 
 <template>
@@ -1747,6 +1765,58 @@ const formatDate = (dateStr: string) => {
             {{ agent.description || '暂无描述' }}
           </p>
 
+          <!-- 已发布版本：Tool / MCP / Skills；显式绑定才显示数据集 / 知识库 -->
+          <div
+            v-if="showCapabilityChips(agent)"
+            class="mt-3 flex items-center flex-wrap gap-1.5"
+          >
+            <template v-if="hasCapabilitySummary(agent)">
+              <span
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-slate-50 text-slate-600 border border-slate-100"
+                :title="`已配置 ${agent.tool_count ?? 0} 个内置/API 工具`"
+              >
+                <span class="text-slate-400 font-normal">Tool</span>
+                <span class="tabular-nums text-slate-800">{{ agent.tool_count ?? 0 }}</span>
+              </span>
+              <span
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-violet-50 text-violet-700 border border-violet-100"
+                :title="`已配置 ${agent.mcp_count ?? 0} 个 MCP 工具`"
+              >
+                <span class="text-violet-400 font-normal">MCP</span>
+                <span class="tabular-nums">{{ agent.mcp_count ?? 0 }}</span>
+              </span>
+              <span
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-100"
+                :title="agent.skills_custom ? `已自定义 ${agent.skill_count ?? 0} 个 Skills` : '使用全部公共 Skills'"
+              >
+                <span class="text-amber-400 font-normal">Skills</span>
+                <span class="tabular-nums">{{ formatSkillCountLabel(agent) }}</span>
+              </span>
+            </template>
+            <span
+              v-if="agent.metadata_dataset_count != null && agent.metadata_dataset_count > 0"
+              class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-cyan-50 text-cyan-700 border border-cyan-100"
+              :title="`已绑定 ${agent.metadata_dataset_count} 个元数据集`"
+            >
+              <span class="text-cyan-400 font-normal">数据集</span>
+              <span class="tabular-nums">{{ agent.metadata_dataset_count }}</span>
+            </span>
+            <span
+              v-if="agent.knowledge_base_count != null && agent.knowledge_base_count > 0"
+              class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-100"
+              :title="`已绑定 ${agent.knowledge_base_count} 个知识库`"
+            >
+              <span class="text-emerald-400 font-normal">知识库</span>
+              <span class="tabular-nums">{{ agent.knowledge_base_count }}</span>
+            </span>
+          </div>
+          <div
+            v-else-if="(agent.engine_type || 'LOCAL') === 'LOCAL'"
+            class="mt-3 text-[11px] text-gray-400"
+          >
+            尚未发布版本
+          </div>
+
           <div
             v-if="!isMobile"
             class="mt-3 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400"
@@ -1851,6 +1921,7 @@ const formatDate = (dateStr: string) => {
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-12 text-center">Icon</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider">智能体名称</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden md:table-cell">引擎 / 类型</th>
+                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden lg:table-cell">能力</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-center w-32">状态</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-right w-48">操作</th>
               </tr>
@@ -1907,6 +1978,37 @@ const formatDate = (dateStr: string) => {
                       {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
                     </span>
                   </div>
+                </td>
+                <td class="px-6 py-4 hidden lg:table-cell">
+                  <div v-if="showCapabilityChips(agent)" class="flex items-center flex-wrap gap-1">
+                    <template v-if="hasCapabilitySummary(agent)">
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-50 text-slate-600 border border-slate-100 tabular-nums" title="Tool">
+                        T {{ agent.tool_count ?? 0 }}
+                      </span>
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-100 tabular-nums" title="MCP">
+                        M {{ agent.mcp_count ?? 0 }}
+                      </span>
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-100 tabular-nums" title="Skills">
+                        S {{ formatSkillCountLabel(agent) }}
+                      </span>
+                    </template>
+                    <span
+                      v-if="agent.metadata_dataset_count != null && agent.metadata_dataset_count > 0"
+                      class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-cyan-50 text-cyan-700 border border-cyan-100 tabular-nums"
+                      title="元数据集"
+                    >
+                      数 {{ agent.metadata_dataset_count }}
+                    </span>
+                    <span
+                      v-if="agent.knowledge_base_count != null && agent.knowledge_base_count > 0"
+                      class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-100 tabular-nums"
+                      title="知识库"
+                    >
+                      库 {{ agent.knowledge_base_count }}
+                    </span>
+                  </div>
+                  <span v-else-if="(agent.engine_type || 'LOCAL') === 'LOCAL'" class="text-[10px] text-gray-400">未发布</span>
+                  <span v-else class="text-[10px] text-gray-300">—</span>
                 </td>
                 <td class="px-6 py-4">
                   <div class="flex justify-center">

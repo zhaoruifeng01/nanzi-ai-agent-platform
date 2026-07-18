@@ -259,6 +259,326 @@ OPS_INSPECTION_MANIFEST: Dict[str, Any] = {
     ],
 }
 
+FINANCE_EXPENSE_ANALYSIS_MANIFEST: Dict[str, Any] = {
+    "id": "finance-expense-analysis",
+    "name": "财务费用分析助手",
+    "category": "数据分析",
+    "description": "面向费用趋势、预算执行、部门成本和异常费用解释的财务分析助手。",
+    "tags": ["ChatBI", "财务", "预算", "费用分析"],
+    "recommended": True,
+    "target_departments": ["财务部", "经营管理", "部门负责人"],
+    "delivery_time": "0.5-1 天",
+    "maturity": "标准版",
+    "included_capabilities": ["Agent", "ChatBI", "指标口径", "验收样例"],
+    "deliverables": ["Agent", "系统提示词", "工具配置", "推荐问题", "验收标准", "交付清单"],
+    "business_goals": [
+        "让财务人员用自然语言查看费用趋势、预算执行率和部门成本结构。",
+        "识别异常费用波动，并给出可能原因和后续核查建议。",
+        "把高频财务分析问题沉淀为可复用问法和报表入口。",
+    ],
+    "install_steps": ["基础信息", "绑定资源", "预检", "安装发布"],
+    "acceptance_criteria": [
+        "费用、预算、部门成本类问题必须优先调用 SQL 查询工具获取真实数据。",
+        "回答必须说明统计口径、时间范围和数据依据。",
+        "遇到预算口径或费用科目不明确时，必须主动澄清。",
+    ],
+    "agent": {
+        "name": "finance-expense-analysis",
+        "display_name": "财务费用分析助手",
+        "description": "查询费用、预算和部门成本数据，辅助财务分析与异常定位。",
+        "capabilities": ["data_query", "knowledge_search"],
+        "sort_order": 75,
+        "engine_type": "LOCAL",
+        "engine_config": {
+            "scenario_template_id": "finance-expense-analysis",
+            "scenario_category": "finance",
+        },
+    },
+    "version": {
+        "model_name": None,
+        "temperature": 0.0,
+        "system_prompt": (
+            "你是财务费用分析助手，负责围绕费用、预算、成本中心和部门经营数据回答问题。"
+            "必须优先使用数据查询工具获取真实数据；回答时说明统计口径、时间范围和异常判断依据。"
+            "对于不明确的科目、期间或组织范围，要先澄清，不要编造财务数字。"
+        ),
+        "tools": ["get_dataset_schema", "execute_sql_query", "search_knowledge_base"],
+        "skills_custom": False,
+        "skills": [],
+        "comment": "由场景模板一键交付生成",
+    },
+    "required_resources": [
+        {"type": "metadata_dataset", "name": "财务费用数据集", "required": True, "description": "建议绑定费用明细、预算、部门和科目类元数据集。"},
+        {"type": "knowledge_base", "name": "财务口径知识库", "required": False, "description": "建议绑定预算口径、费用科目说明和财务制度文档。"},
+    ],
+    "sample_questions": [
+        "本月费用相比预算超了多少？",
+        "按部门统计近 3 个月费用趋势。",
+        "哪些费用科目波动最明显？",
+    ],
+    "next_steps": [
+        "进入元数据管理确认费用、预算和部门维度口径。",
+        "绑定财务制度或预算口径知识库。",
+        "用样例问题试跑并确认异常判断是否符合业务口径。",
+    ],
+}
+
+SALES_CUSTOMER_INSIGHT_MANIFEST: Dict[str, Any] = {
+    "id": "sales-customer-insight",
+    "name": "销售客户洞察助手",
+    "category": "数据分析",
+    "description": "面向客户分层、商机跟进、区域销售和复购/流失分析的销售经营助手。",
+    "tags": ["ChatBI", "销售", "客户洞察", "商机"],
+    "recommended": True,
+    "target_departments": ["销售管理", "客户成功", "经营管理"],
+    "delivery_time": "0.5-1 天",
+    "maturity": "标准版",
+    "included_capabilities": ["Agent", "ChatBI", "客户分析", "推荐问题"],
+    "deliverables": ["Agent", "系统提示词", "工具配置", "推荐问题", "验收标准", "交付清单"],
+    "business_goals": [
+        "帮助销售管理者快速查看客户结构、商机进展和区域业绩。",
+        "发现复购、流失、重点客户和高价值商机线索。",
+        "把客户洞察类问题沉淀为销售例会和经营分析入口。",
+    ],
+    "install_steps": ["基础信息", "绑定资源", "预检", "安装发布"],
+    "acceptance_criteria": [
+        "客户、商机、销售额类问题必须优先查真实数据。",
+        "回答必须区分客户事实、趋势判断和跟进建议。",
+        "涉及客户分层或流失判断时必须说明计算口径。",
+    ],
+    "agent": {
+        "name": "sales-customer-insight",
+        "display_name": "销售客户洞察助手",
+        "description": "分析客户、商机和销售数据，辅助销售管理和客户经营。",
+        "capabilities": ["data_query", "knowledge_search"],
+        "sort_order": 74,
+        "engine_type": "LOCAL",
+        "engine_config": {
+            "scenario_template_id": "sales-customer-insight",
+            "scenario_category": "sales",
+        },
+    },
+    "version": {
+        "model_name": None,
+        "temperature": 0.0,
+        "system_prompt": (
+            "你是销售客户洞察助手，负责围绕客户、商机、销售额、区域和复购流失数据回答问题。"
+            "必须优先使用数据查询工具获取真实数据；结论要区分事实、趋势和建议。"
+            "客户分层、流失或复购判断必须说明口径。"
+        ),
+        "tools": ["get_dataset_schema", "execute_sql_query", "search_knowledge_base"],
+        "skills_custom": False,
+        "skills": [],
+        "comment": "由场景模板一键交付生成",
+    },
+    "required_resources": [
+        {"type": "metadata_dataset", "name": "销售客户数据集", "required": True, "description": "建议绑定客户、商机、订单、销售区域和跟进记录类元数据集。"},
+        {"type": "knowledge_base", "name": "销售方法知识库", "required": False, "description": "建议绑定客户分层规则、销售流程和产品方案文档。"},
+    ],
+    "sample_questions": [
+        "本季度重点客户销售额排名如何？",
+        "哪些客户最近 90 天没有复购？",
+        "按区域分析本月商机转化情况。",
+    ],
+    "next_steps": [
+        "确认客户、商机、订单数据集已完成元数据配置。",
+        "补充客户分层、复购和流失判断口径。",
+        "用销售例会高频问题完成验收。",
+    ],
+}
+
+SUPPORT_TICKET_ANALYSIS_MANIFEST: Dict[str, Any] = {
+    "id": "support-ticket-analysis",
+    "name": "客服工单分析助手",
+    "category": "数据分析",
+    "description": "面向工单分类、热点问题、响应时效和满意度分析的客服运营助手。",
+    "tags": ["ChatBI", "客服", "工单", "满意度"],
+    "recommended": False,
+    "target_departments": ["客服中心", "客户成功", "产品运营"],
+    "delivery_time": "0.5-1 天",
+    "maturity": "标准版",
+    "included_capabilities": ["Agent", "ChatBI", "知识检索", "反馈闭环"],
+    "deliverables": ["Agent", "系统提示词", "工具配置", "推荐问题", "验收标准", "交付清单"],
+    "business_goals": [
+        "快速统计工单量、响应时效、热点问题和满意度趋势。",
+        "结合 FAQ 知识库解释问题原因，并发现知识缺口。",
+        "把客服运营复盘问题沉淀为周报和专题分析入口。",
+    ],
+    "install_steps": ["基础信息", "绑定资源", "预检", "安装发布"],
+    "acceptance_criteria": [
+        "工单统计类问题必须优先调用 SQL 查询工具。",
+        "问题原因解释必须基于工单数据或已绑定知识库。",
+        "找不到原因时要说明缺口，不允许编造客户反馈。",
+    ],
+    "agent": {
+        "name": "support-ticket-analysis",
+        "display_name": "客服工单分析助手",
+        "description": "分析客服工单、响应时效和满意度，辅助客服运营复盘。",
+        "capabilities": ["data_query", "knowledge_search"],
+        "sort_order": 65,
+        "engine_type": "LOCAL",
+        "engine_config": {
+            "scenario_template_id": "support-ticket-analysis",
+            "scenario_category": "support",
+        },
+    },
+    "version": {
+        "model_name": None,
+        "temperature": 0.0,
+        "system_prompt": (
+            "你是客服工单分析助手，负责围绕工单、响应时效、热点问题和满意度回答问题。"
+            "统计必须基于真实数据；解释类回答优先结合 FAQ 或工单知识库。"
+            "对原因判断要说明证据，不要编造客户反馈。"
+        ),
+        "tools": ["get_dataset_schema", "execute_sql_query", "search_knowledge_base"],
+        "skills_custom": False,
+        "skills": [],
+        "comment": "由场景模板一键交付生成",
+    },
+    "required_resources": [
+        {"type": "metadata_dataset", "name": "客服工单数据集", "required": True, "description": "建议绑定工单、客户、产品、响应时效和满意度类元数据集。"},
+        {"type": "knowledge_base", "name": "客服 FAQ 知识库", "required": False, "description": "建议绑定 FAQ、产品问题手册和处理 SOP。"},
+    ],
+    "sample_questions": [
+        "本周工单量最高的问题类型有哪些？",
+        "统计各产品线平均首次响应时长。",
+        "满意度下降主要集中在哪些问题？",
+    ],
+    "next_steps": [
+        "补齐工单分类、产品线和响应时效字段说明。",
+        "绑定客服 FAQ 和处理 SOP 知识库。",
+        "用客服周报问题完成验收。",
+    ],
+}
+
+HR_POLICY_QA_MANIFEST: Dict[str, Any] = {
+    "id": "hr-policy-qa",
+    "name": "人力制度问答助手",
+    "category": "知识问答",
+    "description": "面向入职、考勤、报销、假期和绩效制度的人力行政问答助手。",
+    "tags": ["知识库", "人力行政", "制度问答", "反馈纠错"],
+    "recommended": False,
+    "target_departments": ["人力资源", "行政", "全员服务"],
+    "delivery_time": "0.5 天",
+    "maturity": "基础版",
+    "included_capabilities": ["Agent", "知识检索", "引用溯源", "反馈入口"],
+    "deliverables": ["Agent", "系统提示词", "知识库绑定建议", "推荐问题", "验收标准", "交付清单"],
+    "business_goals": [
+        "让员工自助查询人事、行政和财务报销类制度。",
+        "回答带引用依据，减少 HR 重复答疑。",
+        "通过反馈发现制度文档缺失或口径冲突。",
+    ],
+    "install_steps": ["基础信息", "绑定资源", "预检", "安装发布"],
+    "acceptance_criteria": [
+        "制度类问题必须优先检索知识库并引用依据。",
+        "资料不足时必须提示缺口，不允许编造制度。",
+        "至少完成入职、考勤、报销、假期各 1 条问题验收。",
+    ],
+    "agent": {
+        "name": "hr-policy-qa",
+        "display_name": "人力制度问答助手",
+        "description": "基于人力行政制度知识库回答员工常见问题。",
+        "capabilities": ["knowledge_search"],
+        "sort_order": 64,
+        "engine_type": "LOCAL",
+        "engine_config": {
+            "scenario_template_id": "hr-policy-qa",
+            "scenario_category": "hr",
+        },
+    },
+    "version": {
+        "model_name": None,
+        "temperature": 0.0,
+        "system_prompt": (
+            "你是人力制度问答助手，负责基于已授权知识库回答入职、考勤、报销、假期和绩效制度问题。"
+            "必须优先检索知识库并引用依据；如果资料不足，要明确说明缺口并建议联系人力补充。"
+            "不要编造制度、审批权限或福利承诺。"
+        ),
+        "tools": ["search_knowledge_base"],
+        "skills_custom": False,
+        "skills": [],
+        "comment": "由场景模板一键交付生成",
+    },
+    "required_resources": [
+        {"type": "knowledge_base", "name": "人力行政制度库", "required": True, "description": "建议绑定员工手册、考勤假期、报销和绩效制度。"},
+        {"type": "feedback", "name": "反馈纠错入口", "required": False, "description": "建议开启反馈入口，用于收集制度缺口。"},
+    ],
+    "sample_questions": [
+        "年假如何计算和申请？",
+        "差旅报销需要哪些材料？",
+        "新员工试用期绩效怎么评估？",
+    ],
+    "next_steps": [
+        "上传员工手册、考勤假期和报销制度。",
+        "检查知识库切片和引用是否可读。",
+        "用员工高频问题完成验收。",
+    ],
+}
+
+LEGAL_CONTRACT_REVIEW_MANIFEST: Dict[str, Any] = {
+    "id": "legal-contract-review",
+    "name": "合同法务审阅助手",
+    "category": "知识问答",
+    "description": "面向合同条款解释、风险提示和制度匹配的法务知识助手。",
+    "tags": ["知识库", "合同", "法务", "风险提示"],
+    "recommended": False,
+    "target_departments": ["法务", "销售支持", "采购"],
+    "delivery_time": "1 天",
+    "maturity": "基础版",
+    "included_capabilities": ["Agent", "知识检索", "风险提示", "引用溯源"],
+    "deliverables": ["Agent", "系统提示词", "知识库绑定建议", "推荐问题", "验收标准", "交付清单"],
+    "business_goals": [
+        "辅助业务人员理解合同条款、标准模板和审批要求。",
+        "基于企业制度和历史条款提示潜在风险。",
+        "让法务把常见审阅口径沉淀为可复用知识库。",
+    ],
+    "install_steps": ["基础信息", "绑定资源", "预检", "安装发布"],
+    "acceptance_criteria": [
+        "合同解释和风险提示必须基于已绑定知识库。",
+        "必须明确说明不是正式法律意见，重大事项需法务复核。",
+        "找不到依据时要提示缺口，不得编造法规或条款。",
+    ],
+    "agent": {
+        "name": "legal-contract-review",
+        "display_name": "合同法务审阅助手",
+        "description": "基于合同模板、制度和审阅口径提示条款风险。",
+        "capabilities": ["knowledge_search"],
+        "sort_order": 63,
+        "engine_type": "LOCAL",
+        "engine_config": {
+            "scenario_template_id": "legal-contract-review",
+            "scenario_category": "legal",
+        },
+    },
+    "version": {
+        "model_name": None,
+        "temperature": 0.0,
+        "system_prompt": (
+            "你是合同法务审阅助手，负责基于已授权知识库解释合同条款、提示风险和匹配企业制度。"
+            "所有结论必须基于资料依据；不得编造法律条文或合同承诺。"
+            "你提供的是风险提示和资料辅助，不构成正式法律意见，重大事项必须建议法务复核。"
+        ),
+        "tools": ["search_knowledge_base"],
+        "skills_custom": False,
+        "skills": [],
+        "comment": "由场景模板一键交付生成",
+    },
+    "required_resources": [
+        {"type": "knowledge_base", "name": "合同法务知识库", "required": True, "description": "建议绑定合同模板、审阅清单、授权制度和历史风险案例。"},
+        {"type": "feedback", "name": "反馈纠错入口", "required": False, "description": "建议开启反馈入口，用于法务修订知识库。"},
+    ],
+    "sample_questions": [
+        "这段违约责任条款有哪些风险？",
+        "付款条件是否符合公司标准模板？",
+        "这个合同审批需要哪些授权材料？",
+    ],
+    "next_steps": [
+        "上传标准合同模板、审阅清单和授权制度。",
+        "补充高风险条款案例和处理建议。",
+        "用典型合同问题试跑并由法务复核答案。",
+    ],
+}
+
 
 @dataclass(frozen=True)
 class ScenarioTemplate:
@@ -304,6 +624,11 @@ class ScenarioTemplateService:
             CHATBI_BUSINESS_ANALYSIS_MANIFEST,
             KNOWLEDGE_QA_MANIFEST,
             OPS_INSPECTION_MANIFEST,
+            FINANCE_EXPENSE_ANALYSIS_MANIFEST,
+            SALES_CUSTOMER_INSIGHT_MANIFEST,
+            SUPPORT_TICKET_ANALYSIS_MANIFEST,
+            HR_POLICY_QA_MANIFEST,
+            LEGAL_CONTRACT_REVIEW_MANIFEST,
         )
     }
 

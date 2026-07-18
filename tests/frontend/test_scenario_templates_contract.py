@@ -17,6 +17,7 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     agent_management = _read("frontend/src/views/AgentManagement.vue")
     api = _read("frontend/src/api/portal.ts")
     market = _read("frontend/src/views/ScenarioTemplates.vue")
+    scenario_service = _read("app/services/scenario_template_service.py")
     detail = _read("frontend/src/views/ScenarioTemplateDetail.vue")
     install = _read("frontend/src/views/ScenarioTemplateInstall.vue")
 
@@ -49,12 +50,34 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "/api/portal/scenario-templates" in api
 
     assert "场景包市场" in market
-    assert "经营分析 ChatBI 助手" in market
-    assert "企业知识问答助手" in market
-    assert "运维巡检助手" in market
+    assert "按业务场景一键交付智能体" in market
+    assert "templateStats" in market
+    assert "from-blue-700 via-blue-600 to-indigo-700" in market
+    assert "text-white/90" in market
+    assert "bg-white p-4 text-center shadow-sm" in market
+    assert "text-blue-900" in market
+    assert "bg-white/15 p-3 text-center" not in market
+    assert "selectedCategory" in market
+    assert "activeTab" in market
+    assert "type MarketTab" in market
+    assert "可交付模板" in market
+    assert "categoryOptions" in market
+    assert "filteredTemplates" in market
+    assert "经营分析 ChatBI 助手" in scenario_service
+    assert "企业知识问答助手" in scenario_service
+    assert "运维巡检助手" in scenario_service
+    assert "财务费用分析助手" in scenario_service
+    assert "销售客户洞察助手" in scenario_service
+    assert "客服工单分析助手" in scenario_service
+    assert "人力制度问答助手" in scenario_service
+    assert "合同法务审阅助手" in scenario_service
+    assert "资源要求" in market
+    assert "数据分析" in market
+    assert "知识问答" in market
+    assert "运维自动化" in market
     assert "查看方案" in market
     assert "router.push({ name: 'ScenarioTemplateDetail'" in market
-    assert "一键交付" not in market
+    assert "开始交付" not in market
 
     assert "模板详情" in detail
     assert "业务目标" in detail
@@ -89,6 +112,8 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "getScenarioTemplateInstances" in api
     assert "getScenarioTemplateInstance" in api
     assert "已交付场景" in market
+    assert "activeTab === 'delivered'" in market
+    assert "activeTab === 'templates'" in market
     assert "loadInstalledInstances" in market
     assert "instance_id: instance.id" in market
     assert "resource_summary" in market

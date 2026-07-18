@@ -38,7 +38,13 @@ async def test_chatbi_scenario_template_precheck_and_install(db_session):
             "chatbi-business-analysis",
             "knowledge-qa-assistant",
             "ops-inspection-assistant",
+            "finance-expense-analysis",
+            "sales-customer-insight",
+            "support-ticket-analysis",
+            "hr-policy-qa",
+            "legal-contract-review",
         }.issubset(template_ids)
+        assert len(template_ids) >= 8
 
         template = next(t for t in templates if t["id"] == "chatbi-business-analysis")
         assert template["target_departments"] == ["经营管理", "销售管理", "财务分析"]
