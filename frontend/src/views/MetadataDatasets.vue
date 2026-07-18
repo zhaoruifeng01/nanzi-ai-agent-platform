@@ -17,6 +17,7 @@ const router = useRouter()
 const datasets = ref<Dataset[]>([])
 const loading = ref(false)
 const showCreateModal = ref(false)
+const showCreateMenu = ref(false)
 const showImportModal = ref(false)
 const showSpecModal = ref(false)
 const showDeleteModal = ref(false)
@@ -973,20 +974,55 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm mb-6">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900 font-mono tracking-tight">元数据管理 <span class="text-primary-500">:: Datasets</span></h1>
-        <p class="text-gray-500 text-sm mt-1">管理业务数据集及其表结构语义。</p>
-      </div>
-      <div class="flex items-center gap-3">
-        <!-- 引擎连接指示器 -->
+  <div class="space-y-5" @click="showCreateMenu = false">
+    <!-- Header：对齐技能工作台单行工具栏 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <h1 class="text-2xl font-bold tracking-normal text-gray-900">元数据管理</h1>
+            <button
+              type="button"
+              @click="showSpecModal = true"
+              class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm shrink-0"
+              title="元数据规范"
+            >
+              <span class="font-bold text-sm">?</span>
+            </button>
+          </div>
+          <p class="text-gray-500 text-sm mt-0.5 truncate">管理业务数据集及其表结构语义</p>
+        </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="relative w-full sm:w-72">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="搜索数据集名称、ID或描述..."
+            class="w-full pl-9 pr-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all shadow-sm"
+          />
+        </div>
+
+        <select
+          v-model="statusFilter"
+          class="w-full sm:w-auto text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:outline-none shrink-0"
+        >
+          <option value="all">状态：全部</option>
+          <option value="active">已启用</option>
+          <option value="inactive">已禁用</option>
+        </select>
+
+        <!-- 引擎状态：放在右侧工具栏，避免挤占标题区 -->
         <div
-          class="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border transition-colors shrink-0 group relative cursor-pointer"
+          class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs border transition-colors shrink-0 group relative cursor-pointer bg-white shadow-sm"
           :class="{
-            'border-blue-200 bg-blue-50/50 text-blue-700': !isLocalMode && engineStatus === 'checking',
-            'border-emerald-200 bg-emerald-50/50 text-emerald-700': isLocalMode || engineStatus === 'connected',
-            'border-amber-200 bg-amber-50/50 text-amber-700': !isLocalMode && engineStatus === 'disconnected'
+            'border-blue-200 text-blue-700': !isLocalMode && engineStatus === 'checking',
+            'border-emerald-200 text-emerald-700': isLocalMode || engineStatus === 'connected',
+            'border-amber-200 text-amber-700': !isLocalMode && engineStatus === 'disconnected'
           }"
         >
           <span
@@ -997,60 +1033,143 @@ onMounted(async () => {
               'bg-amber-500': !isLocalMode && engineStatus === 'disconnected'
             }"
           ></span>
-          <span class="font-medium">引擎 {{ engineStatusText }}</span>
-
-          <!-- 悬浮 Tooltip 提示引擎详细配置 -->
-          <span class="absolute top-full right-0 mt-2 hidden group-hover:block bg-slate-900 text-white text-xs p-2.5 rounded-lg shadow-xl z-50 text-left font-sans font-normal pointer-events-none">
+          <span class="font-medium whitespace-nowrap">引擎 {{ engineStatusText }}</span>
+          <span class="absolute top-full right-0 mt-2 hidden group-hover:block bg-slate-900 text-white text-xs p-2.5 rounded-lg shadow-xl z-50 text-left font-sans font-normal pointer-events-none w-56">
             <div class="font-medium mb-1 border-b border-white/10 pb-1">知识库引擎信息</div>
             <template v-if="isLocalMode">
               <div class="opacity-80">运行模式: 本地 Redis 向量检索</div>
               <div class="opacity-80 mt-0.5 text-emerald-400 font-medium">无需连接外部 RAGFlow</div>
             </template>
             <template v-else>
-              <div class="opacity-80">地址: {{ ragflowApiUrl }}</div>
+              <div class="opacity-80 break-all">地址: {{ ragflowApiUrl }}</div>
               <div class="opacity-80 mt-1">
-                API Key: 
+                API Key:
                 <span v-if="ragflowConfig?.api_key_configured" class="text-emerald-400">已配置</span>
                 <span v-else class="text-amber-400">未配置</span>
               </div>
             </template>
           </span>
         </div>
-        <button 
+
+        <div
+          v-if="hasActiveFilters"
+          class="text-xs text-gray-400 whitespace-nowrap px-1 shrink-0 hidden sm:block"
+        >
+          {{ displayDatasets.length }} / {{ datasets.length }}
+        </div>
+
+        <!-- 视图切换 -->
+        <div class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
+          <button
+            type="button"
+            @click="viewMode = 'grid'"
+            class="p-1.5 rounded-md transition-all duration-200 flex items-center justify-center"
+            :class="viewMode === 'grid' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
+            title="卡片视图"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            @click="viewMode = 'list'"
+            class="p-1.5 rounded-md transition-all duration-200 flex items-center justify-center"
+            :class="viewMode === 'list' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
+            title="列表视图"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+
+        <button
+          type="button"
           @click="showTestModal = true"
-          class="bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 px-4 py-2 rounded-lg transition-all flex items-center gap-2 text-sm font-medium"
+          class="flex items-center justify-center p-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 active:scale-95 transition-all shadow-sm shrink-0"
+          title="检索测试"
         >
-          <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          测试
+          <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
         </button>
-        <button 
-          @click="showSpecModal = true"
-          class="border border-purple-200 text-purple-600 hover:bg-purple-50 px-4 py-2 rounded-lg transition-all flex items-center gap-2 text-sm font-medium"
+
+        <!-- 新建 / 智能导入（拆分主按钮） -->
+        <div
+          v-if="hasPermission('element:metadata:edit') || hasPermission('element:metadata:import')"
+          class="relative shrink-0"
+          @click.stop
         >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 17.5 5s3.332.477 4.5 1.253v13C20.832 18.477 19.246 18 17.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
-          规范
-        </button>
-        <button 
-          v-has-perm="'element:metadata:import'"
-          @click="showImportModal = true" 
-          class="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg shadow-md transition-all active:scale-95 text-sm font-medium"
-        >
-          <svg class="w-5 h-5 text-indigo-100" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          智能导入 (DDL)
-        </button>
-        <button 
-          @click="showCreateModal = true"
-          v-if="hasPermission('element:metadata:edit')"
-          class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-all shadow-md flex items-center gap-2 text-sm font-medium"
-        >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-          新建数据集
-        </button>
+          <div class="flex items-stretch rounded-lg overflow-hidden shadow-sm">
+            <button
+              v-if="hasPermission('element:metadata:edit')"
+              type="button"
+              @click="showCreateModal = true; showCreateMenu = false"
+              class="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm transition-all active:scale-[0.98]"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              新建数据集
+            </button>
+            <button
+              v-else
+              type="button"
+              v-has-perm="'element:metadata:import'"
+              @click="showImportModal = true; showCreateMenu = false"
+              class="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm transition-all active:scale-[0.98]"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              智能导入
+            </button>
+            <button
+              v-if="hasPermission('element:metadata:edit') && hasPermission('element:metadata:import')"
+              type="button"
+              @click="showCreateMenu = !showCreateMenu"
+              class="px-2 border-l border-blue-500 bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              title="更多创建方式"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          </div>
+          <div
+            v-if="showCreateMenu"
+            class="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-20"
+          >
+            <button
+              v-if="hasPermission('element:metadata:edit')"
+              type="button"
+              @click="showCreateMenu = false; showCreateModal = true"
+              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              空白新建
+            </button>
+            <button
+              v-has-perm="'element:metadata:import'"
+              type="button"
+              @click="showCreateMenu = false; showImportModal = true"
+              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              智能导入 (DDL)
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Error Banner -->
-    <div v-if="errorMessage && showErrorBanner && !isLocalMode" class="relative rounded-2xl border border-amber-200 bg-amber-50 p-4 pr-10 text-sm text-amber-800 shadow-sm flex items-start gap-3 mb-6">
+    <div v-if="errorMessage && showErrorBanner && !isLocalMode" class="relative rounded-2xl border border-amber-200 bg-amber-50 p-4 pr-10 text-sm text-amber-800 shadow-sm flex items-start gap-3">
       <svg class="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
       </svg>
@@ -1062,67 +1181,11 @@ onMounted(async () => {
           <div class="mt-0.5">错误日志: {{ errorMessage }}</div>
         </div>
       </div>
-      <!-- 右上角关闭按钮 -->
       <button @click="showErrorBanner = false" class="absolute top-4 right-4 text-amber-500 hover:text-amber-700 transition-colors" title="关闭">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
-    </div>
-
-    <!-- Toolbar -->
-    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-       <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto flex-1">
-         <!-- Search -->
-         <div class="relative w-full sm:w-80">
-            <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-               <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            </span>
-            <input 
-              v-model="searchQuery" 
-              type="text" 
-              class="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-lg leading-5 bg-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary focus:bg-white sm:text-sm transition-all" 
-              placeholder="搜索数据集名称、ID或描述..."
-            >
-         </div>
-
-         <!-- Status Filter -->
-         <select
-           v-model="statusFilter"
-           class="w-full sm:w-36 py-2 px-3 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary focus:bg-white transition-all"
-         >
-           <option value="all">全部状态</option>
-           <option value="active">已启用</option>
-           <option value="inactive">已禁用</option>
-         </select>
-
-         <div
-           v-if="hasActiveFilters"
-           class="text-xs text-gray-400 whitespace-nowrap px-1"
-         >
-           显示 {{ displayDatasets.length }} / {{ datasets.length }}
-         </div>
-       </div>
-       
-       <!-- View Toggle -->
-       <div class="flex bg-gray-100 p-1 rounded-lg">
-          <button 
-             @click="viewMode = 'grid'"
-             class="p-1.5 rounded-md transition-all flex items-center gap-2 text-sm font-medium"
-             :class="viewMode === 'grid' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-          >
-             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
-             <span class="hidden sm:inline">网格</span>
-          </button>
-          <button 
-             @click="viewMode = 'list'"
-             class="p-1.5 rounded-md transition-all flex items-center gap-2 text-sm font-medium"
-             :class="viewMode === 'list' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-          >
-             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-             <span class="hidden sm:inline">列表</span>
-          </button>
-       </div>
     </div>
 
     <!-- Loading State -->
@@ -1134,34 +1197,31 @@ onMounted(async () => {
     <!-- Filtered Empty State -->
     <div
       v-else-if="datasets.length > 0 && displayDatasets.length === 0"
-      class="text-center py-20 bg-white rounded-xl border border-dashed border-gray-200"
+      class="flex flex-col items-center justify-center py-16"
     >
-      <div class="text-4xl mb-3">🔍</div>
-      <h3 class="text-lg font-medium text-gray-900">没有匹配的数据集</h3>
-      <p class="text-gray-500 mt-1 mb-5 text-sm">请调整搜索关键词或状态筛选条件后重试。</p>
+      <p class="text-sm text-gray-500 mt-4 font-semibold">无匹配的数据集</p>
+      <p class="text-xs text-gray-400 mt-1">试试其他关键词，或清除筛选后浏览全部</p>
       <button
+        type="button"
         @click="searchQuery = ''; statusFilter = 'all'"
-        class="px-4 py-2 text-sm font-medium text-primary hover:bg-primary/5 rounded-lg border border-primary/20 transition-colors"
+        class="mt-4 px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors"
       >
         清除筛选
       </button>
     </div>
 
-    <!-- Grid View -->
-    <div v-else-if="viewMode === 'grid'" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <!-- Grid View：紧凑卡片，降低无效留白 -->
+    <div v-else-if="viewMode === 'grid'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
       <div 
         v-for="ds in displayDatasets" 
         :key="ds.id"
-        class="bg-white rounded-xl shadow-sm border border-gray-100 hover:shadow-xl transition-all duration-300 cursor-pointer group overflow-hidden flex flex-col hover:-translate-y-1 relative"
+        class="bg-white rounded-xl border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-200 cursor-pointer group overflow-hidden flex flex-col relative"
         @click="goToTables(ds.id)"
       >
-        <!-- Decoration Top -->
-        <div class="h-1.5 w-full bg-gradient-to-r from-blue-400 via-indigo-500 to-primary opacity-0 group-hover:opacity-100 transition-opacity"></div>
-        
-        <!-- RAG Sync Badge (Absolute Top-Right) -->
+        <!-- RAG Sync Badge -->
         <div 
           v-if="!isLocalMode && ds.rag_sync_status !== undefined && ds.rag_sync_status !== 0"
-          class="absolute top-4 right-4 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border shadow-sm z-10"
+          class="absolute top-3 right-3 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border shadow-sm z-10"
           :class="{
             'bg-green-50 text-green-600 border-green-200': ds.rag_sync_status === 2,
             'bg-blue-50 text-blue-600 border-blue-200 animate-pulse': ds.rag_sync_status === 1,
@@ -1170,150 +1230,134 @@ onMounted(async () => {
           }"
           :title="ds.rag_sync_status === 3 ? '元数据已变更，建议重新同步' : (ds.rag_sync_notes || (ds.rag_synced_at ? `Last synced: ${new Date(ds.rag_synced_at).toLocaleString()}` : ''))"
         >
-          <span class="flex items-center gap-1">
-            <span class="w-1.5 h-1.5 rounded-full" :class="{
-              'bg-green-500': ds.rag_sync_status === 2,
-              'bg-blue-500': ds.rag_sync_status === 1,
-              'bg-red-500': ds.rag_sync_status === -1,
-              'bg-amber-500': ds.rag_sync_status === 3
-            }"></span>
-            {{ ds.rag_sync_status === 3 ? 'Pending' : 'RAG' }}
-          </span>
+          {{ ds.rag_sync_status === 3 ? 'Pending' : 'RAG' }}
         </div>
 
-        <div class="p-5 flex-1 text-slate-900 font-sans relative">
-           <!-- Emoji & Title Header -->
-           <div class="flex items-start gap-4 mb-3 pr-12"> <!-- pr-12 to avoid overlap with badge -->
-              <div class="w-12 h-12 rounded-lg bg-gray-50 flex-shrink-0 flex items-center justify-center text-2xl shadow-inner border border-gray-100 group-hover:scale-110 transition-transform duration-300">
-                {{ getDatasetEmoji(ds.name) }}
+        <div class="p-4 flex-1 min-w-0">
+          <div class="flex items-start gap-3 pr-10">
+            <div class="w-9 h-9 rounded-lg bg-gray-50 flex-shrink-0 flex items-center justify-center text-lg border border-gray-100">
+              {{ getDatasetEmoji(ds.name) }}
+            </div>
+            <div class="flex-1 min-w-0">
+              <h3 class="text-sm font-bold text-gray-900 group-hover:text-blue-600 transition-colors truncate">
+                {{ ds.display_name }}
+              </h3>
+              <div class="mt-1 flex items-center gap-1.5 min-w-0 flex-wrap">
+                <span class="text-[11px] font-mono text-gray-400 truncate">#{{ ds.name }}</span>
+                <span
+                  v-if="ds.data_source"
+                  class="inline-flex items-center px-1.5 py-0.5 bg-gray-50 text-gray-500 rounded text-[9px] border border-gray-200 max-w-[9rem] truncate"
+                  :title="ds.data_source"
+                >
+                  {{ ds.data_source }}
+                </span>
               </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 mb-0.5">
-                  <h3 class="text-lg font-bold text-gray-900 group-hover:text-primary transition-colors truncate">{{ ds.display_name }}</h3>
-                </div>
-                <div class="flex flex-col gap-1.5 mt-1">
-                  <p class="text-xs font-mono text-gray-400 truncate">#{{ ds.name }}</p>
-                  <div class="flex">
-                    <span v-if="ds.data_source" class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-50 text-gray-500 rounded text-[9px] border border-gray-200 shadow-sm" :title="ds.data_source">
-                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2H6c-1.1 0-2 .9-2 2zm0 5h16"/></svg>
-                      {{ ds.data_source }}
-                    </span>
-                  </div>
-                </div>
-              </div>
-           </div>
-
-           <!-- Statistics -->
-           <div class="grid grid-cols-3 gap-2 mb-4">
-              <div class="bg-blue-50/80 rounded-lg p-2 text-center border border-blue-100 group-hover:bg-blue-50 transition-colors">
-                  <div class="text-[10px] uppercase tracking-wider text-blue-400 font-bold mb-0.5">Tables</div>
-                  <div class="font-bold text-blue-700 text-sm">{{ ds.table_count || 0 }}</div>
-              </div>
-              <div class="bg-amber-50/80 rounded-lg p-2 text-center border border-amber-100 group-hover:bg-amber-50 transition-colors">
-                  <div class="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-0.5">Metrics</div>
-                  <div class="font-bold text-amber-700 text-sm">{{ ds.metric_count || 0 }}</div>
-              </div>
-              <div class="bg-purple-50/80 rounded-lg p-2 text-center border border-purple-100 group-hover:bg-purple-50 transition-colors">
-                  <div class="text-[10px] uppercase tracking-wider text-purple-400 font-bold mb-0.5">Rels</div>
-                  <div class="font-bold text-purple-700 text-sm">{{ ds.relationship_count || 0 }}</div>
-              </div>
-           </div>
-
-           <div class="mb-4 h-12 overflow-hidden">
-             <div v-if="ds.description" class="inline-flex items-center px-3 py-1.5 bg-gray-50 rounded-xl border border-gray-100/50 w-full">
-               <span class="text-[11px] font-mono italic text-gray-400 leading-relaxed line-clamp-2 tracking-tight">
-                 /* {{ ds.description }} */
-               </span>
-             </div>
-             <p v-else class="text-xs text-gray-300 italic">暂无描述</p>
-           </div>
-
-          <!-- Last Updated -->
-          <div class="flex items-center gap-1 text-[10px] text-gray-400 mb-3" v-if="ds.updated_at">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            <span>Updated {{ new Date(ds.updated_at).toLocaleString() }}</span>
+            </div>
           </div>
-          
-          <div class="flex flex-wrap gap-2">
-            <span 
-              v-for="tag in ds.tags" 
-              :key="tag"
-              class="px-2 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded uppercase tracking-wider font-semibold border border-blue-100"
-            >
-              {{ tag }}
+
+          <!-- 统计：行内芯片，替代三块大色块 -->
+          <div class="mt-3 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100 font-medium">
+              表 <b>{{ ds.table_count || 0 }}</b>
+            </span>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-100 font-medium">
+              指标 <b>{{ ds.metric_count || 0 }}</b>
+            </span>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-100 font-medium">
+              关系 <b>{{ ds.relationship_count || 0 }}</b>
             </span>
           </div>
-        </div>
-        
-        <div class="bg-gray-50/80 px-5 py-3 border-t border-gray-100 flex justify-between items-center backdrop-blur-sm">
-          <div class="flex items-center gap-3">
-            <!-- Apple Style Status Toggle -->
-            <div 
-              class="flex items-center gap-2" 
-              :class="isAdmin || hasPermission('element:metadata:sync') ? 'cursor-pointer group/toggle' : 'cursor-default opacity-80'"
-              @click.stop="(isAdmin || hasPermission('element:metadata:sync')) && toggleStatus(ds)"
-            >
-              <div 
-                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ease-in-out shadow-inner"
-                :class="ds.status === 1 ? 'bg-green-500' : 'bg-gray-300'"
+
+          <p class="mt-2.5 text-xs text-gray-500 line-clamp-2 leading-relaxed min-h-[2.5rem]">
+            {{ ds.description || '暂无描述' }}
+          </p>
+
+          <div class="mt-2.5 flex items-center justify-between gap-2 text-[10px] text-gray-400">
+            <span v-if="ds.updated_at" class="inline-flex items-center gap-1 truncate">
+              <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              {{ new Date(ds.updated_at).toLocaleString() }}
+            </span>
+            <span v-else />
+            <div v-if="ds.tags?.length" class="flex flex-wrap justify-end gap-1 min-w-0">
+              <span
+                v-for="tag in ds.tags.slice(0, 2)"
+                :key="tag"
+                class="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-medium border border-blue-100 truncate max-w-[5.5rem]"
               >
-                <span
-                  class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-200 ease-in-out shadow-md"
-                  :class="ds.status === 1 ? 'translate-x-5' : 'translate-x-0.5'"
-                />
-              </div>
-              <span class="text-[10px] font-bold uppercase tracking-wider" :class="ds.status === 1 ? 'text-green-600' : 'text-gray-400'">
-                {{ ds.status === 1 ? 'Active' : 'Inactive' }}
+                {{ tag }}
+              </span>
+              <span
+                v-if="ds.tags.length > 2"
+                class="px-1.5 py-0.5 bg-gray-50 text-gray-400 rounded border border-gray-100"
+              >
+                +{{ ds.tags.length - 2 }}
               </span>
             </div>
           </div>
-          <div class="flex items-center gap-2">
-             <!-- Action Buttons: Admin or specific permission -->
-             <div class="flex items-center gap-2">
-                <button 
-                  v-if="hasPermission('element:metadata:sync')"
-                  @click.stop="isEngineReady && ds.status === 1 && !isLocalMode && openSyncModal(ds)" 
-                  class="transition-colors p-1.5 rounded-md border border-transparent hover:shadow-sm"
-                  :class="{ 
-                     'text-gray-400 hover:text-indigo-500 hover:bg-white hover:border-gray-200': ds.status === 1 && isEngineReady && !isLocalMode,
-                     'text-gray-300 cursor-not-allowed opacity-50': ds.status !== 1 || !isEngineReady || isLocalMode,
-                     'pointer-events-none': syncingId === ds.id || ds.rag_sync_status === 1 
-                  }"
-                  :disabled="!isEngineReady || ds.status !== 1 || isLocalMode"
-                  :title="isLocalMode ? '本地向量模式下已自动同步，无需手动上传' : (!isEngineReady ? 'RAGFlow 服务未就绪' : (ds.status === 1 ? '同步到 RAGFlow' : '数据集已禁用，无法同步'))"
-                >
-                  <svg v-if="syncingId === ds.id || ds.rag_sync_status === 1" class="w-4 h-4 animate-spin text-indigo-500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-                  <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z"/></svg>
-                </button>
-               <!-- Permission Config Entry -->
-               <button 
-                 v-if="hasPermission('element:metadata:edit')"
-                 @click.stop="openPermConfigModal(ds)" 
-                 class="text-gray-400 hover:text-emerald-500 transition-colors p-1.5 hover:bg-white rounded-md border border-transparent hover:border-gray-200 hover:shadow-sm"
-                 title="数据权限配置"
-               >
-                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-               </button>
-               <button 
-                 v-if="hasPermission('element:metadata:edit')"
-                 @click.stop="openEditDatasetModal(ds)" 
-                 class="text-gray-400 hover:text-blue-500 transition-colors p-1.5 hover:bg-white rounded-md border border-transparent hover:border-gray-200 hover:shadow-sm"
-                 title="编辑数据集"
-               >
-                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-               </button>
-               <button 
-                 v-if="hasPermission('element:metadata:delete')"
-                 @click.stop="openDeleteModal(ds)" 
-                 class="text-gray-400 hover:text-red-500 transition-colors p-1.5 hover:bg-white rounded-md border border-transparent hover:border-gray-200 hover:shadow-sm"
-                 title="删除数据集"
-               >
-                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-               </button>
-               <span class="text-primary text-xs font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
-                 进入 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-               </span>
-             </div>
+        </div>
+        
+        <div class="px-4 py-2.5 border-t border-gray-100 flex justify-between items-center bg-gray-50/60">
+          <div 
+            class="flex items-center gap-2" 
+            :class="isAdmin || hasPermission('element:metadata:sync') ? 'cursor-pointer' : 'cursor-default opacity-80'"
+            @click.stop="(isAdmin || hasPermission('element:metadata:sync')) && toggleStatus(ds)"
+          >
+            <div 
+              class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 ease-in-out"
+              :class="ds.status === 1 ? 'bg-green-500' : 'bg-gray-300'"
+            >
+              <span
+                class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform duration-200 ease-in-out shadow"
+                :class="ds.status === 1 ? 'translate-x-3.5' : 'translate-x-0.5'"
+              />
+            </div>
+            <span class="text-[10px] font-semibold" :class="ds.status === 1 ? 'text-green-600' : 'text-gray-400'">
+              {{ ds.status === 1 ? '已启用' : '已禁用' }}
+            </span>
+          </div>
+          <div class="flex items-center gap-0.5" @click.stop>
+            <button 
+              v-if="hasPermission('element:metadata:sync')"
+              @click.stop="isEngineReady && ds.status === 1 && !isLocalMode && openSyncModal(ds)" 
+              class="transition-colors p-1.5 rounded-md"
+              :class="{ 
+                 'text-gray-400 hover:text-indigo-500 hover:bg-white': ds.status === 1 && isEngineReady && !isLocalMode,
+                 'text-gray-300 cursor-not-allowed opacity-50': ds.status !== 1 || !isEngineReady || isLocalMode,
+                 'pointer-events-none': syncingId === ds.id || ds.rag_sync_status === 1 
+              }"
+              :disabled="!isEngineReady || ds.status !== 1 || isLocalMode"
+              :title="isLocalMode ? '本地向量模式下已自动同步，无需手动上传' : (!isEngineReady ? 'RAGFlow 服务未就绪' : (ds.status === 1 ? '同步到 RAGFlow' : '数据集已禁用，无法同步'))"
+            >
+              <svg v-if="syncingId === ds.id || ds.rag_sync_status === 1" class="w-4 h-4 animate-spin text-indigo-500" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+              <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z"/></svg>
+            </button>
+            <button 
+              v-if="hasPermission('element:metadata:edit')"
+              @click.stop="openPermConfigModal(ds)" 
+              class="text-gray-400 hover:text-emerald-500 transition-colors p-1.5 hover:bg-white rounded-md"
+              title="数据权限配置"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            </button>
+            <button 
+              v-if="hasPermission('element:metadata:edit')"
+              @click.stop="openEditDatasetModal(ds)" 
+              class="text-gray-400 hover:text-blue-500 transition-colors p-1.5 hover:bg-white rounded-md"
+              title="编辑数据集"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            </button>
+            <button 
+              v-if="hasPermission('element:metadata:delete')"
+              @click.stop="openDeleteModal(ds)" 
+              class="text-gray-400 hover:text-red-500 transition-colors p-1.5 hover:bg-white rounded-md"
+              title="删除数据集"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+            <span class="text-blue-600 text-[11px] font-medium flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-0.5">
+              进入 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </span>
           </div>
         </div>
       </div>

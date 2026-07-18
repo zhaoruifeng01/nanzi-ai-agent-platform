@@ -164,9 +164,9 @@
 
     <!-- User List -->
     <div v-else>
-      <!-- Desktop Table -->
-      <div v-if="!isMobile" class="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
-        <div class="overflow-x-auto">
+      <!-- Desktop Table：分页放在 overflow 容器外，避免行内更多菜单被裁切 -->
+      <div v-if="!isMobile" class="bg-white border border-gray-200 shadow-sm rounded-lg">
+        <div class="overflow-x-auto rounded-t-lg">
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
               <tr>
@@ -250,42 +250,12 @@
                     <div class="relative" @click.stop>
                       <button
                         type="button"
-                        @click="toggleRowMenu(user.id)"
+                        @click="toggleRowMenu(user, $event)"
                         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
                         title="更多操作"
                       >
                         <EllipsisHorizontalIcon class="w-4 h-4" />
                       </button>
-                      <div
-                        v-if="openRowMenuId === user.id"
-                        class="absolute right-0 mt-1 w-40 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-20"
-                      >
-                        <button
-                          type="button"
-                          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                          @click="openRowMenuId = null; openSetPasswordDialog(user)"
-                        >
-                          <LockClosedIcon class="w-4 h-4 text-emerald-500" />
-                          设置密码
-                        </button>
-                        <button
-                          type="button"
-                          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                          @click="openRowMenuId = null; regenerateApiKey(user)"
-                        >
-                          <ArrowPathIcon class="w-4 h-4 text-amber-500" />
-                          重置 API Key
-                        </button>
-                        <button
-                          v-if="user.user_name !== 'admin'"
-                          type="button"
-                          class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                          @click="openRowMenuId = null; confirmDelete(user)"
-                        >
-                          <TrashIcon class="w-4 h-4" />
-                          删除用户
-                        </button>
-                      </div>
                     </div>
                   </div>
                 </td>
@@ -294,7 +264,7 @@
           </table>
         </div>
 
-        <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3 rounded-b-lg">
           <div class="text-sm text-gray-700">
             共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
           </div>
@@ -416,6 +386,42 @@
         </div>
       </div>
     </div>
+
+    <!-- 行内「更多」菜单：Teleport 到 body，避免被表格 overflow 裁切 -->
+    <Teleport to="body">
+      <div
+        v-if="openRowMenuUser"
+        class="fixed w-40 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-[200]"
+        :style="rowMenuStyle"
+        @click.stop
+      >
+        <button
+          type="button"
+          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+          @click="closeMenus(); openSetPasswordDialog(openRowMenuUser)"
+        >
+          <LockClosedIcon class="w-4 h-4 text-emerald-500" />
+          设置密码
+        </button>
+        <button
+          type="button"
+          class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+          @click="closeMenus(); regenerateApiKey(openRowMenuUser)"
+        >
+          <ArrowPathIcon class="w-4 h-4 text-amber-500" />
+          重置 API Key
+        </button>
+        <button
+          v-if="openRowMenuUser.user_name !== 'admin'"
+          type="button"
+          class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+          @click="closeMenus(); confirmDelete(openRowMenuUser)"
+        >
+          <TrashIcon class="w-4 h-4" />
+          删除用户
+        </button>
+      </div>
+    </Teleport>
 
     <!-- Create/Edit Dialog -->
     <div
@@ -1604,6 +1610,8 @@ const statusFilter = ref("");
 const roleSearchQuery = ref("");
 const showMoreMenu = ref(false);
 const openRowMenuId = ref<number | null>(null);
+const openRowMenuUser = ref<any>(null);
+const rowMenuStyle = ref<Record<string, string>>({});
 
 const hasActiveFilters = computed(
   () =>
@@ -1618,10 +1626,38 @@ const isSearchEmpty = computed(
 const closeMenus = () => {
   showMoreMenu.value = false;
   openRowMenuId.value = null;
+  openRowMenuUser.value = null;
 };
-const toggleRowMenu = (id: number) => {
-  openRowMenuId.value = openRowMenuId.value === id ? null : id;
+const toggleRowMenu = (user: any, event?: MouseEvent) => {
   showMoreMenu.value = false;
+  if (openRowMenuId.value === user.id) {
+    openRowMenuId.value = null;
+    openRowMenuUser.value = null;
+    return;
+  }
+  const trigger = event?.currentTarget as HTMLElement | undefined;
+  if (trigger) {
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 160;
+    const estimatedHeight = user.user_name === "admin" ? 88 : 128;
+    const gap = 4;
+    // 默认贴在按钮下方；仅当下方空间不足时再向上翻
+    const spaceBelow = window.innerHeight - rect.bottom - gap;
+    const openDown = spaceBelow >= estimatedHeight;
+    const top = openDown
+      ? rect.bottom + gap
+      : Math.max(8, rect.top - estimatedHeight - gap);
+    const left = Math.min(
+      Math.max(8, rect.right - menuWidth),
+      window.innerWidth - menuWidth - 8
+    );
+    rowMenuStyle.value = {
+      top: `${top}px`,
+      left: `${left}px`,
+    };
+  }
+  openRowMenuId.value = user.id;
+  openRowMenuUser.value = user;
 };
 
 // Dialogs
