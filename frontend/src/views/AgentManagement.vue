@@ -1739,7 +1739,7 @@ const formatDate = (dateStr: string) => {
           </div>
 
           <button
-            v-if="!isMobile && agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
+            v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
             @click.stop="openDrawer(agent)"
             class="px-3 py-1.5 bg-primary text-white text-xs font-medium rounded-lg shadow-sm hover:bg-primary-dark transition-colors flex items-center"
           >
