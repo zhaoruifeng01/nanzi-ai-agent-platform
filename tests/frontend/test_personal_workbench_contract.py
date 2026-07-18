@@ -123,6 +123,20 @@ def test_chat_host_forwards_workbench_conversation_and_agent_targets():
     assert "if (data.agent_id)" in embed
 
 
+def test_new_session_clears_workbench_conversation_pin():
+    """从工作台带 conversation_id 进入后，新会话不得再被 resume id / URL 钉回旧会话。"""
+    chat = _read("frontend/src/views/Chat.vue")
+    embed = _read("frontend/src/views/EmbedChat.vue")
+
+    assert "requestedConversationId = \"\"" in embed
+    assert "clear_host_conversation_pin" in embed
+    assert 'type: "CONVERSATION_CHANGED"' in embed
+    assert "clearHostConversationPin" in chat
+    assert "clear_host_conversation_pin" in chat
+    assert "skipNextQueryInit" in chat
+    assert "delete nextQuery.conversation_id" in chat
+
+
 def test_scenario_browse_routes_allow_chat_users():
     router = _read("frontend/src/router/index.ts")
     assert "path: 'scenario-templates'" in router

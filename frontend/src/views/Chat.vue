@@ -54,6 +54,8 @@ const loading = ref(true);
 const isInitTimedOut = ref(false);
 const widgetReady = ref(false);
 let timeoutTimer: any = null;
+/** 挂件主动新开会话后清 URL 钉选时，跳过一次 query watch 触发的 INIT，避免重复初始化 */
+let skipNextQueryInit = false;
 
 const initChat = () => {
     // 基础路径
@@ -130,10 +132,26 @@ const handleSavedReportOpenEvent = (event: Event) => {
     sendSavedReportOpenRequest((event as CustomEvent<SavedReportOpenRequest>).detail);
 };
 
+const clearHostConversationPin = () => {
+    if (!route.query.conversation_id) return;
+    const nextQuery = { ...route.query };
+    delete nextQuery.conversation_id;
+    skipNextQueryInit = true;
+    router.replace({ path: route.path, query: nextQuery });
+};
+
 const handleMessage = (event: MessageEvent) => {
     const data = event.data;
     if (data.source === 'nanzi-agent-embed' && data.type === 'OPEN_DATA_PORTAL_FULL') {
         router.push({ path: '/dashboard/personal', query: { tab: 'data' } });
+        return;
+    }
+    if (
+        data.source === 'nanzi-agent-embed' &&
+        data.type === 'CONVERSATION_CHANGED' &&
+        data.clear_host_conversation_pin
+    ) {
+        clearHostConversationPin();
         return;
     }
     
@@ -159,6 +177,10 @@ watch(
         route.query.run_id,
     ],
     () => {
+        if (skipNextQueryInit) {
+            skipNextQueryInit = false;
+            return;
+        }
         if (widgetReady.value) {
             sendInitConfig();
         }
