@@ -1,90 +1,178 @@
 <template>
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <h1 class="text-2xl font-bold text-gray-900">角色管理</h1>
-      <button
-        @click="openCreateDialog"
-        class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-      >
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-        </svg>
-        创建角色
-      </button>
-    </div>
+  <div class="space-y-5">
+    <!-- Header：与技能工作台一致，搜索进顶栏 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div class="min-w-0">
+        <h1 class="text-xl sm:text-2xl font-bold text-gray-900">角色管理</h1>
+        <p class="text-sm text-gray-500 mt-1">配置角色权限、菜单能力与用户归属</p>
+      </div>
 
-    <!-- Filters -->
-    <div class="bg-white shadow rounded-lg p-4">
-      <div class="flex flex-col sm:flex-row gap-4">
-        <input
-          v-model="searchQuery"
-          @input="debouncedSearch"
-          type="text"
-          placeholder="搜索角色名称或代码..."
-          class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 text-sm"
-        />
+      <div class="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
+        <div class="relative w-full sm:w-64 lg:w-72">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
+          <input
+            v-model="searchQuery"
+            @input="debouncedSearch"
+            type="text"
+            placeholder="搜索角色名称或代码..."
+            class="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none text-sm transition-all shadow-sm"
+          />
+        </div>
+
         <button
+          v-if="searchQuery.trim()"
+          type="button"
           @click="resetFilters"
-          class="border border-gray-300 rounded-lg px-4 py-2 hover:bg-gray-50 transition text-sm font-medium"
+          class="px-3 py-2 text-sm text-gray-500 hover:text-gray-800 bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0 self-start sm:self-auto"
         >
-          重置
+          清除
+        </button>
+
+        <button
+          @click="fetchRoles"
+          class="p-2 text-gray-500 hover:text-primary bg-white border border-gray-300 rounded-lg shadow-sm hover:bg-gray-50 transition-colors shrink-0 self-start sm:self-auto"
+          title="刷新列表"
+        >
+          <svg class="w-4 h-4" :class="{ 'animate-spin': loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+
+        <button
+          @click="openCreateDialog"
+          class="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-all font-medium text-sm shrink-0"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          <span class="hidden sm:inline">创建角色</span>
+          <span class="sm:hidden">创建</span>
         </button>
       </div>
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="bg-white shadow rounded-lg p-12 text-center">
-      <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      <p class="mt-2 text-gray-500">加载中...</p>
+    <div v-if="loading" class="flex flex-col items-center justify-center py-16">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-sm text-gray-500 mt-4 font-medium">加载角色列表...</p>
+    </div>
+
+    <!-- Empty -->
+    <div
+      v-else-if="roles.length === 0"
+      class="flex flex-col items-center justify-center min-h-[320px] bg-white border border-gray-200 rounded-lg shadow-sm px-6"
+    >
+      <svg class="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+      </svg>
+      <template v-if="isSearchEmpty">
+        <p class="text-sm text-gray-500 mt-4 font-semibold">无匹配「{{ searchQuery.trim() }}」的角色</p>
+        <p class="text-xs text-gray-400 mt-1">试试其他关键词，或清除搜索后浏览全部</p>
+        <button
+          type="button"
+          @click="resetFilters"
+          class="mt-5 px-4 py-2 text-sm font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+        >
+          清除搜索
+        </button>
+      </template>
+      <template v-else>
+        <p class="text-sm text-gray-500 mt-4 font-semibold">暂无角色</p>
+        <p class="text-xs text-gray-400 mt-1">创建角色后可为用户分配权限与菜单能力</p>
+        <button
+          type="button"
+          @click="openCreateDialog"
+          class="mt-5 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary-dark rounded-lg transition-colors"
+        >
+          创建角色
+        </button>
+      </template>
     </div>
 
     <!-- Role List -->
-    <div v-else-if="roles.length > 0">
+    <div v-else>
       <!-- Desktop Table -->
-      <div v-if="!isMobile" class="bg-white shadow rounded-lg overflow-hidden">
+      <div v-if="!isMobile" class="bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
         <div class="overflow-x-auto">
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
               <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">ID</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">角色代码</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">角色名称</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">描述</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">用户数</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">创建时间</th>
-                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">操作</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">角色</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">描述</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">用户数</th>
+                <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">创建时间</th>
+                <th class="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
               </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
-              <tr v-for="role in roles" :key="role.id" class="hover:bg-gray-50">
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ role.id }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">{{ role.code }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">{{ role.name }}</td>
-                <td class="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" :title="role.description">
-                  {{ role.description || '-' }}
+              <tr v-for="role in roles" :key="role.id" class="group hover:bg-gray-50/80 transition-colors">
+                <td class="px-5 py-4 whitespace-nowrap">
+                  <div class="flex items-center gap-2.5 min-w-0">
+                    <div class="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-50 text-blue-600 shrink-0">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                      </svg>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        <span class="text-sm font-semibold text-gray-900">{{ role.name }}</span>
+                        <span
+                          v-if="isSystemRole(role)"
+                          class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-slate-100 text-slate-600"
+                        >系统</span>
+                      </div>
+                      <div class="mt-0.5 flex items-center gap-1.5 text-xs text-gray-400">
+                        <span class="font-mono bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px]">{{ role.code }}</span>
+                        <span class="text-gray-300">·</span>
+                        <span class="font-mono">#{{ role.id }}</span>
+                      </div>
+                    </div>
+                  </div>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  <span class="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full text-xs font-medium">{{ role.user_count }}</span>
+                <td class="px-5 py-4 text-sm text-gray-500 max-w-xs truncate" :title="role.description">
+                  {{ role.description || '—' }}
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ formatDate(role.created_at) }}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div class="flex justify-end items-center gap-3">
-                     <button @click="editRole(role)" class="text-blue-600 hover:text-blue-900 transition-colors p-1" title="编辑角色">
-                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                <td class="px-5 py-4 whitespace-nowrap">
+                  <span class="inline-flex items-center bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full text-xs font-medium">
+                    {{ role.user_count }}
+                  </span>
+                </td>
+                <td class="px-5 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
+                  {{ formatDate(role.created_at) }}
+                </td>
+                <td class="px-5 py-4 whitespace-nowrap text-right text-sm font-medium">
+                  <div class="flex justify-end items-center gap-1">
+                    <button
+                      @click="editRole(role)"
+                      class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
+                      title="编辑角色"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                     </button>
-                     <button @click="openPermissionDialog(role)" class="text-indigo-600 hover:text-indigo-900 transition-colors p-1" title="分配权限">
-                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                    <button
+                      @click="openPermissionDialog(role)"
+                      class="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50 transition-colors"
+                      title="分配权限"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
                     </button>
-                    <button @click="openUserAssignmentDialog(role)" class="text-green-600 hover:text-green-900 transition-colors p-1" title="分配用户">
-                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+                    <button
+                      @click="openUserAssignmentDialog(role)"
+                      class="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors"
+                      title="分配用户"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                     </button>
                     <button
                       @click="confirmDelete(role)"
-                      class="text-red-600 hover:text-red-900 transition-colors p-1"
+                      class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
                       title="删除角色"
                     >
-                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                     </button>
                   </div>
                 </td>
@@ -92,65 +180,81 @@
             </tbody>
           </table>
         </div>
+
+        <div class="bg-gray-50 px-4 py-3 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="text-sm text-gray-700">
+            共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
+          </div>
+          <div class="flex gap-2 w-full sm:w-auto">
+            <button @click="page > 1 && (page--, fetchRoles())" :disabled="page <= 1" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 text-sm font-medium">上一页</button>
+            <button @click="page < totalPages && (page++, fetchRoles())" :disabled="page >= totalPages" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 text-sm font-medium">下一页</button>
+          </div>
+        </div>
       </div>
 
       <!-- Mobile Card List -->
-      <div v-else class="space-y-4">
-        <div v-for="role in roles" :key="role.id" class="bg-white shadow rounded-lg p-4 space-y-3">
-          <div class="flex justify-between items-start">
-            <div class="flex-1 min-w-0">
-              <h3 class="text-base font-bold text-gray-900 truncate">{{ role.name }}</h3>
-              <p class="text-xs font-mono text-gray-500">{{ role.code }}</p>
+      <div v-else class="space-y-3">
+        <div
+          v-for="role in roles"
+          :key="role.id"
+          class="bg-white border border-gray-200 rounded-lg p-4 shadow-sm"
+        >
+          <div class="flex justify-between items-start gap-3">
+            <div class="flex items-start gap-3 min-w-0 flex-1">
+              <div class="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-50 text-blue-600 shrink-0">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <h3 class="text-base font-semibold text-gray-900 truncate">{{ role.name }}</h3>
+                  <span
+                    v-if="isSystemRole(role)"
+                    class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-slate-100 text-slate-600"
+                  >系统</span>
+                </div>
+                <p class="text-xs font-mono text-gray-500 mt-0.5">{{ role.code }}</p>
+              </div>
             </div>
-            <div class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full text-[10px] font-bold border border-blue-100 whitespace-nowrap">
+            <span class="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0">
               {{ role.user_count }} 用户
-            </div>
+            </span>
           </div>
 
-          <p class="text-[11px] text-gray-600 line-clamp-2 leading-relaxed bg-gray-50 p-2 rounded border border-gray-100">
+          <p class="mt-3 text-xs text-gray-500 line-clamp-2 leading-relaxed">
             {{ role.description || '暂无描述' }}
           </p>
 
-          <div class="flex justify-between items-center pt-2 border-t border-gray-50">
-            <span class="text-[10px] text-gray-400">ID: {{ role.id }} · {{ formatDate(role.created_at).split(' ')[0] }}</span>
-            <div class="flex gap-3">
-              <button @click="editRole(role)" class="text-blue-600 flex items-center gap-1 text-xs font-medium">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                编辑
+          <div class="flex justify-between items-center pt-3 mt-3 border-t border-gray-100">
+            <span class="text-[10px] text-gray-400 font-mono">#{{ role.id }} · {{ formatDate(role.created_at).split(' ')[0] }}</span>
+            <div class="flex items-center gap-1">
+              <button @click="editRole(role)" class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="编辑">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
               </button>
-              <button @click="openPermissionDialog(role)" class="text-indigo-600 flex items-center gap-1 text-xs font-medium">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                权限
+              <button @click="openPermissionDialog(role)" class="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50" title="权限">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
               </button>
-              <button @click="openUserAssignmentDialog(role)" class="text-green-600 flex items-center gap-1 text-xs font-medium">
+              <button @click="openUserAssignmentDialog(role)" class="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50" title="用户">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
-                用户
               </button>
-              <button @click="confirmDelete(role)" class="text-red-600 flex items-center gap-1 text-xs font-medium">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                删除
+              <button @click="confirmDelete(role)" class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50" title="删除">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               </button>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Pagination -->
-      <div class="bg-white sm:bg-gray-50 px-4 py-3 flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 mt-4 rounded-lg">
-        <div class="text-sm text-gray-700 mb-3 sm:mb-0">
-          共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
-        </div>
-        <div class="flex gap-2 w-full sm:w-auto">
-          <button @click="page > 1 && (page--, fetchRoles())" :disabled="page <= 1" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 text-sm font-medium">上一页</button>
-          <button @click="page < totalPages && (page++, fetchRoles())" :disabled="page >= totalPages" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-200 disabled:opacity-50 text-sm font-medium">下一页</button>
+        <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div class="text-sm text-gray-700">
+            共 {{ total }} 条，第 {{ page }}/{{ totalPages }} 页
+          </div>
+          <div class="flex gap-2 w-full sm:w-auto">
+            <button @click="page > 1 && (page--, fetchRoles())" :disabled="page <= 1" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm font-medium">上一页</button>
+            <button @click="page < totalPages && (page++, fetchRoles())" :disabled="page >= totalPages" class="flex-1 sm:flex-none px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm font-medium">下一页</button>
+          </div>
         </div>
       </div>
-    </div>
-
-    <!-- Empty State -->
-    <div v-else class="bg-white shadow rounded-lg p-12 text-center">
-      <h3 class="mt-2 text-sm font-medium text-gray-900">没有找到角色</h3>
-      <p class="mt-1 text-sm text-gray-500">尝试调整筛选条件或创建新角色</p>
     </div>
 
     <!-- Create/Edit Dialog -->
@@ -682,6 +786,14 @@ const size = ref(20)
 const totalPages = ref(0)
 
 const searchQuery = ref('')
+const isSearchEmpty = computed(
+  () => searchQuery.value.trim().length > 0 && roles.value.length === 0
+)
+
+const isSystemRole = (role: { code?: string }) => {
+  const code = (role.code || '').toLowerCase()
+  return code === 'default' || code === 'admin' || code === 'system'
+}
 
 // Dialogs
 const showCreateDialog = ref(false)

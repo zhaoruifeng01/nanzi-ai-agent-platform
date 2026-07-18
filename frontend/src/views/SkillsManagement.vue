@@ -13,6 +13,7 @@ interface Skill {
   path: string
   scope?: 'global' | 'personal'
   modified_at?: number
+  enabled?: string
 }
 
 interface FileNode {
@@ -40,10 +41,11 @@ const activeScope = ref<'global' | 'personal'>('global')
 const loading = ref(false)
 const searchQuery = ref('')
 const viewMode = ref<'card' | 'list'>('card')
-const skillSortBy = ref<'name' | 'time'>('name')
-const skillSortOrder = ref<'asc' | 'desc'>('asc')
+const skillSortBy = ref<'name' | 'time'>('time')
+const skillSortOrder = ref<'asc' | 'desc'>('desc')
 const fileTreeSortBy = ref<'name' | 'time'>('name')
 const fileTreeSortOrder = ref<'asc' | 'desc'>('asc')
+const showCreateMenu = ref(false)
 
 // 新建技能相关
 const showCreateModal = ref(false)
@@ -317,6 +319,14 @@ const formatModifiedAt = (ts?: number) => {
   })
 }
 
+const isSearchEmpty = computed(() => {
+  return searchQuery.value.trim().length > 0 && sortedSkills.value.length === 0
+})
+
+const clearSearch = () => {
+  searchQuery.value = ''
+}
+
 // 复制 CLI 命令
 const copyCommand = async () => {
   const cmd = 'npx skills add https://github.com/vercel-labs/skills --skill find-skills'
@@ -576,6 +586,32 @@ const createSkillAsset = async () => {
 const hasUnsavedChanges = computed(() => {
   return editingContent.value !== originalContent.value
 })
+
+const requestCloseDrawer = () => {
+  if (!hasUnsavedChanges.value) {
+    showDrawer.value = false
+    return
+  }
+  confirmState.value = {
+    show: true,
+    title: '未保存修改确认',
+    message: '当前文件有未保存的修改，关闭将丢失这些修改。确定要关闭吗？',
+    type: 'warning',
+    onConfirm: () => {
+      confirmState.value.show = false
+      showDrawer.value = false
+    }
+  }
+}
+
+const handleDrawerKeydown = (e: KeyboardEvent) => {
+  if (e.key !== 'Escape' || !showDrawer.value) return
+  if (confirmState.value.show || showCreateModal.value || showImportModal.value || showCreateAssetModal.value || showStatsModal.value || showHelpModal.value) {
+    return
+  }
+  e.preventDefault()
+  requestCloseDrawer()
+}
 
 // 计算行数以显示在编辑器状态栏
 const lineCount = computed(() => {
@@ -897,6 +933,7 @@ const initCharts = () => {
 
 const closeContextMenu = () => {
   contextMenu.value.show = false
+  showCreateMenu.value = false
 }
 
 const handleContextMenu = (data: { event: MouseEvent, node: any }) => {
@@ -1047,10 +1084,12 @@ onMounted(() => {
   fetchSkills()
   fetchPersonalSkills()
   document.addEventListener('click', closeContextMenu)
+  document.addEventListener('keydown', handleDrawerKeydown)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
+  document.removeEventListener('keydown', handleDrawerKeydown)
   disposeSkillDrawerChart()
   if (distChartInstance) {
     distChartInstance.dispose()
@@ -1148,31 +1187,60 @@ onUnmounted(() => {
         </div>
         <button 
           @click="openStatsModal"
-          class="flex items-center justify-center gap-2 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 active:scale-95 transition-all shadow-sm font-medium text-sm"
+          class="flex items-center justify-center p-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 active:scale-95 transition-all shadow-sm shrink-0"
+          title="统计查看"
         >
           <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
           </svg>
-          统计查看
         </button>
-        <button 
-          @click="openImportModal"
-          class="flex items-center justify-center gap-2 px-4 py-2 bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 active:scale-95 transition-all shadow-sm font-semibold text-sm rounded-lg"
-        >
-          <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-          </svg>
-          导入技能 (Zip/Tar)
-        </button>
-        <button 
-          @click="openCreateModal"
-          class="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 active:scale-95 transition-all shadow-sm font-medium text-sm"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
-          新建技能
-        </button>
+        <div class="relative shrink-0" @click.stop>
+          <div class="flex items-stretch rounded-lg overflow-hidden shadow-sm">
+            <button 
+              @click="openCreateModal"
+              class="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium text-sm transition-all active:scale-[0.98]"
+              :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              新建技能
+            </button>
+            <button
+              @click="showCreateMenu = !showCreateMenu"
+              class="px-2 border-l text-white transition-colors"
+              :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500' : 'bg-blue-600 hover:bg-blue-700 border-blue-500'"
+              title="更多创建方式"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          </div>
+          <div
+            v-if="showCreateMenu"
+            class="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-20"
+          >
+            <button
+              @click="showCreateMenu = false; openCreateModal()"
+              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              空白新建
+            </button>
+            <button
+              @click="showCreateMenu = false; openImportModal()"
+              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              导入 Zip/Tar
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1210,12 +1278,49 @@ onUnmounted(() => {
       <p class="text-sm text-gray-500 mt-4 font-medium">智能检索系统文件夹中...</p>
     </div>
 
-    <div v-else-if="sortedSkills.length === 0" class="flex flex-col items-center justify-center min-h-[360px] bg-white border border-gray-200 rounded-lg shadow-sm">
+    <div v-else-if="sortedSkills.length === 0" class="flex flex-col items-center justify-center min-h-[360px] bg-white border border-gray-200 rounded-lg shadow-sm px-6">
       <svg class="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
-      <p class="text-sm text-gray-500 mt-4 font-semibold">未发现匹配的智能体技能目录</p>
-      <p class="text-xs text-gray-400 mt-1">您可以新建一个技能，或参考帮助文档安装生态技能</p>
+      <template v-if="isSearchEmpty">
+        <p class="text-sm text-gray-500 mt-4 font-semibold">无匹配「{{ searchQuery.trim() }}」的技能</p>
+        <p class="text-xs text-gray-400 mt-1">试试其他关键词，或清除搜索后浏览全部</p>
+        <button
+          @click="clearSearch"
+          class="mt-5 px-4 py-2 text-sm font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+        >
+          清除搜索
+        </button>
+      </template>
+      <template v-else>
+        <p class="text-sm text-gray-500 mt-4 font-semibold">
+          {{ activeScope === 'personal' ? '还没有个人技能' : '暂无平台技能' }}
+        </p>
+        <p class="text-xs text-gray-400 mt-1 text-center max-w-sm">
+          <template v-if="activeScope === 'personal'">
+            个人技能仅对自己可见，可新建或导入到「我的技能」目录
+          </template>
+          <template v-else>
+            您可以新建一个技能，或导入 Zip/Tar 压缩包
+          </template>
+        </p>
+        <div class="mt-5 flex items-center gap-3">
+          <button
+            @click="openCreateModal"
+            class="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors"
+            :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'"
+          >
+            新建技能
+          </button>
+          <button
+            @click="openImportModal"
+            class="px-4 py-2 text-sm font-medium border rounded-lg transition-colors"
+            :class="activeScope === 'personal' ? 'text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'text-blue-600 border-blue-200 hover:bg-blue-50'"
+          >
+            导入技能
+          </button>
+        </div>
+      </template>
     </div>
 
     <!-- 卡片视图 -->
@@ -1253,6 +1358,10 @@ onUnmounted(() => {
                   v-else
                   class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-blue-100 text-blue-700"
                 >平台</span>
+                <span
+                  v-if="skill.enabled === 'false'"
+                  class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-gray-100 text-gray-500"
+                >已禁用</span>
               </div>
               <p class="text-[10px] text-gray-400 font-mono tracking-wider uppercase mt-0.5">
                 ID: {{ skill.id }}
@@ -1262,7 +1371,7 @@ onUnmounted(() => {
           
           <div class="flex items-center space-x-2 shrink-0" @click.stop>
             <!-- Switch 开关 -->
-            <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能">
+            <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能（禁用后对话不再自动匹配）">
               <input 
                 type="checkbox" 
                 :checked="skill.enabled !== 'false'"
@@ -1272,10 +1381,10 @@ onUnmounted(() => {
               <div class="w-7 h-4 bg-gray-250 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
             </label>
 
-            <!-- 删除物理技能按钮 -->
+            <!-- 删除：仅 hover 显示，降低误触 -->
             <button 
               @click.stop="deleteSkill(skill.id)"
-              class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+              class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
               title="注销并彻底删除技能目录"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1334,6 +1443,18 @@ onUnmounted(() => {
                   <div class="space-y-0.5">
                     <div class="font-bold text-gray-900 group-hover:text-blue-600 transition-colors flex items-center gap-2 flex-wrap">
                       <span>{{ skill.name }}</span>
+                      <span
+                        v-if="skill.scope === 'personal'"
+                        class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-emerald-100 text-emerald-700"
+                      >个人</span>
+                      <span
+                        v-else
+                        class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-blue-100 text-blue-700"
+                      >平台</span>
+                      <span
+                        v-if="skill.enabled === 'false'"
+                        class="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-gray-100 text-gray-500"
+                      >已禁用</span>
                       <span class="text-[10px] text-gray-400 font-mono bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200 font-normal">ID: {{ skill.id }}</span>
                     </div>
                     <div class="text-xs text-gray-500 max-w-2xl line-clamp-2" :title="skill.description">
@@ -1349,16 +1470,21 @@ onUnmounted(() => {
                 {{ formatModifiedAt(skill.modified_at) }}
               </td>
               <td class="px-6 py-4 text-center whitespace-nowrap" @click.stop>
-                <!-- Switch 开关 -->
-                <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能">
-                  <input 
-                    type="checkbox" 
-                    :checked="skill.enabled !== 'false'"
-                    @change="toggleSkillStatus(skill)"
-                    class="sr-only peer"
-                  >
-                  <div class="w-7 h-4 bg-gray-250 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
-                </label>
+                <div class="flex flex-col items-center gap-1">
+                  <label class="relative inline-flex items-center cursor-pointer" title="启用/禁用此技能（禁用后对话不再自动匹配）">
+                    <input 
+                      type="checkbox" 
+                      :checked="skill.enabled !== 'false'"
+                      @change="toggleSkillStatus(skill)"
+                      class="sr-only peer"
+                    >
+                    <div class="w-7 h-4 bg-gray-250 dark:bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                  <span
+                    class="text-[10px] font-medium"
+                    :class="skill.enabled === 'false' ? 'text-gray-400' : 'text-emerald-600'"
+                  >{{ skill.enabled === 'false' ? '已禁用' : '已启用' }}</span>
+                </div>
               </td>
               <td class="px-6 py-4 text-center whitespace-nowrap" @click.stop>
                 <div class="flex items-center justify-center space-x-2 whitespace-nowrap">
@@ -1554,12 +1680,15 @@ onUnmounted(() => {
       @click.self="showCreateModal = false"
     >
       <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 border border-gray-150">
-        <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-          <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <h2 class="text-xl font-bold text-gray-800 mb-1 flex items-center gap-2">
+          <svg class="w-5 h-5" :class="activeScope === 'personal' ? 'text-emerald-500' : 'text-blue-500'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
           </svg>
           初始化智能体技能
         </h2>
+        <p class="text-xs text-gray-500 mb-4">
+          将创建到<strong>{{ activeScope === 'personal' ? '我的技能（个人）' : '平台技能（全局）' }}</strong>目录
+        </p>
         <div class="space-y-4">
           <div>
             <label class="block text-xs font-bold text-gray-500 uppercase mb-1">
@@ -1569,7 +1698,8 @@ onUnmounted(() => {
               v-model="newSkill.id"
               type="text" 
               placeholder="例如: search-helper" 
-              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all"
+              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:outline-none text-sm transition-all"
+              :class="activeScope === 'personal' ? 'focus:ring-emerald-500' : 'focus:ring-blue-500'"
             />
             <span class="text-[10px] text-gray-400 mt-1 block">物理目录名，创建后不可修改</span>
           </div>
@@ -1582,7 +1712,8 @@ onUnmounted(() => {
               v-model="newSkill.name"
               type="text" 
               placeholder="例如: 全局网页搜索辅助" 
-              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all"
+              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:outline-none text-sm transition-all"
+              :class="activeScope === 'personal' ? 'focus:ring-emerald-500' : 'focus:ring-blue-500'"
             />
           </div>
 
@@ -1594,7 +1725,8 @@ onUnmounted(() => {
               v-model="newSkill.description"
               rows="3"
               placeholder="描述此技能的核心能力或针对的典型任务约束..." 
-              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all"
+              class="w-full px-3 py-2 border border-gray-350 rounded-xl focus:ring-2 focus:outline-none text-sm transition-all"
+              :class="activeScope === 'personal' ? 'focus:ring-emerald-500' : 'focus:ring-blue-500'"
             ></textarea>
           </div>
         </div>
@@ -1609,9 +1741,10 @@ onUnmounted(() => {
           <button 
             @click="createSkill"
             :disabled="creating"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl transition-colors text-sm font-medium"
+            class="px-4 py-2 disabled:opacity-50 text-white rounded-xl transition-colors text-sm font-medium"
+            :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'"
           >
-            {{ creating ? '创建中...' : '提交初始化' }}
+            {{ creating ? '创建中...' : (activeScope === 'personal' ? '创建到我的技能' : '创建到平台技能') }}
           </button>
         </div>
       </div>
@@ -1625,7 +1758,7 @@ onUnmounted(() => {
       <!-- 蒙层 -->
       <div 
         class="absolute inset-0 bg-black/30 backdrop-blur-[2px] transition-opacity"
-        @click="showDrawer = false"
+        @click="requestCloseDrawer"
       ></div>
 
       <!-- 抽屉主体 -->
@@ -1646,7 +1779,7 @@ onUnmounted(() => {
             </div>
             
             <button 
-              @click="showDrawer = false"
+              @click="requestCloseDrawer"
               class="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

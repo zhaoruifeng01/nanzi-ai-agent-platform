@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { agentApi } from "../api/agent";
 import type {
   AIAgent,
@@ -367,6 +367,8 @@ const versionForm = ref<Partial<AIAgentVersion>>({
   synthesis_temperature: 0.7, // NEW
   system_prompt: "",
   tools: [],
+  skills_custom: false,
+  skills: [],
   comment: "",
 });
 
@@ -475,7 +477,8 @@ const availableTools = [
 
 const dynamicTools = ref<SysApiTool[]>([]);
 const mcpTools = ref<any[]>([]);
-const toolTab = ref<'static' | 'mcp'>('static');
+const availableSkills = ref<any[]>([]);
+const toolTab = ref<'static' | 'mcp' | 'skills'>('static');
 
 const groupedMcpTools = computed(() => {
   const groups: Record<string, any[]> = {};
@@ -517,6 +520,10 @@ const versionConfigSteps: { id: VersionConfigStep; label: string }[] = [
 ];
 
 const selectedToolsCount = computed(() => versionForm.value.tools?.length ?? 0);
+const selectedSkillsCount = computed(() => versionForm.value.skills?.length ?? 0);
+const enabledGlobalSkills = computed(() =>
+  availableSkills.value.filter((s) => String(s.enabled ?? 'true') !== 'false')
+);
 const promptCharCount = computed(() => versionForm.value.system_prompt?.length ?? 0);
 
 const versionConfigProgress = computed(() => {
@@ -555,6 +562,16 @@ const filteredGroupedMcpTools = computed(() => {
     if (filtered.length > 0) result[serverName] = filtered;
   }
   return result;
+});
+
+const filteredEnabledSkills = computed(() => {
+  const q = toolSearchQuery.value.trim().toLowerCase();
+  return enabledGlobalSkills.value.filter((skill) =>
+    !q ||
+    String(skill.id || '').toLowerCase().includes(q) ||
+    String(skill.name || '').toLowerCase().includes(q) ||
+    String(skill.description || '').toLowerCase().includes(q)
+  );
 });
 
 const collapsedStaticGroups = ref<Set<string>>(new Set());
@@ -633,6 +650,14 @@ const fetchTools = async () => {
       mcpTools.value = Array.isArray(mcpRes.data) ? mcpRes.data : (mcpRes.data.data || []);
     } catch (e) {
       console.warn("MCP tools not loaded");
+    }
+
+    try {
+      const skillsRes = await axios.get('/api/portal/skills');
+      availableSkills.value = Array.isArray(skillsRes.data) ? skillsRes.data : (skillsRes.data.data || []);
+    } catch (e) {
+      console.warn("Skills not loaded");
+      availableSkills.value = [];
     }
   } catch (e) {
     console.error("Failed to fetch dynamic tools", e);
@@ -958,10 +983,16 @@ const openVersionModal = (
         status: "DRAFT", // Reset status
         comment: `Cloned from V${version.version_number}`,
         created_at: undefined,
+        skills_custom: !!version.skills_custom,
+        skills: version.skills_custom ? [...(version.skills || [])] : [],
       };
     } else {
       // Edit mode
-      versionForm.value = { ...version };
+      versionForm.value = {
+        ...version,
+        skills_custom: !!version.skills_custom,
+        skills: version.skills_custom ? [...(version.skills || [])] : [],
+      };
     }
   } else {
     // Default system prompt from selected agent or empty
@@ -972,6 +1003,8 @@ const openVersionModal = (
       synthesis_temperature: 0.7,
       system_prompt: "",
       tools: [],
+      skills_custom: false,
+      skills: [],
       comment: "",
     };
   }
@@ -1057,16 +1090,29 @@ const saveVersion = async () => {
     return;
   }
 
+  if (versionForm.value.skills_custom && !(versionForm.value.skills?.length)) {
+    showToast("自定义 Skills 开启时至少选择一个公共技能", "warning");
+    versionConfigStep.value = 'tools';
+    toolTab.value = 'skills';
+    return;
+  }
+
+  const payload = {
+    ...versionForm.value,
+    skills_custom: !!versionForm.value.skills_custom,
+    skills: versionForm.value.skills_custom ? (versionForm.value.skills || []) : [],
+  };
+
   try {
     if (versionForm.value.id) {
       await agentApi.updateVersion(
         selectedAgent.value.id,
         versionForm.value.id,
-        versionForm.value
+        payload
       );
       showToast("版本更新成功", "success");
     } else {
-      await agentApi.createVersion(selectedAgent.value.id, versionForm.value);
+      await agentApi.createVersion(selectedAgent.value.id, payload);
       showToast("版本创建成功", "success");
     }
     showVersionModal.value = false;
@@ -1171,6 +1217,32 @@ const toggleTool = (toolName: string) => {
     tools.push(toolName);
   }
   versionForm.value.tools = tools;
+};
+
+const setSkillsCustom = (enabled: boolean) => {
+  if (!canEditVersion.value) return;
+  versionForm.value.skills_custom = enabled;
+  if (!enabled) {
+    versionForm.value.skills = [];
+  } else if (!versionForm.value.skills) {
+    versionForm.value.skills = [];
+  }
+};
+
+const toggleSkill = (skillId: string) => {
+  if (!canEditVersion.value || !versionForm.value.skills_custom) return;
+  const skills = [...(versionForm.value.skills || [])];
+  const index = skills.indexOf(skillId);
+  if (index > -1) {
+    skills.splice(index, 1);
+  } else {
+    skills.push(skillId);
+  }
+  versionForm.value.skills = skills;
+};
+
+const isSkillSelected = (skillId: string) => {
+  return !!(versionForm.value.skills || []).includes(skillId);
 };
 
 const isToolSelected = (toolName: string) => {
@@ -1354,12 +1426,28 @@ const getAgentColorTheme = (agent: AIAgent) => {
   return themes[index] || themes[0]!;
 };
 
+const getEngineShortLabel = (agent: AIAgent) => {
+  if (agent.engine_type === 'RAGFLOW') return 'RAGFlow'
+  if (agent.engine_type === 'OPENCLAW') return 'OpenClaw'
+  return 'NanZi'
+}
+
+const openCardMenuId = ref<string | null>(null)
+const toggleCardMenu = (agentId: string, e?: Event) => {
+  e?.stopPropagation()
+  openCardMenuId.value = openCardMenuId.value === agentId ? null : agentId
+}
+const closeCardMenus = () => {
+  openCardMenuId.value = null
+}
+
 onMounted(() => {
   fetchAgents();
   fetchModels();
   fetchTools();
   const cached = localStorage.getItem("user_info");
   if (cached) userInfo.value = JSON.parse(cached);
+  document.addEventListener('click', closeCardMenus);
 });
 
 const versionsDrawerRef = ref<any>(null);
@@ -1372,9 +1460,9 @@ onMounted(() => {
   window.addEventListener('resize', handleResize);
 });
 
-import { onUnmounted } from 'vue';
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize);
+  document.removeEventListener('click', closeCardMenus);
 });
 
 const formatDate = (dateStr: string) => {
@@ -1390,107 +1478,60 @@ const formatDate = (dateStr: string) => {
 </script>
 
 <template>
-  <div class="space-y-4 sm:space-y-6">
-    <div class="flex justify-between items-center">
-      <div>
-        <div class="flex items-center space-x-3">
-          <h1 class="text-xl sm:text-2xl font-bold text-gray-900">智能体中心</h1>
-          <!-- 「？」帮助按钮 -->
-          <button 
-            @click="showHelp = true"
-            class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm"
-            title="智能体调度与托管说明"
-          >
-            <span class="font-bold text-sm">?</span>
-          </button>
-        </div>
-        <p v-if="!isMobile" class="text-gray-500 mt-1">
-          管理并配置系统中的 AI 智能体及其运行策略
-        </p>
-      </div>
-      <button
-        v-if="!isMobile"
-        v-has-perm="'element:agent:create'"
-        @click="openAgentModal()"
-        class="px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-colors flex items-center"
-      >
-        <svg
-          class="w-5 h-5 mr-2"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M12 4v16m8-8H4"
-          />
-        </svg>
-        新建智能体
-      </button>
-    </div>
-
-    <!-- Filters & Toolbar -->
-    <div
-      class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-wrap items-center justify-between gap-4"
-    >
-      <div class="flex items-center space-x-4">
-        <!-- Status Filter -->
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-500">状态:</span>
-          <select
-            v-model="statusFilter"
-            class="text-sm border-gray-300 rounded-md focus:ring-primary focus:border-primary"
-          >
-            <option value="all">全部</option>
-            <option value="enabled">已启用</option>
-            <option value="disabled">已禁用</option>
-          </select>
-        </div>
-        <!-- Type Filter -->
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-500">类型:</span>
-          <select
-            v-model="typeFilter"
-            class="text-sm border-gray-300 rounded-md focus:ring-primary focus:border-primary"
-          >
-            <option value="all">全部</option>
-            <option value="system">系统内置</option>
-            <option value="custom">自定义</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Search & View Switch -->
+  <div class="space-y-4 sm:space-y-5">
+    <!-- Header：与技能工作台一致，标题左 / 筛选操作右 -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
       <div class="flex items-center space-x-3">
-        <div class="relative w-64">
+        <h1 class="text-xl sm:text-2xl font-bold text-gray-900">智能体中心</h1>
+        <button 
+          @click="showHelp = true"
+          class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm"
+          title="智能体调度与托管说明"
+        >
+          <span class="font-bold text-sm">?</span>
+        </button>
+      </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="relative w-full sm:w-56 lg:w-64">
+          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </span>
           <input
             v-model="searchKeyword"
+            type="text"
             placeholder="搜索智能体名称..."
-            class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+            class="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none text-sm transition-all shadow-sm"
           />
-          <svg
-            class="w-4 h-4 text-gray-400 absolute left-3 top-2.5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            ></path>
-          </svg>
         </div>
 
-        <!-- View Mode Switcher -->
-        <div v-if="!isMobile" class="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200">
+        <select
+          v-model="statusFilter"
+          class="text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none shrink-0"
+          title="按状态筛选"
+        >
+          <option value="all">状态：全部</option>
+          <option value="enabled">状态：已启用</option>
+          <option value="disabled">状态：已禁用</option>
+        </select>
+
+        <select
+          v-model="typeFilter"
+          class="text-sm border border-gray-300 rounded-lg py-2 px-2.5 bg-white shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none shrink-0"
+          title="按类型筛选"
+        >
+          <option value="all">类型：全部</option>
+          <option value="system">类型：系统内置</option>
+          <option value="custom">类型：自定义</option>
+        </select>
+
+        <div v-if="!isMobile" class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
           <button
             @click="toggleViewMode('grid')"
             class="p-1.5 rounded-md transition-all"
-            :class="viewMode === 'grid' ? 'bg-white shadow-sm text-primary' : 'text-gray-400 hover:text-gray-600'"
+            :class="viewMode === 'grid' ? 'bg-white shadow-sm text-primary border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
             title="网格视图"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1499,8 +1540,8 @@ const formatDate = (dateStr: string) => {
           </button>
           <button
             @click="toggleViewMode('list')"
-            class="p-1.5 rounded-md transition-all ml-0.5"
-            :class="viewMode === 'list' ? 'bg-white shadow-sm text-primary' : 'text-gray-400 hover:text-gray-600'"
+            class="p-1.5 rounded-md transition-all"
+            :class="viewMode === 'list' ? 'bg-white shadow-sm text-primary border border-gray-200' : 'text-gray-500 hover:text-gray-800'"
             title="列表视图"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1508,14 +1549,26 @@ const formatDate = (dateStr: string) => {
             </svg>
           </button>
         </div>
-        <p
-          v-if="canDragAgents"
-          class="text-[11px] text-gray-400 hidden sm:block"
+
+        <button
+          v-has-perm="'element:agent:create'"
+          @click="openAgentModal()"
+          class="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-lg shadow-sm hover:bg-primary-dark transition-colors font-medium text-sm shrink-0"
         >
-          拖动卡片或列表行可调整排序
-        </p>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          新建智能体
+        </button>
       </div>
     </div>
+
+    <p
+      v-if="canDragAgents && !isMobile"
+      class="text-[11px] text-gray-400 -mt-2"
+    >
+      拖动卡片或列表行可调整排序
+    </p>
 
     <!-- Agents Grid -->
     <div v-if="loading" class="py-12 text-center text-gray-400">
@@ -1588,11 +1641,11 @@ const formatDate = (dateStr: string) => {
         </div>
         <!-- Card Header Accent -->
         <div class="h-1.5 w-full" :class="getAgentColorTheme(agent).accent"></div>
-        <!-- Card Header & Status -->
-        <div class="p-5 flex items-start justify-between relative">
-          <div class="flex items-center space-x-4">
+        <!-- Card Header: title left, enable switch right -->
+        <div class="p-5 flex items-start justify-between gap-3">
+          <div class="flex items-center space-x-3 min-w-0 flex-1">
             <div
-              class="w-12 h-12 rounded-xl flex items-center justify-center text-2xl shadow-inner border overflow-hidden"
+              class="w-11 h-11 rounded-xl flex items-center justify-center text-xl shadow-inner border overflow-hidden shrink-0"
               :class="[getAgentColorTheme(agent).bg, getAgentColorTheme(agent).border]"
             >
               <img
@@ -1602,54 +1655,43 @@ const formatDate = (dateStr: string) => {
               />
               <span v-else>{{ getAgentEmoji(agent) }}</span>
             </div>
-            <div>
+            <div class="min-w-0">
               <h3
-                class="font-bold text-gray-900 line-clamp-1 relative pr-16"
+                class="font-bold text-gray-900 line-clamp-1"
                 :title="agent.display_name"
               >
                 {{ agent.display_name }}
               </h3>
-              <p class="text-xs text-gray-500 font-mono mt-0.5">
-                {{ agent.name }}
-              </p>
+              <div class="mt-1 flex items-center flex-wrap gap-1.5 text-[11px] text-gray-500">
+                <span class="font-mono truncate max-w-[8rem]" :title="agent.name">{{ agent.name }}</span>
+                <span class="text-gray-300">·</span>
+                <span
+                  class="shrink-0 px-1.5 py-0.5 rounded font-medium border"
+                  :class="{
+                    'bg-purple-50 text-purple-600 border-purple-100': agent.engine_type === 'RAGFLOW',
+                    'bg-orange-50 text-orange-600 border-orange-100': agent.engine_type === 'OPENCLAW',
+                    'bg-blue-50 text-blue-600 border-blue-100': agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW',
+                  }"
+                >{{ getEngineShortLabel(agent) }}</span>
+                <span
+                  v-if="agent.is_system"
+                  class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-indigo-50 text-indigo-600 border border-indigo-100"
+                >系统</span>
+                <span
+                  v-if="!agent.is_enabled"
+                  class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-gray-100 text-gray-500 border border-gray-200"
+                >已禁用</span>
+              </div>
             </div>
           </div>
 
-          <!-- Status Badge -->
-          <div class="absolute top-5 right-5 flex flex-col items-end space-y-2">
-            <!-- 引擎类型标签 -->
-            <span
-              v-if="agent.engine_type === 'RAGFLOW'"
-              class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100 flex items-center"
-            >
-              🌊 RAG Engine
-            </span>
-            <span
-              v-else-if="agent.engine_type === 'OPENCLAW'"
-              class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-50 text-orange-600 border border-orange-100 flex items-center"
-            >
-              🦞 Claw Engine
-            </span>
-            <span
-              v-else
-              class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100 flex items-center"
-            >
-              🧠 NanZi Engine
-            </span>
-
-            <span
-              v-if="agent.is_system"
-              class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-600 border border-indigo-100"
-              >SYSTEM</span
-            >
-
-            <!-- Toggle Switch -->
+          <div class="shrink-0 pt-0.5">
             <button
+              v-if="agent.is_editable !== false"
               class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
               :class="agent.is_enabled ? 'bg-green-500' : 'bg-gray-200'"
               @click.stop="toggleAgentStatus(agent)"
-              title="切换启用状态"
-              v-if="agent.is_editable !== false"
+              :title="agent.is_enabled ? '已启用，点击禁用' : '已禁用，点击启用'"
             >
               <span class="sr-only">Toggle Status</span>
               <span
@@ -1658,7 +1700,6 @@ const formatDate = (dateStr: string) => {
                 :class="agent.is_enabled ? 'translate-x-4' : 'translate-x-0'"
               ></span>
             </button>
-            <!-- Read-only Badge -->
             <span
               v-else
               class="px-2 py-0.5 rounded-full text-[10px] items-center space-x-1 flex border"
@@ -1672,162 +1713,111 @@ const formatDate = (dateStr: string) => {
                 class="w-1.5 h-1.5 rounded-full"
                 :class="agent.is_enabled ? 'bg-green-500' : 'bg-gray-400'"
               ></span>
-              <span>{{ agent.is_enabled ? "Active" : "Disabled" }}</span>
+              <span>{{ agent.is_enabled ? '已启用' : '已禁用' }}</span>
             </span>
           </div>
         </div>
 
-        <!-- Description (Comment Style) -->
-        <div class="px-5 pb-3 flex-1 flex flex-col justify-center">
-          <div
-            class="p-2.5 rounded-lg border border-gray-100 bg-gray-50/80 font-mono text-[11px] leading-relaxed relative group/desc min-h-[64px] flex flex-col justify-center transition-all shadow-sm"
+        <!-- Description -->
+        <div class="px-5 pb-3 flex-1 flex flex-col">
+          <p
+            class="text-sm text-gray-600 leading-relaxed line-clamp-3 min-h-[3.75rem]"
+            :title="agent.description || undefined"
           >
-            <div class="absolute top-0 left-0 w-1 h-full transition-colors bg-gray-300 group-hover:bg-primary/50"></div>
-            <p class="italic px-1 line-clamp-3 text-gray-500">
-              <span class="opacity-40 mr-1">/*</span>
-              {{ agent.description || "No description available..." }}
-              <span class="opacity-40 ml-1">*/</span>
-            </p>
-          </div>
+            {{ agent.description || '暂无描述' }}
+          </p>
 
           <div
             v-if="!isMobile"
-            class="mt-auto flex items-center justify-between text-xs text-gray-500 border-t border-gray-50 pt-3"
+            class="mt-3 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400"
           >
-            <span class="flex items-center" title="创建者">
-              <span class="mr-1">👤</span>{{ agent.created_by || "Unknown" }}
-            </span>
-            <span class="flex items-center" title="最后更新">
-              <span class="mr-1">🕒</span>{{ formatDate(agent.updated_at) }}
-            </span>
+            <span title="创建者">{{ agent.created_by || 'Unknown' }}</span>
+            <span class="text-gray-300">·</span>
+            <span title="最后更新">{{ formatDate(agent.updated_at) }}</span>
+            <span class="text-gray-300">·</span>
+            <span title="调用次数">{{ agent.execution_count ?? 0 }} 次调用</span>
           </div>
         </div>
 
         <!-- Actions Footer -->
         <div
-          class="bg-gray-50 px-5 py-3 border-t border-gray-100 flex items-center justify-between group-hover:bg-blue-50/30 transition-colors"
+          class="bg-gray-50 px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2 group-hover:bg-blue-50/30 transition-colors"
         >
-          <div v-if="!isMobile" class="flex items-center space-x-2">
-            <span
-              class="text-xs font-semibold text-gray-500 bg-white px-2 py-0.5 rounded border border-gray-200 shadow-sm"
-            >
-              {{ agent.execution_count }} runs
-            </span>
-          </div>
-          <div v-else></div> <!-- Placeholder for layout -->
-
-          <div
-            class="flex items-center space-x-1"
-            :class="isMobile ? 'opacity-100' : 'opacity-80 group-hover:opacity-100'"
-          >
-            <!-- Delete -->
+          <div class="relative" @click.stop>
             <button
-              v-has-perm="'element:agent:delete'"
-              @click.stop="handleDeleteAgent(agent)"
-              class="p-1.5 rounded hover:bg-white text-gray-400 hover:text-red-600 transition-colors"
-              title="删除智能体"
-              v-if="!agent.is_system && agent.is_editable !== false"
+              @click="toggleCardMenu(agent.id, $event)"
+              class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-white border border-transparent hover:border-gray-200 transition-colors"
+              title="更多操作"
             >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                />
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0z" />
               </svg>
             </button>
-
-            <!-- Preview -->
-            <button
-              @click.stop="openPreview(agent)"
-              class="p-1.5 rounded hover:bg-white text-gray-400 hover:text-indigo-600 transition-colors"
-              title="预览对话 (EmbedChat)"
+            <div
+              v-if="openCardMenuId === agent.id"
+              class="absolute right-0 bottom-full mb-1 w-40 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-30"
             >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
+              <button
+                @click="closeCardMenus(); openPreview(agent)"
+                class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-              </svg>
-            </button>
-
-            <!-- Edit (Simplified for mobile) -->
-            <button
-              v-has-perm="'element:agent:edit'"
-              @click.stop="openAgentModal(agent)"
-              class="p-1.5 rounded hover:bg-white text-gray-400 hover:text-blue-600 transition-colors"
-              title="配置元数据"
-              v-if="agent.is_editable !== false"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
+                预览对话
+              </button>
+              <button
+                v-if="agent.is_editable !== false"
+                v-has-perm="'element:agent:edit'"
+                @click="closeCardMenus(); openAgentModal(agent)"
+                class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                />
-              </svg>
-            </button>
-
-            <!-- History -->
-            <button
-              v-if="!isMobile"
-              @click.stop="openHistoryModal(agent)"
-              class="p-1.5 rounded hover:bg-white text-gray-400 hover:text-indigo-600 transition-colors"
-              title="历史记录"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
+                配置元数据
+              </button>
+              <button
+                v-if="!isMobile"
+                @click="closeCardMenus(); openHistoryModal(agent)"
+                class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-            </button>
-
-            <!-- Versions (Primary Action - Hidden on mobile, RAGFLOW and OPENCLAW) -->
-            <button
-              v-if="!isMobile && agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
-              @click.stop="openDrawer(agent)"
-              class="ml-2 px-3 py-1 bg-primary text-white text-xs rounded shadow-sm hover:bg-primary-dark transition-colors flex items-center"
-            >
-              <svg
-                class="w-3 h-3 mr-1"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
+                历史记录
+              </button>
+              <button
+                v-if="!agent.is_system && agent.is_editable !== false"
+                v-has-perm="'element:agent:delete'"
+                @click="closeCardMenus(); handleDeleteAgent(agent)"
+                class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                />
-              </svg>
-              版本管理
-            </button>
+                删除
+              </button>
             </div>
           </div>
+
+          <button
+            v-if="!isMobile && agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
+            @click.stop="openDrawer(agent)"
+            class="px-3 py-1.5 bg-primary text-white text-xs font-medium rounded-lg shadow-sm hover:bg-primary-dark transition-colors flex items-center"
+          >
+            <svg
+              class="w-3 h-3 mr-1"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+              />
+            </svg>
+            版本管理
+          </button>
+          <button
+            v-else-if="agent.is_editable !== false"
+            v-has-perm="'element:agent:edit'"
+            @click.stop="openAgentModal(agent)"
+            class="px-3 py-1.5 bg-primary text-white text-xs font-medium rounded-lg shadow-sm hover:bg-primary-dark transition-colors"
+          >
+            配置
+          </button>
+        </div>
         </div>
       </template>
 
@@ -2430,14 +2420,18 @@ const formatDate = (dateStr: string) => {
       :version-config-steps="versionConfigSteps"
       :version-config-progress="versionConfigProgress"
       :selected-tools-count="selectedToolsCount"
+      :selected-skills-count="selectedSkillsCount"
       :prompt-char-count="promptCharCount"
       :version-status-label="versionStatusLabel"
       :version-status-class="versionStatusClass"
       :filtered-grouped-tools="filteredGroupedTools"
       :filtered-grouped-mcp-tools="filteredGroupedMcpTools"
+      :filtered-enabled-skills="filteredEnabledSkills"
+      :enabled-global-skills-count="enabledGlobalSkills.length"
       :all-available-tools-count="allAvailableTools.length"
       :mcp-tools-count="mcpTools.length"
       :is-tool-selected="isToolSelected"
+      :is-skill-selected="isSkillSelected"
       :get-tool-custom-config="getToolCustomConfig"
       :is-all-mcp-selected="isAllMcpSelected"
       :is-mcp-group-collapsed="isMcpGroupCollapsed"
@@ -2451,6 +2445,8 @@ const formatDate = (dateStr: string) => {
       @update:tool-search-query="toolSearchQuery = $event"
       @update:version-config-step="versionConfigStep = $event"
       @toggle-tool="toggleTool"
+      @toggle-skill="toggleSkill"
+      @set-skills-custom="setSkillsCustom"
       @toggle-select-all-mcp="toggleSelectAllMcp"
       @toggle-mcp-group-collapse="toggleMcpGroupCollapse"
       @toggle-static-group-collapse="toggleStaticGroupCollapse"
