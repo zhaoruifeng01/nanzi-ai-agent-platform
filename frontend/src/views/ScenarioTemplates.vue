@@ -8,11 +8,14 @@ import {
 import { portalApi } from '../api/portal'
 import type { ScenarioTemplateInstanceSummary, ScenarioTemplateSummary } from '../api/portal'
 import { useToast } from '../composables/useToast'
+import { useUser } from '../composables/useUser'
 
 type MarketTab = 'templates' | 'delivered'
 
 const router = useRouter()
 const { showToast } = useToast()
+const { hasPermission } = useUser()
+const canManageDelivery = computed(() => hasPermission('menu:agent_management'))
 
 const templates = ref<ScenarioTemplateSummary[]>([])
 const installedInstances = ref<ScenarioTemplateInstanceSummary[]>([])
@@ -53,6 +56,10 @@ const loadTemplates = async () => {
 }
 
 const loadInstalledInstances = async () => {
+  if (!canManageDelivery.value) {
+    installedInstances.value = []
+    return
+  }
   try {
     const res = await portalApi.getScenarioTemplateInstances()
     installedInstances.value = res.data.data || []
@@ -98,8 +105,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-full bg-slate-50 px-4 py-5 sm:px-6 lg:px-8">
-    <section class="mb-6 overflow-hidden rounded-2xl border border-blue-800/30 bg-blue-800 p-6 text-white shadow-sm">
+  <div class="space-y-4 sm:space-y-5">
+    <section class="overflow-hidden rounded-2xl border border-blue-800/30 bg-blue-800 p-6 text-white shadow-sm">
       <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
         <div class="max-w-3xl">
           <p class="text-xs font-semibold uppercase tracking-[0.24em] text-blue-100">Solution Package</p>
@@ -130,8 +137,8 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section class="mb-4 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
-      <div class="grid gap-2 sm:grid-cols-2">
+    <section class="rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+      <div class="grid gap-2" :class="canManageDelivery ? 'sm:grid-cols-2' : 'sm:grid-cols-1'">
         <button
           class="rounded-lg px-4 py-3 text-left transition"
           :class="activeTab === 'templates' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-100' : 'text-gray-500 hover:bg-gray-50'"
@@ -141,6 +148,7 @@ onMounted(async () => {
           <span class="mt-1 block text-xs">按业务场景选择模板，进入详情和交付向导。</span>
         </button>
         <button
+          v-if="canManageDelivery"
           class="rounded-lg px-4 py-3 text-left transition"
           :class="activeTab === 'delivered' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-100' : 'text-gray-500 hover:bg-gray-50'"
           @click="activeTab = 'delivered'"
@@ -151,7 +159,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section v-if="activeTab === 'delivered'" class="mb-6 rounded-lg border border-blue-100 bg-white p-5 shadow-sm">
+    <section v-if="activeTab === 'delivered'" class="rounded-lg border border-blue-100 bg-white p-5 shadow-sm">
       <div class="flex items-center justify-between gap-3">
         <div>
           <p class="text-xs font-semibold uppercase text-blue-600">Delivered</p>
@@ -199,7 +207,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section v-if="activeTab === 'templates'" class="mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <section v-if="activeTab === 'templates'" class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 class="text-lg font-bold text-gray-900">可交付场景模板</h2>

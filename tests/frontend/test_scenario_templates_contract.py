@@ -52,8 +52,8 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "场景包市场" in market
     assert "按业务场景一键交付智能体" in market
     assert "templateStats" in market
-    assert "from-blue-700 via-blue-600 to-indigo-700" in market
-    assert "text-white/90" in market
+    assert "bg-blue-800" in market
+    assert "text-blue-50" in market
     assert "bg-white p-4 text-center shadow-sm" in market
     assert "text-blue-900" in market
     assert "bg-white/15 p-3 text-center" not in market
@@ -63,6 +63,10 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "可交付模板" in market
     assert "categoryOptions" in market
     assert "filteredTemplates" in market
+    assert "canManageDelivery" in market
+    assert "menu:ai_chat" in router
+    assert "meta: { perm: 'menu:ai_chat', title: '场景模板' }" in router
+    assert "meta: { perm: 'menu:agent_management', title: '交付向导' }" in router
     assert "经营分析 ChatBI 助手" in scenario_service
     assert "企业知识问答助手" in scenario_service
     assert "运维巡检助手" in scenario_service

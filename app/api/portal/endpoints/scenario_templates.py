@@ -22,7 +22,7 @@ router = APIRouter()
 
 @router.get("", response_model=StandardResponse[List[ScenarioTemplateSummary]])
 async def list_scenario_templates(
-    _user: Dict[str, Any] = Depends(require_permission("menu", "menu:agent_management")),
+    _user: Dict[str, Any] = Depends(require_permission("menu", "menu:ai_chat")),
 ):
     return StandardResponse(data=ScenarioTemplateService.list_templates())
 
@@ -49,7 +49,7 @@ async def get_scenario_template_instance(
 @router.get("/{template_id}", response_model=StandardResponse[ScenarioTemplateDetail])
 async def get_scenario_template(
     template_id: str,
-    _user: Dict[str, Any] = Depends(require_permission("menu", "menu:agent_management")),
+    _user: Dict[str, Any] = Depends(require_permission("menu", "menu:ai_chat")),
 ):
     return StandardResponse(data=ScenarioTemplateService.get_template(template_id).detail())
 

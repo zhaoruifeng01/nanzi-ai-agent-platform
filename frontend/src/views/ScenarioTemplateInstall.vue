@@ -275,9 +275,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-full bg-gray-50 px-4 py-5 sm:px-6 lg:px-8">
+  <div class="space-y-4 sm:space-y-5">
     <button
-      class="mb-4 inline-flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+      class="inline-flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-900"
       @click="router.push({ name: 'ScenarioTemplateDetail', params: route.params })"
     >
       <ArrowLeftIcon class="h-4 w-4" />
