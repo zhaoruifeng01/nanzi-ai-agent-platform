@@ -351,6 +351,49 @@ async def test_inject_skills_forces_using_superpowers_on_first_turn_greeting(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.no_infrastructure
+async def test_inject_skills_forces_using_superpowers_on_first_turn_for_non_main_agent(tmp_path):
+    """专家 / ChatBI 等非主助手，新会话首轮也应强制预载 using-superpowers。"""
+    service = AgentService()
+    skill_dir = tmp_path / "using-superpowers"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: using-superpowers\n"
+        "description: Use when starting any conversation\n"
+        "---\n\n"
+        "# 完整流程\n"
+        "非主助手首轮也应该启用该流程。\n",
+        encoding="utf-8",
+    )
+    agent_config = ChatConfig(
+        agent_id="sys-agent-chatbi",
+        agent_name="ChatBI",
+        agent_display_name="测试经营分析助手",
+        model_name="test-model",
+        temperature=0,
+        system_prompt="Base prompt",
+        tools=[],
+        capabilities=["data_query"],
+    )
+
+    with (
+        patch("app.core.config.Settings.SKILLS_DIR", str(tmp_path)),
+        patch("app.services.config_service.ConfigService.get", side_effect=_skill_config_get_strict_full_load),
+    ):
+        injections = await service._inject_skills(
+            messages=[{"role": "user", "content": "你好"}],
+            user_query="你好",
+            agent_config=agent_config,
+        )
+
+    joined = "\n".join(injections)
+    assert "已预载完整指令" in joined
+    assert "非主助手首轮也应该启用该流程" in joined
+    assert "using-superpowers" in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
 async def test_inject_skills_does_not_force_using_superpowers_after_first_turn(tmp_path):
     service = AgentService()
     skill_dir = tmp_path / "using-superpowers"
