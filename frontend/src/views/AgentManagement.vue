@@ -5,7 +5,6 @@ import type {
   AIAgent,
   AIAgentBase,
   AIAgentVersion,
-  AgentExecutionHistory,
 } from "../api/agent";
 import { modelApi, type AIModel } from "../api/model";
 import { toolApi, type SysApiTool } from "../api/tool";
@@ -14,6 +13,7 @@ import ConfirmModal from "../components/ConfirmModal.vue";
 import Toast from "../components/Toast.vue";
 import AgentVersionsDrawer from "../components/agent/AgentVersionsDrawer.vue"; // New Component
 import AgentVersionEditorDrawer from "../components/agent/AgentVersionEditorDrawer.vue";
+import AgentHistoryModal from "../components/agent/AgentHistoryModal.vue";
 import RagFlowResourceSelector from "../components/RagFlowResourceSelector.vue";
 import ToolRuntimeConfigModal from "../components/agent/ToolRuntimeConfigModal.vue";
 import DingTalkConfigModal from "../components/agent/DingTalkConfigModal.vue";
@@ -31,13 +31,6 @@ const showEmailModal = ref(false);
 const showWeChatWorkModal = ref(false);
 const currentConfiguringTool = ref("");
 const currentToolConfig = ref<any>({});
-
-const executions = ref<AgentExecutionHistory[]>([]);
-const loadingExecutions = ref(false);
-const historyPage = ref(1);
-const historyPageSize = ref(10);
-const historyKeyword = ref("");
-const historyHasMore = ref(true);
 
 // Model Management
 const models = ref<AIModel[]>([]);
@@ -1316,54 +1309,10 @@ const removeCapability = (index: number) => {
   agentForm.value.capabilities?.splice(index, 1);
 };
 
-const openHistoryModal = async (agent: AIAgent) => {
+const openHistoryModal = (agent: AIAgent) => {
   if (!agent) return;
   selectedAgent.value = agent;
   showHistoryModal.value = true;
-  historyPage.value = 1;
-  historyKeyword.value = "";
-  historyHasMore.value = true;
-  executions.value = [];
-  await fetchHistory();
-};
-
-const fetchHistory = async (loadMore = false) => {
-  if (!selectedAgent.value) return;
-  loadingExecutions.value = true;
-  try {
-    const res = await agentApi.getChatHistory({
-      agent_id: selectedAgent.value.id,
-      page: historyPage.value,
-      page_size: historyPageSize.value,
-      keyword: historyKeyword.value || undefined,
-    });
-
-    if (loadMore) {
-      executions.value = [...executions.value, ...(res.data.data.items || [])];
-    } else {
-      executions.value = res.data.data.items || [];
-    }
-
-    // Simple check for more pages
-    historyHasMore.value = (res.data.data.items || []).length === historyPageSize.value;
-  } catch (error) {
-    console.error("Failed to fetch executions", error);
-    showToast("获取历史记录失败", "error");
-  } finally {
-    loadingExecutions.value = false;
-  }
-};
-
-const handleHistorySearch = () => {
-  historyPage.value = 1;
-  historyHasMore.value = true;
-  fetchHistory();
-};
-
-const loadMoreHistory = () => {
-  if (!historyHasMore.value || loadingExecutions.value) return;
-  historyPage.value++;
-  fetchHistory(true);
 };
 
 const copySystemPrompt = () => {
@@ -2462,230 +2411,11 @@ const formatDate = (dateStr: string) => {
       @prev-step="prevVersionStep"
     />
 
-    <!-- History Modal -->
-    <Modal
-      v-if="showHistoryModal"
-      :title="`对话历史 - ${selectedAgent?.display_name}`"
+    <AgentHistoryModal
+      v-model:show="showHistoryModal"
+      :agent="selectedAgent"
       @close="showHistoryModal = false"
-      size="max-w-5xl"
-    >
-      <div class="space-y-4">
-        <!-- Search Bar -->
-        <div class="flex items-center space-x-3 mb-4">
-          <div class="relative flex-1">
-            <span
-              class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400"
-            >
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                ></path>
-              </svg>
-            </span>
-            <input
-              v-model="historyKeyword"
-              @keyup.enter="handleHistorySearch"
-              placeholder="搜索对话内容关键词..."
-              class="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
-            />
-          </div>
-          <button
-            @click="handleHistorySearch"
-            class="px-4 py-2 bg-primary text-white text-sm rounded-lg hover:bg-primary-dark transition-colors"
-          >
-            搜索
-          </button>
-        </div>
-
-        <div class="overflow-x-auto min-h-[400px]">
-          <table class="w-full text-left text-sm">
-            <thead>
-              <tr
-                class="bg-gray-50 text-gray-500 font-medium uppercase text-xs tracking-wider"
-              >
-                <th class="px-6 py-3 w-40">时间</th>
-                <th class="px-6 py-3 w-24">版本</th>
-                <th class="px-6 py-3 w-32">用户</th>
-                <th class="px-6 py-3">对话内容 (User / AI)</th>
-                <th class="px-6 py-3 w-24 text-center">状态</th>
-                <th class="px-6 py-3 w-24 text-center">Model</th>
-                <th class="px-6 py-3 w-24 text-right">耗时</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-50">
-              <tr v-if="loadingExecutions && historyPage === 1">
-                <td colspan="7" class="py-8 text-center text-gray-400">
-                  加载中...
-                </td>
-              </tr>
-              <tr v-if="!loadingExecutions && executions.length === 0">
-                <td colspan="7" class="py-12 text-center text-gray-400">
-                  暂无对话记录
-                </td>
-              </tr>
-              <tr
-                v-for="exec in executions"
-                :key="exec.id"
-                class="hover:bg-gray-50 transition-colors"
-              >
-                <td
-                  class="px-6 py-4 align-top text-gray-500 font-mono text-xs whitespace-nowrap"
-                >
-                  {{ new Date(exec.created_at).toLocaleString() }}
-                </td>
-                <td class="px-6 py-4 align-top">
-                  <span
-                    v-if="exec.agent_version"
-                    class="inline-flex items-center px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] font-bold border border-gray-200"
-                  >
-                    {{ exec.agent_version }}
-                  </span>
-                  <span v-else class="text-gray-300 text-[10px]">-</span>
-                </td>
-                <td class="px-6 py-4 align-top">
-                  <div class="flex items-center">
-                    <div
-                      class="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold mr-2"
-                    >
-                      {{
-                        exec.username
-                          ? exec.username.charAt(0).toUpperCase()
-                          : "U"
-                      }}
-                    </div>
-                    <span
-                      class="text-gray-900 font-medium truncate max-w-[100px]"
-                      :title="exec.username || ''"
-                      >{{ exec.username || "Unknown" }}</span
-                    >
-                  </div>
-                </td>
-                <td class="px-6 py-4 align-top">
-                  <div class="space-y-2">
-                    <div
-                      class="bg-gray-50 p-2 rounded-lg text-gray-800 text-sm border border-gray-100 relative group pr-6"
-                    >
-                      <span class="text-xs font-bold text-gray-400 block mb-0.5"
-                        >User</span
-                      >
-                      {{ exec.query }}
-                      <button
-                        @click="copyText(exec.query || '', '用户提问')"
-                        class="absolute top-2 right-2 text-gray-400 hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="复制内容"
-                      >
-                        <svg
-                          class="w-3.5 h-3.5"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                          ></path>
-                        </svg>
-                      </button>
-                    </div>
-                    <div
-                      class="bg-blue-50/50 p-2 rounded-lg text-gray-800 text-sm border border-blue-100/50 relative group pr-6"
-                    >
-                      <span
-                        class="text-xs font-bold text-primary/60 block mb-0.5"
-                        >AI</span
-                      >
-                      <div
-                        class="whitespace-pre-wrap break-words max-h-[150px] overflow-y-auto custom-scrollbar text-xs"
-                      >
-                        {{ exec.summary || "(无响应内容)" }}
-                      </div>
-                      <button
-                        @click="copyText(exec.summary || '', '回复内容')"
-                        class="absolute top-2 right-2 text-primary/40 hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="复制内容"
-                      >
-                        <svg
-                          class="w-3.5 h-3.5"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                          ></path>
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                </td>
-                <td class="px-6 py-4 align-top text-center">
-                  <span
-                    class="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border"
-                    :class="
-                      exec.status === 'success'
-                        ? 'bg-green-50 text-green-700 border-green-200'
-                        : 'bg-red-50 text-red-700 border-red-200'
-                    "
-                  >
-                    {{ exec.status }}
-                  </span>
-                </td>
-                <td class="px-6 py-4 align-top">
-                  <span
-                    v-if="exec.model_id"
-                    class="inline-flex items-center px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] font-bold border border-gray-200"
-                  >
-                    {{ exec.model_id }}
-                  </span>
-                  <span v-else class="text-gray-300 text-[10px]">-</span>
-                </td>
-                <td
-                  class="px-6 py-4 align-top text-right text-gray-500 text-xs font-mono"
-                >
-                  {{
-                    exec.execution_time_ms
-                      ? (exec.execution_time_ms / 1000).toFixed(2) + "s"
-                      : "-"
-                  }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Load More -->
-        <div v-if="historyHasMore" class="mt-4 flex justify-center pb-4">
-          <button
-            @click="loadMoreHistory"
-            :disabled="loadingExecutions"
-            class="px-6 py-2 border border-gray-200 rounded-full text-xs font-medium text-gray-500 hover:bg-gray-50 hover:text-primary transition-all disabled:opacity-50"
-          >
-            {{ loadingExecutions ? "加载中..." : "加载更多" }}
-          </button>
-        </div>
-      </div>
-      <div class="mt-6 flex justify-end pt-4 border-t border-gray-100">
-        <button
-          @click="showHistoryModal = false"
-          class="px-4 py-2 bg-white border border-gray-300 rounded-lg shadow-sm text-gray-700 hover:bg-gray-50 font-medium text-sm"
-        >
-          关闭
-        </button>
-      </div>
-    </Modal>
+    />
 
     <!-- Global Components -->
     <ConfirmModal
