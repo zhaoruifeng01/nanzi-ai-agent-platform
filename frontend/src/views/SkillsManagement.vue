@@ -1104,137 +1104,149 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-5">
-    <!-- Header 头部栏 -->
-    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+    <!-- Header：标题一行；窄屏下搜索通栏，排序/视图/统计并排，新建通栏 -->
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div class="flex items-center space-x-3">
         <h1 class="text-2xl font-bold tracking-normal text-gray-900">技能工作台</h1>
-
-        <!-- 「？」呼吸帮助按钮 -->
-        <button 
-          @click="showHelpModal = true"
-          class="flex items-center justify-center w-7 h-7 rounded-full bg-white text-blue-600 border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm"
+        <button
+          type="button"
+          class="flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 bg-white text-blue-600 shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50"
           title="技能开发使用指南"
+          @click="showHelpModal = true"
         >
-          <span class="font-bold text-sm">?</span>
+          <span class="text-sm font-bold">?</span>
         </button>
       </div>
 
-      <!-- 右侧控制区 -->
-      <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+      <div class="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 lg:justify-end">
         <div class="relative w-full sm:w-72">
-          <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+          <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
             <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </span>
-          <input 
+          <input
             v-model="searchQuery"
-            type="text" 
-            placeholder="搜索技能名称或描述..." 
-            class="w-full pl-9 pr-4 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm transition-all shadow-sm"
+            type="text"
+            placeholder="搜索技能名称或描述..."
+            class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-4 text-sm shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        <!-- 排序 -->
-        <div class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
-          <button
-            @click="skillSortBy = 'name'"
-            class="px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
-            :class="skillSortBy === 'name' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
-            title="按名称排序"
-          >
-            名称
-          </button>
-          <button
-            @click="skillSortBy = 'time'"
-            class="px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
-            :class="skillSortBy === 'time' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
-            title="按更新时间排序"
-          >
-            时间
-          </button>
-          <button
-            @click="toggleSkillSortOrder"
-            class="p-1.5 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-150 transition-all"
-            :title="skillSortOrder === 'asc' ? '当前升序，点击切换降序' : '当前降序，点击切换升序'"
-          >
-            <svg class="w-4 h-4 transition-transform" :class="skillSortOrder === 'desc' ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0v4m0 0l-3-3m3 3l3-3" />
-            </svg>
-          </button>
-        </div>
-        <!-- 视图切换按钮 -->
-        <div class="flex items-center bg-gray-200/60 p-0.5 rounded-lg border border-gray-300 gap-0.5 select-none shrink-0">
-          <button 
-            @click="viewMode = 'card'"
-            class="p-1.5 rounded-md transition-all duration-200 flex items-center justify-center"
-            :class="viewMode === 'card' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
-            title="卡片视图"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-            </svg>
-          </button>
-          <button 
-            @click="viewMode = 'list'"
-            class="p-1.5 rounded-md transition-all duration-200 flex items-center justify-center"
-            :class="viewMode === 'list' ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-150'"
-            title="列表视图"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-        </div>
-        <button 
-          @click="openStatsModal"
-          class="flex items-center justify-center p-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 active:scale-95 transition-all shadow-sm shrink-0"
-          title="统计查看"
-        >
-          <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-        </button>
-        <div class="relative shrink-0" @click.stop>
-          <div class="flex items-stretch rounded-lg overflow-hidden shadow-sm">
-            <button 
-              @click="openCreateModal"
-              class="flex items-center justify-center gap-2 px-4 py-2 text-white font-medium text-sm transition-all active:scale-[0.98]"
-              :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'"
+
+        <div class="flex items-center gap-2">
+          <div class="flex shrink-0 select-none items-center gap-0.5 rounded-lg border border-gray-300 bg-gray-200/60 p-0.5">
+            <button
+              type="button"
+              class="rounded-md px-2.5 py-1.5 text-xs font-medium transition-all"
+              :class="skillSortBy === 'name' ? 'border border-gray-200 bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-150 hover:text-gray-800'"
+              title="按名称排序"
+              @click="skillSortBy = 'name'"
             >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              名称
+            </button>
+            <button
+              type="button"
+              class="rounded-md px-2.5 py-1.5 text-xs font-medium transition-all"
+              :class="skillSortBy === 'time' ? 'border border-gray-200 bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-150 hover:text-gray-800'"
+              title="按更新时间排序"
+              @click="skillSortBy = 'time'"
+            >
+              时间
+            </button>
+            <button
+              type="button"
+              class="rounded-md p-1.5 text-gray-500 transition-all hover:bg-gray-150 hover:text-gray-800"
+              :title="skillSortOrder === 'asc' ? '当前升序，点击切换降序' : '当前降序，点击切换升序'"
+              @click="toggleSkillSortOrder"
+            >
+              <svg class="h-4 w-4 transition-transform" :class="skillSortOrder === 'desc' ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0v4m0 0l-3-3m3 3l3-3" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="flex shrink-0 select-none items-center gap-0.5 rounded-lg border border-gray-300 bg-gray-200/60 p-0.5">
+            <button
+              type="button"
+              class="flex items-center justify-center rounded-md p-1.5 transition-all duration-200"
+              :class="viewMode === 'card' ? 'border border-gray-200 bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-150 hover:text-gray-800'"
+              title="卡片视图"
+              @click="viewMode = 'card'"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="flex items-center justify-center rounded-md p-1.5 transition-all duration-200"
+              :class="viewMode === 'list' ? 'border border-gray-200 bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:bg-gray-150 hover:text-gray-800'"
+              title="列表视图"
+              @click="viewMode = 'list'"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-700 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
+            title="统计查看"
+            @click="openStatsModal"
+          >
+            <svg class="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="relative w-full shrink-0 sm:w-auto" @click.stop>
+          <div class="flex w-full items-stretch overflow-hidden rounded-lg shadow-sm sm:w-auto">
+            <button
+              type="button"
+              class="flex flex-1 items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white transition-all active:scale-[0.98] sm:flex-none"
+              :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'"
+              @click="openCreateModal"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
               </svg>
               新建技能
             </button>
             <button
-              @click="showCreateMenu = !showCreateMenu"
-              class="px-2 border-l text-white transition-colors"
-              :class="activeScope === 'personal' ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500' : 'bg-blue-600 hover:bg-blue-700 border-blue-500'"
+              type="button"
+              class="border-l px-2 text-white transition-colors"
+              :class="activeScope === 'personal' ? 'border-emerald-500 bg-emerald-600 hover:bg-emerald-700' : 'border-blue-500 bg-blue-600 hover:bg-blue-700'"
               title="更多创建方式"
+              @click="showCreateMenu = !showCreateMenu"
             >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
               </svg>
             </button>
           </div>
           <div
             v-if="showCreateMenu"
-            class="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-20"
+            class="absolute right-0 z-20 mt-1.5 w-48 rounded-xl border border-gray-200 bg-white py-1 shadow-lg"
           >
             <button
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
               @click="showCreateMenu = false; openCreateModal()"
-              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
               </svg>
               空白新建
             </button>
             <button
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
               @click="showCreateMenu = false; openImportModal()"
-              class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
               </svg>
               导入 Zip/Tar
