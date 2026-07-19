@@ -67,7 +67,7 @@ def test_build_insight_uses_executed_sql_and_permission_notice():
     ]
 
 
-def test_build_insight_marks_repaired_and_limits_actions():
+def test_build_insight_marks_repaired_and_exposes_delivery_actions():
     state = _state(
         [
             {"stat_date": "2026-07-14", "room_name": "上海一号", "pue": 1.42},
@@ -79,11 +79,22 @@ def test_build_insight_marks_repaired_and_limits_actions():
     data = build_chatbi_insight_meta(state)["data"]
 
     assert data["execution"]["mode"] == "repaired"
-    assert len(data["actions"]) <= 4
+    assert len(data["actions"]) <= 6
     action_ids = {action["id"] for action in data["actions"]}
     assert "trend" in action_ids
     assert "visualize" in action_ids
     assert "ranking" in action_ids
+    assert "brief" in action_ids
+    assert "monitor" in action_ids
+
+
+def test_build_insight_binds_actions_to_saved_result():
+    state = _state([{"room_name": "上海一号", "pue": 1.42}])
+    state.current_result_id = "result_abc123"
+
+    data = build_chatbi_insight_meta(state)["data"]
+
+    assert data["result_id"] == "result_abc123"
 
 
 def test_build_insight_returns_none_without_successful_query():
@@ -131,4 +142,4 @@ def test_text_only_result_does_not_recommend_visualization():
 
     actions = build_chatbi_insight_meta(state)["data"]["actions"]
 
-    assert [action["id"] for action in actions] == ["summary"]
+    assert [action["id"] for action in actions] == ["brief", "summary"]

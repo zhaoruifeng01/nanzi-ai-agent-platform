@@ -429,6 +429,7 @@ async def yield_fresh_data_schema_setup(
         yield chunk
 
     outcome.prefetched_schema_output = prefetched_schema_output
+    runner._authorized_schema_output = prefetched_schema_output
     if not prefetched_schema_output:
         return
 

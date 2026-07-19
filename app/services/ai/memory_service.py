@@ -15,6 +15,7 @@ class MemoryService:
     KEY_PREFIX = "conversation"
     HISTORY_SUFFIX = "history"
     DATA_RESULT_SUFFIX = "last_data_result"
+    DATA_RESULT_STACK_SUFFIX = "data_result_stack_v1"
     
     def __init__(self, max_history_turns: int = 50, ttl: int = 604800):
         """
@@ -38,6 +39,67 @@ class MemoryService:
     def _get_data_result_key(self, user_id: str, conversation_id: str) -> str:
         uid = str(user_id) if user_id else "anonymous"
         return f"{self.KEY_PREFIX}:{uid}:{conversation_id}:{self.DATA_RESULT_SUFFIX}"
+
+    def _get_data_result_stack_key(self, user_id: str, conversation_id: str) -> str:
+        uid = str(user_id) if user_id else "anonymous"
+        return f"{self.KEY_PREFIX}:{uid}:{conversation_id}:{self.DATA_RESULT_STACK_SUFFIX}"
+
+    async def get_data_result_stack(
+        self,
+        user_id: str,
+        conversation_id: str,
+    ) -> List[Dict[str, Any]]:
+        redis = await get_redis()
+        if not redis:
+            return []
+        key = self._get_data_result_stack_key(user_id, conversation_id)
+        try:
+            raw = await redis.get(key)
+            if not raw:
+                return []
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            parsed = json.loads(raw)
+            return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+        except Exception as e:
+            logger.error("[MemoryService] Failed to get data result stack from key %s: %s", key, e)
+            return []
+
+    async def push_data_result_ref(
+        self,
+        user_id: str,
+        conversation_id: str,
+        payload: Dict[str, Any],
+        *,
+        max_depth: int = 10,
+    ) -> None:
+        from app.services.ai.chatbi_result_stack import ChatBIResultRef, push_result_ref
+
+        redis = await get_redis()
+        if not redis:
+            logger.warning("[MemoryService] Redis client not available for push_data_result_ref")
+            return
+        current = [ChatBIResultRef.from_dict(item) for item in await self.get_data_result_stack(user_id, conversation_id)]
+        stack = push_result_ref(current, ChatBIResultRef.from_dict(payload), max_depth=max_depth)
+        key = self._get_data_result_stack_key(user_id, conversation_id)
+        try:
+            await redis.set(
+                key,
+                json.dumps([item.to_dict() for item in stack], ensure_ascii=False),
+                ex=self.ttl,
+            )
+        except Exception as e:
+            logger.error("[MemoryService] Failed to push data result stack key %s: %s", key, e)
+
+    async def get_current_data_result(
+        self,
+        user_id: str,
+        conversation_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        stack = await self.get_data_result_stack(user_id, conversation_id)
+        if stack:
+            return stack[-1]
+        return await self.get_last_data_result(user_id, conversation_id)
 
     async def get_history(self, user_id: str, conversation_id: str, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, str]]:
         """
@@ -175,6 +237,7 @@ class MemoryService:
         logger.info(f"[MemoryService] Clearing history for key: {key}")
         await redis.delete(key)
         await redis.delete(self._get_data_result_key(user_id, conversation_id))
+        await redis.delete(self._get_data_result_stack_key(user_id, conversation_id))
 
     async def delete_session_memory(
         self,
@@ -312,4 +375,3 @@ class LongTermMemoryService:
 
 
 ltm_service = LongTermMemoryService()
-

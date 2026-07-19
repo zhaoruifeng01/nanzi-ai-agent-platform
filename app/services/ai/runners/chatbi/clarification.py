@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import uuid
 from typing import Any, AsyncGenerator, Dict, List
 
@@ -78,33 +76,25 @@ async def generate_clarification_content(
 
     if missing_fields:
         try:
-            llm = await AgentConfigProvider.get_configured_llm(
-                streaming=False,
-                config=runner.config,
+            from app.services.ai.runners.chatbi.metadata_guide import (
+                build_grounded_clarification_queries,
             )
-            chat_client = chat_client_from_handle(llm)
-            raw_recommendations = await chat_client.generate_text(
-                system_user_prompt_messages(
-                    DataQueryPrompts.clarification_recommendation_prompt(
-                        user_question,
-                        history_excerpt,
-                        missing_fields,
-                    ),
-                    user_prompt=user_question,
-                )
+
+            runtime_user_id = runner._runtime_user_id()
+            is_admin = bool((runner.user_info or {}).get("is_admin"))
+            dataset_menu = await AgentConfigProvider.get_dataset_menu(
+                user_id=int(runtime_user_id) if str(runtime_user_id).isdigit() else None,
+                is_admin=is_admin,
             )
-            match = re.search(r"\{.*\}", str(raw_recommendations or ""), flags=re.DOTALL)
-            payload = json.loads(match.group() if match else str(raw_recommendations or ""))
-            suggested_queries = DataQueryPrompts.validate_clarification_recommendations(
-                user_question,
+            suggested_queries = build_grounded_clarification_queries(
+                dataset_menu,
                 missing_fields,
-                payload.get("queries") if isinstance(payload, dict) else (),
             )
             if suggested_queries:
-                quick_source = "llm_recommendations"
+                quick_source = "authorized_metadata"
         except Exception as e:
             logger.warning(
-                "[DataAgentRunner] Contextual clarification recommendation generation failed: %s",
+                "[DataAgentRunner] Authorized clarification metadata load failed: %s",
                 e,
             )
 
@@ -262,6 +252,47 @@ async def yield_non_data_guidance(
         "category": "intent",
     }
     content = await generate_non_data_response(runner, user_question=user_question)
+    yield {"content": content, "status": "success"}
+
+
+async def yield_local_help(
+    runner: Any,
+    *,
+    user_question: str,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Answer ChatBI capability and BI-method questions without pretending to query data."""
+    yield {
+        "type": "log",
+        "id": f"local_help_{uuid.uuid4().hex[:8]}",
+        "title": "数据分析帮助",
+        "details": "该问题不需要查库，由 ChatBI 直接说明能力或分析概念",
+        "status": "success",
+        "category": "intent",
+    }
+    agent_display_name = _resolve_agent_display_name(runner)
+    try:
+        llm = await AgentConfigProvider.get_configured_llm(streaming=False, config=runner.config)
+        chat_client = chat_client_from_handle(llm)
+        content = await chat_client.generate_text(
+            system_user_prompt_messages(
+                (
+                    f"你是{agent_display_name}。本轮是数据分析能力、使用方法或 BI 概念咨询，不需要查询数据库。"
+                    "请直接、简洁、准确回答；不得声称已经查库，不得编造当前业务数据。"
+                    "若问题实际需要具体业务数值，说明用户可以继续给出业务对象和时间范围。"
+                ),
+                user_prompt=user_question,
+            )
+        )
+        visible = finalize_visible_reply(str(content or ""), collapse_duplicates=False)
+        if visible:
+            yield {"content": visible, "status": "success"}
+            return
+    except Exception as exc:
+        logger.warning("[DataAgentRunner] Local ChatBI help generation failed: %s", exc)
+    content = DataQueryPrompts.build_non_data_response(
+        user_question,
+        agent_display_name=agent_display_name,
+    )
     yield {"content": content, "status": "success"}
 
 

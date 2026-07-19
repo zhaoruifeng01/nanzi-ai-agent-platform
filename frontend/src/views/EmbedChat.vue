@@ -920,6 +920,7 @@
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                 </button>
+                                                                <AgentHandoffNotice v-if="msg.agentHandoff" :handoff="msg.agentHandoff" />
                                                                 <div
                                                                   v-if="msg.permissionNotice?.row_filter_applied && !msg.chatbiInsight"
                                                                   class="mb-2 inline-flex max-w-full items-start gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
@@ -1037,6 +1038,7 @@
                                                             </div>
             <!-- Agent Message Actions (Overlay/Bottom) -->
             <ChatBIDataEvidence v-if="msg.chatbiInsight" :meta="msg.chatbiInsight" />
+            <ChatBIMetadataGuide v-if="msg.chatbiMetadataGuide" :guide="msg.chatbiMetadataGuide" @select="handleQuickQuestion" />
             <div class="flex flex-nowrap items-center space-x-2 mt-1.5">
               <button
                 @click="copyMessage(msg.content)"
@@ -1189,7 +1191,9 @@
                   v-if="msg.chatbiInsight?.actions?.length && checkRole(msg, 'agent') && !msg.isThinking"
                   :actions="msg.chatbiInsight.actions"
                   :is-mobile="isMobile"
+                  :result-id="msg.chatbiInsight.result_id"
                   @select="handleQuickQuestion"
+                  @action="handleChatBIResultAction"
                 />
                 <button
                   v-if="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
@@ -2360,6 +2364,13 @@
       :visible="showEmbedTrace"
       @close="showEmbedTrace = false"
     />
+    <ChatBIMonitorDialog
+      :open="chatbiMonitorDialogOpen"
+      :conversation-id="conversationId"
+      :result-id="chatbiMonitorResultId"
+      @close="chatbiMonitorDialogOpen = false"
+      @created="handleChatBIMonitorCreated"
+    />
     </div>
 </template>
 <script setup lang="ts">
@@ -2414,8 +2425,15 @@ import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue
 import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
 import ChatBIDataEvidence from "@/components/chatbi/ChatBIDataEvidence.vue";
 import ChatBIContinueAnalysis from "@/components/chatbi/ChatBIContinueAnalysis.vue";
+import ChatBIMonitorDialog from "@/components/chatbi/ChatBIMonitorDialog.vue";
+import ChatBIMetadataGuide from "@/components/chatbi/ChatBIMetadataGuide.vue";
+import AgentHandoffNotice from "@/components/chat/AgentHandoffNotice.vue";
 import type { ChatBIInsightMeta } from "@/types/chatbiInsight";
 import { applyChatBIInsightEvent } from "@/utils/chatbiInsight";
+import type { ChatBIMetadataGuide as ChatBIMetadataGuidePayload } from "@/types/chatbiMetadataGuide";
+import { applyChatBIMetadataGuideEvent } from "@/utils/chatbiMetadataGuide";
+import type { AgentHandoffNoticeData } from "@/types/agentHandoff";
+import { applyAgentHandoffEvent } from "@/utils/agentHandoff";
 import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
 import { useKnowledgePortal } from "@/composables/useKnowledgePortal";
 import CitationPopover from "@/components/CitationPopover.vue";
@@ -2606,6 +2624,8 @@ interface Message {
   turnType?: TurnType | string;
   hasDataOutput?: boolean;
   chatbiInsight?: ChatBIInsightMeta;
+  chatbiMetadataGuide?: ChatBIMetadataGuidePayload;
+  agentHandoff?: AgentHandoffNoticeData;
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
@@ -5237,6 +5257,39 @@ const handleViewOriginal = (citation: any) => {
   }
 };
 
+const chatbiMonitorDialogOpen = ref(false);
+const chatbiMonitorResultId = ref<string>();
+const handleChatBIMonitorCreated = (payload: { created: boolean }) => {
+  chatbiMonitorDialogOpen.value = false;
+  showToast(payload.created === false ? "该结果的订阅已存在" : "查询订阅已创建，可在黄金报表中管理", "success");
+};
+
+const handleChatBIResultAction = async (action: ChatBIInsightMeta["actions"][number]) => {
+  if (action.id === "monitor") {
+    chatbiMonitorResultId.value = action.result_id;
+    chatbiMonitorDialogOpen.value = true;
+    return;
+  }
+  if (action.id !== "brief") return handleQuickQuestion(action.query);
+  try {
+    const res = await axios.post("/api/portal/chatbi-briefs", {
+      conversation_id: conversationId.value,
+      result_id: action.result_id,
+      export_word: true,
+    });
+    const artifact = res.data?.data?.artifact;
+    if (artifact?.download_url) {
+      const link = document.createElement("a");
+      link.href = artifact.download_url;
+      link.download = artifact.filename || "ChatBI业务简报.docx";
+      link.click();
+    }
+    showToast("业务简报已生成", "success");
+  } catch (error: any) {
+    showToast(error.response?.data?.detail || "业务简报生成失败", "error");
+  }
+};
+
 const handleQuickQuestion = async (content: string, action: "send" | "fill" = "send") => {
   if (!content) return;
   if (action === "send" && isProcessing.value) return;
@@ -5556,7 +5609,7 @@ const addEmbedLogFromStream = (msg: Message, data: any) => {
 const applyPermissionStreamEvent = (msg: Message, data: any) => {
   applyStreamTraceId(msg, data);
 
-  if (applyChatBIInsightEvent(msg, data)) return;
+  if (applyChatBIInsightEvent(msg, data) || applyChatBIMetadataGuideEvent(msg, data) || applyAgentHandoffEvent(msg, data)) return;
 
   if (dispatchAgentscopeStreamEvent(msg, data, addEmbedLogFromStream)) {
     if (data.type === "error") {
@@ -5980,7 +6033,7 @@ const sendMessage = async () => {
                 execution_time_ms: data.execution_time_ms ?? null,
               });
             }
-          } else if (applyChatBIInsightEvent(agentMsg.value, data)) {
+          } else if (applyChatBIInsightEvent(agentMsg.value, data) || applyChatBIMetadataGuideEvent(agentMsg.value, data) || applyAgentHandoffEvent(agentMsg.value, data)) {
             // Additive ChatBI evidence event; answer content stays unchanged.
           } else if (dispatchAgentscopeStreamEvent(agentMsg.value, data, addEmbedLogFromStream)) {
             if (data.type === "permission_required" && thoughtTimer) {

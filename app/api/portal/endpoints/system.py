@@ -356,90 +356,19 @@ async def rebuild_vector_indexes(
     then recreate indexes and trigger full background sync of embeddings.
     """
     try:
-        if not settings.REDIS_ENABLE:
-             raise HTTPException(status_code=400, detail="Redis is disabled")
-             
-        r = await redis.get_redis()
-        if not r:
-            await redis.init_redis()
-            r = await redis.get_redis()
-            
-        if not r:
-             raise HTTPException(status_code=500, detail="Redis client not available")
+        from app.services.ai.local_vector_rebuild import rebuild_local_vector_indexes
 
-        from app.services.ai.metadata_index_service import MetadataIndexService
-        from app.services.ai.example_index_service import ExampleIndexService
-
-        logs = []
-        # 1. Drop metadata index
-        meta_idx = await MetadataIndexService.index_name()
-        try:
-            # We use DD to completely delete existing vector document hashes
-            await r.execute_command("FT.DROPINDEX", meta_idx, "DD")
-            logs.append(f"Successfully dropped metadata index: {meta_idx} (with documents)")
-        except Exception as e:
-            logs.append(f"Metadata index drop skipped or failed: {str(e)}")
-
-        # 2. Drop example index
-        ex_idx = await ExampleIndexService.index_name()
-        try:
-            await r.execute_command("FT.DROPINDEX", ex_idx, "DD")
-            logs.append(f"Successfully dropped example index: {ex_idx} (with documents)")
-        except Exception as e:
-            logs.append(f"Example index drop skipped or failed: {str(e)}")
-
-        # 3. Ensure indexes exist (this creates them with the current dimension)
-        await MetadataIndexService.ensure_index()
-        logs.append("Recreated metadata index schema")
-        await ExampleIndexService.ensure_index()
-        logs.append("Recreated example index schema")
-
-        # 4. Count items to be rebuilt
-        from app.core.orm import AsyncSessionLocal
-        from app.services.metadata_service import MetadataService
-        from app.models.chatbi_example import ChatBIExample
-        from sqlalchemy import select, func
-
-        table_count = 0
-        metric_count = 0
-        example_count = 0
-
-        async with AsyncSessionLocal() as db:
-            try:
-                datasets = await MetadataService.get_datasets(db)
-                enabled_datasets = [ds for ds in datasets if ds.status == 1]
-                for ds in enabled_datasets:
-                    for table in ds.tables:
-                        if hasattr(table, "status") and table.status != 1:
-                            continue
-                        table_count += 1
-                    if ds.metrics:
-                        metric_count += len(ds.metrics)
-            except Exception as db_err:
-                logs.append(f"Counting metadata items failed: {str(db_err)}")
-
-            try:
-                stmt = select(func.count(ChatBIExample.id)).where(ChatBIExample.status == "approved")
-                res = await db.execute(stmt)
-                example_count = res.scalar() or 0
-            except Exception as db_err:
-                logs.append(f"Counting examples failed: {str(db_err)}")
-
-        # 5. Trigger full background sync
-        # Since these run as async background tasks, they will generate new vectors
-        # using the currently configured Embedding client.
-        await MetadataIndexService.sync_all_datasets()
-        logs.append(f"Triggered background sync for all enabled datasets (Total: {len(enabled_datasets) if 'enabled_datasets' in locals() else 'unknown'})")
-        await ExampleIndexService.sync_all_examples()
-        logs.append(f"Triggered background sync for all approved examples (Total: {example_count})")
-
-        msg = f"已成功重构本地向量索引。已在后台启动重新向量化任务，共计：{table_count} 张数据表、{metric_count} 个业务指标及 {example_count} 条案例。任务在后台异步执行，请在后台终端控制台查看最新进度。"
-
+        result = await rebuild_local_vector_indexes(trigger="manual")
         return {
-            "status": "success",
-            "message": msg,
-            "logs": logs
+            "status": result["status"],
+            "message": result["message"],
+            "logs": result["logs"],
         }
+    except RuntimeError as e:
+        detail = str(e)
+        if "disabled" in detail.lower():
+            raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
     except Exception as e:
         logging.error(f"Failed to rebuild vector indexes: {e}")
         raise HTTPException(status_code=500, detail=str(e))

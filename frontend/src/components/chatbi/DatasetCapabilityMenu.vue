@@ -443,6 +443,18 @@
               <div v-if="savedReportSubscriptionForm.ai_analysis_enabled" class="block border-t border-gray-100 pt-2 dark:border-gray-800"><span class="flex items-center justify-between text-xs font-bold text-gray-600 dark:text-gray-300"><span class="inline-flex items-center gap-1.5">补充分析要求 <small class="font-normal text-gray-400">（可选）</small><span class="relative inline-flex" @mouseenter="openSubscriptionHelp('instruction')" @mouseleave="closeSubscriptionHelp"><button type="button" class="flex h-4 w-4 items-center justify-center rounded-full border border-gray-300 text-[10px] font-black text-gray-400 transition-colors hover:border-blue-400 hover:text-blue-600" aria-label="了解补充分析要求" @mousedown.prevent @focus="openSubscriptionHelp('instruction')" @blur="closeSubscriptionHelp" @click.stop.prevent="toggleSubscriptionHelp('instruction')">?</button><span v-if="activeSubscriptionHelp === 'instruction'" class="absolute left-0 top-6 z-30 w-64 rounded-xl border border-gray-100 bg-white p-3 text-left text-[11px] font-normal leading-relaxed text-gray-600 shadow-xl dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"><strong class="mb-1 block text-xs text-gray-800 dark:text-gray-100">补充要求如何使用？</strong>可以指定关注异常、排名、成本或表达风格，立即执行和定时运行都会使用。要求只能影响分析侧重点，不能要求 AI 编造数据、突破权限或覆盖系统真实性约束。</span></span></span><small class="font-normal text-gray-400">{{ savedReportSubscriptionForm.analysis_instruction.length }}/500</small></span><textarea v-model="savedReportSubscriptionForm.analysis_instruction" maxlength="500" rows="3" class="mt-1.5 w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs leading-relaxed text-gray-700 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200" placeholder="例如：重点关注异常值，按管理层语言总结，并说明需要优先处理的事项。"/><small class="mt-1 block text-[10px] text-gray-400">最多 500 字，仅在开启 AI 智能分析后生效，不能覆盖系统真实性约束。</small></div>
             </div>
             <div class="space-y-2"><p class="text-xs font-bold text-gray-600">外部通知渠道</p><div class="flex flex-wrap gap-3"><label v-for="channel in [{ value: 'dingtalk', label: '钉钉' }, { value: 'wechat_work', label: '企业微信' }, { value: 'email', label: '邮件' }]" :key="channel.value" class="flex items-center gap-1.5 text-xs text-gray-600"><input v-model="savedReportSubscriptionForm.external_channels" type="checkbox" :value="channel.value" />{{ channel.label }}</label></div><p class="text-[10px] text-gray-400">外部渠道需先在个人中心 → 消息通知中启用。</p></div>
+            <div class="space-y-2 rounded-xl border border-gray-100 p-3 dark:border-gray-800">
+              <p class="text-xs font-bold text-gray-600 dark:text-gray-300">告警触发条件</p>
+              <select v-model="savedReportSubscriptionForm.alert_condition.type" class="w-full rounded-lg border-gray-200 text-sm dark:border-gray-700 dark:bg-gray-900">
+                <option value="always">每次成功都通知</option><option value="threshold">指标达到阈值</option><option value="rate_of_change">指标变化率达到阈值</option><option value="no_data">结果无数据</option>
+              </select>
+              <div v-if="['threshold', 'rate_of_change'].includes(savedReportSubscriptionForm.alert_condition.type)" class="grid grid-cols-[1fr_auto_1fr] gap-2">
+                <input v-model="savedReportSubscriptionForm.alert_condition.field" class="min-w-0 rounded-lg border-gray-200 text-xs" placeholder="结果字段物理名" />
+                <select v-model="savedReportSubscriptionForm.alert_condition.operator" class="rounded-lg border-gray-200 text-xs"><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option><option>==</option><option>!=</option></select>
+                <input v-model.number="savedReportSubscriptionForm.alert_condition.value" type="number" class="min-w-0 rounded-lg border-gray-200 text-xs" :placeholder="savedReportSubscriptionForm.alert_condition.type === 'rate_of_change' ? '变化率 %' : '阈值'" />
+              </div>
+              <label v-if="savedReportSubscriptionForm.alert_condition.type !== 'always'" class="flex items-center justify-between gap-2 text-xs text-gray-500"><span>连续命中次数</span><input v-model.number="savedReportSubscriptionForm.alert_condition.consecutive_hits" type="number" min="1" max="99" class="w-20 rounded-lg border-gray-200 text-xs" /></label>
+            </div>
             <div class="flex flex-wrap gap-2">
               <button class="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold" :disabled="savedReportSubscriptionSaving" @click="saveSavedReportSubscription">{{ savedReportSubscriptionSaving ? '保存中...' : '保存订阅' }}</button>
               <button v-if="savedReportSubscription" class="px-3 py-2 rounded-lg border text-xs font-bold" @click="toggleSavedReportSubscriptionStatus">{{ savedReportSubscription.status === 'active' ? '暂停' : '恢复' }}</button>
@@ -1645,7 +1657,7 @@ const savedReportSubscriptionRunning = ref(false);
 const savedReportSubscriptionDeleting = ref(false);
 const showDeleteSubscriptionConfirm = ref(false);
 const activeSubscriptionHelp = ref<"ai" | "instruction" | null>(null);
-const savedReportSubscriptionForm = ref({ schedule_type: "daily", time_value: "09:00", weekday: 1, monthday: 1, cron_expr: "0 9 * * *", params: {} as Record<string, any>, ai_analysis_enabled: true, analysis_instruction: "", notify_on_success: false, notify_on_failure: true, external_channels: [] as string[] });
+const savedReportSubscriptionForm = ref({ schedule_type: "daily", time_value: "09:00", weekday: 1, monthday: 1, cron_expr: "0 9 * * *", params: {} as Record<string, any>, ai_analysis_enabled: true, analysis_instruction: "", notify_on_success: false, notify_on_failure: true, external_channels: [] as string[], alert_condition: { version: 1, type: "always", field: "", operator: ">=", value: 0, consecutive_hits: 1 } });
 const openSubscriptionHelp = (topic: "ai" | "instruction") => { activeSubscriptionHelp.value = topic; };
 const closeSubscriptionHelp = () => { activeSubscriptionHelp.value = null; };
 const toggleSubscriptionHelp = (topic: "ai" | "instruction") => { activeSubscriptionHelp.value = activeSubscriptionHelp.value === topic ? null : topic; };
@@ -1890,6 +1902,7 @@ const fetchSavedReportSubscription = async () => {
     const res = await axios.get(`/api/portal/saved-reports/${selectedSavedReportDetail.value.id}/subscription`);
     savedReportSubscription.value = res.data?.data || null;
     if (savedReportSubscription.value) Object.assign(savedReportSubscriptionForm.value, savedReportSubscription.value);
+    if (!savedReportSubscriptionForm.value.alert_condition) savedReportSubscriptionForm.value.alert_condition = { version: 1, type: "always", field: "", operator: ">=", value: 0, consecutive_hits: 1 };
     savedReportSubscriptionForm.value.analysis_instruction = String(savedReportSubscriptionForm.value.analysis_instruction || "");
   } finally { savedReportSubscriptionLoading.value = false; }
 };

@@ -563,6 +563,38 @@ async def yield_schema_fatal_abort(
     state: DataRunState,
     details: Any = "",
     ) -> AsyncGenerator[Dict[str, Any], None]:
+    if state.schema_miss_count >= 2 and not state.no_authorized_schema:
+        from app.services.ai.runners.chatbi.handoff import stream_to_routed_assistant
+        from app.services.ai.runners.chatbi.source_reclassification import (
+            SchemaMissDisposition,
+            reclassify_schema_miss_source,
+        )
+
+        query = str(getattr(runner, "_standalone_query", "") or "").strip()
+        source_decision = reclassify_schema_miss_source(query)
+        if source_decision.disposition != SchemaMissDisposition.KEEP_DATA_FAILURE:
+            yield {
+                "type": "log",
+                "id": f"schema_source_{uuid.uuid4().hex[:8]}",
+                "title": "重新判断请求来源",
+                "details": (
+                    "内部数据集连续未命中，已判断该请求更适合其他信息来源并继续处理"
+                ),
+                "status": "success",
+                "category": "intent",
+                "source": source_decision.source.value,
+            }
+            try:
+                async for chunk in stream_to_routed_assistant(
+                    runner,
+                    history=list(getattr(runner, "_active_history", []) or []),
+                    user_question=query,
+                    reason=source_decision.reason,
+                ):
+                    yield chunk
+                return
+            except Exception as exc:
+                logger.warning("[DataAgentRunner] Schema-miss source handoff failed: %s", exc)
     title, content = runner._schema_fatal_response(state)
     yield {
         "type": "log",
@@ -597,4 +629,3 @@ async def retract_provisional_content_before_repair(
         "content": "",
         "final": False,
     }
-

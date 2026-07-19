@@ -9,9 +9,8 @@ export function applyChatBIInsightEvent(
   }
   message.chatbiInsight = {
     ...event.data,
-    actions: Array.isArray(event.data.actions) ? event.data.actions.slice(0, 4) : [],
+    actions: Array.isArray(event.data.actions) ? event.data.actions.slice(0, 6) : [],
   } as ChatBIInsightMeta;
   message.hasDataOutput = true;
   return true;
 }
-

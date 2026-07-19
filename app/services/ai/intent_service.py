@@ -282,22 +282,49 @@ def looks_like_short_field_or_continuation_followup(user_question: str) -> bool:
     return True
 
 
+class DataSessionAffinity(str, Enum):
+    """How confidently the outer router should preserve a ChatBI session."""
+
+    KEEP = "keep"
+    BREAK = "break"
+    UNCERTAIN = "uncertain"
+
+
+def resolve_data_agent_session_affinity(user_question: str) -> DataSessionAffinity:
+    """Return a tri-state ChatBI affinity decision.
+
+    Only explicit topic switches may bypass semantic routing.  A lack of strong
+    data signals is not evidence that the request belongs to Main.
+    """
+    q = (user_question or "").strip()
+    if not q:
+        return DataSessionAffinity.UNCERTAIN
+    if looks_like_data_followup(q) or looks_like_pure_result_followup(q):
+        return DataSessionAffinity.KEEP
+    if looks_like_short_field_or_continuation_followup(q):
+        return DataSessionAffinity.KEEP
+    if looks_like_strong_business_data_request(q):
+        return DataSessionAffinity.KEEP
+    if looks_like_context_action(q):
+        return DataSessionAffinity.KEEP
+    if (
+        looks_like_greeting(q)
+        or looks_like_web_search_query(q)
+        or looks_like_public_profile_lookup(q)
+        or looks_like_platform_self_service_query(q)
+        or looks_like_runtime_diagnostic_query(q)
+    ):
+        return DataSessionAffinity.BREAK
+    return DataSessionAffinity.UNCERTAIN
+
+
 def should_inherit_data_agent_session(user_question: str) -> bool:
     """上一轮为 data_query 智能体时，本轮是否仍应沿用其会话粘性。
 
     正向判定：仅当本轮是「对已有查数结果的加工追问」，或仍含明确内部业务库查数信号。
     仅有「看看/查一下/情况」等弱探询、但无内部业务对象时返回 False，避免机械沿用 ChatBI。
     """
-    q = (user_question or "").strip()
-    if not q:
-        return False
-    if looks_like_meta_action(q) or looks_like_context_action(q) or looks_like_skill_execution(q):
-        return False
-    if looks_like_data_followup(q) or looks_like_pure_result_followup(q):
-        return True
-    if looks_like_short_field_or_continuation_followup(q):
-        return True
-    return looks_like_strong_business_data_request(q)
+    return resolve_data_agent_session_affinity(user_question) == DataSessionAffinity.KEEP
 
 
 _GREETING_CORE_PHRASES = frozenset({

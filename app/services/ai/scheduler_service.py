@@ -594,7 +594,14 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
             subscription.last_run_at = datetime.now()
             subscription.consecutive_failures = 0
             subscription.last_error = None
-            if subscription.notify_on_success:
+            from app.services.saved_report_subscription_service import evaluate_alert_condition
+            alert_evaluation = evaluate_alert_condition(
+                getattr(subscription, "alert_condition", None),
+                run.result_snapshot if run else None,
+                getattr(subscription, "alert_state", None),
+            )
+            subscription.alert_state = alert_evaluation.next_state
+            if subscription.notify_on_success and alert_evaluation.hit:
                 try:
                     async with db.begin_nested():
                         digest = build_deterministic_digest(report, run, subscription.params or {})
@@ -617,12 +624,14 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
                                 "report_title": report.title,
                                 "subscription_id": subscription.id,
                                 "digest_mode": digest.get("generation_mode"),
+                                "trigger_evidence": alert_evaluation.evidence,
                             },
                         )
                         if run:
                             db.add(PortalSavedReportDigestDelivery(
                                 run_id=run.id, subscription_id=subscription.id, channel="inbox",
-                                digest_payload=digest, title=title, content=content, status="success",
+                                digest_payload=digest, trigger_evidence=alert_evaluation.evidence,
+                                title=title, content=content, status="success",
                                 ai_status=digest.get("ai_status") or "disabled", sent_at=datetime.now(),
                             ))
                         senders = {
@@ -639,7 +648,8 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
                             if run:
                                 db.add(PortalSavedReportDigestDelivery(
                                     run_id=run.id, subscription_id=subscription.id, channel=channel,
-                                    digest_payload=digest, title=channel_title, content=channel_content,
+                                    digest_payload=digest, trigger_evidence=alert_evaluation.evidence,
+                                    title=channel_title, content=channel_content,
                                     status="success" if ok else "failed",
                                     error_message=None if ok else error,
                                     ai_status=digest.get("ai_status") or "disabled",

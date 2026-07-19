@@ -19,7 +19,7 @@ async def load_last_data_result(runner: Any) -> Optional[Dict[str, Any]]:
     try:
         from app.services.ai.memory_service import memory_service
 
-        return await memory_service.get_last_data_result(user_id, runner.conversation_id)
+        return await memory_service.get_current_data_result(user_id, runner.conversation_id)
     except Exception as e:
         logger.warning("[DataAgentRunner] Failed to load last data result: %s", e)
         return None
@@ -86,10 +86,38 @@ async def save_last_data_result_for_followups(
     }
     try:
         from app.services.ai.memory_service import memory_service
+        from app.services.ai.chatbi_result_stack import ChatBIAnalysisContext, ChatBIResultRef
+        from app.services.ai.data_query_semantic_intent import semantic_intent_to_dict
 
         await memory_service.set_last_data_result(user_id, runner.conversation_id, payload)
+        semantic = semantic_intent_to_dict(getattr(runner, "_semantic_intent", None))
+        stack = await memory_service.get_data_result_stack(user_id, runner.conversation_id)
+        parent_result_id = str(stack[-1].get("result_id") or "") if stack else None
+        analysis_context = ChatBIAnalysisContext(
+            metrics=list(semantic.get("metrics") or []),
+            dimensions=list(semantic.get("dimensions") or []),
+            filters=list(semantic.get("filters") or []),
+            time_range={"expression": semantic.get("time_range")} if semantic.get("time_range") else {},
+            time_grain=str(semantic.get("grain") or ""),
+        )
+        result_ref = ChatBIResultRef(
+            parent_result_id=parent_result_id or None,
+            question=str(getattr(runner, "_standalone_query", "") or ""),
+            dataset_name=str(tool_args.get("dataset_name") or ""),
+            data_source=str(tool_args.get("data_source") or ""),
+            sql=str(tool_args.get("sql") or tool_args.get("query") or ""),
+            rows=normalized,
+            analysis_context=analysis_context,
+            trace_id=str(runner.trace_id or ""),
+        )
+        await memory_service.push_data_result_ref(
+            user_id,
+            runner.conversation_id,
+            result_ref.to_dict(),
+        )
         state = runner._last_run_state
         if state is not None:
             state.followup_data_saved = True
+            state.current_result_id = result_ref.result_id
     except Exception as e:
         logger.warning("[DataAgentRunner] Failed to save last data result: %s", e)

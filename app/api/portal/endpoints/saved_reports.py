@@ -71,6 +71,7 @@ class SavedReportSubscriptionRequest(BaseModel):
     notify_on_success: bool = False
     notify_on_failure: bool = True
     external_channels: List[str] = Field(default_factory=list)
+    alert_condition: Optional[Dict[str, Any]] = None
 
 
 class SavedReportPreview(BaseModel):
@@ -1605,6 +1606,7 @@ def _saved_report_subscription_data(row: PortalSavedReportSubscription) -> Dict[
         "analysis_instruction": row.analysis_instruction,
         "notify_on_success": bool(row.notify_on_success), "notify_on_failure": bool(row.notify_on_failure),
         "external_channels": row.external_channels or [], "status": row.status,
+        "alert_condition": row.alert_condition, "alert_state": row.alert_state or {},
         "consecutive_failures": row.consecutive_failures or 0, "last_run_id": row.last_run_id,
         "last_run_at": _dt_to_iso(row.last_run_at), "next_run_at": _dt_to_iso(row.next_run_at),
         "last_error": row.last_error,
@@ -1654,6 +1656,14 @@ async def put_saved_report_subscription(report_id: str, body: SavedReportSubscri
     row.notify_on_success = body.notify_on_success
     row.notify_on_failure = body.notify_on_failure
     row.external_channels = channels
+    if body.alert_condition is not None:
+        condition_type = str(body.alert_condition.get("type") or "")
+        if condition_type not in {"always", "threshold", "rate_of_change", "no_data"}:
+            raise HTTPException(status_code=400, detail="告警条件类型无效")
+        if int(body.alert_condition.get("version") or 1) != 1:
+            raise HTTPException(status_code=400, detail="告警条件版本无效")
+    row.alert_condition = body.alert_condition
+    row.alert_state = {}
     row.status = "active"
     row.last_error = None
     await db.flush()

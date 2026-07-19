@@ -28,12 +28,12 @@ def test_saved_report_subscription_configures_mobile_ai_digest():
     assert "关闭后仍会发送数据摘要" in SOURCE
 
 
-def test_saved_report_list_shows_subscription_badge_and_opens_subscription_tab():
-    for text in ("已订阅", "已暂停", "订阅异常", "subscription_status", "subscription_next_run_at", "每天"):
-        assert text in CARD
-    assert "emit('subscription', report)" in CARD
-    assert '@subscription="openSavedReportSubscription"' in SOURCE
-    assert "syncSavedReportSubscriptionSummary" in SOURCE
+def test_saved_report_card_body_opens_detail_and_has_explicit_run_button():
+    assert "@click=\"emit('detail', report)\"" in CARD
+    assert "@click.stop=\"emit('execute', report)\"" in CARD
+    assert "运行黄金报表" in CARD
+    assert "打开报表详情" in CARD or "点击打开详情" in CARD
+    assert 'title="报表详情"' in CARD
 
 
 def test_saved_report_lists_offer_subscribed_smart_filter_and_switch_to_my_scope():
