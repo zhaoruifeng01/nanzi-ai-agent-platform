@@ -398,7 +398,7 @@
         <button
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-          @click="closeMenus(); openSetPasswordDialog(openRowMenuUser)"
+          @click="openSetPasswordDialog(openRowMenuUser); closeMenus()"
         >
           <LockClosedIcon class="w-4 h-4 text-emerald-500" />
           设置密码
@@ -406,7 +406,7 @@
         <button
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-          @click="closeMenus(); regenerateApiKey(openRowMenuUser)"
+          @click="regenerateApiKey(openRowMenuUser); closeMenus()"
         >
           <ArrowPathIcon class="w-4 h-4 text-amber-500" />
           重置 API Key
@@ -415,7 +415,7 @@
           v-if="openRowMenuUser.user_name !== 'admin'"
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-          @click="closeMenus(); confirmDelete(openRowMenuUser)"
+          @click="confirmDelete(openRowMenuUser); closeMenus()"
         >
           <TrashIcon class="w-4 h-4" />
           删除用户
@@ -2297,7 +2297,10 @@ const closeSetPasswordDialog = () => {
   settingPassword.value = false;
 };
 const executeSetPassword = async () => {
-  if (!userToSetPassword.value) return;
+  if (!userToSetPassword.value?.id) {
+    showToast("未选择用户，请重新打开设置密码", "warning");
+    return;
+  }
   const password = setPasswordForm.value.password;
   if (!password || password.length < 6) {
     showToast("密码长度至少需要6位", "warning");
