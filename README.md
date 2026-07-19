@@ -104,7 +104,7 @@
 ## 🌟 核心能力 (Core Capabilities)
 
 ### 1. 🧠 多引擎与混合编排 (Multi-Engine & Hybrid Orchestration)
-*   **智能路由**：未指定智能体时，先走问候/联网/ChatBI 会话粘性等启发式短路，再 LLM 语义路由；支持多意图并行与 Synthesizer 聚合。
+*   **智能路由**：未指定智能体时，先走问候/联网/ChatBI 会话亲和性（`KEEP`/`BREAK`/`UNCERTAIN`）等启发式短路，再 LLM 语义路由；支持多意图并行与 Synthesizer 聚合。
 *   **专家直选**：Embed 专家模式、`agent_id` 或 `@` 提及可跳过自动路由，直达指定智能体。
 *   **AgentScope ReAct**：Assistant / ChatBI / Knowledge 基于 AgentScope Agent + Toolkit，闭环调度本地工具，支持权限挂起与恢复。
 *   **主助手增强**：工具预检（按绑定工具相关度促发调用）、Skill 自动扫描、反业务数据幻觉 Guard（可一键切换 ChatBI）。
@@ -145,9 +145,9 @@
 
 系统遵循 **「路由 → 分发 → 执行 → 聚合」** 链路：
 
-1.  **意图路由 (Router)**：未传 `agent_id` 时，先尝试启发式短路（纯问候、联网搜索、ChatBI 会话非粘性话题切换 → 通用助手），否则 LLM 结合最近对话与智能体元数据选型；支持多专家并行 hint。
+1.  **意图路由 (Router)**：未传 `agent_id` 时，先尝试启发式短路（纯问候、联网搜索、ChatBI 亲和性 `BREAK` → 通用助手；`UNCERTAIN` 不短路），否则 LLM 结合最近对话与智能体元数据选型；支持多专家并行 hint。
 2.  **专家直选**：Embed 专家模式 / `agent_id` / `@提及` 跳过 Router，直接进入指定智能体。
-3.  **执行分发 (Dispatcher)**：按引擎与能力选择 **Knowledge** / **ChatBI (DataQuery)** / **Assistant** / RAGFlow / OpenClaw 执行器；ChatBI 内部再判定新查数、复用结果、上下文动作等。
+3.  **执行分发 (Dispatcher)**：按引擎与能力选择 **Knowledge** / **ChatBI (DataQuery)** / **Assistant** / RAGFlow / OpenClaw 执行器；ChatBI 内部分诊新查数、结果分析/呈现/动作、元数据、非查数委派或澄清等。
 4.  **动态执行 (ReAct)**：AgentScope「思考-行动-观察」循环，工具权限挂起、SQL 护栏、工具预检等按执行器生效。
 5.  **结果合成 (Synthesis)**：多 Agent 场景由 Synthesizer 聚合；单 Agent 流式 SSE 返回正文、日志与引用。
 

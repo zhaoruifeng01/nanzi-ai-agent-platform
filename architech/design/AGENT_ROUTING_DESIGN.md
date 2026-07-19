@@ -6,7 +6,7 @@
 
 平台采用 **“上下文感知的 LLM 路由机制” (Context-Aware LLM Routing)**。当请求未显式指定智能体时，路由器会结合可用智能体清单、最近多轮对话、上一轮处理智能体和当前用户输入，选择最合适的主智能体。
 
-路由层只负责选择最合适的智能体 / 执行器，并可输出通用会话标签作为 hint；它不负责 ChatBI 内部请求类别判断。ChatBI 的「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」由 `DataQueryExecutor` 内部的 `DataQueryTurnClassifier` 判定。
+路由层只负责选择最合适的智能体 / 执行器，并可输出通用会话标签作为 hint；它不负责 ChatBI 内部请求类别判断。ChatBI 的新查数 / 追问 / 结果分析与呈现 / 动作 / 元数据 / 非查数处置由 `DataQueryExecutor` 内部的 `DataQueryTurnClassifier` 判定。
 
 ### 1.1 路由流程图
 
@@ -18,7 +18,7 @@ graph TD
     C -- 否 --> H1{启发式短路}
     H1 -- 纯问候 --> G1[通用助手 无 LLM]
     H1 -- 联网/外部搜索 --> G1
-    H1 -- 上轮 ChatBI 但本轮非数据粘性 --> G1
+    H1 -- 上轮 ChatBI 且亲和性 BREAK --> G1
     H1 -- 否 --> E[RouterService LLM 路由]
     E --> F{LLM 决策结果}
     F -- 匹配成功 --> G[路由至主 Agent]
@@ -64,20 +64,28 @@ graph TD
 
 在调用路由 LLM 之前，`RouterService.route_query` 会按顺序尝试以下短路（实现见 `router_service.py` + `intent_service.py`）：
 
-| 短路 | 判定函数 | 目标 | 说明 |
-|------|----------|------|------|
+| 短路 | 判定 | 目标 | 说明 |
+|------|------|------|------|
 | 纯问候 | `looks_like_greeting()` | 通用助手 | 短句寒暄/自我介绍/致谢，且无复合业务词 |
 | 联网/外部搜索 | `looks_like_web_search_query()` | 通用助手 | 明确公网/新闻/搜索引擎语义，走 `web_search` 等工具 |
-| ChatBI 会话粘性打断 | 上轮为 data_query 智能体 **且** `not should_inherit_data_agent_session()` | 通用助手 | 避免「上一轮查 PUE、本轮问 GitHub 小星星」仍粘 ChatBI |
+| ChatBI 会话打断 | 上轮为 data_query 智能体 **且** `resolve_data_agent_session_affinity() == BREAK` | 通用助手 | 仅明确离开数据会话时短路；灰区不直接 fallback |
 
-**`should_inherit_data_agent_session()`** 正向条件（满足其一即**沿用** ChatBI 会话）：
+#### ChatBI 会话亲和性（三态）
 
-- 对已有查数结果的加工追问（`looks_like_data_followup` / `looks_like_pure_result_followup`）；
-- 仍含明确内部业务库查数信号（`looks_like_strong_business_data_request`）。
+实现：`DataSessionAffinity` + `resolve_data_agent_session_affinity(user_question)`。  
+兼容包装：`should_inherit_data_agent_session()` ≡「亲和性 == `KEEP`」。
 
-反向排除：元操作、上下文动作、技能执行类请求不继承 ChatBI 粘性。
+| 状态 | 含义 | 典型信号 | Router 行为 |
+|------|------|----------|-------------|
+| `KEEP` | 明确仍在数据会话 | 强业务查数、结果追问/加工、结果动作（导出/保存等）、元数据探索 | 不因「上轮是 ChatBI」以外的理由打断；倾向沿用 |
+| `BREAK` | 明确离开数据会话 | 纯问候、公网搜索、平台自助、运行诊断、明显无关通用任务 | **唯一**会在启发式层短路到通用助手的粘性分支 |
+| `UNCERTAIN` | 灰区 | 表述不明、可能切换也可能追问 | **不**直接 fallback Main；进入语义 Router / LLM 选型 |
 
-LLM 路由阶段的历史上下文（`_build_history_context`）会在「应打断 ChatBI 粘性」时注入 **禁止机械沿用** 提示，避免模型仅因上一轮是数据智能体就继续选 ChatBI。
+说明：
+
+- 结果动作 / 上下文动作对已有查数结果的操作属于 **`KEEP`**（不再按「反向排除」打断粘性）。
+- LLM 路由历史上下文仍可在「应打断」场景注入禁止机械沿用提示，避免仅因上轮是数据智能体就继续选 ChatBI。
+- 进入 ChatBI 后的非查数处置见 [CHAT_BI_DESIGN.md](./CHAT_BI_DESIGN.md) §4（本地帮助 / 结果动作 / `agent_handoff` 委派）。
 
 ### 2.5 专家直选与 Guard 边界
 

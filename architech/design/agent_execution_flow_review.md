@@ -49,9 +49,9 @@ flowchart TB
 - `TurnClassification` 是通用会话请求分类，只表达 `DATA_QUERY_REQUEST / CONTEXT_ACTION / SKILL_EXECUTION / META_ACTION / GENERAL / KNOWLEDGE` 等跨执行器概念。
 - `shared_turn` 由 `resolve_turn_for_session` 统一产出（启发式 + 意图 LLM），供 Dispatcher 与各 Executor 复用，避免重复意图调用。
 - 路由层输出的 `turn_labels / relation_to_previous / user_action_type` 是通用 hint，可被 Assistant 参考；当前仅把它注入为弱提示词，不做硬分支。
-- **RouterService** 在 LLM 前尝试：问候短路、联网短路、ChatBI 会话粘性打断（`should_inherit_data_agent_session`）。
+- **RouterService** 在 LLM 前尝试：问候短路、联网短路、ChatBI 亲和性 `BREAK` 打断（`resolve_data_agent_session_affinity`；`UNCERTAIN` 不短路）。
 - 显式 `agent_id` / 专家模式 → `direct_agent_selection`，跳过自动路由与主助手数据反幻觉 Guard。
-- ChatBI 专用请求类别由 `DataQueryTurnClassifier` 在 `DataQueryExecutor` 内部执行，结果为「新数据查询 / 复用上一轮结果 / 上下文动作 / 技能执行」。
+- ChatBI 专用请求类别由 `DataQueryTurnClassifier` 在 `DataQueryExecutor` 内部执行（新查数 / 追问 / 结果分析与呈现 / 动作 / 元数据 / 非查数处置等），详见 [CHAT_BI_DESIGN.md](./CHAT_BI_DESIGN.md)。
 
 ---
 
@@ -70,18 +70,23 @@ flowchart TB
 
 ### 2.2 ChatBI 专用请求类别（`data_query_turn_classifier.py`）
 
+权威类型与处置见 [CHAT_BI_DESIGN.md](./CHAT_BI_DESIGN.md)。摘要：
+
 | 类型 | 含义 | 典型用户说法 | 经验库 | 查库护栏 |
 |------|------|--------------|--------|----------|
-| `NEW_DATA_QUERY` | 新数据查询 | 「查用户列表」「查 PUE 并可视化」 | 是 | 是 |
-| `REUSE_PREVIOUS_RESULT` | 复用上一轮结构化结果 | 「画个柱状图」「分析一下刚才的结果」 | 否 | 否 |
-| `CONTEXT_ACTION` | 对已有结果做保存/导出/记忆等动作 | 「保存这个结果」「导出上面表格」 | 否 | 否 |
+| `NEW_DATA_QUERY` / `DATA_FOLLOWUP_QUERY` | 新查数或带上下文追问 | 「查用户列表」「按区域再拆」 | 是 | 是 |
+| `RESULT_ANALYSIS` / `RESULT_PRESENTATION` / `REUSE_PREVIOUS_RESULT` / `FORMAT_CORRECTION` | 基于结果栈分析/呈现/复用 | 「画个柱状图」「分析刚才的结果」 | 否 | 否 |
+| `RESULT_ACTION` / `CONTEXT_ACTION` | 对已有结果做导出/保存/简报/监控等 | 「保存这个结果」「做成简报」 | 否 | 否 |
+| `METADATA_QUERY` | 元数据/有哪些表字段 | 「有哪些数据集」 | 否 | 否 |
+| `NON_DATA_REQUEST` / `CLARIFICATION_REQUIRED` | 非查数处置或查数澄清 | 「帮我写邮件」/「查销售」（缺条件） | 否 | 否 |
 | `SKILL_EXECUTION` | 显式使用技能 | 「使用用户列表查询技能」 | 是 | 按技能 |
 
 ChatBI 请求类别采用 **LLM 主判、规则兜底**：
 
-- 主路径：LLM 结合最近对话、当前用户问题和上一轮结构化查询结果状态，输出四类之一。
-- 兜底路径：仅当 LLM 返回无效内容或调用失败时，使用轻量规则判断上下文动作、技能执行、复用上一轮结果或新数据查询。
-- 复用保护：如果本轮被判断为复用上一轮结果但没有可复用结构化结果，执行器直接提示缺少结果，不把展示/可视化追问当成 Schema 检索关键词。
+- 主路径：LLM 结合最近对话、当前用户问题与结果栈 / `last_data_result` 状态输出上述类型之一。
+- 兜底路径：仅当 LLM 返回无效内容或调用失败时，使用轻量规则判断。
+- 非查数：按 `NonDataDisposition`（本地帮助 / 结果动作 / `agent_handoff` 委派），澄清仅用于缺执行条件。
+- 复用保护：若判断为复用但无可引用结构化结果，直接提示缺少结果，不把展示追问当成 Schema 关键词。
 
 ### 2.3 分类流程（当前实现）
 
@@ -95,13 +100,14 @@ flowchart TD
     H -->|"其他 + data_query 能力"| D["DataQueryExecutor"]
     H -->|"其他"| AS["AssistantExecutor"]
     D --> Q["DataQueryTurnClassifier"]
-    Q --> N["新数据查询: Schema -> SQL -> 汇总"]
-    Q --> P["复用上一轮结果: 跳过 Schema/SQL -> 合成"]
-    Q --> A2["上下文动作: 注入上一轮结果并放宽查库护栏"]
+    Q --> N["新查数/追问: Schema -> SQL -> 结果栈"]
+    Q --> P["结果分析/呈现/复用: 跳过 Schema/SQL"]
+    Q --> A2["结果动作/上下文动作"]
+    Q --> ND["非查数 disposition / 澄清"]
     K --> KB["自动 search_knowledge_base -> ReAct 回答"]
 ```
 
-实现位置：`turn_classifier.py`、`data_query_turn_classifier.py`、`dispatcher.py`、`executors/data_executor.py`。
+实现位置：`turn_classifier.py`、`data_query_turn_classifier.py`、`dispatcher.py`、`executors/data_executor.py`、`runners/chatbi/`。
 
 ---
 
@@ -197,7 +203,7 @@ AgentService 统一输出「轮次分类」日志；ChatBI 场景在 `DATA_QUERY
 5. `GeneralChat*` 重命名为 `Assistant*`（通用助手，非闲聊专用）
 6. 多智能体共享 `session_turn`（通用分类 + 意图 LLM）
 7. RAGExecutor：`conversation_id` 修复
-8. 路由启发式短路（问候/联网/ChatBI 粘性打断）与 `should_inherit_data_agent_session`
+8. 路由启发式短路（问候/联网/ChatBI 亲和性三态，仅 `BREAK` 打断）与 `resolve_data_agent_session_affinity`
 9. 主助手工具预检（`tool_nudge_policy`）与 Skill 自动扫描
 10. 主助手数据反幻觉 Guard 收紧 + 专家直选 bypass
 11. ChatBI `sql_plan` 可选门禁（`enable_sql_plan`）+ 前端 SqlPlanCard 渲染

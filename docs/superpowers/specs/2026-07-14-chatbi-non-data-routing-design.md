@@ -1,5 +1,19 @@
 # ChatBI 非查数引导与查数澄清分流设计
 
+> **状态：已被取代（Superseded）**  
+> 本文档描述的「非查数只引导切换智能体、**不**实现自动切换 / 无感委派」方案已由  
+> [`2026-07-19-chatbi-analysis-workflow-evolution-design.md`](./2026-07-19-chatbi-analysis-workflow-evolution-design.md)  
+> 与实现（`non_data_policy` / `handoff` / `DataSessionAffinity`）取代。  
+>  
+> **当前行为摘要：**  
+> - 非查数按 `LOCAL_HELP` / `RESULT_ACTION` / `DELEGATE_MAIN` / `DELEGATE_WEB` 处置；  
+> - 委派走 `agent_handoff` SSE；仅在委派失败时降级为带 `/switch_to_auto` 的切换引导；  
+> - 外层粘性为 `KEEP` / `BREAK` / `UNCERTAIN`，灰区不直接 fallback Main。  
+>  
+> 下文保留作历史设计记录，**请勿再按本文验收或实现新功能**。权威说明见  
+> [`CHAT_BI_DESIGN.md`](../../../architech/design/CHAT_BI_DESIGN.md) 与  
+> [`app/services/ai/runners/chatbi/README.md`](../../../app/services/ai/runners/chatbi/README.md)。
+
 ## 背景
 
 数据智能体当前使用 `CLARIFICATION_OR_NON_DATA` 同时承载两类不同请求：

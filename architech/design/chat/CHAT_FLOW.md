@@ -167,7 +167,7 @@ conversation:{user_id}:{conversation_id}:history
 conversation:42:a1b2c3d4-e5f6-7890-abcd-ef1234567890:history
 ```
 
-**最近一次 SQL 结构化结果（辅助 Key，ChatBI 追问复用）**
+**最近一次 SQL 结构化结果（兼容 Key，ChatBI 追问复用）**
 
 ```text
 conversation:{user_id}:{conversation_id}:last_data_result
@@ -175,6 +175,16 @@ conversation:{user_id}:{conversation_id}:last_data_result
 
 - 类型：Redis **STRING**（JSON），TTL 与历史一致（默认 7 天）
 - 方法：`get_last_data_result` / `set_last_data_result`
+- 说明：新链路在 SQL 成功后会**双写**本键与结果栈；纯依赖本键的旧路径仍可用
+
+**ChatBI 结果栈（连续分析主 Key）**
+
+```text
+conversation:{user_id}:{conversation_id}:data_result_stack_v1
+```
+
+- 类型：Redis **STRING**（JSON 数组 / 栈结构），元素为 `ChatBIResultRef`
+- 用途：结果引用、条件继承下钻、简报/监控绑定 `result_id`；实现见 `chatbi_result_stack.py`
 
 **长期记忆 LTM（与会话无关，按用户维度）**
 
@@ -416,7 +426,7 @@ session summary 写入成功后，会由 `DailySummaryService.refresh_for_date(u
 |------|------|
 | 传了 `version_id` | 加载指定版本配置 |
 | 传了 `agent_id` / `agent_name` | 直接加载该智能体；设置 `route_hints.direct_agent_selection=True` |
-| 都未传 | `RouterService.route_query`：先启发式短路（问候/联网/ChatBI 粘性打断），再 LLM 选型 |
+| 都未传 | `RouterService.route_query`：先启发式短路（问候/联网/ChatBI 亲和性 `BREAK`），再 LLM 选型；`UNCERTAIN` 不短路 |
 | 仍无配置 | 回退 **Assistant** 默认配置 |
 
 路由结果通过 SSE 发送 `router_log`，并写入执行 trace。`turn_labels`、`relation_to_previous`、`user_action_type` 只表示路由层对当前轮次的通用理解，供 executor 参考；各 executor 是否使用这些 hint，由自身业务流程决定。
@@ -604,4 +614,4 @@ ChatBI 流式正文中的 `<sql_plan>{...}</sql_plan>` 由前端 `MessageRendere
 
 ---
 
-*文档版本：2026-06-19。含工具预检、Skill 自动扫描、路由启发式短路、用户画像 stable_prefix、sql_plan 前端卡片、ChatBI 会话粘性修正。*
+*文档版本：2026-07-19。含工具预检、Skill 自动扫描、路由启发式短路、用户画像 stable_prefix、sql_plan 前端卡片、ChatBI 亲和性三态与结果栈 `data_result_stack_v1`。*

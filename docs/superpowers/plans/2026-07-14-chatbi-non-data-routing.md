@@ -1,5 +1,10 @@
 # ChatBI Non-Data Routing Split Implementation Plan
 
+> **状态：已被取代（Superseded）**  
+> 对应设计文档已标记废弃。当前非查数处置、handoff 与三态亲和性以实现为准，见  
+> [`2026-07-19-chatbi-analysis-workflow-evolution-design.md`](../specs/2026-07-19-chatbi-analysis-workflow-evolution-design.md)。  
+> 本计划仅作历史实现记录，**请勿按本文继续验收或开新任务**。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Separate non-data requests from genuine data-query clarification so ChatBI redirects unrelated requests without showing data-gap prompts.
