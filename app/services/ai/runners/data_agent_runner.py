@@ -13,6 +13,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from agentscope.agent import Agent, ReActConfig
 from app.schemas.agent import AgentExecutionStep, ChatConfig
 from app.services.ai.data_query_turn_classifier import DataQueryTurnType, data_query_turn_type_label, resolve_data_query_turn_classification
+from app.services.ai.intent_service import IntentType
 from app.services.ai.config import AgentConfigProvider
 from app.services.ai.executors.base import BaseExecutor
 from app.services.ai.executors.common import convert_history_to_messages, normalize_messages_for_llm
@@ -95,6 +96,8 @@ class DataAgentRunner(BaseExecutor):
         self._semantic_intent: DataQuerySemanticIntent | None = None
         self._schema_similarity_threshold: float | None = None
         self._requires_sql_query = True
+        self._active_history: List[Dict[str, str]] = []
+        self._mixed_task_plan_active = False
 
     def _chatbi_grounding_audit(
         self,
@@ -432,6 +435,7 @@ class DataAgentRunner(BaseExecutor):
                 yield chunk
 
     async def _execute_raw(self, history: List[Dict[str, str]]) -> AsyncGenerator[Dict[str, Any], None]:
+        self._active_history = list(history or [])
         model_name = resolve_runtime_model_name(self.config, prefer_synthesis=True)
         incompatible_msg = await ensure_multimodal_compatible(history, model_name)
         if incompatible_msg:
@@ -439,8 +443,77 @@ class DataAgentRunner(BaseExecutor):
             return
         runtime_messages = [message for message in normalize_messages_for_llm(convert_history_to_messages(history, strip_thought=True)) if not isinstance(message, SystemMessage)]
         user_question = next((str(getattr(message, 'content', '')) for message in reversed(runtime_messages)), '')
+        if not self._mixed_task_plan_active:
+            from app.services.ai.chatbi_task_plan import (
+                ChatBITaskStatus,
+                build_chatbi_task_plan,
+            )
+
+            task_plan = build_chatbi_task_plan(user_question)
+            # brief/monitor/action 尚无 operation-aware runner，不能伪装成查询子句执行。
+            if task_plan.is_executable:
+                yield task_plan.as_event()
+                task_history = list(history[:-1])
+                self._mixed_task_plan_active = True
+                try:
+                    by_id = {task.task_id: task for task in task_plan.tasks}
+                    for task in task_plan.tasks:
+                        dependencies = [by_id[item] for item in task.depends_on if item in by_id]
+                        if any(dep.status != ChatBITaskStatus.SUCCEEDED for dep in dependencies):
+                            task.status = ChatBITaskStatus.SKIPPED
+                            task.error = "dependency_failed"
+                            yield {
+                                "type": "chatbi_task_status",
+                                "data": {"plan_id": task_plan.plan_id, "task_id": task.task_id, "status": task.status.value},
+                            }
+                            continue
+                        task.status = ChatBITaskStatus.RUNNING
+                        yield {
+                            "type": "chatbi_task_status",
+                            "data": {"plan_id": task_plan.plan_id, "task_id": task.task_id, "status": task.status.value},
+                        }
+                        current_history = task_history + [{"role": "user", "content": task.query}]
+                        assistant_content: list[str] = []
+                        failed = False
+                        async for chunk in self._execute_raw(current_history):
+                            if chunk.get("content"):
+                                assistant_content.append(str(chunk["content"]))
+                            if chunk.get("type") == "error" or chunk.get("status") == "error":
+                                failed = True
+                            yield chunk
+                        task.status = ChatBITaskStatus.FAILED if failed else ChatBITaskStatus.SUCCEEDED
+                        task_history.append({"role": "user", "content": task.query})
+                        task_history.append({
+                            "role": "assistant",
+                            "content": "".join(assistant_content) or f"任务已{task.status.value}",
+                        })
+                        yield {
+                            "type": "chatbi_task_status",
+                            "data": {"plan_id": task_plan.plan_id, "task_id": task.task_id, "status": task.status.value},
+                        }
+                finally:
+                    self._mixed_task_plan_active = False
+                return
         last_data_result_for_turn = await self._load_last_data_result_with_retry()
         turn_cls, turn_intent_info, turn_elapsed_ms = await resolve_data_query_turn_classification(user_question, history, user_info=self.user_info, conversation_id=self.conversation_id, has_last_data_result=last_data_result_for_turn is not None)
+        if turn_cls.turn_type == DataQueryTurnType.NON_DATA_REQUEST and last_data_result_for_turn:
+            from app.services.ai.runners.chatbi.non_data_policy import (
+                NonDataDisposition,
+                resolve_non_data_disposition,
+            )
+            result_action = resolve_non_data_disposition(
+                user_question,
+                has_last_data_result=True,
+            )
+            if result_action.disposition == NonDataDisposition.RESULT_ACTION:
+                # Defensive correction for classifier drift: result tools belong to ChatBI.
+                turn_cls.turn_type = DataQueryTurnType.RESULT_ACTION
+                turn_cls.reasoning = result_action.reason
+                turn_cls.requires_fresh_data = False
+                turn_cls.requires_few_shot = False
+                turn_cls.requires_sql_query = False
+                turn_cls.intent = IntentType.DATA_QUERY
+                turn_intent_info.intent = IntentType.DATA_QUERY
         self.turn_classification = turn_cls
         self.intent_info = turn_intent_info
         self.intent_elapsed_ms = turn_elapsed_ms
@@ -457,6 +530,18 @@ class DataAgentRunner(BaseExecutor):
         if turn_cls.requires_fresh_data:
             self._standalone_query = await chatbi_schema_prefetch.resolve_standalone_query_for_new_data_query(self, user_question, runtime_messages)
         system_content = await chatbi_system_prompt.build_system_content(self, context_action_result=last_data_result_for_turn if not turn_cls.requires_fresh_data else None, include_context_action=not turn_cls.requires_fresh_data)
+        if (
+            turn_cls.turn_type == DataQueryTurnType.DATA_FOLLOWUP_QUERY
+            and last_data_result_for_turn
+        ):
+            from app.services.ai.runners.chatbi.drilldown_context import (
+                build_inherited_analysis_context,
+            )
+
+            system_content += build_inherited_analysis_context(
+                last_data_result_for_turn,
+                user_question,
+            )
         if turn_cls.requires_few_shot:
             system_content = await chatbi_few_shot.inject_few_shot_examples(self, system_content, user_question=self._standalone_query, runtime_messages=runtime_messages)
             if self._pending_few_shot_log:

@@ -36,7 +36,7 @@ def test_continue_analysis_uses_one_trigger_and_responsive_chooser():
     assert "fixed inset-0" in source
     assert "absolute bottom-full" in source
     assert "emit('select', action.query)" in source
-    assert "props.actions.slice(0, 4)" in source
+    assert "props.actions.slice(0, 6)" in source
     assert 'aria-label="关闭继续分析"' in source
     assert "handleDocumentPointerDown" in source
     assert "@mouseleave=\"scheduleClose\"" in source

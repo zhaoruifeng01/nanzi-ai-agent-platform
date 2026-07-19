@@ -203,8 +203,10 @@ class RouterService:
             return None
 
         from app.services.ai.intent_service import (
+            DataSessionAffinity,
             looks_like_greeting,
             looks_like_web_search_query,
+            resolve_data_agent_session_affinity,
             should_inherit_data_agent_session,
         )
 
@@ -243,7 +245,7 @@ class RouterService:
         if (
             last_agent_name
             and self._is_data_query_agent(agents_metadata, last_agent_name)
-            and not should_inherit_data_agent_session(user_input)
+            and resolve_data_agent_session_affinity(user_input) == DataSessionAffinity.BREAK
         ):
             fallback_agent = self._find_fallback_agent(agents_metadata)
             if fallback_agent:

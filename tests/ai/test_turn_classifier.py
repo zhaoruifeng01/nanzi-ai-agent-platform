@@ -512,7 +512,7 @@ async def test_data_query_turn_classifier_owns_reuse_previous_result_semantics()
             has_last_data_result=True,
         )
 
-    assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+    assert classification.turn_type == DataQueryTurnType.RESULT_ANALYSIS
     assert classification.requires_fresh_data is False
     assert classification.requires_few_shot is False
     assert classification.skip_intent_llm is True
@@ -543,7 +543,7 @@ async def test_data_query_turn_classifier_reuses_from_history_when_redis_missing
             has_last_data_result=False,
         )
 
-    assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+    assert classification.turn_type == DataQueryTurnType.RESULT_ANALYSIS
     assert classification.requires_fresh_data is False
     assert classification.skip_intent_llm is True
     assert "查数展示" in classification.reasoning or "结构化查询结果" in classification.reasoning
@@ -563,7 +563,7 @@ async def test_data_query_turn_classifier_reuses_result_for_date_formatting_foll
             has_last_data_result=True,
         )
 
-    assert classification.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT
+    assert classification.turn_type == DataQueryTurnType.RESULT_PRESENTATION
     assert classification.requires_fresh_data is False
     assert classification.requires_few_shot is False
 
@@ -632,6 +632,136 @@ async def test_data_query_turn_classifier_short_circuits_general_chat_without_sq
     assert classification.requires_few_shot is False
     assert classification.skip_intent_llm is True
     assert intent_info.intent == IntentType.GENERAL
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_first_turn_business_scope_is_metadata_navigation():
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("business-scope navigation should use the metadata fast path")),
+    ):
+        classification, _, elapsed_ms = await resolve_data_query_turn_classification(
+            "这里主要覆盖哪些业务主题和指标",
+            [],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.METADATA_QUERY
+    assert classification.requires_sql_query is False
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_first_turn_gray_request_uses_semantic_classifier():
+    llm = object()
+    chat_client = _mock_chat_client(
+        '{"turn_type":"non_data_request","reasoning":"用户询问通用分析方法而非查询内部数据"}'
+    )
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ) as get_llm, patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            "销售额通常应该怎么分析",
+            [],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.NON_DATA_REQUEST
+    get_llm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_first_turn_classifier_failure_does_not_query_schema():
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=RuntimeError("classifier unavailable")),
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            "帮我处理一下",
+            [],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.NON_DATA_REQUEST
+    assert classification.requires_sql_query is False
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_first_turn_explicit_query_keeps_zero_llm_fast_path():
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("explicit data query should not call classifier LLM")),
+    ):
+        classification, _, elapsed_ms = await resolve_data_query_turn_classification(
+            "查本月各区域销售额",
+            [],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.NEW_DATA_QUERY
+    assert classification.requires_sql_query is True
+    assert elapsed_ms == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "llm_type", "expected", "fresh"),
+    [
+        ("分析刚才结果的主要变化", "result_analysis", DataQueryTurnType.RESULT_ANALYSIS, False),
+        ("把刚才的图改成柱状图", "result_presentation", DataQueryTurnType.RESULT_PRESENTATION, False),
+        ("把刚才结果导出成 Excel", "result_action", DataQueryTurnType.RESULT_ACTION, False),
+        ("再按区域拆一下", "data_followup_query", DataQueryTurnType.DATA_FOLLOWUP_QUERY, True),
+    ],
+)
+async def test_data_query_turn_classifier_splits_result_behaviors(query, llm_type, expected, fresh):
+    llm = object()
+    chat_client = _mock_chat_client(
+        f'{{"turn_type":"{llm_type}","reasoning":"测试细分结果行为"}}'
+    )
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            query,
+            [{"role": "assistant", "content": "已返回销售数据表格。"}, {"role": "user", "content": query}],
+            has_last_data_result=True,
+        )
+    assert classification.turn_type == expected
+    assert classification.requires_fresh_data is fresh
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "把刚才结果导出成 Excel",
+        "订阅刚才的结果",
+        "把结果发给老板",
+        "基于这个结果创建监控",
+    ],
+)
+async def test_result_actions_stay_in_chatbi_without_classifier_llm(query):
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(side_effect=AssertionError("result action should use deterministic classification")),
+    ):
+        classification, _, elapsed_ms = await resolve_data_query_turn_classification(
+            query,
+            [{"role": "assistant", "content": "已返回销售数据表格。"}],
+            has_last_data_result=True,
+        )
+    assert classification.turn_type == DataQueryTurnType.RESULT_ACTION
+    assert classification.requires_fresh_data is False
+    assert classification.requires_sql_query is False
     assert elapsed_ms == 0.0
 
 

@@ -4,11 +4,10 @@
   >
     <button
       type="button"
-      class="w-full flex flex-col p-2.5 text-left transition-all min-w-0"
-      :class="isDisabled ? 'cursor-not-allowed opacity-75 bg-gray-50/60 dark:bg-gray-900/60' : 'active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20'"
-      :disabled="isDisabled"
-      :title="buttonTitle"
-      @click="emit('execute', report)"
+      class="w-full flex flex-col p-2.5 text-left transition-all min-w-0 active:scale-[0.99] hover:bg-blue-50/30 dark:hover:bg-blue-950/20"
+      :class="isDisabled ? 'opacity-90' : ''"
+      :title="detailTitle"
+      @click="emit('detail', report)"
     >
       <span class="text-xs font-bold text-gray-800 dark:text-gray-200 truncate w-full" :title="report.title">
         {{ report.title }}
@@ -62,6 +61,19 @@
       >
         <span class="h-1.5 w-1.5 rounded-full bg-current" />
         {{ subscriptionLabel }}
+      </button>
+      <button
+        type="button"
+        class="flex items-center justify-center p-1 rounded transition-all duration-200"
+        :class="isDisabled ? 'text-gray-300 dark:text-gray-600 bg-gray-50/70 dark:bg-gray-900/60 cursor-not-allowed opacity-40' : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer'"
+        :disabled="isDisabled"
+        :title="executeTitle"
+        @click.stop="emit('execute', report)"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
       </button>
       <button
         v-if="report.is_owner"
@@ -193,14 +205,18 @@ const shareTargetLabel = computed(() => {
   return `已共享给 ${labels.join("、")}`;
 });
 
-const buttonTitle = computed(() => {
+const detailTitle = computed(() => {
+  if (props.report.is_owner && props.report.share_summary) {
+    return `${props.report.title || "黄金报表"}\n${shareTargetLabel.value}\n点击打开详情`;
+  }
+  return props.report.title ? `${props.report.title}\n点击打开详情` : "打开报表详情";
+});
+
+const executeTitle = computed(() => {
   if (props.report.run_permission_status === "denied") {
     return props.report.run_permission_message || "暂无该报表所需数据权限，无法运行。";
   }
-  if (props.report.is_owner && props.report.share_summary) {
-    return shareTargetLabel.value;
-  }
-  return props.report.title || "运行黄金报表";
+  return "运行黄金报表";
 });
 
 const copyTitle = computed(() => {

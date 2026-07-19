@@ -6,6 +6,7 @@ export interface ChatBIInsightAction {
   query: string;
   priority?: number;
   requires_data_result?: boolean;
+  result_id?: string;
 }
 
 export interface ChatBIInsightSource {
@@ -17,6 +18,7 @@ export interface ChatBIInsightSource {
 export interface ChatBIInsightMeta {
   version: number;
   status: "success";
+  result_id?: string;
   sources: ChatBIInsightSource[];
   permission?: {
     row_filter_applied?: boolean;
@@ -33,4 +35,3 @@ export interface ChatBIInsightMeta {
   final_sql?: string;
   actions: ChatBIInsightAction[];
 }
-

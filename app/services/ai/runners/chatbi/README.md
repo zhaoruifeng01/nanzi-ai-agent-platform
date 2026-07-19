@@ -44,7 +44,21 @@
 | `clarification.py` | 非查数 / 缺上下文澄清 |
 | `synthesis.py` | 复用结果 / 格式修正 / 缓存 SQL 合成 |
 | `followup_data.py` | 上一轮结构化结果读写 |
+| `metadata_guide.py` | 从授权 Schema 生成业务主题、指标、维度和澄清候选 |
+| `drilldown_context.py` | 合并上一结果分析条件并约束下钻 SQL 重新过门禁 |
+| `non_data_policy.py` / `handoff.py` | 非查数本地回答、结果动作和无感委派 |
+| `source_reclassification.py` | Schema 连续未命中后的请求来源重判 |
+| `insight_meta.py` | 结果证据、继续分析、简报和监控动作契约 |
 | `resume_stream.py` | AgentScope 挂起流恢复 |
+
+## 连续分析与交付（2026-07）
+
+- `chatbi_result_stack.py` 按用户与会话维护最多 10 个版本化结果引用，支持当前、上一结果和显式引用。
+- ChatBI turn 拆为数据追问、结果分析、结果呈现和结果动作；数据追问继承未被本轮覆盖的指标、筛选与时间条件。
+- 显式多步骤请求由 `chatbi_task_plan.py` 生成依赖计划；当前仅对 query/analyze/present 串行执行。brief/monitor/action 在 operation-aware 调度闭环前不自动拆句，避免被误当作 SQL 查询。
+- 元数据问答同时发出 `chatbi_metadata_guide`，两个聊天界面共享渲染；快捷问题只来源于授权 Schema。
+- “生成业务简报”调用 `/api/portal/chatbi-briefs` 生成可追溯 Markdown 与 Word；“创建监控”调用 `/api/portal/chatbi-monitors` 转为黄金报表订阅。
+- 订阅支持阈值、变化率、连续命中与无数据告警，并在投递记录中保存触发证据。
 
 ## 向后兼容
 

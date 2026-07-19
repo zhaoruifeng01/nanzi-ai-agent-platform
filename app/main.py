@@ -60,6 +60,11 @@ async def lifespan(app: FastAPI):
     from app.services.ai.scheduler_service import scheduler_service
     await scheduler_service.start()
 
+    # local 元数据模式：启动时后台 ensure 索引 + 全量同步（不 DROP）
+    import asyncio
+    from app.services.ai.local_vector_rebuild import maybe_rebuild_local_vectors_on_startup
+    asyncio.create_task(maybe_rebuild_local_vectors_on_startup())
+
     yield
     # Shutdown
     from app.services.ai.scheduler_service import scheduler_service

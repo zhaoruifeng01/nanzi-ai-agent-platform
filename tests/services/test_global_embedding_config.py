@@ -150,7 +150,8 @@ async def test_rebuild_vector_indexes_api():
     mock_redis = AsyncMock()
     mock_redis.execute_command = AsyncMock()
     
-    with patch("app.api.portal.endpoints.system.redis.get_redis", return_value=mock_redis), \
+    with patch("app.services.ai.local_vector_rebuild.redis.get_redis", return_value=mock_redis), \
+         patch("app.services.ai.local_vector_rebuild.settings.REDIS_ENABLE", True), \
          patch("app.services.ai.metadata_index_service.MetadataIndexService.ensure_index", return_value=True), \
          patch("app.services.ai.example_index_service.ExampleIndexService.ensure_index", return_value=True), \
          patch("app.services.ai.metadata_index_service.MetadataIndexService.sync_all_datasets", return_value=None), \
@@ -161,7 +162,7 @@ async def test_rebuild_vector_indexes_api():
         assert res["status"] == "success"
         assert "已成功重构本地向量索引。" in res["message"]
         mock_redis.execute_command.assert_any_call("FT.DROPINDEX", "nanzi:idx:metadata:dataset", "DD")
-        mock_redis.execute_command.assert_any_call("FT.DROPINDEX", "nanzi:idx:example:dataset", "DD")
+        mock_redis.execute_command.assert_any_call("FT.DROPINDEX", "nanzi:idx:example:local", "DD")
 
 @pytest.mark.asyncio
 async def test_search_examples_top_k_resolution():

@@ -74,12 +74,12 @@ def _column_roles(rows: list[dict[str, Any]]) -> tuple[list[str], list[str], lis
     return numeric, temporal, categorical
 
 
-def _action(action_id: str, label: str, description: str, query: str, priority: int) -> dict[str, Any]:
+def _action(action_id: str, label: str, description: str, query: str, priority: int, *, action_type: str = "send_query") -> dict[str, Any]:
     return {
         "id": action_id,
         "label": label,
         "description": description,
-        "action_type": "send_query",
+        "action_type": action_type,
         "query": query,
         "priority": priority,
         "requires_data_result": True,
@@ -118,7 +118,18 @@ def _build_actions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         actions.append(
             _action("summary", "总结关键结论", "提炼重点和业务含义", "基于刚才的查询结果，总结关键结论、异常点和业务含义。", 50)
         )
-    return sorted(actions, key=lambda item: item["priority"], reverse=True)[:4]
+    actions.append(_action(
+        "brief", "生成业务简报", "整理为可直接汇报的结论、数据和图表",
+        "把刚才的查询结果整理成一份业务简报，包含核心结论、关键数据、图表建议、风险和后续动作。", 85,
+        action_type="local_action",
+    ))
+    if numeric:
+        actions.append(_action(
+            "monitor", "创建订阅", "定时执行本次查询并按设置发送通知",
+            "基于刚才的查询条件创建定时订阅；先确认执行频率、时间和通知方式。", 75,
+            action_type="local_action",
+        ))
+    return sorted(actions, key=lambda item: item["priority"], reverse=True)[:6]
 
 
 def _build_sources(state: DataRunState) -> list[dict[str, Any]]:
@@ -157,6 +168,7 @@ def build_chatbi_insight_meta(state: DataRunState) -> dict[str, Any] | None:
         "data": {
             "version": 1,
             "status": "success",
+            "result_id": state.current_result_id or None,
             "sources": _build_sources(state),
             "permission": safe_notice,
             "execution": {

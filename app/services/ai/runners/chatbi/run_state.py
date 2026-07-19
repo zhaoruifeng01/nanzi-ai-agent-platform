@@ -87,6 +87,7 @@ class DataRunState:
     last_applied_schema_retry_keywords: str = ""
     pending_schema_retry: bool = False
     followup_data_saved: bool = False
+    current_result_id: str = ""
     insight_meta_emitted: bool = False
     schema_output: str = ""
     table_bindings: dict[str, TableBinding] = field(default_factory=dict)

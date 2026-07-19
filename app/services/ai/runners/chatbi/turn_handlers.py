@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 EARLY_EXIT_TURN_TYPES = frozenset(
     {
         DataQueryTurnType.FORMAT_CORRECTION,
+        DataQueryTurnType.RESULT_PRESENTATION,
         DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        DataQueryTurnType.RESULT_ANALYSIS,
         DataQueryTurnType.CLARIFICATION_OR_NON_DATA,
         DataQueryTurnType.NON_DATA_REQUEST,
         DataQueryTurnType.CLARIFICATION_REQUIRED,
@@ -72,7 +74,10 @@ async def dispatch_early_turn(
     last_data_result_for_turn: Optional[Dict[str, Any]],
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Handle turns that exit before tool/ReAct execution."""
-    if turn_cls.turn_type == DataQueryTurnType.FORMAT_CORRECTION:
+    if turn_cls.turn_type in {
+        DataQueryTurnType.FORMAT_CORRECTION,
+        DataQueryTurnType.RESULT_PRESENTATION,
+    }:
         if not last_data_result_for_turn:
             last_data_result_for_turn = await runner._load_last_data_result_with_retry()
         if last_data_result_for_turn:
@@ -96,7 +101,10 @@ async def dispatch_early_turn(
                 yield chunk
         return
 
-    if turn_cls.turn_type == DataQueryTurnType.REUSE_PREVIOUS_RESULT:
+    if turn_cls.turn_type in {
+        DataQueryTurnType.REUSE_PREVIOUS_RESULT,
+        DataQueryTurnType.RESULT_ANALYSIS,
+    }:
         if not last_data_result_for_turn:
             last_data_result_for_turn = await runner._load_last_data_result_with_retry()
         if last_data_result_for_turn:
@@ -130,12 +138,38 @@ async def dispatch_early_turn(
 
     if turn_cls.turn_type == DataQueryTurnType.NON_DATA_REQUEST:
         from app.services.ai.runners.chatbi import clarification as chatbi_clarification
+        from app.services.ai.runners.chatbi.handoff import stream_to_routed_assistant
+        from app.services.ai.runners.chatbi.non_data_policy import (
+            NonDataDisposition,
+            resolve_non_data_disposition,
+        )
 
-        async for chunk in chatbi_clarification.yield_non_data_guidance(
-            runner,
-            user_question=user_question,
-        ):
-            yield chunk
+        decision = resolve_non_data_disposition(
+            user_question,
+            has_last_data_result=bool(last_data_result_for_turn),
+        )
+        if decision.disposition == NonDataDisposition.LOCAL_HELP:
+            async for chunk in chatbi_clarification.yield_local_help(
+                runner,
+                user_question=user_question,
+            ):
+                yield chunk
+            return
+        try:
+            async for chunk in stream_to_routed_assistant(
+                runner,
+                history=history,
+                user_question=user_question,
+                reason=decision.reason,
+            ):
+                yield chunk
+        except Exception as exc:
+            logger.warning("[DataAgentRunner] Seamless non-data handoff failed: %s", exc)
+            async for chunk in chatbi_clarification.yield_non_data_guidance(
+                runner,
+                user_question=user_question,
+            ):
+                yield chunk
         return
 
     if turn_cls.turn_type in {
@@ -165,6 +199,12 @@ async def dispatch_metadata_schema_turn(
     from app.services.ai.executors.prompts import DataQueryPrompts
     from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
     from app.services.ai.runtime.agentscope.stream_reconcile import finalize_visible_reply
+    from app.services.ai.runners.chatbi.metadata_guide import (
+        build_metadata_guide,
+        metadata_guide_markdown,
+    )
+
+    guide = build_metadata_guide(prefetched_schema_output)
 
     yield {
         "type": "log",
@@ -202,6 +242,10 @@ async def dispatch_metadata_schema_turn(
     deduped = finalize_visible_reply(full_content)
     if deduped != full_content:
         yield {"type": "retraction", "content": deduped}
+    guide_fallback = metadata_guide_markdown(guide)
+    if guide_fallback:
+        guide["fallback_markdown"] = guide_fallback
+    yield {"type": "chatbi_metadata_guide", "data": guide}
     runner._last_run_state = DataRunState(
         requires_fresh_data=True,
         schema_completed=True,

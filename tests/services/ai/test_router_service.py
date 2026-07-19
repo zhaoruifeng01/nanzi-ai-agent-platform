@@ -3,7 +3,13 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 from app.services.ai.router_service import RouterService, RouteResult
-from app.services.ai.intent_service import IntentResponse, IntentType, should_inherit_data_agent_session
+from app.services.ai.intent_service import (
+    DataSessionAffinity,
+    IntentResponse,
+    IntentType,
+    resolve_data_agent_session_affinity,
+    should_inherit_data_agent_session,
+)
 
 # --- Mocks ---
 
@@ -70,6 +76,22 @@ def test_should_inherit_data_agent_session_generalized():
     assert should_inherit_data_agent_session("那它呢") is False
     assert should_inherit_data_agent_session("为什么呢") is False
     assert should_inherit_data_agent_session("看看") is False
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("把上面的结果画成柱状图", DataSessionAffinity.KEEP),
+        ("保存这个结果", DataSessionAffinity.KEEP),
+        ("查一下所有机房的列表", DataSessionAffinity.KEEP),
+        ("你好", DataSessionAffinity.BREAK),
+        ("联网查一下今天的行业新闻", DataSessionAffinity.BREAK),
+        ("帮我看看这个", DataSessionAffinity.UNCERTAIN),
+        ("看看我开源项目，小星星情况", DataSessionAffinity.UNCERTAIN),
+    ],
+)
+def test_resolve_data_agent_session_affinity_is_tristate(query, expected):
+    assert resolve_data_agent_session_affinity(query) == expected
 
 # --- Tests ---
 
@@ -620,10 +642,14 @@ async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
 
 
 @pytest.mark.asyncio
-async def test_route_query_open_source_stars_shortcut_to_general(mock_agents_metadata):
-    """上一轮 ChatBI 后，若本轮无内部业务查数/数据追问信号，应断开粘性并转通用助手。"""
+async def test_route_query_uncertain_topic_after_chatbi_reaches_semantic_router(mock_agents_metadata):
+    """上一轮 ChatBI 后的灰区话题应重新分诊，不能由粘性规则直接判给通用助手。"""
     service = RouterService()
-    mock_chat = _mock_chat_client("{}")
+    mock_chat = _mock_chat_client(json.dumps({
+        "thought": "This is an external project status question.",
+        "agent_name": "general-chat",
+        "confidence": 0.94,
+    }))
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
@@ -647,10 +673,12 @@ async def test_route_query_open_source_stars_shortcut_to_general(mock_agents_met
 
     assert result is not None
     assert result.agent_id == "agent-general"
-    assert "内部业务库查数" in result.reasoning or "数据追问" in result.reasoning
-    assert result.relation_to_previous == "topic_switch"
-    mock_get_llm.assert_not_called()
-    mock_chat.generate_text.assert_not_called()
+    assert result.reasoning != (
+        "上一轮虽由数据智能体处理，但本轮不再具备内部业务库查数或数据追问信号，"
+        "按话题切换重新分诊至通用助手"
+    )
+    mock_get_llm.assert_called_once()
+    mock_chat.generate_text.assert_called_once()
 
 
 @pytest.mark.asyncio
