@@ -62,10 +62,15 @@ async def generate_clarification_content(
     reasoning: str,
     missing_fields: tuple[str, ...] | None = None,
 ) -> str:
+    from app.services.ai.data_query_turn_classifier import filter_satisfied_missing_fields
+
     history_excerpt = DataQueryPrompts.format_clarification_history(history)
     user_profile = _build_user_profile_block(runner)
     agent_display_name = _resolve_agent_display_name(runner)
     scenario = DataQueryPrompts.resolve_clarification_scenario(user_question, reasoning)
+    # 展示前再剔一次已满足缺口，避免建议补原问题已写明的条件
+    if missing_fields is not None:
+        missing_fields = filter_satisfied_missing_fields(user_question, missing_fields)
     skip_llm = (
         missing_fields is not None
         or DataQueryPrompts.should_skip_clarification_llm(scenario)

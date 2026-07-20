@@ -1198,7 +1198,8 @@ async def test_generate_clarification_content_returns_string_not_coroutine(data_
     )
     assert not inspect.iscoroutine(content)
     assert isinstance(content, str)
-    assert "### ℹ️ 为什么需要补充信息" in content
+    assert ":::clarification" in content
+    assert "### 💬 一键继续" in content
     assert "(quick:" in content
 
 
@@ -1247,7 +1248,7 @@ async def test_data_agent_runner_clarifies_non_data_with_real_content(data_confi
         if isinstance(chunk.get("content"), str) and chunk.get("content")
     ]
     assert content_chunks, "clarification must emit visible content chunk"
-    assert any("### ℹ️ 为什么需要补充信息" in content for content in content_chunks)
+    assert any(":::clarification" in content for content in content_chunks)
     assert any("(quick:" in content for content in content_chunks)
 
 

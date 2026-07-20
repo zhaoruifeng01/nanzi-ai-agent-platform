@@ -606,7 +606,7 @@ XML 示例：
 {user_question}
 
 任务：只输出 1-2 句自然中文引导语。
-- 不要输出标题、列表、quick 按钮或 `### ℹ️ 为什么需要补充信息` 区块（系统会自动添加）。
+- 不要输出标题、列表、quick 按钮或 `:::clarification` / `### ℹ️ 为什么需要补充信息` 区块（系统会自动添加）。
 - 结合【当前用户问题】与【已识别缺口】说明还缺什么、如何补充。
 - 若上文有 `<USER_PROFILE>` 且含用户称呼，可礼貌使用真实姓名。
 - 禁止输出与用户当前问题无关的其他业务域示例；不要编造对话中未出现的具体数值。
@@ -691,6 +691,10 @@ XML 示例：
         body = str(text or "").strip()
         if not body:
             return ""
+        if ":::clarification" in body:
+            body = re.sub(r":::clarification[^\n]*\n?", "", body, count=1).strip()
+            if body.endswith(":::"):
+                body = body[:-3].strip()
         if "### ℹ️ 为什么需要补充信息" in body:
             _, _, remainder = body.partition("### ℹ️ 为什么需要补充信息")
             body = remainder.strip()
@@ -707,6 +711,8 @@ XML 示例：
             if "(quick:" in line.lower():
                 continue
             if line.strip().startswith("- **"):
+                continue
+            if line.strip() == ":::":
                 continue
             cleaned_lines.append(line)
         return "\n".join(cleaned_lines).strip()
@@ -745,59 +751,154 @@ XML 示例：
         suggested_queries: tuple[str, ...] | None = None,
         agent_display_name: str | None = None,
     ) -> str:
-        """Assemble clarification: reason + lead + rewrite examples + quick buttons."""
-        structured_gaps = cls._structured_clarification_gaps(missing_fields)
-        if lead:
-            lead_text = cls.sanitize_clarification_lead(lead)
-        elif missing_fields is not None:
-            gap_text = "、".join(structured_gaps) or "完整查数条件"
-            lead_text = (
-                f"这是查数需求，但还需要补充{gap_text}后才能继续。"
-                "如果您不确定怎么写，可直接参考或点选下方基于原问题的改写示例。"
-            )
-        else:
-            lead_text = cls._build_contextual_clarification_lead(
-                user_question,
-                reasoning,
-                history_excerpt,
-                agent_display_name=agent_display_name,
-            )
-
-        example_queries = cls._merge_clarification_example_queries(
+        """Assemble clarification: short human summary + primary quick buttons."""
+        intent_question = cls._extract_user_intent_text(user_question) or user_question
+        summary = cls._build_clarification_summary(
             user_question,
+            reasoning,
+            missing_fields=missing_fields,
+            lead=lead,
+            agent_display_name=agent_display_name,
+            history_excerpt=history_excerpt,
+        )
+        example_queries = cls._merge_clarification_example_queries(
+            intent_question,
             reasoning,
             history_excerpt,
             missing_fields=missing_fields,
             suggested_queries=suggested_queries,
         )
-        example_block = cls._format_clarification_example_block(
-            user_question,
-            example_queries,
-        )
         variants = [
-            (cls._truncate_for_display(query, 36), query)
+            (cls._clarification_button_label(query), query)
             for query in example_queries
         ]
         if not variants:
             variants = cls._build_contextual_clarification_quick_variants(
-                user_question,
+                intent_question,
                 reasoning,
                 history_excerpt,
                 missing_fields=missing_fields,
             )
-        buttons = [cls.quick_button(label, target) for label, target in variants[:4]]
+            variants = [
+                (cls._clarification_button_label(label if label != target else target), target)
+                for label, target in variants
+            ]
+        buttons = [cls.quick_button(label, target) for label, target in variants[:3]]
+        if cls._is_non_data_general_intent(intent_question, reasoning):
+            buttons = [
+                cls.quick_button("查看我能查哪些数据", DATASET_PORTAL_SLASH_COMMAND),
+                cls.quick_button("切换智能体", "/switch_to_auto"),
+                *buttons,
+            ][:3]
         suggestions = "\n".join(buttons)
-        reason_block = cls._format_clarification_reason_block(
+        title = cls._clarification_card_title(missing_fields, reasoning)
+        return (
+            f":::clarification {title}\n"
+            f"{summary}\n\n"
+            f"### 💬 一键继续\n"
+            f"{suggestions}\n"
+            f":::"
+        )
+
+    @classmethod
+    def _clarification_card_title(
+        cls,
+        missing_fields: tuple[str, ...] | None,
+        reasoning: str,
+    ) -> str:
+        reasoning_text = str(reasoning or "")
+        if any(k in reasoning_text for k in ("可复用", "结构化查询结果", "结果追问")):
+            return "还差一次可复用的查询结果"
+        if any(k in reasoning_text for k in ("最近对话", "上下文")):
+            return "需要确认要基于哪次结果继续"
+        if missing_fields:
+            return "再确认一点点就能查"
+        return "需要再确认一下"
+
+    @classmethod
+    def _clarification_button_label(cls, query: str, *, max_len: int = 28) -> str:
+        """按钮展示短标签，点击仍发送完整问法。"""
+        text = re.sub(r"\s+", " ", str(query or "")).strip()
+        if not text:
+            return "继续查数"
+        for prefix in ("查询", "统计", "列出", "查看", "显示"):
+            if text.startswith(prefix) and len(text) > len(prefix) + 2:
+                text = text[len(prefix):].strip()
+                break
+        return cls._truncate_for_display(text, max_len) or "继续查数"
+
+    @classmethod
+    def _build_clarification_summary(
+        cls,
+        user_question: str,
+        reasoning: str,
+        *,
+        missing_fields: tuple[str, ...] | None = None,
+        lead: str | None = None,
+        agent_display_name: str | None = None,
+        history_excerpt: str = "",
+    ) -> str:
+        if lead:
+            return cls.sanitize_clarification_lead(lead)
+        if missing_fields is not None:
+            return (
+                f"{cls._humanize_clarification_gaps(user_question, missing_fields)}。"
+                "点选下方问法即可继续，无需从零重写。"
+            )
+        return cls._build_contextual_clarification_lead(
             user_question,
             reasoning,
-            missing_fields=missing_fields,
-            example_queries=example_queries,
+            history_excerpt,
+            agent_display_name=agent_display_name,
         )
-        parts = [reason_block, lead_text]
-        if example_block:
-            parts.append(example_block)
-        parts.append(f"### 💬 您可以这样继续\n{suggestions}")
-        return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _extract_user_intent_text(cls, user_question: str) -> str:
+        """去掉自动化包装与模板尾巴，只保留用户真实查数意图。"""
+        q = str(user_question or "").strip()
+        if not q:
+            return ""
+        if "【自动化指令" in q or "TaskCenter 自动任务" in q:
+            match = re.search(r"任务内容[：:]\s*(.+)", q, flags=re.DOTALL)
+            if match:
+                body = match.group(1).strip()
+                for cut in (
+                    "\n# Role", "\n# Constraints", "\n# Output", "\n# Few-Shot",
+                    "（# Role", "(# Role", "（# Constraints", "(# Constraints",
+                ):
+                    idx = body.find(cut)
+                    if idx > 0:
+                        body = body[:idx].strip()
+                q = body
+        q = re.sub(r"^@\S+\s*", "", q)
+        q = re.sub(r"\s+", " ", q).strip()
+        return q
+
+    @classmethod
+    def _humanize_clarification_gaps(
+        cls,
+        user_question: str,
+        missing_fields: tuple[str, ...] | None,
+    ) -> str:
+        """把结构化缺口改写成贴着原问题的人话。"""
+        intent = cls._extract_user_intent_text(user_question) or user_question
+        topic = cls._truncate_for_display(
+            cls._extract_clarification_topic_core(intent) or intent,
+            28,
+        )
+        hints = {
+            "data_object": "要查哪类业务数据",
+            "metric": "要看什么指标或统计口径",
+            "time_range": "要覆盖哪段时间",
+            "dimension": "要按什么维度拆开看",
+            "result_context": "要基于哪一次查询结果继续",
+            "dataset_or_schema": "要用哪套数据集或字段口径",
+        }
+        gaps = [hints[field] for field in (missing_fields or ()) if field in hints]
+        gap_text = "、".join(gaps) or "还缺一点查数条件"
+        if topic:
+            return f"关于「{topic}」，还需要确认：{gap_text}"
+        return f"还需要确认：{gap_text}"
 
     @classmethod
     def build_non_data_response(
@@ -1325,12 +1426,12 @@ XML 示例：
         missing_fields: tuple[str, ...] | None,
     ) -> list[str]:
         names = {
-            "data_object": "要查什么数据",
-            "metric": "要统计什么",
-            "time_range": "时间范围",
-            "dimension": "要按什么分组或看哪些字段",
-            "result_context": "要基于哪一份查询结果继续分析",
-            "dataset_or_schema": "数据集或字段口径",
+            "data_object": "要查哪类业务数据",
+            "metric": "要看什么指标或统计口径",
+            "time_range": "要覆盖哪段时间",
+            "dimension": "要按什么维度拆开看",
+            "result_context": "要基于哪一次查询结果继续",
+            "dataset_or_schema": "要用哪套数据集或字段口径",
         }
         if missing_fields is None:
             return []
@@ -1339,7 +1440,9 @@ XML 示例：
     @classmethod
     def _extract_clarification_topic_core(cls, user_question: str) -> str:
         """从原问题抽出可复用的对象/主题，便于改写成完整问法。"""
-        q = re.sub(r"\s+", " ", str(user_question or "")).strip()
+        q = cls._extract_user_intent_text(user_question) or re.sub(
+            r"\s+", " ", str(user_question or "")
+        ).strip()
         if not q:
             return ""
         core = q
@@ -1351,6 +1454,7 @@ XML 示例：
         for verb in (
             "查查看", "查查", "查询一下", "查询下", "查询", "查一下", "查下",
             "统计一下", "统计下", "统计", "看一下", "看看", "查看", "列出", "获取",
+            "显示一下", "显示", "巡检",
         ):
             if core.startswith(verb):
                 core = core[len(verb):].strip()
@@ -1501,33 +1605,13 @@ XML 示例：
         missing_fields: tuple[str, ...] | None = None,
         example_queries: tuple[str, ...] | None = None,
     ) -> str:
-        if missing_fields is None:
-            expl = cls._explain_clarification_trigger(user_question, reasoning)
-        else:
-            gaps = cls._structured_clarification_gaps(missing_fields)
-            gap_text = "、".join(gaps) or "完整查数条件"
-            topic = cls._truncate_for_display(user_question, 40)
-            expl = {
-                "title": "查数需求还缺少必要条件",
-                "detail": f"已确认这是查数需求，当前还缺少：{gap_text}。",
-                "fix": (
-                    f"不必从零重写；可在原问题「{topic}」基础上补齐{gap_text}，"
-                    "或直接使用下方改写示例。"
-                    if topic
-                    else f"请补充{gap_text}；也可直接使用下方改写示例。"
-                ),
-            }
-        if example_queries and "下方" not in expl["fix"]:
-            expl["fix"] = f"{expl['fix'].rstrip('。')}；也可直接点选下方示例。"
-        block = (
-            "### ℹ️ 为什么需要补充信息\n"
-            f"- **触发原因：** {expl['title']}\n"
-            f"- **具体情况：** {expl['detail']}\n"
-            f"- **您可以这样改：** {expl['fix']}\n"
+        """兼容旧调用：返回短说明，不再使用「触发原因」三件套。"""
+        del example_queries  # 按钮区承载行动，说明区不再重复罗列示例
+        return cls._build_clarification_summary(
+            user_question,
+            reasoning,
+            missing_fields=missing_fields,
         )
-        if expl.get("agent_switch"):
-            block += f"- **若不是查数需求：** {expl['agent_switch']}\n"
-        return block
 
     @classmethod
     def ensure_clarification_reason_block(
@@ -1537,12 +1621,14 @@ XML 示例：
         reasoning: str,
     ) -> str:
         body = str(content or "").strip()
+        if ":::clarification" in body or "### 💬 一键继续" in body:
+            return body
         if "### ℹ️ 为什么需要补充信息" in body:
             return body
-        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
+        summary = cls._format_clarification_reason_block(user_question, reasoning)
         if not body:
-            return reason_block.strip()
-        return f"{reason_block}\n{body}"
+            return summary.strip()
+        return f"{summary}\n\n{body}"
 
     @staticmethod
     def _truncate_for_display(text: str, max_len: int = 48) -> str:
@@ -1637,42 +1723,40 @@ XML 示例：
         *,
         agent_display_name: str | None = None,
     ) -> str:
-        q = str(user_question or "").strip()
-        topic = cls._truncate_for_display(q, 56)
+        intent = cls._extract_user_intent_text(user_question) or str(user_question or "").strip()
+        topic = cls._truncate_for_display(intent, 28)
         reasoning_text = str(reasoning or "")
+        q = intent
 
         if any(keyword in reasoning_text for keyword in ("结果追问", "可复用", "结构化查询结果")):
             if topic:
                 return (
-                    f"您提到「{topic}」，但当前会话里还没有可复用的查询结果。"
-                    "请说明要基于哪份数据继续，或先完成一次查询："
+                    f"关于「{topic}」，当前还没有可复用的查询结果。"
+                    "点选下方问法即可继续。"
                 )
-            return "当前还不确定要基于哪一份查询结果继续分析，请补充说明或先完成一次数据查询："
+            return "当前还没有可复用的查询结果。点选下方问法即可继续。"
 
         if any(keyword in reasoning_text for keyword in ("最近对话", "上下文")):
             if topic:
                 return (
-                    f"关于「{topic}」，最近对话里暂时没有足够明确的数据上下文。"
-                    "请补充要分析的对象或时间范围："
+                    f"关于「{topic}」，最近对话里暂时对不上要基于哪次结果继续。"
+                    "点选下方问法即可继续。"
                 )
-            return "最近对话里暂时没有足够明确的数据上下文，请补充您想分析的对象或时间范围："
+            return "最近对话里暂时对不上要基于哪次结果继续。点选下方问法即可继续。"
 
         if cls._looks_like_intent_calibration_signal(q, reasoning_text):
             last_topic = cls._extract_last_user_topic(history_excerpt, q)
             if last_topic:
                 return (
-                    f"您当前是在校准查数意图。请结合上一轮「{last_topic}」"
-                    "的真实业务诉求，重述一句完整、可直接查数的问题："
+                    f"请结合上一轮「{last_topic}」重述一句完整可查数的问题；"
+                    "也可直接点选下方问法。"
                 )
             if topic:
                 return (
-                    f"您当前是在校准查数意图。请把「{topic}」整理成一句"
-                    "完整、可直接查数的独立问题："
+                    f"请把「{topic}」整理成一句完整可查数的问题；"
+                    "也可直接点选下方问法。"
                 )
-            return (
-                "您当前是在校准查数意图。请结合上一轮对话中的真实业务诉求，"
-                "重述一句完整、可直接查数的问题："
-            )
+            return "请重述一句完整可查数的问题；也可直接点选下方问法。"
 
         if cls._is_non_data_general_intent(q, reasoning_text):
             return cls.capability_onboarding_lead(agent_display_name)
@@ -1680,13 +1764,10 @@ XML 示例：
         gap_text = "、".join(cls._infer_clarification_gaps(q, reasoning_text))
         if topic:
             return (
-                f"关于「{topic}」，还需要确认{gap_text}后才能继续。"
-                "如果您不确定怎么补齐，可直接参考或点选下方基于原问题的改写示例："
+                f"关于「{topic}」，还需要确认：{gap_text}。"
+                "点选下方问法即可继续，无需从零重写。"
             )
-        return (
-            f"还需要确认{gap_text}后才能继续。"
-            "如果您不确定怎么补齐，可直接参考或点选下方改写示例："
-        )
+        return f"还需要确认：{gap_text}。点选下方问法即可继续，无需从零重写。"
 
     @classmethod
     def _build_contextual_clarification_quick_variants(
@@ -1765,39 +1846,72 @@ XML 示例：
         # 结构化缺口：优先给出基于原问题的完整改写示例，避免「请补充…」元提示。
         if missing_fields is not None:
             for query in cls._build_gap_fill_example_queries(q, missing_fields):
-                add(cls._truncate_for_display(query, 32), query)
+                add(cls._clarification_button_label(query), query)
             if variants:
-                return variants[:4]
+                return variants[:3]
 
         gaps = (
             cls._structured_clarification_gaps(missing_fields)
             if missing_fields is not None
             else cls._infer_clarification_gaps(q, reasoning_text)
         )
-        if "时间范围" in gaps:
+        gap_blob = "、".join(gaps)
+        fields = set(missing_fields or ())
+        if "time_range" in fields or "时间范围" in gap_blob or "哪段时间" in gap_blob:
             for query in cls._build_gap_fill_example_queries(q, ("time_range",)):
-                add(cls._truncate_for_display(query, 32), query)
+                add(cls._clarification_button_label(query), query)
         if "具体对象或指代范围" in gaps:
-            add(f"明确对象后重问：{topic_label}", f"查询本月{cls._extract_clarification_topic_core(q) or q}的明细列表")
-        if "要基于哪一份查询结果继续分析" in gaps and last_topic:
+            add(
+                cls._clarification_button_label(
+                    f"查询本月{cls._extract_clarification_topic_core(q) or q}的明细列表"
+                ),
+                f"查询本月{cls._extract_clarification_topic_core(q) or q}的明细列表",
+            )
+        if (
+            "result_context" in fields
+            or "要基于哪一份查询结果继续分析" in gaps
+            or "要基于哪一次查询结果继续" in gaps
+        ) and last_topic:
             add(
                 f"基于「{cls._truncate_for_display(last_topic, 16)}」",
                 f"基于刚才关于{last_topic}的查询结果，{q}",
             )
-        if "要查什么数据" in gaps or "要统计什么" in gaps or "统计对象或指标口径" in gaps or "指标口径" in gaps or "统计对象" in gaps:
+        if (
+            fields & {"data_object", "metric"}
+            or any(
+                token in gap_blob
+                for token in (
+                    "要查什么数据",
+                    "要查哪类业务数据",
+                    "要统计什么",
+                    "要看什么指标",
+                    "指标口径",
+                    "统计对象",
+                )
+            )
+        ):
             for query in cls._build_gap_fill_example_queries(q, ("metric", "data_object")):
-                add(cls._truncate_for_display(query, 32), query)
-        if "要按什么分组或看哪些字段" in gaps or "分析维度" in gaps:
+                add(cls._clarification_button_label(query), query)
+        if (
+            "dimension" in fields
+            or "要按什么分组或看哪些字段" in gaps
+            or "要按什么维度拆开看" in gaps
+            or "分析维度" in gaps
+        ):
             for query in cls._build_gap_fill_example_queries(q, ("dimension",)):
-                add(cls._truncate_for_display(query, 32), query)
-        if "数据集或字段口径" in gaps:
+                add(cls._clarification_button_label(query), query)
+        if (
+            "dataset_or_schema" in fields
+            or "数据集或字段口径" in gaps
+            or "哪套数据集" in gap_blob
+        ):
             for query in cls._build_gap_fill_example_queries(q, ("dataset_or_schema",)):
-                add(cls._truncate_for_display(query, 32), query)
+                add(cls._clarification_button_label(query), query)
         if not variants:
             for query in cls._build_gap_fill_example_queries(q, missing_fields):
-                add(cls._truncate_for_display(query, 32), query)
-        add(f"按原问题重试：{topic_label}", q)
-        return variants[:4]
+                add(cls._clarification_button_label(query), query)
+        add(cls._clarification_button_label(q) or f"按原问题重试：{topic_label}", q)
+        return variants[:3]
 
     @classmethod
     def append_contextual_quick_suggestions(
@@ -1820,7 +1934,7 @@ XML 示例：
         buttons = [cls.quick_button(label, target) for label, target in variants]
         if "### 💬" in body:
             return f"{body}\n" + "\n".join(buttons)
-        return f"{body}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons)
+        return f"{body}\n\n### 💬 一键继续\n" + "\n".join(buttons)
 
     @classmethod
     def build_clarification_fallback(
@@ -1869,10 +1983,16 @@ XML 示例：
             )
         lead = (
             "当前会话还没有可复用的结构化查询结果，无法直接基于上一轮数据出图或分析。"
-            "您可以先完成一次查询，或选择下面的建议："
+            "点选下方问法即可继续。"
         )
-        reason_block = cls._format_clarification_reason_block(user_question, reasoning)
-        return f"{reason_block}\n{lead}\n\n### 💬 您可以这样继续\n" + "\n".join(buttons[:3])
+        title = "还差一次可复用的查询结果"
+        return (
+            f":::clarification {title}\n"
+            f"{lead}\n\n"
+            f"### 💬 一键继续\n"
+            + "\n".join(buttons[:3])
+            + "\n:::"
+        )
 
     @staticmethod
     def _extract_last_user_topic(history_excerpt: str, current_question: str) -> str:

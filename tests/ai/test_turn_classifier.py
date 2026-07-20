@@ -16,6 +16,7 @@ from app.services.ai.data_query_turn_classifier import (
     DataQueryTurnType,
     _classify_with_llm,
     data_query_turn_type_label,
+    filter_satisfied_missing_fields,
     looks_like_chart_format_correction,
     resolve_data_query_turn_classification,
 )
@@ -895,7 +896,50 @@ async def test_data_query_turn_classifier_downgrades_misreported_data_object_for
 
     assert classification.turn_type == DataQueryTurnType.NEW_DATA_QUERY
     assert classification.requires_fresh_data is True
-    assert "不拦截澄清" in classification.reasoning
+    assert "原问题已覆盖" in classification.reasoning or "不拦截澄清" in classification.reasoning
+
+
+def test_filter_satisfied_missing_fields_drops_already_stated_gaps():
+    query = (
+        "按各数据中心显示动环指标最后时间，并计算与现在的间隔时间"
+    )
+    assert filter_satisfied_missing_fields(
+        query, ("data_object", "metric", "time_range", "dimension")
+    ) == ()
+
+
+def test_filter_satisfied_missing_fields_keeps_unsatisfied_hard_gaps():
+    query = "查看各机房动环指标"
+    assert filter_satisfied_missing_fields(
+        query, ("data_object", "metric", "result_context")
+    ) == ("result_context",)
+
+
+@pytest.mark.asyncio
+async def test_data_query_turn_classifier_keeps_only_unsatisfied_gaps_in_clarification():
+    """缺口自检后仍剩硬缺口时继续澄清，但建议只展示未满足字段。"""
+    llm = object()
+    chat_client = _mock_chat_client(
+        '{"turn_type":"clarification_required","reasoning":"缺对象且无上轮结果",'
+        '"missing_fields":["data_object","metric","result_context"]}'
+    )
+    query = "查看各机房动环指标延迟"
+
+    with patch(
+        "app.services.ai.config.AgentConfigProvider.get_configured_llm",
+        AsyncMock(return_value=llm),
+    ), patch(
+        "app.services.ai.data_query_turn_classifier.chat_client_from_handle",
+        return_value=chat_client,
+    ):
+        classification, _, _ = await resolve_data_query_turn_classification(
+            query,
+            [{"role": "user", "content": query}],
+            has_last_data_result=False,
+        )
+
+    assert classification.turn_type == DataQueryTurnType.CLARIFICATION_REQUIRED
+    assert classification.missing_fields == ("result_context",)
 
 
 @pytest.mark.asyncio
@@ -928,7 +972,7 @@ async def test_data_query_turn_classifier_never_clarifies_taskcenter_automation(
 
     assert classification.turn_type == DataQueryTurnType.NEW_DATA_QUERY
     assert classification.requires_fresh_data is True
-    assert "自动化任务" in classification.reasoning
+    assert "自动化任务" in classification.reasoning or "原问题已覆盖" in classification.reasoning
 
 @pytest.mark.asyncio
 async def test_data_query_turn_classifier_requires_recent_context_for_reuse():

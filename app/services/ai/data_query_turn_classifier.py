@@ -218,6 +218,22 @@ _CONCRETE_OBJECT_SIGNALS = (
     "数据中心", "动环", "指标", "节点", "网关", "采集",
 )
 
+_METRIC_SATISFIED_SIGNALS = (
+    "指标", "多少", "数量", "统计", "汇总", "趋势", "占比", "排名", "对比",
+    "消耗", "用量", "延迟", "延时", "最后时间", "间隔", "最新时间", "更新时间",
+    "采集时间", "上报时间", "pue", "count", "sum", "avg", "max", "min",
+)
+
+_TIME_SATISFIED_SIGNALS = (
+    "今天", "昨天", "本周", "上周", "本月", "上月", "今年", "去年",
+    "最近", "近期", "天内", "月内", "季度", "年度", "最后时间", "间隔时间",
+    "与现在", "当前时间", "实时",
+)
+
+_DIMENSION_SATISFIED_SIGNALS = (
+    "各", "每", "按", "分组", "维度", "分机房", "分区域", "分部门", "groupby", "group by",
+)
+
 
 def _has_concrete_data_object(user_query: str) -> bool:
     """问题中是否已点名可执行的业务对象（用于纠正 LLM 误报 data_object）。"""
@@ -225,6 +241,39 @@ def _has_concrete_data_object(user_query: str) -> bool:
     if not q:
         return False
     return any(signal in q for signal in _CONCRETE_OBJECT_SIGNALS)
+
+
+def _query_satisfies_clarification_field(user_query: str, field: str) -> bool:
+    """原问题是否已覆盖某类澄清缺口（用于剔除 LLM 误报）。"""
+    q = (user_query or "").strip().lower()
+    if not q or not field:
+        return False
+    if field == "data_object":
+        return _has_concrete_data_object(q)
+    if field == "metric":
+        return any(signal in q for signal in _METRIC_SATISFIED_SIGNALS)
+    if field == "time_range":
+        if any(signal in q for signal in _TIME_SATISFIED_SIGNALS):
+            return True
+        return bool(re.search(r"20\d{2}[-/\.年]", q))
+    if field == "dimension":
+        return any(signal in q for signal in _DIMENSION_SATISFIED_SIGNALS)
+    # result_context / dataset_or_schema：无法仅凭当前句子判定已满足
+    return False
+
+
+def filter_satisfied_missing_fields(
+    user_query: str,
+    missing_fields: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """剔除原问题中已满足的缺口，避免建议补已经写明的条件。"""
+    if not missing_fields:
+        return ()
+    return tuple(
+        field
+        for field in missing_fields
+        if not _query_satisfies_clarification_field(user_query, field)
+    )
 
 
 def _looks_like_actionable_data_query(user_query: str) -> bool:
@@ -250,6 +299,7 @@ def _should_proceed_despite_clarification(
     """软性缺口或可纠正的 data_object 误报在对象已明确时不拦截。
 
     无人值守自动化任务无人可答澄清，一律放行继续查数。
+    调用前应先用 filter_satisfied_missing_fields 剔除已满足缺口。
     """
     if _is_unattended_automation_query(user_query):
         return True
@@ -822,27 +872,39 @@ async def resolve_data_query_turn_classification(
                     skip_intent_llm=False,
                 )
 
-    # 澄清降级：自动化任务、软性缺口、或已点名对象却被误报 data_object 时不拦截。
-    if (
-        classification
-        and classification.turn_type == DataQueryTurnType.CLARIFICATION_REQUIRED
-        and _should_proceed_despite_clarification(q, classification.missing_fields)
-    ):
-        reason = (
-            "无人值守自动化任务禁止澄清拦截，直接继续查数"
-            if _is_unattended_automation_query(q)
-            else "查数对象已足够明确，软性缺口或可纠正的对象缺口交由执行阶段补齐，不拦截澄清"
-        )
-        logger.info(
-            "[DataQueryTurnClassifier] 澄清降级为 new_data_query（missing_fields=%s, reasoning=%s）",
-            classification.missing_fields,
-            classification.reasoning,
-        )
-        classification = _classification_for_turn_type(
-            DataQueryTurnType.NEW_DATA_QUERY,
-            reason,
-            skip_intent_llm=False,
-        )
+    # 澄清缺口自检：剔除原问题已覆盖的字段；剔空或仅剩可执行软缺口则继续查数。
+    if classification and classification.turn_type == DataQueryTurnType.CLARIFICATION_REQUIRED:
+        original_fields = tuple(classification.missing_fields or ())
+        filtered_fields = filter_satisfied_missing_fields(q, original_fields)
+        if filtered_fields != original_fields:
+            logger.info(
+                "[DataQueryTurnClassifier] 澄清缺口自检：%s → %s",
+                original_fields,
+                filtered_fields,
+            )
+            classification.missing_fields = filtered_fields
+
+        if _should_proceed_despite_clarification(q, filtered_fields):
+            reason = (
+                "无人值守自动化任务禁止澄清拦截，直接继续查数"
+                if _is_unattended_automation_query(q)
+                else (
+                    "原问题已覆盖分类缺口，继续查数"
+                    if not filtered_fields and original_fields
+                    else "查数对象已足够明确，软性缺口或可纠正的对象缺口交由执行阶段补齐，不拦截澄清"
+                )
+            )
+            logger.info(
+                "[DataQueryTurnClassifier] 澄清降级为 new_data_query（missing_fields=%s→%s, reasoning=%s）",
+                original_fields,
+                filtered_fields,
+                classification.reasoning,
+            )
+            classification = _classification_for_turn_type(
+                DataQueryTurnType.NEW_DATA_QUERY,
+                reason,
+                skip_intent_llm=False,
+            )
 
     # LLM 分类为联邦查询时做规则兜底校验：
     # 联邦升级成本高（额外一次 LLM 计划生成），必须有明确的跨数据集/跨库意图才允许；
