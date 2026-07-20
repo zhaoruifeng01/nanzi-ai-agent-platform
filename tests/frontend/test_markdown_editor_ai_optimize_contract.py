@@ -17,6 +17,10 @@ def test_markdown_editor_exposes_ai_optimize_when_enabled():
     assert "应用此方案" in optimize
     assert "z-[10000]" in optimize
     assert "z-[10050]" in optimize
+    assert "取消润色" in optimize
+    assert "cancelOptimize" in optimize
+    assert "AbortController" in optimize
+    assert "aria-label=\"关闭润色遮罩\"" in optimize
 
 
 def test_agent_version_editor_enables_prompt_ai_optimize():

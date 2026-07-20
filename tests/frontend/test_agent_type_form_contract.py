@@ -97,6 +97,34 @@ def test_agent_center_filters_and_labels_cards_by_primary_type():
     assert "a.agent_type || 'GENERAL'" in management
     assert "getAgentTypeLabel(agent)" in management
     assert "getAgentTypeBadgeClass(agent)" in management
+    assert "return '通用助手'" in management
+    assert "return '知识库助手'" in management
+
+
+def test_agent_center_card_ux_hierarchy_and_primary_cta():
+    management = Path("frontend/src/views/AgentManagement.vue").read_text()
+
+    assert "getPrimaryCardAction" in management
+    assert "getPrimaryCardActionLabel" in management
+    assert "runPrimaryCardAction" in management
+    assert "followReadinessGap" in management
+    assert "formatReadinessMissing" in management
+    assert "line-clamp-2 min-h-[2.5rem]" in management
+    assert "grayscale opacity-60" in management
+    assert "更新于 {{ formatDate(agent.updated_at) }}" in management
+    assert "调用 {{ agent.execution_count ?? 0 }} 次" in management
+    assert ">工具</span>" in management or "font-normal\">工具</span>" in management
+    assert ">技能</span>" in management or "font-normal\">技能</span>" in management
+    assert "showAgentCenterGuide" in management
+    assert "dismissAgentCenterGuide" in management
+    assert "batchMode" in management
+    assert "batchSetEnabled" in management
+    assert "toggleAgentSelection" in management
+    # 复选框只在 change 时 toggle 一次，避免 click+change 双触发导致勾不上
+    assert '@click.stop="toggleAgentSelection(agent.id)"' not in management
+    assert '@change="toggleAgentSelection(agent.id)"' in management
+    assert "待完善：" in management
+    assert "完善配置" in management
 
 
 def test_agent_list_keeps_continue_configuration_action_horizontal():
@@ -105,7 +133,9 @@ def test_agent_list_keeps_continue_configuration_action_horizontal():
     assert "min-w-[1100px]" in management
     assert "min-w-[17rem]" in management
     assert "shrink-0 items-center whitespace-nowrap" in management
-
+    assert "getPrimaryCardActionLabel(agent)" in management
+    assert "系统内置" in management
+    assert "自定义" in management
 
 def test_agent_wizard_blocks_later_steps_until_prior_complete():
     management = Path("frontend/src/views/AgentManagement.vue").read_text()

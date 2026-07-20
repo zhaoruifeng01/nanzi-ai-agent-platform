@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import axios from 'axios';
-import { SparklesIcon, ClipboardDocumentIcon, CheckBadgeIcon } from '@heroicons/vue/24/outline';
+import { SparklesIcon, ClipboardDocumentIcon, CheckBadgeIcon, XMarkIcon } from '@heroicons/vue/24/outline';
 import ConfirmModal from './ConfirmModal.vue';
 
 export type PromptOptimizeSuggestion = {
@@ -24,6 +24,7 @@ const optimizing = ref(false);
 const showOptimizeModal = ref(false);
 const optimizeSuggestions = ref<PromptOptimizeSuggestion[]>([]);
 const activeOptimizeTab = ref(0);
+let optimizeAbort: AbortController | null = null;
 
 const canOptimize = computed(() => Boolean((props.content || '').trim()) && !optimizing.value);
 
@@ -39,14 +40,28 @@ const openConfirm = () => {
   showOptimizeConfirm.value = true;
 };
 
+const cancelOptimize = () => {
+  if (!optimizing.value) return;
+  optimizeAbort?.abort();
+  optimizeAbort = null;
+  optimizing.value = false;
+  notify('已取消 AI 润色', 'info');
+};
+
 const runOptimize = async () => {
   if (!(props.content || '').trim()) return;
   showOptimizeConfirm.value = false;
+  optimizeAbort?.abort();
+  optimizeAbort = new AbortController();
+  const signal = optimizeAbort.signal;
   optimizing.value = true;
   try {
-    const res = await axios.post('/api/portal/prompts/optimize', {
-      content: props.content,
-    });
+    const res = await axios.post(
+      '/api/portal/prompts/optimize',
+      { content: props.content },
+      { signal },
+    );
+    if (signal.aborted) return;
     optimizeSuggestions.value = res.data.suggestions || [];
     activeOptimizeTab.value = 0;
     if (!optimizeSuggestions.value.length) {
@@ -55,9 +70,23 @@ const runOptimize = async () => {
     }
     showOptimizeModal.value = true;
   } catch (err: any) {
+    if (
+      signal.aborted ||
+      axios.isCancel?.(err) ||
+      err?.code === 'ERR_CANCELED' ||
+      err?.name === 'CanceledError' ||
+      err?.name === 'AbortError'
+    ) {
+      return;
+    }
     notify(err?.response?.data?.detail || '优化失败', 'error');
   } finally {
-    optimizing.value = false;
+    if (optimizeAbort?.signal === signal) {
+      optimizeAbort = null;
+    }
+    if (!signal.aborted) {
+      optimizing.value = false;
+    }
   }
 };
 
@@ -75,6 +104,11 @@ const copyToClipboard = async (content: string) => {
     notify('复制失败', 'error');
   }
 };
+
+onUnmounted(() => {
+  optimizeAbort?.abort();
+  optimizeAbort = null;
+});
 </script>
 
 <template>
@@ -106,14 +140,30 @@ const copyToClipboard = async (content: string) => {
         v-if="optimizing"
         class="fixed inset-0 z-[10050] bg-white/50 backdrop-blur-[2px] flex flex-col items-center justify-center"
       >
-        <div class="p-10 bg-white rounded-3xl shadow-2xl border border-indigo-100 flex flex-col items-center">
+        <div class="relative p-10 pt-12 bg-white rounded-3xl shadow-2xl border border-indigo-100 flex flex-col items-center min-w-[280px]">
+          <button
+            type="button"
+            class="absolute top-3 right-3 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            title="关闭"
+            aria-label="关闭润色遮罩"
+            @click="cancelOptimize"
+          >
+            <XMarkIcon class="w-5 h-5" />
+          </button>
           <div class="relative w-20 h-20 mb-6">
             <div class="absolute inset-0 rounded-full border-4 border-indigo-50"></div>
             <div class="absolute inset-0 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin"></div>
             <SparklesIcon class="absolute inset-0 m-auto w-8 h-8 text-indigo-500 animate-pulse" />
           </div>
           <div class="text-base font-bold text-gray-900 mb-2">AI 正在深度优化中...</div>
-          <div class="text-xs text-gray-400">正在为您生成 8 个差异化方案</div>
+          <div class="text-xs text-gray-400 mb-5">正在为您生成 8 个差异化方案</div>
+          <button
+            type="button"
+            class="px-4 py-2 text-xs font-semibold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors"
+            @click="cancelOptimize"
+          >
+            取消润色
+          </button>
         </div>
       </div>
     </transition>

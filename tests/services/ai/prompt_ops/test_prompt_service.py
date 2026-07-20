@@ -97,6 +97,74 @@ async def test_optimize_prompt_parsing():
         assert "ReAct / 工具调用规范" in system_text
         assert "反幻觉 / 取证门禁" in system_text
         assert "输出契约 (Schema)" in system_text
+        assert "CDATA" in system_text
+
+
+def test_parse_optimize_prompt_response_xml_cdata():
+    from app.services.ai.prompt_ops.prompt_service import parse_optimize_prompt_response
+
+    raw = """
+    <suggestions>
+      <item>
+        <title>结构化增强版</title>
+        <reason>更清晰</reason>
+        <content><![CDATA[
+你是助手。若用户说 "hello"，回复世界。
+]]></content>
+      </item>
+      <item>
+        <title>角色设定版</title>
+        <reason>更专业</reason>
+        <content><![CDATA[Role: expert]]></content>
+      </item>
+    </suggestions>
+    """
+    data = parse_optimize_prompt_response(raw)
+    assert len(data["suggestions"]) == 2
+    assert '说 "hello"' in data["suggestions"][0]["content"]
+    assert data["suggestions"][1]["title"] == "角色设定版"
+
+
+def test_parse_optimize_prompt_response_json_with_raw_newline():
+    from app.services.ai.prompt_ops.prompt_service import parse_optimize_prompt_response
+
+    # content 字符串内含未转义换行（模型常见瑕疵）
+    raw = '{\n  "suggestions": [\n    {"title": "A", "content": "line1\nline2", "reason": "ok"}\n  ]\n}'
+    data = parse_optimize_prompt_response(raw)
+    assert data["suggestions"][0]["content"] == "line1\nline2"
+
+
+def test_parse_optimize_prompt_response_json_trailing_comma():
+    from app.services.ai.prompt_ops.prompt_service import parse_optimize_prompt_response
+
+    raw = '{"suggestions":[{"title":"A","content":"B","reason":"C"},]}'
+    data = parse_optimize_prompt_response(raw)
+    assert data["suggestions"][0]["content"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_optimize_prompt_retries_on_broken_json():
+    content = "Original Prompt"
+    broken = '{"suggestions":[{"title":"A","content":"say "hi" now","reason":"x"}]}'
+    fixed = """
+    <suggestions>
+      <item>
+        <title>A</title>
+        <reason>x</reason>
+        <content><![CDATA[say "hi" now]]></content>
+      </item>
+    </suggestions>
+    """
+    mock_llm = object()
+    mock_chat = AsyncMock()
+    mock_chat.generate_text.side_effect = [broken, fixed]
+
+    with patch("app.services.ai.prompt_ops.prompt_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.prompt_ops.prompt_service.chat_client_from_handle", return_value=mock_chat):
+        mock_get_llm.return_value = mock_llm
+        data = await PromptService.optimize_prompt(content)
+        assert data["suggestions"][0]["content"] == 'say "hi" now'
+        assert mock_chat.generate_text.await_count == 2
 
 @pytest.mark.asyncio
 async def test_save_prompt_config():

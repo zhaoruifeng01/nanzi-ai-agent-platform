@@ -1,3 +1,4 @@
+import json
 import re
 import logging
 import time
@@ -13,6 +14,156 @@ from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
 
 logger = logging.getLogger(__name__)
+
+_OPTIMIZE_XML_ITEM_RE = re.compile(
+    r"<item>\s*"
+    r"<title>(?P<title>.*?)</title>\s*"
+    r"<reason>(?P<reason>.*?)</reason>\s*"
+    r"<content>\s*(?:<!\[CDATA\[(?P<cdata>.*?)\]\]>|(?P<plain>.*?))\s*</content>\s*"
+    r"</item>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_markdown_fence(text: str) -> str:
+    clean = str(text or "").strip()
+    if not clean.startswith("```"):
+        return clean
+    lines = clean.splitlines()
+    if not lines:
+        return clean
+    body = lines[1:]
+    if body and body[-1].strip().startswith("```"):
+        body = body[:-1]
+    return "\n".join(body).strip()
+
+
+def _relax_json_text(text: str) -> str:
+    """Common LLM JSON cleanups that do not alter string semantics."""
+    cleaned = str(text or "").strip().lstrip("\ufeff")
+    # Remove trailing commas before } or ]
+    cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    return cleaned
+
+
+def _escape_control_chars_in_json_strings(text: str) -> str:
+    """Escape raw newlines/tabs inside JSON string literals."""
+    out: List[str] = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_string = True
+        out.append(ch)
+    return "".join(out)
+
+
+def _extract_json_object(text: str) -> Optional[str]:
+    cleaned = _strip_markdown_fence(text)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    return cleaned[start : end + 1]
+
+
+def _normalize_optimize_payload(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("优化结果不是 JSON 对象")
+    raw_items = data.get("suggestions")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("优化结果缺少 suggestions")
+    suggestions: List[Dict[str, str]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("content") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not content:
+            continue
+        suggestions.append(
+            {
+                "title": title or f"优化方案 {len(suggestions) + 1}",
+                "content": content,
+                "reason": reason or "未提供推荐理由",
+            }
+        )
+    if not suggestions:
+        raise ValueError("优化结果没有可用方案")
+    return {"suggestions": suggestions}
+
+
+def parse_optimize_prompt_response(raw_text: str) -> Dict[str, Any]:
+    """
+    Parse LLM optimize output.
+
+    Prefer XML+CDATA (avoids quote escaping issues in long prompts).
+    Fall back to JSON with light repairs for trailing commas / raw newlines.
+    """
+    text = str(raw_text or "").strip()
+    if not text:
+        raise ValueError("模型返回为空")
+
+    xml_items = list(_OPTIMIZE_XML_ITEM_RE.finditer(text))
+    if xml_items:
+        suggestions = []
+        for match in xml_items:
+            content = (match.group("cdata") if match.group("cdata") is not None else match.group("plain") or "")
+            content = content.strip()
+            if not content:
+                continue
+            suggestions.append(
+                {
+                    "title": (match.group("title") or "").strip() or f"优化方案 {len(suggestions) + 1}",
+                    "content": content,
+                    "reason": (match.group("reason") or "").strip() or "未提供推荐理由",
+                }
+            )
+        if suggestions:
+            return {"suggestions": suggestions}
+
+    blob = _extract_json_object(text)
+    if not blob:
+        raise ValueError("无法从模型输出中提取结构化结果")
+
+    candidates = [
+        blob,
+        _relax_json_text(blob),
+        _escape_control_chars_in_json_strings(_relax_json_text(blob)),
+    ]
+    last_err: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            return _normalize_optimize_payload(json.loads(candidate))
+        except Exception as exc:  # noqa: BLE001 - try next repair strategy
+            last_err = exc
+            continue
+    raise ValueError(f"模型返回的 JSON 无法解析: {last_err}")
 
 # 定义系统级 Prompt 的映射注册表
 # 注意：路由相关的两层系统提示词均已内置到代码，不再通过数据库配置管理
@@ -328,26 +479,26 @@ class PromptService:
 7. **反幻觉 / 取证门禁**：无证据不编造；要求引用/取证；不确定时如实说明。
 8. **输出契约 (Schema)**：固定章节/字段/表格结构，便于 ChatBI、知识库或结构化交付。
 
-输出格式要求：
-请仅返回一个 JSON 对象，结构如下：
-{
-  "suggestions": [
-    {
-      "title": "版本标题 (如：结构化增强版)",
-      "content": "完全优化后的提示词内容",
-      "reason": "推荐理由：为什么这么修改，解决了什么问题。"
-    },
-    ... (必须恰好 8 个)
-  ]
-}
-不要包含任何额外的 Markdown 标记或解释。"""
+输出格式要求（优先使用 XML，避免提示词正文中的引号/换行破坏结构）：
+请仅返回如下 XML，不要 Markdown 代码块，不要额外解释：
+<suggestions>
+  <item>
+    <title>版本标题 (如：结构化增强版)</title>
+    <reason>推荐理由</reason>
+    <content><![CDATA[
+完全优化后的提示词内容（可含任意引号、换行、Markdown）
+]]></content>
+  </item>
+  <!-- 必须恰好 8 个 item -->
+</suggestions>
+
+若无法输出 XML，也可退回 JSON（content 内双引号必须写成 \\"，换行写成 \\n）：
+{"suggestions":[{"title":"...","content":"...","reason":"..."}]}"""
 
         try:
             llm = await get_llm_async()
             if not llm:
                 raise Exception("LLM not configured")
-
-            import json
 
             chat_client = chat_client_from_handle(llm)
             messages = [
@@ -361,18 +512,44 @@ class PromptService:
                 ),
             ]
             raw_text = await chat_client.generate_text(messages)
-            
-            # 清理 Markdown 代码块包裹
-            clean_text = raw_text.strip()
-            if clean_text.startswith("```"):
-                lines = clean_text.splitlines()
-                if lines[0].startswith("```json"):
-                    clean_text = "\n".join(lines[1:-1])
-                elif lines[0].startswith("```"):
-                    clean_text = "\n".join(lines[1:-1])
-            
-            data = json.loads(clean_text)
-            return data
+
+            try:
+                return parse_optimize_prompt_response(raw_text)
+            except ValueError as first_err:
+                # 一次纠错重试：专治 content 含未转义引号导致的 JSON 损坏
+                logger.warning(
+                    "Prompt optimize parse failed, retrying with repair prompt: %s",
+                    first_err,
+                )
+                repair_messages = [
+                    RuntimeMessage(
+                        role="system",
+                        content=[
+                            RuntimeContentBlock(
+                                type="text",
+                                text=(
+                                    "你是 JSON/XML 修复器。用户会给你一段损坏的提示词优化结果。"
+                                    "请改写为合法 XML（推荐）或合法 JSON，保留全部 8 个方案的 title/reason/content。"
+                                    "content 优先放在 CDATA 中。只输出修复后的结果，不要解释。"
+                                ),
+                            )
+                        ],
+                    ),
+                    RuntimeMessage(
+                        role="user",
+                        content=[
+                            RuntimeContentBlock(
+                                type="text",
+                                text=(
+                                    f"解析错误：{first_err}\n\n"
+                                    f"待修复内容：\n{raw_text}"
+                                ),
+                            )
+                        ],
+                    ),
+                ]
+                repaired = await chat_client.generate_text(repair_messages)
+                return parse_optimize_prompt_response(repaired)
         except Exception as e:
             logger.error(f"Prompt optimization failed: {str(e)}", exc_info=True)
             raise e

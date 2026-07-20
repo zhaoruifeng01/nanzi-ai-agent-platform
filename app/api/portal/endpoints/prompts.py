@@ -70,6 +70,8 @@ async def optimize_prompt(
     
     try:
         return await PromptService.optimize_prompt(content)
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=f"AI 润色结果解析失败，请重试：{e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
