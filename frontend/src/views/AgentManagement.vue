@@ -2478,11 +2478,11 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                   </div>
                 </td>
                 <td class="px-6 py-4 hidden md:table-cell">
-                  <div class="flex items-center space-x-2">
-                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium border" :class="agent.is_system ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-blue-50 text-blue-600 border-blue-100'">
+                  <div class="flex w-fit flex-col items-start gap-1">
+                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="agent.is_system ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-blue-50 text-blue-600 border-blue-100'">
                       {{ agent.is_system ? 'System' : 'Custom' }}
                     </span>
-                    <span class="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                    <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
                       {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
                     </span>
                     <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="getAgentTypeBadgeClass(agent)">
