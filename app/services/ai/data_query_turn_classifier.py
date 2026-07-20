@@ -180,6 +180,12 @@ def _classification_for_turn_type(
     )
 
 
+def _is_unattended_automation_query(user_query: str) -> bool:
+    """TaskCenter 无人值守任务：无人可回答澄清，禁止整轮拦截。"""
+    q = str(user_query or "")
+    return "【自动化指令" in q or "TaskCenter 自动任务" in q
+
+
 def _looks_like_explicit_new_data_query(user_query: str) -> bool:
     """高置信的新查数请求，避免占用后续 Schema/SQL 编排 LLM 调用。"""
     q = (user_query or "").strip().lower()
@@ -192,16 +198,33 @@ def _looks_like_explicit_new_data_query(user_query: str) -> bool:
         "用户表", "用户列表", "query", "how many", "count", "select ",
         "from ", "where ", "group by", "table", "users",
         "查看", "关联", "调用情况", "访问日志",
+        "巡检", "动环", "显示一下", "显示", "最后时间", "间隔时间",
     ]
     return any(keyword in q for keyword in keywords) or _looks_like_business_status_data_query(q)
 
 
 # 软性缺口：可由执行阶段合理默认补齐，不应单独触发整轮澄清拦截
 _SOFT_CLARIFICATION_FIELDS = frozenset({"time_range", "metric", "dimension"})
-# 硬性缺口：缺少时继续查数容易空跑或答非所问
+# 真正硬性：缺则无法安全复用结果或无法在多口径间选择
+_STRICT_HARD_CLARIFICATION_FIELDS = frozenset({"result_context", "dataset_or_schema"})
+# 含 data_object：仅在问题中已有具体业务对象时可降级继续
 _HARD_CLARIFICATION_FIELDS = frozenset({
     "data_object", "result_context", "dataset_or_schema",
 })
+
+_CONCRETE_OBJECT_SIGNALS = (
+    "表", "数据集", "字段", "日志", "明细", "记录", "智能体", "代理",
+    "用户", "订单", "机房", "门店", "客户", "项目", "渠道", "工单",
+    "数据中心", "动环", "指标", "节点", "网关", "采集",
+)
+
+
+def _has_concrete_data_object(user_query: str) -> bool:
+    """问题中是否已点名可执行的业务对象（用于纠正 LLM 误报 data_object）。"""
+    q = (user_query or "").strip().lower()
+    if not q:
+        return False
+    return any(signal in q for signal in _CONCRETE_OBJECT_SIGNALS)
 
 
 def _looks_like_actionable_data_query(user_query: str) -> bool:
@@ -211,15 +234,11 @@ def _looks_like_actionable_data_query(user_query: str) -> bool:
         return False
     if _looks_like_explicit_new_data_query(q) or _looks_like_business_status_data_query(q):
         return True
-    object_signals = (
-        "表", "数据集", "字段", "日志", "明细", "记录", "智能体", "代理",
-        "用户", "订单", "机房", "门店", "客户", "项目", "渠道", "工单",
-    )
     action_signals = (
         "查看", "查", "统计", "列出", "关联", "join", "分析", "汇总",
-        "对比", "筛选", "获取", "拉取",
+        "对比", "筛选", "获取", "拉取", "显示", "巡检",
     )
-    has_object = any(signal in q for signal in object_signals)
+    has_object = _has_concrete_data_object(q)
     has_action = any(signal in q for signal in action_signals)
     return has_object and has_action and len(q) >= 8
 
@@ -228,13 +247,22 @@ def _should_proceed_despite_clarification(
     user_query: str,
     missing_fields: tuple[str, ...],
 ) -> bool:
-    """软性缺口（时间/指标/维度）在对象已明确时不拦截，交由执行默认补齐。"""
+    """软性缺口或可纠正的 data_object 误报在对象已明确时不拦截。
+
+    无人值守自动化任务无人可答澄清，一律放行继续查数。
+    """
+    if _is_unattended_automation_query(user_query):
+        return True
     fields = set(missing_fields or ())
     if not fields:
         return True
-    if fields & _HARD_CLARIFICATION_FIELDS:
+    # 结果上下文 / 多口径冲突：继续查数容易答非所问，保持拦截
+    if fields & _STRICT_HARD_CLARIFICATION_FIELDS:
         return False
-    if not fields <= _SOFT_CLARIFICATION_FIELDS:
+    # 仅软性缺口，或软性 + 误报的 data_object（问题里已有具体对象）
+    if not fields <= (_SOFT_CLARIFICATION_FIELDS | {"data_object"}):
+        return False
+    if "data_object" in fields and not _has_concrete_data_object(user_query):
         return False
     return _looks_like_actionable_data_query(user_query)
 
@@ -505,6 +533,8 @@ async def _classify_with_llm(
 - 不要因为未写精确日期、未出现“指标口径/分析维度”等 BI 术语，或“近期/最近”较模糊就澄清。
 - 用户已给出表/对象/字段/关联关系，或问题已足够可执行时，必须选 new_data_query。
   例：「查看智能体主表中的名称和引擎类型，并关联访问日志统计近期调用」→ new_data_query。
+  例：「按各数据中心显示动环指标最后时间并计算与现在的间隔」→ new_data_query（对象与指标已明确）。
+- 带「【自动化指令」或「TaskCenter 自动任务」前缀的无人值守任务：禁止 clarification_required，必须选 new_data_query（或明确的 data_followup_query / federated_data_query）；无人可回答澄清。
 - 如果选择 reuse_previous_result、result_analysis、result_presentation、result_action 或 format_correction，必须确认“存在上一轮结构化查询结果”为 true。
 - 如果用户基于上一轮对象或条件切换维度、时间粒度、筛选范围或分析方法，选择 data_followup_query；完全独立的新查询才选 new_data_query。
 - 如果用户明确要求跨数据集、跨库、联邦查询，或要求关联多个数据集/数据源/库/表，选择 federated_data_query。
@@ -792,20 +822,25 @@ async def resolve_data_query_turn_classification(
                     skip_intent_llm=False,
                 )
 
-    # 软性澄清降级：对象已明确时，仅缺时间/指标/维度不整轮拦截，交由执行阶段默认补齐。
+    # 澄清降级：自动化任务、软性缺口、或已点名对象却被误报 data_object 时不拦截。
     if (
         classification
         and classification.turn_type == DataQueryTurnType.CLARIFICATION_REQUIRED
         and _should_proceed_despite_clarification(q, classification.missing_fields)
     ):
+        reason = (
+            "无人值守自动化任务禁止澄清拦截，直接继续查数"
+            if _is_unattended_automation_query(q)
+            else "查数对象已足够明确，软性缺口或可纠正的对象缺口交由执行阶段补齐，不拦截澄清"
+        )
         logger.info(
-            "[DataQueryTurnClassifier] 软性澄清降级为 new_data_query（missing_fields=%s, reasoning=%s）",
+            "[DataQueryTurnClassifier] 澄清降级为 new_data_query（missing_fields=%s, reasoning=%s）",
             classification.missing_fields,
             classification.reasoning,
         )
         classification = _classification_for_turn_type(
             DataQueryTurnType.NEW_DATA_QUERY,
-            "查数对象已足够明确，软性缺口交由执行阶段用合理默认补齐，不拦截澄清",
+            reason,
             skip_intent_llm=False,
         )
 
