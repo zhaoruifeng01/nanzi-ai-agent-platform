@@ -330,18 +330,20 @@ def resolve_tool_nudge(
             aliases = {name, name.replace("_", "-"), name.replace("-", "_")}
             return bool(aliases & available_sub_agent_names)
 
-        def _target_for_capability(capability: str) -> Optional[str]:
+        def _target_for_capability(capability: str, fallback_name: str) -> Optional[str]:
             target = ""
             if sub_agent_targets_by_capability:
                 target = str(sub_agent_targets_by_capability.get(capability) or "").strip()
-            return target if target and _sub_agent_available(target) else None
+            if target:
+                return target if _sub_agent_available(target) else None
+            return fallback_name if _sub_agent_available(fallback_name) else None
 
         # 优先判断更具体的知识库检索意图
         if (
             request_decision.should_delegate
             and request_decision.delegate_capability == "knowledge_base"
         ):
-            target_agent_name = _target_for_capability("knowledge_base")
+            target_agent_name = _target_for_capability("knowledge_base", "knowledge-base")
             if not target_agent_name:
                 return None
             desc = (
@@ -359,7 +361,7 @@ def resolve_tool_nudge(
             request_decision.should_delegate
             and request_decision.delegate_capability == "data_query"
         ):
-            target_agent_name = _target_for_capability("data_query")
+            target_agent_name = _target_for_capability("data_query", "chat-bi")
             if not target_agent_name:
                 return None
             desc = (

@@ -267,14 +267,7 @@ class AssistantAgentRunner(BaseExecutor):
     @classmethod
     def _build_sub_agent_targets_by_capability(cls, agents: Any) -> Dict[str, str]:
         targets: Dict[str, str] = {}
-        ordered_agents = sorted(
-            agents or [],
-            key=lambda agent: (
-                -int(cls._agent_field(agent, "sort_order", 0) or 0),
-                str(cls._agent_field(agent, "id", "") or ""),
-            ),
-        )
-        for agent in ordered_agents:
+        for agent in agents or []:
             agent_name = str(cls._agent_field(agent, "name", "") or "").strip()
             if not agent_name:
                 continue
@@ -290,7 +283,7 @@ class AssistantAgentRunner(BaseExecutor):
         try:
             from app.services.ai.tools.agent_delegate_tool import (
                 delegable_agent_name_aliases,
-                resolve_runnable_delegable_system_agents,
+                filter_delegable_system_agents,
             )
 
             raw_user_id = None
@@ -300,7 +293,7 @@ class AssistantAgentRunner(BaseExecutor):
                 is_admin = self.user_info.get("role") == "admin"
             async with AsyncSessionLocal() as session:
                 agents = await AgentManagerService.list_agents(session)
-                delegable_agents = await resolve_runnable_delegable_system_agents(
+                delegable_agents = await filter_delegable_system_agents(
                     session,
                     agents,
                     user_id=raw_user_id,
