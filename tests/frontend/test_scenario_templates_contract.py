@@ -103,6 +103,9 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "完成交付" in install
     assert "上一步" in install
     assert "下一步" in install
+    assert "currentStep.id === 'done' ? openAgentCenter() : goNext()" in install
+    assert "currentStep.id === 'done' ? '完成' : '下一步'" in install
+    assert ':disabled="currentStep.id !== \'done\' && !canGoNext"' in install
     assert "交付清单" in install
     assert "没有绑定时不能安装" in install
     assert "安装记录" in install
