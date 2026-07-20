@@ -161,6 +161,7 @@ const showToast = (
 
 const isEditingAgent = ref(false);
 const showAdvancedCapabilities = ref(false);
+const showAdvancedSafety = ref(false);
 const AGENT_TYPE_OPTIONS = [
   {
     value: "GENERAL",
@@ -923,6 +924,8 @@ const startAgentCreation = () => {
 const openAgentModal = (agent?: AIAgent) => {
   if (agent) {
     isOnboardingFlow.value = false;
+    showAdvancedCapabilities.value = false;
+    showAdvancedSafety.value = false;
     if (agent.is_system && userInfo.value?.role !== "admin") {
       showToast("系统内置智能体仅管理员可编辑", "warning");
       return;
@@ -1463,7 +1466,7 @@ const handleVersionEditorClose = async () => {
 
 const saveVersion = async () => {
   if (isCreatingAgent.value) {
-    await persistNewAgentDraft(true);
+    await persistNewAgentDraft(isLocalCreationEngine.value);
     return;
   }
   if (!selectedAgent.value) return;
@@ -2579,8 +2582,30 @@ const formatSkillCountLabel = (agent: AIAgent) => {
     <Modal
       v-if="showAgentModal && isEditingAgent"
       :title="isEditingAgent ? '编辑智能体' : '新建智能体'"
+      size="max-w-4xl"
       @close="showAgentModal = false"
     >
+      <template #header-extra>
+        <label
+          v-if="userInfo?.role === 'admin'"
+          class="flex cursor-pointer items-center gap-2"
+          title="标记为系统预置智能体，防止误删并提高路由权重"
+        >
+          <span class="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Admin Only</span>
+          <span class="text-xs font-semibold text-gray-700">System Agent</span>
+          <span class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors" :class="agentForm.is_system ? 'bg-primary' : 'bg-gray-300'">
+            <input v-model="agentForm.is_system" type="checkbox" class="sr-only" />
+            <span class="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" :class="agentForm.is_system ? 'translate-x-4' : 'translate-x-0.5'"></span>
+          </span>
+        </label>
+      </template>
+
+      <template #footer>
+        <div class="flex items-center justify-end gap-3">
+          <button @click="showAgentModal = false" class="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">取消</button>
+          <button @click="saveAgent(false)" class="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-dark">保存修改</button>
+        </div>
+      </template>
       <div class="space-y-4">
         <div v-if="isOnboardingFlow" class="grid grid-cols-3 gap-2 rounded-xl bg-gray-50 p-2">
           <div
@@ -2598,6 +2623,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
         </div>
 
         <div v-if="!isOnboardingFlow || onboardingStep === 'BASIC'" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_8rem]">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1"
             >物理标识符 (ID/Name)</label
@@ -2633,14 +2659,15 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             * 仅影响聊天页面的智能体选择列表顺序。值越大越靠前。
           </p>
         </div>
+        </div>
 
         <!-- Engine Selection -->
-        <div class="bg-gray-50/50 p-4 rounded-xl border border-gray-100">
-          <label class="block text-xs font-black text-gray-500 uppercase tracking-widest mb-3"
+        <div class="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+          <label class="block text-[10px] font-black uppercase tracking-widest text-gray-400"
             >执行引擎 (Execution Engine)</label
           >
 
-          <div class="grid grid-cols-3 gap-3">
+          <div v-if="!isEditingAgent" class="mt-3 grid grid-cols-3 gap-3">
             <!-- Local LLM Card -->
             <div
               @click="agentForm.engine_type = 'LOCAL'"
@@ -2684,10 +2711,26 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             </div>
           </div>
 
+          <div v-else class="mt-2 flex items-center gap-2 text-sm">
+            <span class="inline-flex items-center rounded-full border px-3 py-1 font-semibold"
+              :class="agentForm.engine_type === 'RAGFLOW'
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                : agentForm.engine_type === 'OPENCLAW'
+                  ? 'border-orange-200 bg-orange-50 text-orange-700'
+                  : 'border-blue-200 bg-blue-50 text-blue-700'"
+            >{{ agentForm.engine_type === 'RAGFLOW' ? '🌊 RAGFlow' : agentForm.engine_type === 'OPENCLAW' ? '🦞 OpenClaw' : '🧠 NanZi Engine' }}</span>
+            <span class="text-xs text-gray-400">执行引擎不可修改；当前引擎参数仍可编辑</span>
+          </div>
+
           <!-- Engine Config Fields -->
-          <div class="space-y-3 mt-4 animate-fade-in-down">
+          <div
+            v-if="agentForm.engine_type !== 'LOCAL'"
+            class="mt-3 border-t border-gray-200 pt-3 animate-fade-in-down"
+            :class="agentForm.engine_type === 'RAGFLOW' ? 'grid grid-cols-1 gap-3 md:grid-cols-2' : 'space-y-3'"
+          >
             <!-- OpenClaw Config (Address, Key, Model) -->
-            <div v-if="agentForm.engine_type === 'OPENCLAW'" class="space-y-3">
+            <div v-if="agentForm.engine_type === 'OPENCLAW'" class="space-y-3 md:col-span-2">
+              <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
               <div>
                 <label class="block text-xs font-bold text-orange-700 mb-1"
                   >OpenClaw 地址 (Base URL) <span class="text-red-500">*</span></label
@@ -2719,23 +2762,32 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                   class="w-full px-3 py-2 text-sm border border-orange-200 rounded focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none"
                 />
               </div>
+              </div>
 
               <!-- Safety Check (OpenClaw Only) -->
-              <div class="pt-2 border-t border-orange-100 mt-2">
-                <div class="flex items-center justify-between mb-2">
+              <div class="mt-2 border-t border-orange-100 pt-2">
+                <div class="flex items-center justify-between gap-3">
                   <div class="flex flex-col">
                     <span class="text-xs font-bold text-orange-800 flex items-center">
                       🛡️ 内容安全审查
                     </span>
                     <span class="text-[10px] text-orange-600/70 mt-0.5">调用系统模型检测用户输入是否合规</span>
                   </div>
-                  <label class="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" v-model="engineConfigUI.safety_check_enabled" class="sr-only peer" />
-                    <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
-                  </label>
+                  <div class="flex items-center gap-3">
+                    <button
+                      v-if="engineConfigUI.safety_check_enabled"
+                      type="button"
+                      @click="showAdvancedSafety = !showAdvancedSafety"
+                      class="rounded-md border border-orange-200 bg-white px-2.5 py-1 text-[10px] font-medium text-orange-700 hover:bg-orange-50"
+                    >高级安全设置 {{ showAdvancedSafety ? '收起' : '展开' }}</button>
+                    <label class="relative inline-flex cursor-pointer items-center">
+                      <input type="checkbox" v-model="engineConfigUI.safety_check_enabled" class="sr-only peer" />
+                      <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
+                    </label>
+                  </div>
                 </div>
 
-                <div v-if="engineConfigUI.safety_check_enabled" class="animate-fade-in space-y-4 pt-2">
+                <div v-if="engineConfigUI.safety_check_enabled && showAdvancedSafety" class="animate-fade-in grid grid-cols-1 gap-3 pt-3 md:grid-cols-2">
                   <!-- Input Audit Section -->
                   <div class="p-2.5 bg-white/50 border border-orange-100 rounded-lg">
                     <div class="flex items-center justify-between mb-2">
@@ -2880,7 +2932,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             </div>
 
             <!-- RAGFlow Advanced Params -->
-            <div v-if="agentForm.engine_type === 'RAGFLOW'" class="grid grid-cols-2 gap-4 pt-2 bg-indigo-50/50 p-2 rounded border border-indigo-100">
+            <div v-if="agentForm.engine_type === 'RAGFLOW'" class="grid grid-cols-2 gap-4 pt-2 bg-indigo-50/50 p-2 rounded border border-indigo-100 md:col-span-2">
                <div>
                   <label class="block text-xs font-bold text-gray-700 mb-1 flex justify-between">
                      <span>相似度阈值 (Threshold)</span>
@@ -2943,54 +2995,29 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           >
           <textarea
             v-model="agentForm.description"
-            rows="3"
+            rows="2"
             placeholder="简要描述此智能体的功能，这将用于自动路由匹配。例如：擅长回答销售数据相关的问题。"
             class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
           ></textarea>
         </div>
 
-        <!-- System Agent Toggle (Moved here) -->
-        <div
-          v-if="userInfo?.role === 'admin'"
-          class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200"
-        >
-          <div class="flex flex-col">
-            <span class="text-sm font-bold text-gray-800 flex items-center">
-              System Agent
-              <span
-                class="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200"
-                >Admin Only</span
-              >
-            </span>
-            <span class="text-xs text-gray-500 mt-0.5"
-              >标记为系统预置智能体，防止误删并提高路由权重。</span
-            >
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="agentForm.is_system"
-              class="sr-only peer"
-            />
-            <div
-              class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"
-            ></div>
-          </label>
-        </div>
         <div v-if="agentForm.engine_type === 'LOCAL'">
           <label class="block text-sm font-medium text-gray-700 mb-2">
             智能体类型 <span class="text-red-500">*</span>
           </label>
-          <div v-if="!isEditingAgent" class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <button
               v-for="option in AGENT_TYPE_OPTIONS"
               :key="option.value"
               type="button"
+              :disabled="isEditingAgent"
               @click="selectAgentType(option.value)"
               class="text-left rounded-xl border p-3 transition-all"
               :class="agentForm.agent_type === option.value
                 ? 'border-primary bg-blue-50 ring-1 ring-primary/20'
-                : 'border-gray-200 bg-white hover:border-blue-300'"
+                : isEditingAgent
+                  ? 'cursor-not-allowed border-gray-200 bg-gray-50 opacity-55'
+                  : 'border-gray-200 bg-white hover:border-blue-300'"
             >
               <div class="flex items-center gap-2 font-semibold text-gray-800">
                 <span>{{ option.icon }}</span>
@@ -3001,18 +3028,17 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 v-if="agentForm.agent_type === option.value"
                 class="mt-2 text-xs font-medium text-primary"
               >
-                ✓ 已选择
+                {{ isEditingAgent ? '🔒 当前类型' : '✓ 已选择' }}
               </p>
             </button>
           </div>
-          <div v-else class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-            <div class="text-sm font-semibold text-gray-800">当前类型：{{ AGENT_TYPE_OPTIONS.find(option => option.value === agentForm.agent_type)?.label }}</div>
-            <p class="mt-1 text-xs text-gray-500">智能体类型决定运行流程和门禁规则，创建保存后不可修改。</p>
-          </div>
+          <p v-if="isEditingAgent" class="mt-2 text-xs text-gray-500">
+            智能体类型决定运行流程和门禁规则，创建保存后不可修改。
+          </p>
 
           <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-gray-600">
             <template v-if="agentForm.agent_type === 'CHATBI'">
-              将自动启用数据查询能力；发布前需要绑定数据集和查数工具。
+              数据查询流程和门禁由类型锁定；查数工具必需，数据集可选，未绑定时使用当前用户有权访问的数据集。
             </template>
             <template v-else-if="agentForm.agent_type === 'KNOWLEDGE_BASE'">
               将自动启用知识库能力；发布前需要绑定知识库和检索工具。
@@ -3071,20 +3097,6 @@ const formatSkillCountLabel = (agent: AIAgent) => {
               >暂无扩展能力</span>
             </div>
           </div>
-        </div>
-        <div class="mt-6 flex justify-end space-x-3">
-          <button
-            @click="isOnboardingFlow ? saveOnboardingDraft() : (showAgentModal = false)"
-            class="px-4 py-2 text-gray-500 hover:text-gray-700 font-medium"
-          >
-            {{ isOnboardingFlow ? '跳过，稍后配置' : '取消' }}
-          </button>
-          <button
-            @click="saveAgent(false)"
-            class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors font-medium"
-          >
-            {{ isEditingAgent ? '确认保存' : '保存并继续配置' }}
-          </button>
         </div>
         </div>
 

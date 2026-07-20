@@ -108,8 +108,8 @@ def test_resolve_delegation_permission_options_preserves_main_approval_boundary(
     }
 
 
-def test_capability_target_prefers_sort_order_then_stable_id():
-    targets = AssistantAgentRunner._build_sub_agent_targets_by_capability(
+def test_capability_candidates_include_all_agents_sorted_by_sort_order():
+    candidates = AssistantAgentRunner._build_sub_agent_candidates_by_capability(
         [
             {
                 "id": "b",
@@ -123,10 +123,16 @@ def test_capability_target_prefers_sort_order_then_stable_id():
                 "sort_order": 5,
                 "capabilities": ["data_query"],
             },
+            {
+                "id": "c",
+                "name": "finance",
+                "sort_order": 3,
+                "capabilities": ["data_query"],
+            },
         ]
     )
 
-    assert targets["data_query"] == "preferred"
+    assert candidates["data_query"] == ["preferred", "finance", "later"]
 
 
 @pytest.mark.asyncio

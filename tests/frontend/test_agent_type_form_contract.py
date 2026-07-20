@@ -86,6 +86,31 @@ def test_agent_action_labels_describe_editing_and_publishing():
     assert "版本管理" not in versions_drawer
 
 
+def test_agent_edit_dialog_is_compact_and_locks_engine_type_only():
+    management = Path("frontend/src/views/AgentManagement.vue").read_text()
+    modal = Path("frontend/src/components/Modal.vue").read_text()
+    edit_dialog = management[management.index('v-if="showAgentModal && isEditingAgent"'):]
+
+    assert 'size="max-w-4xl"' in edit_dialog[:300]
+    assert '<template #header-extra>' in management
+    assert '<template #footer>' in management
+    assert "System Agent" in management
+    assert "执行引擎不可修改" in management
+    assert ':disabled="isEditingAgent"' in management
+    assert "🔒 当前类型" in management
+    assert "当前类型：" not in edit_dialog[:6000]
+    assert "showAdvancedSafety" in management
+    assert "高级安全设置" in management
+    assert "查数工具必需，数据集可选" in management
+    assert 'v-model="engineConfigUI.base_url"' in management
+    assert 'v-model="engineConfigUI.app_id"' in management
+    assert 'v-model="engineConfigUI.model"' in management
+    assert '<slot name="header-extra"></slot>' in modal
+    assert '<slot name="footer"></slot>' in modal
+    assert "max-h-[calc(100vh-2rem)]" in modal
+    assert "min-h-0 flex-1" in modal
+
+
 def test_onboarding_columns_are_in_v103_migration():
     v103 = Path("db-prod/V103-add-agent-primary-type.sql").read_text()
 
@@ -109,3 +134,13 @@ def test_creation_flow_is_engine_first_and_external_engines_skip_versions():
     assert "RAGFlow 远程智能体调用" in drawer
     assert "OpenClaw 远程任务执行" in drawer
     assert "v-if=\"agentForm.engine_type === 'LOCAL'\"" in drawer
+
+
+def test_external_engine_creation_requires_parameters_before_save():
+    source = Path("frontend/src/views/AgentManagement.vue").read_text()
+    drawer = Path("frontend/src/components/agent/AgentVersionEditorDrawer.vue").read_text()
+
+    assert "externalCreationMissingFields" in drawer
+    assert "请先填写" in drawer
+    assert ':disabled="externalCreationMissingFields.length > 0"' in drawer
+    assert "persistNewAgentDraft(isLocalCreationEngine.value)" in source

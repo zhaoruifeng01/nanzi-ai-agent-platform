@@ -80,15 +80,23 @@ def test_sub_agent_call_nudge_for_data_query():
     nudge = resolve_tool_nudge(
         "帮我查一下设备资产列表",
         tools,
-        available_sub_agent_names={"chat-bi"},
-        sub_agent_targets_by_capability={"data_query": "chat-bi"},
+        available_sub_agent_names={"chat-bi", "finance-expense"},
+        sub_agent_candidates_by_capability={
+            "data_query": ["chat-bi", "finance-expense"],
+        },
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.94,
     )
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95
-    assert "chat-bi" in nudge.message
+    assert nudge.should_force_first_call is True
+    assert "sub_agent_call" in nudge.message
+    assert "语义" in nudge.message or "自动路由" in nudge.message
+    assert "agent_name='chat-bi'" not in nudge.message
+    assert "agent_name='finance-expense'" not in nudge.message
+    assert "`chat-bi`" in nudge.message
+    assert "`finance-expense`" in nudge.message
 
 
 def test_sub_agent_call_is_not_selected_by_generic_tool_relevance_without_intent():
@@ -175,7 +183,7 @@ def test_explicit_sub_agent_name_skips_when_unavailable():
     assert nudge is None
 
 
-def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
+def test_sub_agent_call_nudge_for_data_query_uses_capability_candidates_semantically():
     tools = [
         _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
     ]
@@ -183,15 +191,16 @@ def test_sub_agent_call_nudge_for_data_query_uses_capability_target():
         "帮我查一下设备资产列表",
         tools,
         available_sub_agent_names={"biz-data-agent", "knowledge-base"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.94,
     )
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='biz-data-agent'" in nudge.message
-    assert "agent_name='chat-bi'" not in nudge.message
+    assert "agent_name='biz-data-agent'" not in nudge.message
+    assert "`biz-data-agent`" in nudge.message
+    assert "data_query" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -205,7 +214,7 @@ def test_general_semantic_company_info_prefers_web_tool_over_data_sub_agent():
         "查一下有孚网络公司信息",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.GENERAL,
         semantic_confidence=0.92,
     )
@@ -225,7 +234,7 @@ def test_misclassified_company_info_does_not_force_data_sub_agent():
         "查一下有孚网络公司信息",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.93,
     )
@@ -245,7 +254,7 @@ def test_public_news_query_prefers_web_tool_over_data_sub_agent():
         "查一下有孚网络最新新闻",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
     )
 
     assert nudge is not None
@@ -261,7 +270,7 @@ def test_ambiguous_lookup_does_not_force_data_sub_agent():
         "查一下 abc",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
     )
 
     assert nudge is None
@@ -277,14 +286,15 @@ def test_data_query_semantic_forces_data_sub_agent():
         "查一下客户订单列表",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.91,
     )
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='biz-data-agent'" in nudge.message
+    assert "agent_name='biz-data-agent'" not in nudge.message
+    assert "`biz-data-agent`" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -297,7 +307,7 @@ def test_data_query_intent_forces_sub_agent_without_strong_keyword():
         "查询合同编号 YVPR-FZN-202211-068 下的所有资产信息",
         tools,
         available_sub_agent_names={"chat-bi"},
-        sub_agent_targets_by_capability={"data_query": "chat-bi"},
+        sub_agent_candidates_by_capability={"data_query": ["chat-bi"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.9,
         turn_intent=IntentType.DATA_QUERY,
@@ -305,7 +315,8 @@ def test_data_query_intent_forces_sub_agent_without_strong_keyword():
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='chat-bi'" in nudge.message
+    assert "agent_name='chat-bi'" not in nudge.message
+    assert "`chat-bi`" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -319,7 +330,7 @@ def test_server_load_query_prefers_shell_tool_over_data_sub_agent():
         "查一下我机器的服务器负载情况",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
     )
 
     assert nudge is not None
@@ -336,7 +347,7 @@ def test_runtime_diagnostic_data_intent_does_not_force_data_sub_agent():
         "查看当前系统的CPU和内存使用情况",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         turn_intent=IntentType.DATA_QUERY,
     )
 
@@ -353,14 +364,15 @@ def test_generic_data_intent_forces_data_sub_agent_without_business_signal():
         "查一下 abc 的状态",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.91,
     )
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='biz-data-agent'" in nudge.message
+    assert "agent_name='biz-data-agent'" not in nudge.message
+    assert "`biz-data-agent`" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -381,9 +393,9 @@ def test_general_semantic_query_does_not_delegate_by_keywords_only(query):
         query,
         tools,
         available_sub_agent_names={"chat-bi", "knowledge-base"},
-        sub_agent_targets_by_capability={
-            "data_query": "chat-bi",
-            "knowledge_base": "knowledge-base",
+        sub_agent_candidates_by_capability={
+            "data_query": ["chat-bi"],
+            "knowledge_base": ["knowledge-base"],
         },
         semantic_intent=IntentType.GENERAL,
         semantic_confidence=0.95,
@@ -401,14 +413,15 @@ def test_knowledge_base_semantic_query_still_forces_knowledge_sub_agent():
         "查一下设备运维规范",
         tools,
         available_sub_agent_names={"knowledge-base"},
-        sub_agent_targets_by_capability={"knowledge_base": "knowledge-base"},
+        sub_agent_candidates_by_capability={"knowledge_base": ["knowledge-base"]},
         semantic_intent=IntentType.KNOWLEDGE_BASE,
         semantic_confidence=0.92,
     )
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='knowledge-base'" in nudge.message
+    assert "agent_name='knowledge-base'" not in nudge.message
+    assert "`knowledge-base`" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -421,7 +434,7 @@ def test_general_previous_web_info_visualization_does_not_force_data_sub_agent()
         "能不能把刚刚的信息可视化一下呢",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.GENERAL,
         semantic_confidence=0.95,
     )
@@ -438,14 +451,15 @@ def test_data_query_previous_result_visualization_still_forces_data_sub_agent():
         "把刚才的结果画成柱状图",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.93,
     )
 
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
-    assert "agent_name='biz-data-agent'" in nudge.message
+    assert "agent_name='biz-data-agent'" not in nudge.message
+    assert "`biz-data-agent`" in nudge.message
     assert nudge.should_force_first_call is True
 
 
@@ -459,7 +473,7 @@ def test_runtime_diagnostic_data_intent_prefers_shell_tool():
         "查看当前系统的CPU和内存使用情况",
         tools,
         available_sub_agent_names={"biz-data-agent"},
-        sub_agent_targets_by_capability={"data_query": "biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         turn_intent=IntentType.DATA_QUERY,
     )
 
@@ -476,11 +490,11 @@ def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():
         "帮我查一下设备资产列表",
         tools,
         available_sub_agent_names={"knowledge-base"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
         semantic_intent=IntentType.DATA_QUERY,
         semantic_confidence=0.94,
     )
     assert nudge is None
-
 
 def test_sub_agent_call_nudge_for_knowledge_query():
     tools = [
@@ -490,15 +504,16 @@ def test_sub_agent_call_nudge_for_knowledge_query():
         "我想查一下设备运维规范和操作指引",
         tools,
         available_sub_agent_names={"knowledge-base"},
-        sub_agent_targets_by_capability={"knowledge_base": "knowledge-base"},
+        sub_agent_candidates_by_capability={"knowledge_base": ["knowledge-base"]},
         semantic_intent=IntentType.KNOWLEDGE_BASE,
         semantic_confidence=0.92,
     )
     assert nudge is not None
     assert nudge.tool_name == "sub_agent_call"
     assert nudge.score == 0.95
-    assert "knowledge-base" in nudge.message
-
+    assert "agent_name='knowledge-base'" not in nudge.message
+    assert "`knowledge-base`" in nudge.message
+    assert ("语义" in nudge.message) or ("自动路由" in nudge.message)
 
 def test_notification_keyword_nudge_for_dingtalk_send():
     tools = [

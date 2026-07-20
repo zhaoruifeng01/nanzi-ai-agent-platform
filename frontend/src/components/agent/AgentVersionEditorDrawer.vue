@@ -143,6 +143,21 @@ const builtInEngineCapabilities = computed(() =>
       ? ['OpenClaw 远程任务执行', '流式对话', ...(engineConfig.value.safety_check_enabled ? ['输入安全审计', '输出安全审计'] : [])]
       : []
 );
+
+const externalCreationMissingFields = computed(() => {
+  if (!props.isCreatingAgent || props.agentForm.engine_type === 'LOCAL') return [];
+  const missing: string[] = [];
+  if (!String(props.agentForm.name || '').trim()) missing.push('物理标识符');
+  if (!String(props.agentForm.display_name || '').trim()) missing.push('显示名称');
+  if (props.agentForm.engine_type === 'RAGFLOW' && !String(engineConfig.value.app_id || '').trim()) {
+    missing.push('RAGFlow App ID');
+  }
+  if (props.agentForm.engine_type === 'OPENCLAW') {
+    if (!String(engineConfig.value.base_url || '').trim()) missing.push('OpenClaw 地址');
+    if (!String(engineConfig.value.model || '').trim()) missing.push('机器人 ID');
+  }
+  return missing;
+});
 </script>
 
 <template>
@@ -731,7 +746,11 @@ const builtInEngineCapabilities = computed(() =>
           <div v-if="selectedAgent?.is_editable === false" class="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100">
             只读模式，无法修改
           </div>
-          <div v-else class="flex-1"></div>
+          <div v-else class="flex-1">
+            <p v-if="externalCreationMissingFields.length > 0" class="text-xs font-medium text-amber-700">
+              请先填写：{{ externalCreationMissingFields.join('、') }}
+            </p>
+          </div>
 
           <div class="flex items-center gap-2">
             <button type="button" @click="emit('close')" class="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 font-medium">取消</button>
@@ -740,8 +759,9 @@ const builtInEngineCapabilities = computed(() =>
             <button
               v-if="isLastStep() && canEditVersion && (!versionForm.id || versionForm.status === 'DRAFT') && !(isOnboardingFlow && agentForm.engine_type === 'LOCAL')"
               type="button"
+              :disabled="externalCreationMissingFields.length > 0"
               @click="emit('save')"
-              class="px-6 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark font-medium shadow-sm"
+              class="px-6 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark font-medium shadow-sm disabled:cursor-not-allowed disabled:bg-gray-300 disabled:shadow-none"
             >{{ isCreatingAgent && agentForm.engine_type !== 'LOCAL' ? `创建 ${agentForm.engine_type === 'RAGFLOW' ? 'RAGFlow' : 'OpenClaw'} 智能体` : isCreatingAgent ? '创建智能体与 V1 草稿' : versionForm.id ? '更新草稿' : '保存为草稿' }}</button>
             <template v-if="isLastStep() && canEditVersion && (!versionForm.id || versionForm.status === 'DRAFT') && isOnboardingFlow && agentForm.engine_type === 'LOCAL'">
               <button

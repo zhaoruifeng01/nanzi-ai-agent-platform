@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Set
+from typing import Any, List, Mapping, Optional, Sequence, Set
 
 from app.services.ai.request_decision import (
     RequestCapability,
@@ -249,6 +249,55 @@ def _build_explicit_sub_agent_message(target_agent_name: str) -> str:
     )
 
 
+def _normalize_capability_candidates(
+    raw: Any,
+) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        name = raw.strip()
+        return [name] if name else []
+    if isinstance(raw, Sequence):
+        names: List[str] = []
+        for item in raw:
+            name = str(item or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+    name = str(raw or "").strip()
+    return [name] if name else []
+
+
+def build_semantic_sub_agent_nudge_message(
+    *,
+    capability: str,
+    candidates: Sequence[str],
+    intent_label: str,
+) -> str:
+    candidate_hint = "、".join(f"`{name}`" for name in candidates)
+    return (
+        f"【本轮工具优先】本轮用户请求涉及{intent_label}。"
+        "主助手没有直接完成该任务的专用能力，必须先调用 sub_agent_call。"
+        f"agent_name 必须从可委派子智能体清单中、具备 `{capability}` 能力的候选里按语义选择"
+        "（对照 name / 中文名 / Description / Capabilities，与自动路由一致）；"
+        f"当前候选包括：{candidate_hint}。"
+        "严禁编造结果；若工具返回为空或失败，如实说明，不要编造。"
+    )
+
+
+def _build_semantic_sub_agent_message(
+    *,
+    capability: str,
+    candidates: Sequence[str],
+    intent_label: str,
+) -> str:
+    return build_semantic_sub_agent_nudge_message(
+        capability=capability,
+        candidates=candidates,
+        intent_label=intent_label,
+    )
+
+
 def _resolve_notification_nudge(query: str, tools: List[Any]) -> Optional[ToolNudge]:
     normalized_query = query.lower()
     if not _contains_any(normalized_query, _NOTIFICATION_ACTION_TERMS):
@@ -290,7 +339,8 @@ def resolve_tool_nudge(
     min_score: float = 0.25,
     exclude_tools: Optional[Set[str]] = None,
     available_sub_agent_names: Optional[Set[str]] = None,
-    sub_agent_targets_by_capability: Optional[Mapping[str, str]] = None,
+    sub_agent_candidates_by_capability: Optional[Mapping[str, Any]] = None,
+    sub_agent_targets_by_capability: Optional[Mapping[str, Any]] = None,
     semantic_intent: Any = None,
     semantic_confidence: Any = None,
     turn_intent: Any = None,
@@ -299,6 +349,10 @@ def resolve_tool_nudge(
 
     相关度完全由 ``tools`` 的 name + description 与问题的字符重叠决定，
     不依赖任何写死的工具名或类别。
+
+    强查数/强知识库委派：强制调用 sub_agent_call，但 agent_name 由模型按
+    通讯录语义选择（与自动路由对齐），不再按 sort_order 点名唯一目标。
+    ``sub_agent_targets_by_capability`` 仅为兼容旧调用方，等价于单元素候选。
     """
     query = (user_query or "").strip()
     if not query or not should_consider_tool_nudge(query):
@@ -310,6 +364,11 @@ def resolve_tool_nudge(
         turn_intent=turn_intent,
         semantic_intent_blocks_followup=True,
     )
+
+    capability_candidates = dict(sub_agent_candidates_by_capability or {})
+    if sub_agent_targets_by_capability:
+        for capability, raw in sub_agent_targets_by_capability.items():
+            capability_candidates.setdefault(str(capability), raw)
 
     # 特殊规则：对于强查数或强知识库检索意图，若绑定了 sub_agent_call，优先做静默子代理委派
     sub_agent_tool = next((t for t in (tools or []) if getattr(t, "name", "") == "sub_agent_call"), None)
@@ -330,47 +389,47 @@ def resolve_tool_nudge(
             aliases = {name, name.replace("_", "-"), name.replace("-", "_")}
             return bool(aliases & available_sub_agent_names)
 
-        def _target_for_capability(capability: str) -> Optional[str]:
-            target = ""
-            if sub_agent_targets_by_capability:
-                target = str(sub_agent_targets_by_capability.get(capability) or "").strip()
-            return target if target and _sub_agent_available(target) else None
+        def _available_candidates_for(capability: str) -> List[str]:
+            raw = capability_candidates.get(capability)
+            return [
+                name
+                for name in _normalize_capability_candidates(raw)
+                if _sub_agent_available(name)
+            ]
 
         # 优先判断更具体的知识库检索意图
         if (
             request_decision.should_delegate
             and request_decision.delegate_capability == "knowledge_base"
         ):
-            target_agent_name = _target_for_capability("knowledge_base")
-            if not target_agent_name:
+            candidates = _available_candidates_for("knowledge_base")
+            if not candidates:
                 return None
-            desc = (
-                "用户问题涉及内部制度、SOP或操作规程查询。主助手没有直接读取知识库能力，"
-                f"你必须优先调用 sub_agent_call(agent_name='{target_agent_name}', query='用户的问题') 委派给知识库助手 '{target_agent_name}' 检索文档，拿到结果再回答；"
-                "严禁凭记忆直接编造任何文档或规范；若工具返回为空或失败，如实说明，不要编造。"
-            )
             return ToolNudge(
                 tool_name="sub_agent_call",
                 score=0.95,
-                message=f"【本轮工具优先】本轮用户请求涉及制度、SOP或规范文档检索。{desc}",
+                message=_build_semantic_sub_agent_message(
+                    capability="knowledge_base",
+                    candidates=candidates,
+                    intent_label="内部制度、SOP或操作规程查询",
+                ),
                 force_first_call=True,
             )
         elif (
             request_decision.should_delegate
             and request_decision.delegate_capability == "data_query"
         ):
-            target_agent_name = _target_for_capability("data_query")
-            if not target_agent_name:
+            candidates = _available_candidates_for("data_query")
+            if not candidates:
                 return None
-            desc = (
-                "用户问题涉及内部数据、指标或资产查询。主助手没有直接连接数据库能力，"
-                f"你必须优先调用 sub_agent_call(agent_name='{target_agent_name}', query='用户的问题') 委派给数据智能助手 '{target_agent_name}' 获取真实数据，拿到结果再回答；"
-                "严禁凭记忆直接编造任何表格、数据或字段；若工具返回为空或失败，如实说明，不要编造。"
-            )
             return ToolNudge(
                 tool_name="sub_agent_call",
                 score=0.95,
-                message=f"【本轮工具优先】本轮用户请求涉及内部数据、指标或资产查询。{desc}",
+                message=_build_semantic_sub_agent_message(
+                    capability="data_query",
+                    candidates=candidates,
+                    intent_label="内部数据、指标或资产查询",
+                ),
                 force_first_call=True,
             )
 

@@ -46,7 +46,10 @@ async def reorder_agents(
 @router.post("/", response_model=AIAgentResponse, dependencies=[Depends(require_permission("element", "element:agent:create"))])
 async def create_agent(data: AIAgentBase, session: AsyncSession = Depends(get_db_session), user: Dict[str, Any] = Depends(get_current_user)):
     """创建新智能体"""
-    return await AgentManagerService.create_agent(session, data, user=user)
+    try:
+        return await AgentManagerService.create_agent(session, data, user=user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(
@@ -80,7 +83,10 @@ async def update_agent(
     user: Dict[str, Any] = Depends(get_current_user)
 ):
     """更新智能体元数据"""
-    agent = await AgentManagerService.update_agent(session, agent_id, data, user=user)
+    try:
+        agent = await AgentManagerService.update_agent(session, agent_id, data, user=user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not agent:
         raise HTTPException(status_code=403, detail="Forbidden: You can only edit your own agents")
     return agent

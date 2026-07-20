@@ -52,9 +52,9 @@ def test_data_query_capability_target_uses_agent_name(chat_config):
         ),
     ]
 
-    assert runner._build_sub_agent_targets_by_capability(agents) == {
-        "data_query": "biz-data-agent",
-        "knowledge_base": "knowledge-base",
+    assert runner._build_sub_agent_candidates_by_capability(agents) == {
+        "data_query": ["biz-data-agent"],
+        "knowledge_base": ["knowledge-base"],
     }
 
 

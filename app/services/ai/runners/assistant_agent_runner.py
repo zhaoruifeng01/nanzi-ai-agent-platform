@@ -265,8 +265,8 @@ class AssistantAgentRunner(BaseExecutor):
         return capability in capabilities
 
     @classmethod
-    def _build_sub_agent_targets_by_capability(cls, agents: Any) -> Dict[str, str]:
-        targets: Dict[str, str] = {}
+    def _build_sub_agent_candidates_by_capability(cls, agents: Any) -> Dict[str, List[str]]:
+        candidates: Dict[str, List[str]] = {}
         ordered_agents = sorted(
             agents or [],
             key=lambda agent: (
@@ -280,11 +280,23 @@ class AssistantAgentRunner(BaseExecutor):
                 continue
             for capability in cls._agent_field(agent, "capabilities", []) or []:
                 capability_key = str(capability or "").strip()
-                if capability_key and capability_key not in targets:
-                    targets[capability_key] = agent_name
-        return targets
+                if not capability_key:
+                    continue
+                names = candidates.setdefault(capability_key, [])
+                if agent_name not in names:
+                    names.append(agent_name)
+        return candidates
 
-    async def _resolve_available_sub_agent_delegation_info(self) -> tuple[Optional[Set[str]], Dict[str, str]]:
+    @classmethod
+    def _build_sub_agent_targets_by_capability(cls, agents: Any) -> Dict[str, str]:
+        """兼容旧调用：每个 capability 仍返回排序后的首个候选。"""
+        return {
+            capability: names[0]
+            for capability, names in cls._build_sub_agent_candidates_by_capability(agents).items()
+            if names
+        }
+
+    async def _resolve_available_sub_agent_delegation_info(self) -> tuple[Optional[Set[str]], Dict[str, List[str]]]:
         if not is_main_general_agent(self.config):
             return None, {}
         try:
@@ -309,7 +321,7 @@ class AssistantAgentRunner(BaseExecutor):
                 )
             return (
                 delegable_agent_name_aliases(delegable_agents),
-                self._build_sub_agent_targets_by_capability(delegable_agents),
+                self._build_sub_agent_candidates_by_capability(delegable_agents),
             )
         except Exception as exc:
             logger.warning("[AssistantAgentRunner] Failed to resolve sub-agent availability: %s", exc)
@@ -863,7 +875,7 @@ class AssistantAgentRunner(BaseExecutor):
 
                     (
                         available_sub_agent_names,
-                        sub_agent_targets_by_capability,
+                        sub_agent_candidates_by_capability,
                     ) = await self._resolve_available_sub_agent_delegation_info()
                     matching_retry_tool = self._select_grounding_retry_tool(
                         tools,
@@ -884,7 +896,7 @@ class AssistantAgentRunner(BaseExecutor):
                             self._extract_last_user_query(history),
                             tools,
                             available_sub_agent_names=available_sub_agent_names,
-                            sub_agent_targets_by_capability=sub_agent_targets_by_capability,
+                            sub_agent_candidates_by_capability=sub_agent_candidates_by_capability,
                             semantic_intent=self.route_hints.get("semantic_intent"),
                             semantic_confidence=self.route_hints.get("semantic_confidence"),
                             turn_intent=(
@@ -911,20 +923,42 @@ class AssistantAgentRunner(BaseExecutor):
                             RequestCapability.DATA_QUERY: "data_query",
                             RequestCapability.KNOWLEDGE_SEARCH: "knowledge_base",
                         }.get(grounding_request_decision.capability)
-                        target_name = (
-                            str(sub_agent_targets_by_capability.get(capability_name) or "").strip()
+                        raw_candidates = (
+                            sub_agent_candidates_by_capability.get(capability_name)
                             if capability_name
-                            else ""
+                            else None
                         )
+                        candidates: List[str] = []
+                        if isinstance(raw_candidates, list):
+                            candidates = [str(name).strip() for name in raw_candidates if str(name).strip()]
+                        elif raw_candidates:
+                            name = str(raw_candidates).strip()
+                            if name:
+                                candidates = [name]
                         has_delegate_tool = any(tool.name == "sub_agent_call" for tool in tools)
-                        if target_name and has_delegate_tool:
+                        if candidates and has_delegate_tool and capability_name in {
+                            "data_query",
+                            "knowledge_base",
+                        }:
+                            from app.services.ai.tool_nudge_policy import (
+                                build_semantic_sub_agent_nudge_message,
+                            )
+
+                            intent_label = (
+                                "内部数据、指标或资产查询"
+                                if capability_name == "data_query"
+                                else "内部制度、SOP或操作规程查询"
+                            )
                             tool_nudge = ToolNudge(
                                 tool_name="sub_agent_call",
                                 score=1.0,
                                 message=(
                                     "【事实取证要求】本轮回答依赖外部事实。"
-                                    f"必须先调用 sub_agent_call 委派给具备 {capability_name} 能力的"
-                                    f"智能体 '{target_name}'，取得真实结果后再回答。"
+                                    + build_semantic_sub_agent_nudge_message(
+                                        capability=capability_name,
+                                        candidates=candidates,
+                                        intent_label=intent_label,
+                                    )
                                 ),
                                 force_first_call=True,
                             )

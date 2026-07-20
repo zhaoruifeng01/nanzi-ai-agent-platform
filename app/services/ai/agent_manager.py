@@ -47,6 +47,18 @@ class AgentManagerService:
     }
 
     @staticmethod
+    def _validate_engine_config(engine_type: Any, engine_config: Optional[Dict[str, Any]]) -> None:
+        normalized_engine = str(getattr(engine_type, "value", engine_type) or "LOCAL").upper()
+        config = engine_config or {}
+        if normalized_engine == "RAGFLOW" and not str(config.get("app_id") or "").strip():
+            raise ValueError("RAGFlow 模式必须填写 App ID")
+        if normalized_engine == "OPENCLAW" and (
+            not str(config.get("base_url") or "").strip()
+            or not str(config.get("model") or "").strip()
+        ):
+            raise ValueError("OpenClaw 模式必须填写地址和机器人 ID")
+
+    @staticmethod
     async def _resolve_onboarding_template(
         session: AsyncSession,
         agent_type: Any,
@@ -615,6 +627,8 @@ class AgentManagerService:
         else:
             created_by = getattr(user, 'user_name', None) if user else None
             is_admin = user and getattr(user, 'role', '') == 'admin'
+
+        AgentManagerService._validate_engine_config(data.engine_type, data.engine_config)
         
         # Check if agent with the same name already exists
         existing_query = select(AIAgent).where(AIAgent.name == data.name)
@@ -703,6 +717,12 @@ class AgentManagerService:
         if agent.is_system and not is_admin:
             return None
 
+        original_engine_type = str(agent.engine_type or "LOCAL").upper()
+        if "engine_type" in data.model_fields_set:
+            requested_engine_type = str(data.engine_type or original_engine_type).upper()
+            if requested_engine_type != original_engine_type:
+                raise ValueError("执行引擎创建后不可修改；请新建智能体以使用其他引擎")
+
         agent.name = data.name
         agent.display_name = data.display_name
         agent.description = data.description
@@ -722,9 +742,8 @@ class AgentManagerService:
         if data.is_enabled is not None:
             agent.is_enabled = data.is_enabled
         
-        # Update Engine Config
-        if data.engine_type:
-            agent.engine_type = data.engine_type
+        # Engine implementation is immutable after creation. Connection and
+        # runtime parameters remain editable through engine_config.
         if data.engine_config is not None:
             agent.engine_config = data.engine_config
         
