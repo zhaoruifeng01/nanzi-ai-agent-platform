@@ -74,6 +74,18 @@ def test_unfinished_onboarding_can_publish_from_unified_version_drawer():
     assert "保存并发布" in drawer_source
 
 
+def test_agent_action_labels_describe_editing_and_publishing():
+    management = Path("frontend/src/views/AgentManagement.vue").read_text()
+    versions_drawer = Path("frontend/src/components/agent/AgentVersionsDrawer.vue").read_text()
+
+    assert "编辑智能体" in management
+    assert "配置与发布" in management
+    assert "配置与发布" in versions_drawer
+    assert "配置元数据" not in management
+    assert "版本管理" not in management
+    assert "版本管理" not in versions_drawer
+
+
 def test_onboarding_columns_are_in_v103_migration():
     v103 = Path("db-prod/V103-add-agent-primary-type.sql").read_text()
 

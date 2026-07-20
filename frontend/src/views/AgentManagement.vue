@@ -2333,7 +2333,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 @click="closeCardMenus(); openAgentModal(agent)"
                 class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                配置元数据
+                编辑智能体
               </button>
               <button
                 v-if="!isMobile"
@@ -2378,7 +2378,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
               />
             </svg>
-            版本管理
+            配置与发布
           </button>
           <button
             v-else-if="agent.is_editable !== false"
@@ -2538,7 +2538,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                       v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
                       @click.stop="openDrawer(agent)"
                       class="p-1.5 text-primary hover:bg-primary/5 rounded-md transition-all shadow-sm border border-transparent hover:border-primary/20"
-                      title="版本管理"
+                      title="配置与发布"
                     >
                       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
@@ -3134,7 +3134,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           <div class="rounded-xl border border-gray-200 p-4">
             <div class="text-sm font-semibold text-gray-900">{{ agentForm.agent_type === 'GENERAL' ? '通用智能体无需必选业务资源' : agentForm.agent_type === 'CHATBI' ? '绑定 ChatBI 数据集' : '绑定知识库' }}</div>
             <p class="mt-1 text-xs leading-5 text-gray-500">
-              {{ agentForm.agent_type === 'GENERAL' ? '可以直接发布；需要时再从版本管理补充工具、技能或资源。' : '发布前需要至少绑定一个可用资源，并确保初始版本包含对应查询工具。' }}
+              {{ agentForm.agent_type === 'GENERAL' ? '可以直接发布；需要时再从配置与发布补充工具、技能或资源。' : '发布前需要至少绑定一个可用资源，并确保初始版本包含对应查询工具。' }}
             </p>
           </div>
           <div v-if="agentForm.agent_type !== 'GENERAL'">
