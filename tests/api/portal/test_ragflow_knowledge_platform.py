@@ -309,7 +309,36 @@ async def test_document_file_requires_dataset_access(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sync_ragflow_datasets_writes_local_metadata_and_audit(monkeypatch):
+async def test_document_file_passes_dataset_id_to_ragflow_client(monkeypatch):
+    calls = {}
+
+    async def fake_require_dataset_access(user, db, dataset_ids):
+        calls["dataset_ids"] = dataset_ids
+
+    class FakeRagFlowClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def download_document(self, document_id, *, dataset_id=None):
+            calls["document_id"] = document_id
+            calls["dataset_id"] = dataset_id
+            return b"pdf", "test.pdf", "application/pdf"
+
+    monkeypatch.setattr(ragflow, "require_dataset_access", fake_require_dataset_access)
+    monkeypatch.setattr(ragflow, "RagFlowClient", FakeRagFlowClient)
+
+    response = await ragflow.get_ragflow_dataset_document_file(
+        dataset_id="ds-allowed",
+        document_id="doc-1",
+        user={"role": "user", "user_id": "2"},
+        db=None,
+    )
+
+    assert calls["dataset_ids"] == ["ds-allowed"]
+    assert calls["document_id"] == "doc-1"
+    assert calls["dataset_id"] == "ds-allowed"
+    assert response.body == b"pdf"
+
     calls = {}
 
     class FakeRagFlowClient:

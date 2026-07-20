@@ -2,7 +2,7 @@ import json
 import time
 import uuid
 import httpx
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -739,11 +739,14 @@ async def get_ragflow_metrics_summary(
     return {"code": 0, "data": data}
 
 
-async def _build_ragflow_document_file_response(document_id: str):
+async def _build_ragflow_document_file_response(document_id: str, *, dataset_id: str | None = None):
     from fastapi.responses import Response
     client = RagFlowClient(config_prefix="knowledge_ragflow")
     try:
-        content, filename, content_type = await client.download_document(document_id)
+        content, filename, content_type = await client.download_document(
+            document_id,
+            dataset_id=dataset_id,
+        )
         
         # 强力纠正 Content-Type 防止未知流触发下载
         import mimetypes
@@ -774,18 +777,20 @@ async def get_ragflow_dataset_document_file(
     获取文档文件二进制流以供前端 iframe 原地预览；必须具备对应知识库读取权限。
     """
     await require_dataset_access(user, db, [dataset_id])
-    return await _build_ragflow_document_file_response(document_id)
+    return await _build_ragflow_document_file_response(document_id, dataset_id=dataset_id)
 
 
 @router.get("/documents/{document_id}/file", dependencies=[Depends(require_admin)])
 async def get_ragflow_document_file(
     document_id: str,
+    dataset_id: Optional[str] = Query(None, description="RAGFlow dataset id (recommended)"),
     user: dict = Depends(get_current_user),
 ):
     """
     旧版无 dataset 上下文的下载入口仅保留给管理员，避免普通用户绕过知识库授权。
+    建议传 dataset_id，走 /datasets/{dataset_id}/documents/{document_id} 下载。
     """
-    return await _build_ragflow_document_file_response(document_id)
+    return await _build_ragflow_document_file_response(document_id, dataset_id=dataset_id)
 
 
 @router.get("/datasets/{dataset_id}/portal")

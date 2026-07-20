@@ -569,27 +569,45 @@ class RagFlowClient:
         logger.error(f"[RAGFlow] All {max_attempts} retrieval attempts failed. Last exception: {last_exception}")
         raise last_exception
 
-    async def download_document(self, document_id: str) -> tuple[bytes, str, str]:
+    async def download_document(
+        self,
+        document_id: str,
+        *,
+        dataset_id: str | None = None,
+    ) -> tuple[bytes, str, str]:
         """
         Download document binary content from RAGFlow.
+        Prefer dataset-scoped API; falls back to legacy /document/get when dataset_id is omitted.
         Returns: (content, filename, content_type)
         """
         await self._ensure_config()
-        url = f"{self.base_url}/api/v1/document/get/{document_id}"
-        
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        if dataset_id:
+            url = f"{self.base_url}/api/v1/datasets/{dataset_id}/documents/{document_id}"
+        else:
+            url = f"{self.base_url}/api/v1/document/get/{document_id}"
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(url, headers=self._get_headers())
             if resp.status_code == 200:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                # Dataset download returns raw file bytes; JSON means business error.
+                if "application/json" in content_type.lower():
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = {}
+                    message = payload.get("message") if isinstance(payload, dict) else None
+                    raise Exception(
+                        f"RAGFlow document download failed: {message or resp.text[:200]}"
+                    )
+
                 content_disposition = resp.headers.get("content-disposition", "")
                 filename = "document"
                 if "filename=" in content_disposition:
-                    # 解密文件名
                     import urllib.parse
                     raw_fn = content_disposition.split("filename=")[-1].strip('"')
                     filename = urllib.parse.unquote(raw_fn)
-                
-                content_type = resp.headers.get("content-type", "application/octet-stream")
+
                 return resp.content, filename, content_type
-            else:
-                raise Exception(f"RAGFlow document download failed ({resp.status_code}): {resp.text}")
+            raise Exception(f"RAGFlow document download failed ({resp.status_code}): {resp.text}")
 

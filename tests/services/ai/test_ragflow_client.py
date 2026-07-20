@@ -160,3 +160,33 @@ async def test_handle_response_error_translation_not_found(ragflow_client):
         await ragflow_client._handle_response(response, "Delete Datasets")
     
     assert "RAGFlow 侧未找到该知识库" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_download_document_uses_dataset_scoped_url(ragflow_client, mock_config):
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            content=b"file-bytes",
+            headers={
+                "content-type": "application/pdf",
+                "content-disposition": 'attachment; filename="report.pdf"',
+            },
+        )
+    )
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__.return_value = mock_client
+    mock_cm.__aexit__.return_value = None
+
+    with patch("httpx.AsyncClient", return_value=mock_cm):
+        content, filename, content_type = await ragflow_client.download_document(
+            "doc-abc",
+            dataset_id="ds-xyz",
+        )
+
+    assert content == b"file-bytes"
+    assert filename == "report.pdf"
+    assert content_type == "application/pdf"
+    args, _kwargs = mock_client.get.call_args
+    assert args[0] == "http://mock-ragflow/api/v1/datasets/ds-xyz/documents/doc-abc"
