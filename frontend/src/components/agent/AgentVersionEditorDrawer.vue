@@ -44,6 +44,8 @@ const props = defineProps<{
   isStaticGroupCollapsed: (label: string) => boolean;
   getStaticGroupSelectedCount: (tools: any[]) => number;
   getModelDisplayName: (modelId?: string) => string;
+  canReachVersionConfigStep?: (step: VersionConfigStep) => boolean;
+  isVersionConfigStepComplete?: (step: VersionConfigStep) => boolean;
 }>();
 
 const emit = defineEmits<{
@@ -78,7 +80,12 @@ const llmModels = () => props.models.filter((m) => (m.type === 'llm' || m.type =
 const stepIndex = () => props.versionConfigSteps.findIndex((s) => s.id === props.versionConfigStep);
 const isFirstStep = () => stepIndex() <= 0;
 const isLastStep = () => stepIndex() >= props.versionConfigSteps.length - 1;
-
+const canReachStep = (step: VersionConfigStep) =>
+  props.canReachVersionConfigStep ? props.canReachVersionConfigStep(step) : true;
+const isCurrentStepComplete = () =>
+  props.isVersionConfigStepComplete
+    ? props.isVersionConfigStepComplete(props.versionConfigStep)
+    : true;
 const goStep = (step: VersionConfigStep) => emit('update:versionConfigStep', step);
 
 const agentTypes: { value: AgentType; label: string; icon: string; description: string }[] = [
@@ -201,16 +208,22 @@ const externalCreationMissingFields = computed(() => {
               <button
                 type="button"
                 @click="goStep(step.id)"
+                :disabled="!canReachStep(step.id) && versionConfigStep !== step.id"
                 class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
                 :class="versionConfigStep === step.id
                   ? 'bg-primary text-white shadow-sm'
-                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'"
+                  : canReachStep(step.id)
+                    ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                    : 'cursor-not-allowed text-gray-300'"
+                :title="!canReachStep(step.id) && versionConfigStep !== step.id ? '请先完成前面的配置步骤' : undefined"
               >
                 <span
                   class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border"
                   :class="versionConfigStep === step.id
                     ? 'bg-white/20 border-white/30 text-white'
-                    : 'bg-gray-100 border-gray-200 text-gray-500'"
+                    : canReachStep(step.id)
+                      ? 'bg-gray-100 border-gray-200 text-gray-500'
+                      : 'bg-gray-50 border-gray-100 text-gray-300'"
                 >{{ idx + 1 }}</span>
                 {{ step.label }}
               </button>
@@ -765,7 +778,13 @@ const externalCreationMissingFields = computed(() => {
           <div class="flex items-center gap-2">
             <button type="button" @click="emit('close')" class="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 font-medium">取消</button>
             <button v-if="!isFirstStep()" type="button" @click="emit('prevStep')" class="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-white font-medium text-gray-700">上一步</button>
-            <button v-if="!isLastStep()" type="button" @click="emit('nextStep')" class="px-5 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark font-medium shadow-sm">下一步</button>
+            <button
+              v-if="!isLastStep()"
+              type="button"
+              @click="emit('nextStep')"
+              :disabled="!isCurrentStepComplete()"
+              class="px-5 py-2 text-sm bg-primary text-white rounded-lg hover:bg-primary-dark font-medium shadow-sm disabled:cursor-not-allowed disabled:bg-gray-300 disabled:shadow-none"
+            >下一步</button>
             <button
               v-if="isLastStep() && canEditVersion && (!versionForm.id || versionForm.status === 'DRAFT') && !(isOnboardingFlow && agentForm.engine_type === 'LOCAL')"
               type="button"

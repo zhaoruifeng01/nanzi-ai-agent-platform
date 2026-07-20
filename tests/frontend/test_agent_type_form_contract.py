@@ -107,7 +107,18 @@ def test_agent_list_keeps_continue_configuration_action_horizontal():
     assert "shrink-0 items-center whitespace-nowrap" in management
 
 
-def test_agent_list_stacks_engine_and_type_badges_vertically():
+def test_agent_wizard_blocks_later_steps_until_prior_complete():
+    management = Path("frontend/src/views/AgentManagement.vue").read_text()
+    drawer = Path("frontend/src/components/agent/AgentVersionEditorDrawer.vue").read_text()
+
+    assert "canReachVersionConfigStep" in management
+    assert "isVersionConfigStepComplete" in management
+    assert "handleVersionConfigStepChange" in management
+    assert "请先完善智能体信息：填写物理标识符和显示名称" in management
+    assert "canReachVersionConfigStep" in drawer
+    assert "请先完成前面的配置步骤" in drawer
+    assert "disabled:cursor-not-allowed disabled:bg-gray-300" in drawer
+
     management = Path("frontend/src/views/AgentManagement.vue").read_text()
     list_section = management.split("<!-- List View -->", 1)[1]
 

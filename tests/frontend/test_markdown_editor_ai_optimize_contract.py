@@ -15,6 +15,8 @@ def test_markdown_editor_exposes_ai_optimize_when_enabled():
     assert "/api/portal/prompts/optimize" in optimize
     assert "element:prompts:optimize" in optimize
     assert "应用此方案" in optimize
+    assert "z-[10000]" in optimize
+    assert "z-[10050]" in optimize
 
 
 def test_agent_version_editor_enables_prompt_ai_optimize():

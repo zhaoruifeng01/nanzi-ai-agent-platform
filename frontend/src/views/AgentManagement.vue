@@ -608,6 +608,66 @@ const versionConfigProgress = computed(() => {
   return count;
 });
 
+const isAgentConfigStepComplete = () => {
+  if (!agentForm.value.name?.trim() || !agentForm.value.display_name?.trim()) return false;
+  if (agentForm.value.engine_type === 'RAGFLOW' && !String(agentForm.value.engine_config?.app_id || '').trim()) {
+    return false;
+  }
+  if (
+    agentForm.value.engine_type === 'OPENCLAW' &&
+    (!String(agentForm.value.engine_config?.base_url || '').trim() ||
+      !String(agentForm.value.engine_config?.model || '').trim())
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const isVersionConfigStepComplete = (step: VersionConfigStep) => {
+  if (step === 'agent') return isAgentConfigStepComplete();
+  if (step === 'model') return Boolean(versionForm.value.model_name?.trim());
+  if (step === 'tools') return true;
+  if (step === 'prompt') return Boolean(versionForm.value.system_prompt?.trim());
+  return true;
+};
+
+const canReachVersionConfigStep = (target: VersionConfigStep) => {
+  const steps = versionConfigSteps.value;
+  const targetIdx = steps.findIndex((item) => item.id === target);
+  if (targetIdx <= 0) return true;
+  for (let i = 0; i < targetIdx; i++) {
+    const step = steps[i];
+    if (step && !isVersionConfigStepComplete(step.id)) return false;
+  }
+  return true;
+};
+
+const describeIncompleteVersionConfigStep = (step: VersionConfigStep) => {
+  if (step === 'agent') {
+    if (!agentForm.value.name?.trim() || !agentForm.value.display_name?.trim()) {
+      return '请先完善智能体信息：填写物理标识符和显示名称';
+    }
+    if (agentForm.value.engine_type === 'RAGFLOW') return '请先完善智能体信息：填写 RAGFlow App ID';
+    if (agentForm.value.engine_type === 'OPENCLAW') return '请先完善智能体信息：填写 OpenClaw 地址和机器人 ID';
+    return '请先完善智能体信息';
+  }
+  if (step === 'model') return '请先完善模型策略：选择编排模型';
+  if (step === 'prompt') return '请先填写系统提示词';
+  return '请先完成前面的配置步骤';
+};
+
+const handleVersionConfigStepChange = (step: VersionConfigStep) => {
+  if (step === versionConfigStep.value) return;
+  if (!canReachVersionConfigStep(step)) {
+    const steps = versionConfigSteps.value;
+    const targetIdx = steps.findIndex((item) => item.id === step);
+    const blocker = steps.slice(0, Math.max(targetIdx, 0)).find((item) => !isVersionConfigStepComplete(item.id));
+    showToast(describeIncompleteVersionConfigStep(blocker?.id || 'agent'), 'warning');
+    return;
+  }
+  versionConfigStep.value = step;
+};
+
 const filteredGroupedTools = computed(() => {
   const q = toolSearchQuery.value.trim().toLowerCase();
   return Object.values(groupedTools.value)
@@ -662,16 +722,8 @@ const getStaticGroupSelectedCount = (tools: any[]) => {
 };
 
 const nextVersionStep = () => {
-  if (versionConfigStep.value === 'agent' && (!agentForm.value.name || !agentForm.value.display_name)) {
-    showToast('请完善智能体标识和显示名称', 'warning');
-    return;
-  }
-  if (versionConfigStep.value === 'agent' && agentForm.value.engine_type === 'RAGFLOW' && !agentForm.value.engine_config?.app_id) {
-    showToast('RAGFlow 模式必须填写 App ID', 'warning');
-    return;
-  }
-  if (versionConfigStep.value === 'agent' && agentForm.value.engine_type === 'OPENCLAW' && (!agentForm.value.engine_config?.base_url || !agentForm.value.engine_config?.model)) {
-    showToast('OpenClaw 模式必须填写地址和机器人 ID', 'warning');
+  if (!isVersionConfigStepComplete(versionConfigStep.value)) {
+    showToast(describeIncompleteVersionConfigStep(versionConfigStep.value), 'warning');
     return;
   }
   const idx = versionConfigSteps.value.findIndex((s) => s.id === versionConfigStep.value);
@@ -3242,12 +3294,14 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       :is-static-group-collapsed="isStaticGroupCollapsed"
       :get-static-group-selected-count="getStaticGroupSelectedCount"
       :get-model-display-name="getModelDisplayName"
+      :can-reach-version-config-step="canReachVersionConfigStep"
+      :is-version-config-step-complete="isVersionConfigStepComplete"
       @close="handleVersionEditorClose"
       @save="saveVersion"
       @publish="publishVersionFromEditor"
       @update:tool-tab="toolTab = $event"
       @update:tool-search-query="toolSearchQuery = $event"
-      @update:version-config-step="versionConfigStep = $event"
+      @update:version-config-step="handleVersionConfigStepChange"
       @toggle-tool="toggleTool"
       @toggle-skill="toggleSkill"
       @set-skills-custom="setSkillsCustom"

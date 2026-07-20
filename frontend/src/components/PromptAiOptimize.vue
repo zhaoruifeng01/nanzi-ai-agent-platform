@@ -104,7 +104,7 @@ const copyToClipboard = async (content: string) => {
     <transition name="fade">
       <div
         v-if="optimizing"
-        class="fixed inset-0 z-[9999] bg-white/50 backdrop-blur-[2px] flex flex-col items-center justify-center"
+        class="fixed inset-0 z-[10050] bg-white/50 backdrop-blur-[2px] flex flex-col items-center justify-center"
       >
         <div class="p-10 bg-white rounded-3xl shadow-2xl border border-indigo-100 flex flex-col items-center">
           <div class="relative w-20 h-20 mb-6">
@@ -120,7 +120,7 @@ const copyToClipboard = async (content: string) => {
 
     <div
       v-if="showOptimizeModal"
-      class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm"
+      class="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm"
     >
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
         <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/80">
