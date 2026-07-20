@@ -84,7 +84,7 @@ const getChartOption = (segment: ContentSegment, idx: number) => {
 const getChartTable = (segment: ContentSegment) => buildChartTableRows(segment.chartData || {});
 
 interface ContentSegment {
-  type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'sql_plan' | 'canvas_html' | 'canvas_code';
+  type: 'text' | 'chart' | 'mermaid' | 'thought' | 'analysis' | 'clarification' | 'sql_plan' | 'canvas_html' | 'canvas_code';
   content: string;
   chartData?: any;
   title?: string;
@@ -300,7 +300,7 @@ const segments = computed<ContentSegment[]>(() => {
   // 2. 预处理 Quick 按钮 (核心改进)
   cleanContent = parseQuickButtons(cleanContent);
 
-  const regex = /(?:<sql_plan>([\s\S]*?)<\/sql_plan>)|(?:<thought>([\s\S]*?)<\/thought>)|(?:<chart>([\s\S]*?)<\/chart>)|(?:```\s*(?:chart|echarts|json)\s*([\s\S]*?)```)|(?:```\s*mermaid\s*([\s\S]*?)```)|(?::::analysis\s*([^\n]*)\n([\s\S]*?)\n:::)|(?:```\s*([a-zA-Z0-9_\-]+)?\s*\n([\s\S]*?)```)/gi;
+  const regex = /(?:<sql_plan>([\s\S]*?)<\/sql_plan>)|(?:<thought>([\s\S]*?)<\/thought>)|(?:<chart>([\s\S]*?)<\/chart>)|(?:```\s*(?:chart|echarts|json)\s*([\s\S]*?)```)|(?:```\s*mermaid\s*([\s\S]*?)```)|(?::::analysis\s*([^\n]*)\n([\s\S]*?)\n:::)|(?::::clarification\s*([^\n]*)\n([\s\S]*?)\n:::)|(?:```\s*([a-zA-Z0-9_\-]+)?\s*\n([\s\S]*?)```)/gi;
   const result: ContentSegment[] = [];
   let lastIndex = 0;
   let match;
@@ -334,6 +334,13 @@ const segments = computed<ContentSegment[]>(() => {
         content: renderMarkdown(match[7]?.trim() || '')
       });
     }
+    else if (match[8] || match[9]) {
+      result.push({
+        type: 'clarification',
+        title: (match[8] || '需要再确认一下').trim() || '需要再确认一下',
+        content: renderMarkdownSegment(parseQuickButtons(match[9]?.trim() || '')),
+      });
+    }
     else if (match[3] || match[4]) {
       const rawJson = (match[3] || match[4]) as string;
       const jsonStr = rawJson.trim().replace(/^(json|javascript|js|xml|chart)\s+/i, '');
@@ -345,9 +352,9 @@ const segments = computed<ContentSegment[]>(() => {
         result.push({ type: 'text', content: renderMarkdown(`> ⚠️ **Chart Render Failed**\n\n\`\`\`json\n${jsonStr}\n\`\`\``) });
       }
     }
-    else if (match[9] !== undefined) {
-      const lang = (match[8] || '').trim().toLowerCase();
-      const codeContent = match[9];
+    else if (match[11] !== undefined) {
+      const lang = (match[10] || '').trim().toLowerCase();
+      const codeContent = match[11];
       const isHtmlApp = lang === 'html' && (/<html/i.test(codeContent) || /<body/i.test(codeContent) || /<!doctype html/i.test(codeContent));
 
       if (isHtmlApp) {
@@ -366,7 +373,7 @@ const segments = computed<ContentSegment[]>(() => {
             langName: lang
           });
         } else {
-          const langPrefix = match[8] || '';
+          const langPrefix = match[10] || '';
           const rawMarkdownCode = `\`\`\`${langPrefix}\n${codeContent}\`\`\``;
           result.push({
             type: 'text',
@@ -550,6 +557,21 @@ const segments = computed<ContentSegment[]>(() => {
           </div>
         </details>
       </div>
+
+      <div v-else-if="segment.type === 'clarification'" class="clarification-card my-3">
+        <div class="clarification-card__header">
+          <div class="clarification-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" d="M8.228 9c.549-1.165 1.956-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <div class="clarification-card__heading">
+            <span class="clarification-card__badge">需要你确认</span>
+            <h4 class="clarification-card__title">{{ segment.title }}</h4>
+          </div>
+        </div>
+        <div class="clarification-card__body markdown-body text-sm text-gray-700 dark:text-gray-200 leading-relaxed" v-html="segment.content"></div>
+      </div>
     </div>
   </div>
 </template>
@@ -604,6 +626,118 @@ const segments = computed<ContentSegment[]>(() => {
 /* Analysis Block Styling - Refined for clarity and "thinking" vibe */
 .analysis-block {
   margin: 1.5rem 0;
+}
+
+.clarification-card {
+  position: relative;
+  border: 1.5px solid #f6d48a;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fffbeb 0%, #fff7ed 100%);
+  padding: 14px 16px 12px 16px;
+  box-shadow: 0 2px 8px rgba(180, 83, 9, 0.08);
+  overflow: hidden;
+}
+
+.clarification-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, #f59e0b 0%, #ea580c 100%);
+}
+
+.dark .clarification-card {
+  border-color: #92400e;
+  background: linear-gradient(180deg, #1c1410 0%, #1a1510 100%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.dark .clarification-card::before {
+  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+}
+
+.clarification-card__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-left: 2px;
+}
+
+.clarification-card__icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+  box-shadow: 0 2px 6px rgba(234, 88, 12, 0.28);
+}
+
+.clarification-card__icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.clarification-card__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.clarification-card__badge {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #9a3412;
+  background: #ffedd5;
+  border: 1px solid #fdba74;
+}
+
+.dark .clarification-card__badge {
+  color: #fed7aa;
+  background: rgba(234, 88, 12, 0.22);
+  border-color: rgba(251, 146, 60, 0.45);
+}
+
+.clarification-card__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+  color: #7c2d12;
+}
+
+.dark .clarification-card__title {
+  color: #ffedd5;
+}
+
+.clarification-card__body {
+  padding-left: 2px;
+}
+
+.clarification-card__body :deep(h3) {
+  margin-top: 0.85rem !important;
+  margin-bottom: 0.4rem !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  color: #9a3412 !important;
+}
+
+.dark .clarification-card__body :deep(h3) {
+  color: #fdba74 !important;
 }
 
 .analysis-details {

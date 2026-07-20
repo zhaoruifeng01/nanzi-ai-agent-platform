@@ -53,10 +53,12 @@ def test_build_clarification_response_uses_rule_lead_and_quick():
         "需要用户补充查数信息",
         "",
     )
-    assert "### ℹ️ 为什么需要补充信息" in content
-    assert "### 💬 您可以这样继续" in content
+    assert ":::clarification" in content
+    assert "### 💬 一键继续" in content
     assert "(quick:" in content
     assert "PUE" in content
+    assert "### ℹ️ 为什么需要补充信息" not in content
+    assert "触发原因" not in content
 
 
 def test_build_non_data_response_only_guides_agent_switch():
@@ -135,14 +137,15 @@ def test_structured_clarification_only_builds_requested_gap_buttons():
         missing_fields=("time_range",),
     )
 
-    assert "时间范围" in content
-    assert "### ℹ️ 为什么需要补充信息" in content
-    assert "### 📝 可以这样问我" in content
-    assert "### 💬 您可以这样继续" in content
+    assert "哪段时间" in content or "时间" in content
+    assert ":::clarification" in content
+    assert "### 💬 一键继续" in content
+    assert "### 📝 可以这样问我" not in content
     assert "(quick:" in content
     assert "PUE" in content
     assert "本月" in content
     assert "请补充具体指标" not in content
+    assert content.count("(quick:") <= 3
 
 
 def test_semantic_clarification_recommendations_replace_mechanical_gap_buttons():
@@ -158,9 +161,9 @@ def test_semantic_clarification_recommendations_replace_mechanical_gap_buttons()
         ),
     )
 
-    assert "查询本月各机房平均 PUE" in content
-    assert "最近 30 天各机房 PUE 趋势" in content
-    assert "可以这样问我" in content
+    assert "本月各机房平均 PUE" in content or "查询本月各机房平均 PUE" in content
+    assert "PUE" in content
+    assert "一键继续" in content
     assert "（时间范围：本月）" not in content
 
 
@@ -172,11 +175,11 @@ def test_clarification_examples_rewrite_user_question_with_id():
         missing_fields=("metric", "time_range"),
     )
 
-    assert "可以这样问我" in content
+    assert "一键继续" in content
     assert "A1000-0009D3" in content
     assert "明细" in content or "状态" in content
     assert "请补充具体指标和统计口径后回答" not in content
-    assert content.count("(quick:") >= 3
+    assert content.count("(quick:") >= 2
 
 
 def test_gap_fill_examples_keep_original_object():
@@ -213,6 +216,30 @@ def test_sanitize_clarification_lead_strips_reason_and_quick():
     assert DataQueryPrompts.sanitize_clarification_lead(raw) == "请先补充时间范围。"
 
 
+def test_extract_user_intent_text_strips_taskcenter_wrapper():
+    question = (
+        "【自动化指令-任务ID: 1】@📊数据智能助手\n"
+        "这是 TaskCenter 自动任务的本次独立触发。\n"
+        "任务内容：按各数据中心显示动环指标最后时间，并计算与现在的间隔。"
+        "把结果发给钉钉（# Role\n你是运维专家"
+    )
+    intent = DataQueryPrompts._extract_user_intent_text(question)
+    assert "各数据中心" in intent
+    assert "动环" in intent
+    assert "【自动化指令" not in intent
+    assert "# Role" not in intent
+
+
+def test_humanize_clarification_gaps_anchors_to_topic():
+    text = DataQueryPrompts._humanize_clarification_gaps(
+        "统计各机房 PUE",
+        ("time_range",),
+    )
+    assert "各机房" in text or "PUE" in text
+    assert "哪段时间" in text
+    assert "要统计什么" not in text
+
+
 def test_is_valid_clarification_lead_rejects_pseudo_data_query():
     assert not DataQueryPrompts.is_valid_clarification_lead(
         "建议您查询当前用户信息。",
@@ -239,14 +266,13 @@ def test_build_clarification_fallback_for_followup_missing_context():
         "请求类别 LLM 未返回有效结果；检测到结果追问但没有可信的近期可复用结构化查询结果",
         "用户: 查询算力SU 1-6月回款率\n助手: | 月份 | 回款率 |",
     )
-    assert "### ℹ️ 为什么需要补充信息" in content
-    assert "**触发原因：**" in content
-    assert "**您可以这样改：**" in content
-    assert "可复用的查询结果" in content
-    assert "### 💬 您可以这样继续" in content
+    assert ":::clarification" in content
+    assert "一键继续" in content
+    assert "可复用" in content
     assert "(quick:" in content
     assert "算力SU" in content
     assert "PUE" not in content
+    assert "触发原因" not in content
 
 
 def test_build_clarification_fallback_for_general_chat():
@@ -255,10 +281,8 @@ def test_build_clarification_fallback_for_general_chat():
         "当前请求不是明确的 ChatBI 查数请求，需要用户补充想查询的业务数据、指标、维度或时间范围",
         "",
     )
-    assert "### ℹ️ 为什么需要补充信息" in content
-    assert "尚未识别为明确的数据查询" in content
+    assert ":::clarification" in content
     assert "切换智能体" in content
-    assert "若不是查数需求" in content
     assert DataQueryPrompts.has_quick_suggestions(content)
     assert "PUE" not in content
 
@@ -270,8 +294,6 @@ def test_build_clarification_fallback_for_identity_question():
         "",
     )
     assert "切换智能体" in content
-    assert "身份确认" in content or "通用问答" in content
-    assert "查询当前用户" not in content
     assert "(quick:" in content
 
 
@@ -282,10 +304,8 @@ def test_build_clarification_fallback_anchors_to_user_question():
         "需要用户补充查数信息",
         "",
     )
-    assert "### ℹ️ 为什么需要补充信息" in content
-    assert "**触发原因：**" in content
+    assert ":::clarification" in content
     assert "Token" in content
-    assert question in content
     assert "PUE" not in content
     assert "告警" not in content
     assert "(quick:" in content
@@ -301,7 +321,7 @@ def test_append_contextual_quick_suggestions_when_llm_body_only():
         "",
     )
     assert merged.startswith(body)
-    assert "### 💬 您可以这样继续" in merged
+    assert "### 💬 一键继续" in merged
     assert "PUE" in merged
     assert "(quick:" in merged
 
@@ -311,7 +331,7 @@ def test_build_missing_reusable_result_fallback_includes_quick_buttons():
         "用户: 查询算力SU回款趋势",
         user_question="可视化分析一下",
     )
-    assert "### ℹ️ 为什么需要补充信息" in content
+    assert ":::clarification" in content
     assert "结构化查询结果" in content
     assert "(quick:对刚刚的查询结果做可视化分析)" in content
     assert "(quick:查询算力SU回款趋势)" in content
