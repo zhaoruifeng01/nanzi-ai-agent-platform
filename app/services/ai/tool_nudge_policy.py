@@ -145,6 +145,11 @@ _NOTIFICATION_ACTION_TERMS = (
 
 _NOTIFICATION_CHANNELS = (
     (
+        "send_portal_notification",
+        ("站内", "站内信", "站内消息", "铃铛", "inbox", "门户消息", "消息中心"),
+        "站内消息（门户铃铛）",
+    ),
+    (
         "send_dingtalk_message",
         ("钉钉", "dingtalk"),
         "钉钉群机器人",
@@ -263,9 +268,16 @@ def _resolve_notification_nudge(query: str, tools: List[Any]) -> Optional[ToolNu
             score=1.0,
             message=(
                 f"【本轮工具优先】用户明确要求发送或推送到{channel_label}。"
-                f"请调用已绑定工具「{tool_name}」完成发送；该工具会自动读取当前用户"
-                f"在个人中心 -> 消息通知里的配置，无需用户在本轮提供 webhook、token 或服务器配置。"
-                f"只有工具返回失败时，才向用户说明配置或发送失败原因；不要在未调用工具前声称未配置。"
+                f"请调用已绑定工具「{tool_name}」完成发送；"
+                + (
+                    "该工具会写入当前用户的门户站内信箱（铃铛），无需 Webhook 配置。"
+                    if tool_name == "send_portal_notification"
+                    else (
+                        "该工具会自动读取当前用户在个人中心 -> 消息通知里的配置，"
+                        "无需用户在本轮提供 webhook、token 或服务器配置。"
+                    )
+                )
+                + "只有工具返回失败时，才向用户说明失败原因；不要在未调用工具前声称未配置或已发送。"
             ),
         )
     return None

@@ -43,6 +43,23 @@ def test_scheduled_task_prompt_requires_real_tool_execution():
     assert "不要只回复计划" in prompt
     assert "必须调用对应工具完成" in prompt
     assert "任务内容：检查机器负载并发送钉钉" in prompt
+    assert "【结果通知要求】" not in prompt
+
+
+@pytest.mark.no_infrastructure
+def test_scheduled_task_prompt_appends_notification_channels_supplement():
+    prompt = _build_scheduled_task_prompt(
+        24,
+        "主助手(Main)",
+        "检查机器负载",
+        notification_channels=["portal", "dingtalk"],
+    )
+
+    assert "任务内容：检查机器负载" in prompt
+    assert "【结果通知要求】" in prompt
+    assert "send_portal_notification" in prompt
+    assert "send_dingtalk_message" in prompt
+    assert "每个渠道只发送一次" in prompt
 
 
 @pytest.mark.no_infrastructure

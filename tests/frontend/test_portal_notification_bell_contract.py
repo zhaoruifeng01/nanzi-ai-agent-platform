@@ -95,3 +95,20 @@ def test_mark_read_failure_does_not_block_saved_report_navigation():
     assert "publishSavedReportOpenRequest" in bell
     assert "createSavedReportOpenRequest" in bell
     assert "open_request_id" in bell
+
+
+def test_ordinary_notification_opens_markdown_detail_while_saved_report_jumps():
+    bell = (ROOT / "frontend/src/components/PortalNotificationBell.vue").read_text(encoding="utf-8")
+
+    assert "isSavedReportNotification" in bell
+    assert 'from "../utils/markdown"' in bell
+    assert "renderMarkdown" in bell
+    assert "detailItem" in bell
+    assert "notification-detail-body" in bell
+    assert 'v-html="detailHtml"' in bell
+    assert "⭐ 黄金报表" in bell
+    assert "openNotification" in bell
+    assert "detailItem.value = item" in bell
+    assert "未读" in bell
+    assert "已读" in bell
+    assert "applyLocal" in bell
