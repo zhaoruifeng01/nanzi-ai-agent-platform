@@ -7,6 +7,7 @@ import Toast from '../components/Toast.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import cronstrue from 'cronstrue/i18n'
 import SessionTraceModal from '../components/SessionTraceModal.vue'
+import axios from '../utils/axios'
 import { 
   PlayCircleIcon,
   PauseCircleIcon
@@ -46,10 +47,112 @@ watch(viewMode, (newMode) => {
 
 const tasks = ref<AgentTask[]>([])
 const agents = ref<AIAgent[]>([])
+const showAgentDropdown = ref(false)
+const agentDropdownRef = ref<HTMLElement | null>(null)
+const selectedEditingAgent = computed(() =>
+  agents.value.find((agent) => agent.id === editingTask.value.agent_id) || null
+)
+const isAgentAvatarUrl = (url?: string) =>
+  Boolean(url && (url.startsWith('http') || url.startsWith('/') || url.startsWith('data:')))
+const selectEditingAgent = (agentId: string) => {
+  editingTask.value.agent_id = agentId
+  showAgentDropdown.value = false
+}
+const handleAgentDropdownOutsideClick = (e: MouseEvent) => {
+  if (agentDropdownRef.value && !agentDropdownRef.value.contains(e.target as Node)) {
+    showAgentDropdown.value = false
+  }
+}
 const loading = ref(false)
 const showEditModal = ref(false)
+const showPromptHelpModal = ref(false)
 const showLogsDrawer = ref(false)
 const editingTask = ref<Partial<AgentTask>>({})
+const notificationChannelOptions = [
+  { value: 'portal', label: '站内消息' },
+  { value: 'dingtalk', label: '钉钉' },
+  { value: 'wechat_work', label: '企业微信' },
+  { value: 'email', label: '邮件' },
+] as const
+const notificationChannels = ref<string[]>(['portal'])
+const personalNotificationConfigs = ref<Record<string, any>>({})
+const personalNotificationLoading = ref(false)
+const promptOverlapsNotificationChannels = computed(() => {
+  const prompt = String(editingTask.value.prompt || '').toLowerCase()
+  if (!prompt || !notificationChannels.value.length) return false
+  const hints: Record<string, string[]> = {
+    portal: ['站内', '铃铛', 'inbox', '门户消息', '消息中心'],
+    dingtalk: ['钉钉', 'dingtalk'],
+    wechat_work: ['企微', '企业微信', 'wechat'],
+    email: ['邮件', '邮箱', 'email', 'smtp'],
+  }
+  return notificationChannels.value.some((channel) =>
+    (hints[channel] || []).some((term) => prompt.includes(term.toLowerCase()))
+  )
+})
+const isNotificationChannelReady = (channel: string) => {
+  if (channel === 'portal') return true
+  const cfg = personalNotificationConfigs.value[channel]
+  if (!cfg || !cfg.is_enabled) return false
+  if (channel === 'dingtalk' || channel === 'wechat_work') {
+    return Boolean(String(cfg.webhook_url || '').trim())
+  }
+  if (channel === 'email') {
+    return Boolean(String(cfg.smtp_host || '').trim() && String(cfg.smtp_user || '').trim())
+  }
+  return false
+}
+const unavailableExternalChannels = computed(() =>
+  notificationChannelOptions
+    .filter((c) => c.value !== 'portal' && !isNotificationChannelReady(c.value))
+    .map((c) => c.label)
+)
+const pruneUnavailableNotificationChannels = () => {
+  notificationChannels.value = notificationChannels.value.filter((channel) =>
+    isNotificationChannelReady(channel)
+  )
+}
+const fetchPersonalNotificationConfigs = async () => {
+  personalNotificationLoading.value = true
+  try {
+    const res = await axios.get('/api/portal/notifications/config')
+    personalNotificationConfigs.value = res.data || {}
+    pruneUnavailableNotificationChannels()
+  } catch (error) {
+    console.warn('Failed to load personal notification configs', error)
+    personalNotificationConfigs.value = {}
+  } finally {
+    personalNotificationLoading.value = false
+  }
+}
+const openPersonalNotificationSettings = () => {
+  router.push({ path: '/dashboard/personal', query: { tab: 'notifications' } })
+}
+const promptExamples = [
+  {
+    title: 'GitHub Stars 巡检',
+    tip: '适合工具查询 + 下方勾选站内消息（不必在指令里写 send_portal_notification）',
+    text: `1. 使用 search_github_repos 工具查询用户 RandyChen1985 的全部开源项目（按 stars 排序），获取最新 Stars 与 Forks。
+2. 整理成简洁 Markdown 报告：每个项目的 Stars、Forks、语言，以及总 Stars 数。
+3. 将报告作为本次任务结果输出。`,
+  },
+  {
+    title: '机房巡检简报',
+    tip: '查数类任务写清对象、时间范围与输出格式即可',
+    text: `查询华东一号机房昨天的 PUE 峰值与均值，并列出告警次数 Top3。
+用简洁 Markdown 输出：核心结论 + 关键指标表格。`,
+  },
+  {
+    title: '仅业务指令（推荐）',
+    tip: '通知渠道请用下方「结果通知」勾选，执行指令专注业务本身',
+    text: `汇总本周任务失败次数，按失败原因分组，给出可执行的改进建议（3 条以内）。`,
+  },
+] as const
+const applyPromptExample = (text: string) => {
+  editingTask.value.prompt = text
+  showPromptHelpModal.value = false
+  showToast('已填入示例，可按需修改')
+}
 const selectedTask = ref<AgentTask | null>(null)
 const logs = ref<TaskLog[]>([])
 const logsLoading = ref(false)
@@ -66,9 +169,11 @@ const currentViewMode = computed(() => isMobile.value ? 'grid' : viewMode.value)
 
 onMounted(() => {
   window.addEventListener('resize', () => windowWidth.value = window.innerWidth)
+  document.addEventListener('click', handleAgentDropdownOutsideClick)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', () => windowWidth.value = window.innerWidth)
+  document.removeEventListener('click', handleAgentDropdownOutsideClick)
 })
 
 // Cron Builder Logic
@@ -223,31 +328,51 @@ const fetchAgents = async () => {
   }
 }
 
-const openCreateModal = () => {
+const openCreateModal = async () => {
   editingTask.value = { name: '', agent_id: agents.value[0]?.id || '', cron_expr: '0 8 * * *', prompt: '', status: 1 }
+  notificationChannels.value = ['portal']
+  showAgentDropdown.value = false
   cronMode.value = 'daily'
   cronConfig.value = { time: '08:00', weekday: 1, day: 1, intervalValue: 30, intervalUnit: 'minutes' }
   showEditModal.value = true
+  await fetchPersonalNotificationConfigs()
 }
 
-const openEditModal = (task: AgentTask) => {
+const openEditModal = async (task: AgentTask) => {
   if (task.task_type === 'saved_report') {
     openSavedReportTask(task)
     return
   }
   editingTask.value = { ...task }
+  const cfg = task.config && typeof task.config === 'object' ? task.config : {}
+  notificationChannels.value = Array.isArray(cfg.notification_channels)
+    ? cfg.notification_channels.map((c: string) => String(c))
+    : []
+  showAgentDropdown.value = false
   parseCronToUI(task.cron_expr || '')
   showEditModal.value = true
+  await fetchPersonalNotificationConfigs()
 }
 
 
 const saveTask = async () => {
   try {
+    pruneUnavailableNotificationChannels()
+    const baseConfig =
+      editingTask.value.config && typeof editingTask.value.config === 'object'
+        ? { ...editingTask.value.config }
+        : {}
+    if (notificationChannels.value.length) {
+      baseConfig.notification_channels = [...notificationChannels.value]
+    } else {
+      delete baseConfig.notification_channels
+    }
+    const payload = { ...editingTask.value, config: baseConfig }
     if (editingTask.value.id) {
-      await taskApi.update(editingTask.value.id, editingTask.value)
+      await taskApi.update(editingTask.value.id, payload)
       showToast('更新成功')
     } else {
-      await taskApi.create(editingTask.value)
+      await taskApi.create(payload)
       showToast('创建成功')
     }
     showEditModal.value = false
@@ -922,7 +1047,7 @@ onMounted(async () => {
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pl-3.5">
             <div class="p-3 bg-blue-50/50 rounded-xl border border-blue-100/50">
               <p class="text-[10px] font-bold text-blue-700 uppercase mb-1">create_recurring_task</p>
-              <p class="text-[9px] text-blue-600 italic">创建新任务。参数：name, cron, prompt</p>
+              <p class="text-[9px] text-blue-600 italic">创建新任务。参数：name, cron, prompt, notification_channels?(portal/dingtalk/wechat_work/email)</p>
             </div>
             <div class="p-3 bg-indigo-50/50 rounded-xl border border-indigo-100/50">
               <p class="text-[10px] font-bold text-indigo-700 uppercase mb-1">get_my_tasks</p>
@@ -973,9 +1098,90 @@ onMounted(async () => {
           
           <div>
             <label class="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">执行大脑 (Agent)</label>
-            <select v-model="editingTask.agent_id" class="w-full px-3 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-white">
-              <option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.display_name }} ({{ agent.name }})</option>
-            </select>
+            <div ref="agentDropdownRef" class="relative z-40">
+              <button
+                type="button"
+                class="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-3 py-2 text-left shadow-sm outline-none transition-all hover:border-gray-300 focus:border-primary focus:ring-2 focus:ring-primary/20"
+                @click.stop="showAgentDropdown = !showAgentDropdown"
+              >
+                <div class="flex min-w-0 flex-1 items-center gap-2">
+                  <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gray-100 bg-gray-50 text-sm">
+                    <img
+                      v-if="isAgentAvatarUrl(selectedEditingAgent?.avatar_url)"
+                      :src="selectedEditingAgent?.avatar_url"
+                      class="h-full w-full object-cover"
+                    />
+                    <span v-else-if="selectedEditingAgent?.avatar_url" class="text-sm">{{ selectedEditingAgent?.avatar_url }}</span>
+                    <span v-else class="text-sm">{{ selectedEditingAgent?.is_system ? '🔒' : '👤' }}</span>
+                  </div>
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-bold text-gray-800">
+                      {{ selectedEditingAgent?.display_name || '选择智能体' }}
+                    </p>
+                    <p v-if="selectedEditingAgent?.name" class="truncate text-[10px] font-mono text-gray-400">
+                      {{ selectedEditingAgent.name }}
+                    </p>
+                  </div>
+                </div>
+                <svg
+                  class="ml-2 h-4 w-4 shrink-0 text-gray-400 transition-transform duration-200"
+                  :class="{ 'rotate-180': showAgentDropdown }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              <div
+                v-show="showAgentDropdown"
+                class="absolute left-0 right-0 z-50 mt-1 max-h-72 overflow-y-auto rounded-xl border border-gray-200 bg-white py-1 px-1 shadow-xl"
+              >
+                <button
+                  v-for="agent in agents"
+                  :key="agent.id"
+                  type="button"
+                  class="my-1 flex w-full cursor-pointer items-start gap-2.5 rounded-lg border p-2 text-left transition-all"
+                  :class="
+                    editingTask.agent_id === agent.id
+                      ? 'border-primary/40 bg-primary/5 ring-1 ring-primary/5'
+                      : 'border-transparent hover:bg-gray-50'
+                  "
+                  @click.stop="selectEditingAgent(agent.id)"
+                >
+                  <div
+                    class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-100 bg-gray-50 text-sm"
+                    :class="editingTask.agent_id === agent.id ? 'border-primary/20 bg-primary/10' : ''"
+                  >
+                    <img
+                      v-if="isAgentAvatarUrl(agent.avatar_url)"
+                      :src="agent.avatar_url"
+                      class="h-full w-full object-cover"
+                    />
+                    <span v-else-if="agent.avatar_url" class="text-sm">{{ agent.avatar_url }}</span>
+                    <span v-else class="text-sm">{{ agent.is_system ? '🔒' : '👤' }}</span>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center justify-between gap-2">
+                      <span
+                        class="truncate text-xs font-bold text-gray-800"
+                        :class="editingTask.agent_id === agent.id ? 'text-primary' : ''"
+                      >{{ agent.display_name }}</span>
+                      <span
+                        v-if="agent.is_system"
+                        class="shrink-0 rounded border border-gray-200 bg-gray-50 px-1 text-[8px] font-mono text-gray-400"
+                      >SYSTEM</span>
+                    </div>
+                    <div class="mt-0.5 truncate font-mono text-[9px] text-gray-400">{{ agent.name }}</div>
+                    <div class="mt-1 line-clamp-2 break-words text-[10px] leading-relaxed text-gray-500" :title="agent.description">
+                      {{ agent.description || '暂无备注说明信息' }}
+                    </div>
+                  </div>
+                </button>
+                <p v-if="!agents.length" class="px-3 py-4 text-center text-xs text-gray-400">暂无可选智能体</p>
+              </div>
+            </div>
           </div>
 
           <div>
@@ -1059,14 +1265,94 @@ onMounted(async () => {
           </div>
 
           <div>
-            <label class="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">执行指令 (Prompt)</label>
+            <div class="mb-1 flex items-center gap-1.5">
+              <label class="text-xs font-bold text-gray-400 uppercase tracking-widest">执行指令 (Prompt)</label>
+              <button
+                type="button"
+                class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-300 text-[10px] font-black text-gray-400 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-600"
+                title="查看填写示例"
+                aria-label="查看填写示例"
+                @click="showPromptHelpModal = true"
+              >?</button>
+            </div>
             <textarea v-model="editingTask.prompt" rows="4" placeholder="例如：帮我查一下华东一号机房昨天的 PUE 峰值..." class="w-full px-3 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-sm"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">结果通知</label>
+            <div class="rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-3 space-y-2">
+              <div class="flex flex-wrap gap-x-4 gap-y-2">
+                <label
+                  v-for="channel in notificationChannelOptions"
+                  :key="channel.value"
+                  class="flex items-center gap-1.5 text-xs font-bold"
+                  :class="isNotificationChannelReady(channel.value) ? 'text-gray-600 cursor-pointer' : 'text-gray-300 cursor-not-allowed'"
+                  :title="isNotificationChannelReady(channel.value) ? '' : '请先在个人中心 → 消息通知中配置并启用该通道'"
+                >
+                  <input
+                    v-model="notificationChannels"
+                    type="checkbox"
+                    :value="channel.value"
+                    class="rounded border-gray-300 text-primary focus:ring-primary/30 disabled:opacity-40"
+                    :disabled="!isNotificationChannelReady(channel.value) || personalNotificationLoading"
+                  />
+                  {{ channel.label }}
+                </label>
+              </div>
+              <p class="text-[10px] text-gray-400 leading-relaxed">
+                勾选后由调度器在执行时补充通知要求；站内消息始终可用。钉钉 / 企业微信 / 邮件需所选智能体绑定对应工具，并在个人中心启用通道。
+              </p>
+              <p v-if="unavailableExternalChannels.length" class="text-[10px] text-amber-600 leading-relaxed">
+                {{ unavailableExternalChannels.join('、') }} 尚未在个人中心配置或未启用，已禁止勾选。
+                <button type="button" class="ml-1 font-black text-blue-600 underline underline-offset-2 hover:text-blue-700" @click="openPersonalNotificationSettings">
+                  去个人中心配置消息通知
+                </button>
+              </p>
+              <p v-if="promptOverlapsNotificationChannels" class="text-[10px] text-amber-600 leading-relaxed">
+                执行指令里已提到通知渠道；勾选渠道将与之合并，同一渠道运行时只发送一次。
+              </p>
+            </div>
           </div>
         </div>
 
         <div class="flex justify-end space-x-3 pt-4 pb-safe-area border-t border-gray-50">
           <button @click="showEditModal = false" class="px-4 py-2 text-sm font-bold text-gray-400 hover:text-gray-600">取消</button>
           <button @click="saveTask" class="px-8 py-2 bg-primary text-white rounded-xl shadow-lg shadow-primary/20 hover:bg-primary-dark transition-all font-bold text-sm">确认保存</button>
+        </div>
+      </div>
+    </Modal>
+
+    <Modal
+      v-if="showPromptHelpModal"
+      title="执行指令填写示例"
+      size="max-w-md"
+      :z-index="80"
+      @close="showPromptHelpModal = false"
+    >
+      <div class="space-y-3">
+        <p class="text-[11px] leading-relaxed text-gray-500">
+          写清「做什么、用什么、输出什么」。通知优先勾选下方「结果通知」。
+        </p>
+        <div
+          v-for="example in promptExamples"
+          :key="example.title"
+          class="rounded-xl border border-gray-100 bg-gray-50/70 p-2.5"
+        >
+          <div class="mb-1.5 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <p class="text-xs font-black text-gray-800">{{ example.title }}</p>
+              <p class="mt-0.5 text-[10px] text-gray-400 line-clamp-1">{{ example.tip }}</p>
+            </div>
+            <button
+              type="button"
+              class="shrink-0 rounded-lg bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-600 hover:bg-blue-100"
+              @click="applyPromptExample(example.text)"
+            >填入</button>
+          </div>
+          <pre class="max-h-24 overflow-y-auto whitespace-pre-wrap rounded-lg border border-gray-100 bg-white px-2.5 py-2 text-[10px] leading-relaxed text-gray-700">{{ example.text }}</pre>
+        </div>
+        <div class="flex justify-end">
+          <button type="button" class="px-3 py-1.5 text-xs font-bold text-gray-400 hover:text-gray-600" @click="showPromptHelpModal = false">关闭</button>
         </div>
       </div>
     </Modal>

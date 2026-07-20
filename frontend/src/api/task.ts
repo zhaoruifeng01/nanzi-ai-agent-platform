@@ -29,7 +29,12 @@ export interface AgentTask {
   last_attempt_at?: string
   last_finished_at?: string
   last_alert_at?: string
-  config?: any
+  /** May include notification_channels: portal | dingtalk | wechat_work | email */
+  config?: {
+    notification_channels?: string[]
+    task_metrics?: Record<string, any>
+    [key: string]: any
+  }
   last_run_id?: string
   last_run_at?: string
   next_run_at?: string

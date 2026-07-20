@@ -243,3 +243,78 @@ class send_wechat_work_message(BaseTool):
 
     def _run(self, content: str) -> str:
         raise NotImplementedError("Use _arun instead")
+
+
+class PortalNotificationInput(BaseModel):
+    title: str = Field(description="站内消息标题（门户铃铛与消息中心可见）")
+    content: str = Field(description="站内消息正文（支持纯文本或 Markdown）")
+    level: str = Field(
+        default="info",
+        description="消息级别：info / success / warning / error，默认 info",
+    )
+
+
+class send_portal_notification(BaseTool):
+    name: str = "send_portal_notification"
+    description: str = (
+        "发送站内消息到当前用户的门户消息中心（右上角铃铛 / Inbox）。"
+        "Send an in-app portal notification to the current user. "
+        "无需配置 Webhook；消息会出现在 PortalNotification 站内信箱。"
+        "适合任务完成提醒、巡检结论摘要、需要用户回门户查看的结果通知。"
+    )
+    args_schema: Type[BaseModel] = PortalNotificationInput
+
+    async def _arun(self, title: str, content: str, level: str = "info") -> str:
+        from app.core.context import get_current_agent_context
+        from app.core.orm import AsyncSessionLocal
+        from app.services.portal_notification_service import PortalNotificationService
+
+        agent_ctx = get_current_agent_context()
+        if not agent_ctx or not agent_ctx.user_id:
+            return "Error: 无法确定当前用户，站内消息未发送。"
+
+        try:
+            user_id = int(agent_ctx.user_id)
+        except (TypeError, ValueError):
+            return "Error: 当前用户 ID 无效，站内消息未发送。"
+
+        cleaned_title = str(title or "").strip()
+        cleaned_content = str(content or "").strip()
+        if not cleaned_title:
+            return "Error: 标题不能为空。"
+        if not cleaned_content:
+            return "Error: 正文不能为空。"
+
+        allowed_levels = {"info", "success", "warning", "error"}
+        resolved_level = str(level or "info").strip().lower()
+        if resolved_level not in allowed_levels:
+            resolved_level = "info"
+
+        try:
+            async with AsyncSessionLocal() as db:
+                row = await PortalNotificationService.create(
+                    db,
+                    user_id=user_id,
+                    title=cleaned_title,
+                    content=cleaned_content,
+                    level=resolved_level,
+                    category="agent",
+                    resource_type="agent_message",
+                    resource_id=str(getattr(agent_ctx, "conversation_id", "") or "")[:64] or None,
+                    metadata={
+                        "source": "send_portal_notification",
+                        "agent_name": getattr(agent_ctx, "agent_name", None),
+                        "conversation_id": getattr(agent_ctx, "conversation_id", None),
+                    },
+                )
+                await db.commit()
+            return (
+                f"Successfully sent portal notification "
+                f"(id={row.id}, level={resolved_level}): {cleaned_title}"
+            )
+        except Exception as e:
+            logger.error("Portal notification tool error: %s", e, exc_info=True)
+            return f"Error sending portal notification: {str(e)}"
+
+    def _run(self, title: str, content: str, level: str = "info") -> str:
+        raise NotImplementedError("Use _arun instead")

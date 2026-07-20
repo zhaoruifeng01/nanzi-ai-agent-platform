@@ -9,20 +9,32 @@ from app.core.orm import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 @tool
-async def create_recurring_task(name: str, cron: str, prompt: str) -> str:
+async def create_recurring_task(
+    name: str,
+    cron: str,
+    prompt: str,
+    notification_channels: Optional[List[str]] = None,
+) -> str:
     """
     Create a new recurring scheduled task.
-    
+
     Args:
         name: A descriptive name for the task (e.g., 'Daily PUE Report').
         cron: The standard Cron expression (e.g., '0 8 * * *' for daily 8 AM).
-        prompt: The specific instruction for the AI to execute periodically.
+        prompt: The specific business instruction for the AI to execute periodically.
+            Prefer putting only the work to do here; delivery channels can use notification_channels.
+        notification_channels: Optional delivery channels when the user explicitly asks to notify.
+            Allowed values: portal (站内消息/铃铛), dingtalk (钉钉), wechat_work (企业微信), email (邮件).
+            Example: ["portal"] or ["portal", "dingtalk"]. Leave empty if the user did not ask for delivery.
     """
     ctx = get_current_agent_context()
     if not ctx or not ctx.user_id:
         return "Error: User context not found. Cannot create task."
 
     try:
+        from app.services.task_notification_channels import merge_notification_channels_into_config
+
+        config = merge_notification_channels_into_config(None, notification_channels)
         async with AsyncSessionLocal() as db:
             task = await TaskCenterService.create_task(
                 db=db,
@@ -31,9 +43,17 @@ async def create_recurring_task(name: str, cron: str, prompt: str) -> str:
                 agent_id=ctx.agent_id,
                 cron_expr=cron,
                 prompt=prompt,
-                source="agent"
+                source="agent",
+                config=config or None,
             )
-            return f"Successfully created scheduled task '{name}' (ID: {task.id}). Next run: {task.next_run_at}"
+            channel_note = ""
+            channels = (config or {}).get("notification_channels") or []
+            if channels:
+                channel_note = f" Notification channels: {', '.join(channels)}."
+            return (
+                f"Successfully created scheduled task '{name}' (ID: {task.id}). "
+                f"Next run: {task.next_run_at}.{channel_note}"
+            )
     except Exception as e:
         logger.error(f"Failed to create task via tool: {e}", exc_info=True)
         return f"Error creating task: {str(e)}"

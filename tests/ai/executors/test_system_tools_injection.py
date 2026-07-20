@@ -26,6 +26,7 @@ def test_system_implicit_tools_registry():
         "create_skills",
         "list_available_skills",
         "read_skill_instruction",
+        "send_portal_notification",
     }.issubset(set(tool_names))
 
     assert {
@@ -36,9 +37,10 @@ def test_system_implicit_tools_registry():
         "manage_process",
         "search_text",
         "system_http_request",
-        "fetch_static_web_url",
         "web_renderer_and_snapshot",
-        "web_search_baidu",
+        "send_dingtalk_message",
+        "send_email",
+        "send_wechat_work_message",
     }.isdisjoint(set(tool_names))
     assert "execute_system_command" not in tool_names
     assert "manage_system_process" not in tool_names

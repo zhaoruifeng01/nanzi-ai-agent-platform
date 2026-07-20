@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import axios from "../utils/axios";
+import { renderMarkdown } from "../utils/markdown";
 import {
   createSavedReportOpenRequest,
   publishSavedReportOpenRequest,
@@ -17,13 +18,32 @@ const deleteMode = ref<"single" | "read" | null>(null);
 const deleteTarget = ref<any | null>(null);
 const deleting = ref(false);
 const deleteError = ref("");
+const detailItem = ref<any | null>(null);
 let unreadTimer: ReturnType<typeof setInterval> | null = null;
 let listTimer: ReturnType<typeof setInterval> | null = null;
+
+const isSavedReportNotification = (item: any) => {
+  const meta = item?.metadata || {};
+  return Boolean(meta.report_id) || item?.resource_type === "saved_report_run";
+};
+
+const notificationKindLabel = (item: any) => {
+  if (isSavedReportNotification(item)) return "黄金报表";
+  if (item?.category === "agent") return "智能体";
+  if (item?.category === "saved_report") return "报表";
+  return "系统";
+};
+
+const detailHtml = computed(() => renderMarkdown(String(detailItem.value?.content || "")));
 
 const closeNotifications = () => {
   open.value = false;
   if (listTimer) clearInterval(listTimer);
   listTimer = null;
+};
+
+const closeDetail = () => {
+  detailItem.value = null;
 };
 
 const fetchUnreadCount = async () => {
@@ -88,9 +108,33 @@ const toggle = async () => {
     closeNotifications();
   }
 };
-const markRead = async (item: any) => {
+const markItemRead = async (item: any) => {
+  if (item.read_at) return;
+  const readAt = new Date().toISOString();
+  // 先本地标记，保证列表/角标即时反馈；接口失败再回滚
+  const applyLocal = (value: string | null) => {
+    item.read_at = value;
+    const idx = notifications.value.findIndex((n) => n.id === item.id);
+    if (idx >= 0) {
+      notifications.value[idx] = { ...notifications.value[idx], read_at: value };
+    }
+    if (detailItem.value?.id === item.id) {
+      detailItem.value = { ...detailItem.value, read_at: value };
+    }
+  };
+  applyLocal(readAt);
+  unreadCount.value = Math.max(0, unreadCount.value - 1);
+  try {
+    await axios.post(`/api/portal/inbox/${item.id}/read`);
+  } catch (error) {
+    console.warn("Failed to mark portal notification as read", error);
+    applyLocal(null);
+    unreadCount.value += 1;
+  }
+};
+const openNotification = async (item: any) => {
   const meta = item.metadata || {};
-  const savedReportOpenRequest = meta.report_id
+  const savedReportOpenRequest = isSavedReportNotification(item) && meta.report_id
     ? createSavedReportOpenRequest({ report_id: meta.report_id, run_id: item.resource_id || "" })
     : null;
   const notificationTarget = savedReportOpenRequest
@@ -104,20 +148,19 @@ const markRead = async (item: any) => {
         },
       }
     : null;
-  if (!item.read_at) {
-    try {
-      await axios.post(`/api/portal/inbox/${item.id}/read`);
-      item.read_at = new Date().toISOString();
-      unreadCount.value = Math.max(0, unreadCount.value - 1);
-    } catch (error) {
-      console.warn("Failed to mark portal notification as read", error);
-    }
-  }
-  if (notificationTarget) {
+
+  await markItemRead(item);
+
+  if (notificationTarget && savedReportOpenRequest) {
     closeNotifications();
+    closeDetail();
     await router.push(notificationTarget);
     publishSavedReportOpenRequest(savedReportOpenRequest);
+    return;
   }
+
+  // 普通站内消息：打开详情并渲染 Markdown
+  detailItem.value = item;
 };
 const markAllRead = async () => {
   await axios.post("/api/portal/inbox/read-all");
@@ -150,10 +193,12 @@ const confirmDeleteNotifications = async () => {
     if (deleteMode.value === "read") {
       await axios.delete("/api/portal/inbox/read");
       notifications.value = notifications.value.filter(item => !item.read_at);
+      if (detailItem.value?.read_at) closeDetail();
     } else if (deleteTarget.value) {
       await axios.delete(`/api/portal/inbox/${deleteTarget.value.id}`);
       if (!deleteTarget.value.read_at) unreadCount.value = Math.max(0, unreadCount.value - 1);
       notifications.value = notifications.value.filter(item => item.id !== deleteTarget.value.id);
+      if (detailItem.value?.id === deleteTarget.value.id) closeDetail();
     }
     closeDeleteConfirm();
   } catch (error: any) {
@@ -164,6 +209,11 @@ const confirmDeleteNotifications = async () => {
   }
 };
 const formatDate = (value: string) => value ? new Date(value).toLocaleString("zh-CN") : "";
+const previewText = (content: string) =>
+  String(content || "")
+    .replace(/[#>*`_\-|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 onMounted(() => {
   fetchUnreadCount().catch(() => undefined);
@@ -200,12 +250,69 @@ onUnmounted(() => {
       <div class="max-h-[28rem] overflow-y-auto">
         <p v-if="loading" class="py-10 text-center text-xs text-gray-400">正在加载...</p>
         <p v-else-if="!notifications.length" class="py-10 text-center text-xs text-gray-400">暂无通知</p>
-        <div v-for="item in notifications" v-else :key="item.id" class="group flex border-b border-gray-50 hover:bg-gray-50" :class="!item.read_at ? 'bg-blue-50/40' : ''">
-          <button class="min-w-0 flex-1 px-4 py-3 text-left" @click="markRead(item)"><div class="flex gap-2"><span class="mt-1 w-2 h-2 rounded-full shrink-0" :class="item.level === 'error' ? 'bg-red-500' : item.level === 'success' ? 'bg-emerald-500' : 'bg-blue-500'"></span><div class="min-w-0"><p class="text-xs font-bold text-gray-700 truncate">{{ item.title }}</p><p class="text-[11px] text-gray-500 mt-1 line-clamp-2">{{ item.content }}</p><p class="text-[10px] text-gray-400 mt-1">{{ formatDate(item.created_at) }}</p></div></div></button>
+        <div v-for="item in notifications" v-else :key="item.id" class="group flex border-b border-gray-50 hover:bg-gray-50" :class="!item.read_at ? 'bg-blue-50/50' : 'bg-white'">
+          <button class="min-w-0 flex-1 px-4 py-3 text-left" @click="openNotification(item)">
+            <div class="flex gap-2">
+              <span
+                class="mt-1.5 w-2 h-2 rounded-full shrink-0"
+                :class="!item.read_at ? 'bg-blue-500' : 'bg-gray-200'"
+                :title="item.read_at ? '已读' : '未读'"
+              ></span>
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span
+                    class="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black"
+                    :class="isSavedReportNotification(item) ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-slate-100 text-slate-600 border border-slate-200'"
+                  >{{ isSavedReportNotification(item) ? '⭐ 黄金报表' : notificationKindLabel(item) }}</span>
+                  <span
+                    v-if="!item.read_at"
+                    class="shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-black text-blue-600"
+                  >未读</span>
+                  <p class="truncate text-xs" :class="!item.read_at ? 'font-black text-gray-800' : 'font-medium text-gray-500'">{{ item.title }}</p>
+                </div>
+                <p class="text-[11px] mt-1 line-clamp-2" :class="!item.read_at ? 'text-gray-600' : 'text-gray-400'">{{ previewText(item.content) }}</p>
+                <p class="text-[10px] text-gray-400 mt-1">{{ formatDate(item.created_at) }}</p>
+              </div>
+            </div>
+          </button>
           <button type="button" class="mr-2 self-center rounded-lg p-2 text-gray-300 opacity-70 transition-all hover:bg-red-50 hover:text-red-500 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100" title="删除消息" aria-label="删除消息" @click.stop="requestDeleteNotification(item)"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12m-10 0 1 13h6l1-13m-6 0V4h4v3"/></svg></button>
         </div>
       </div>
     </div>
+
+    <teleport to="body">
+      <div
+        v-if="detailItem"
+        class="fixed inset-0 z-[270] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]"
+        @click.self="closeDetail"
+      >
+        <div class="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div class="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+            <div class="min-w-0">
+              <div class="mb-1.5 flex flex-wrap items-center gap-2">
+                <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">{{ notificationKindLabel(detailItem) }}</span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-black"
+                  :class="detailItem.level === 'error' ? 'bg-red-50 text-red-600' : detailItem.level === 'success' ? 'bg-emerald-50 text-emerald-700' : detailItem.level === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-600'"
+                >{{ detailItem.level || 'info' }}</span>
+              </div>
+              <h3 class="text-base font-black text-gray-800">{{ detailItem.title }}</h3>
+              <p class="mt-1 text-[11px] text-gray-400">{{ formatDate(detailItem.created_at) }}</p>
+            </div>
+            <button type="button" class="shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="关闭详情" aria-label="关闭详情" @click="closeDetail">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+          <div class="notification-detail-body flex-1 overflow-y-auto px-5 py-4">
+            <div class="markdown-body text-sm text-gray-700 leading-relaxed" v-html="detailHtml"></div>
+          </div>
+          <div class="flex justify-end gap-2 border-t border-gray-100 px-5 py-3">
+            <button type="button" class="rounded-lg border px-3 py-2 text-xs font-bold text-gray-600" @click="closeDetail">关闭</button>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
     <teleport to="body"><div v-if="deleteMode" class="fixed inset-0 z-[280] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[1px]" @click.self="closeDeleteConfirm">
       <div class="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
         <h3 class="text-sm font-black text-gray-800">{{ deleteMode === 'read' ? '确认清空已读消息？' : '确认删除这条消息？' }}</h3>
@@ -217,3 +324,57 @@ onUnmounted(() => {
     </div></teleport>
   </div>
 </template>
+
+<style scoped>
+.notification-detail-body :deep(.markdown-body) {
+  overflow-wrap: break-word;
+}
+.notification-detail-body :deep(h1),
+.notification-detail-body :deep(h2),
+.notification-detail-body :deep(h3) {
+  font-weight: 800;
+  margin: 0.85em 0 0.4em;
+  color: #1f2937;
+}
+.notification-detail-body :deep(h1) { font-size: 1.15rem; }
+.notification-detail-body :deep(h2) { font-size: 1.05rem; }
+.notification-detail-body :deep(h3) { font-size: 0.95rem; }
+.notification-detail-body :deep(p) { margin: 0.45em 0; }
+.notification-detail-body :deep(ul),
+.notification-detail-body :deep(ol) { padding-left: 1.25em; margin: 0.5em 0; }
+.notification-detail-body :deep(li) { margin: 0.25em 0; }
+.notification-detail-body :deep(blockquote) {
+  margin: 0.6em 0;
+  padding: 0.4em 0.75em;
+  border-left: 3px solid #93c5fd;
+  background: #f8fafc;
+  color: #475569;
+}
+.notification-detail-body :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 12px;
+}
+.notification-detail-body :deep(th),
+.notification-detail-body :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  text-align: left;
+}
+.notification-detail-body :deep(th) {
+  background: #f8fafc;
+  font-weight: 800;
+}
+.notification-detail-body :deep(pre) {
+  overflow-x: auto;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+.notification-detail-body :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+</style>

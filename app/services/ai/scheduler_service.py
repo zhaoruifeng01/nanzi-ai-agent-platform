@@ -169,14 +169,25 @@ def _new_task_run_conversation_id(task_conversation_id: str) -> str:
     return f"{_task_run_conversation_prefix(task_conversation_id)}_run_{uuid.uuid4().hex[:12]}"
 
 
-def _build_scheduled_task_prompt(task_id: int, agent_display_name: str, prompt: str) -> str:
-    return (
+def _build_scheduled_task_prompt(
+    task_id: int,
+    agent_display_name: str,
+    prompt: str,
+    notification_channels: Optional[List[str]] = None,
+) -> str:
+    from app.services.task_notification_channels import build_notification_delivery_supplement
+
+    body = (
         f"【自动化指令-任务ID: {task_id}】@{agent_display_name}\n"
         "这是 TaskCenter 自动任务的本次独立触发。请立即实际执行任务，不要只回复计划、准备开始或执行思路。\n"
         "如果任务需要获取系统状态、调用工具、发送通知或写入外部系统，必须调用对应工具完成；"
         "只有工具调用完成后，才能总结执行结果。\n"
         f"任务内容：{prompt}"
     )
+    supplement = build_notification_delivery_supplement(notification_channels or [])
+    if supplement:
+        body = f"{body}\n\n{supplement}"
+    return body
 
 
 def _is_busy_task_result(result: Dict[str, Any]) -> bool:
@@ -348,7 +359,14 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
             await _mark_task_attempt_started(session, task)
 
             # Add structured prefix with @AgentName for forced routing.
-            full_prompt = _build_scheduled_task_prompt(task_id, agent_display_name, task.prompt)
+            from app.services.task_notification_channels import channels_from_task_config
+
+            full_prompt = _build_scheduled_task_prompt(
+                task_id,
+                agent_display_name,
+                task.prompt,
+                notification_channels=channels_from_task_config(_task_config(task)),
+            )
             run_conversation_id = _new_task_run_conversation_id(task.conversation_id)
 
             logger.info(
