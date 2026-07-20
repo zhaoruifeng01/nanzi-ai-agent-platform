@@ -1172,7 +1172,7 @@ onUnmounted(() => {
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索技能名称或描述..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-9 pr-4 text-sm shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500"
           />

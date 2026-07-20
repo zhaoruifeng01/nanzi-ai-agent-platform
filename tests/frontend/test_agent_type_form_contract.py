@@ -44,7 +44,9 @@ def test_agent_creation_reuses_version_drawer_with_agent_step():
     assert "OpenClaw" in drawer_source
     assert "https://api.openclaw.example.com" in drawer_source
     assert "bot-123" in drawer_source
-    assert "System Agent" in drawer_source
+    assert "系统智能体" in drawer_source
+    assert "Admin Only" in drawer_source
+    assert "agentForm.is_system ? 'border-blue-200 bg-blue-50 text-blue-700'" in drawer_source
     assert "系统预置智能体，防止误删并提高路由权重" in drawer_source
     assert "扩展能力标签" in drawer_source
     assert "系统内置标签" in drawer_source
@@ -94,13 +96,20 @@ def test_agent_edit_dialog_is_compact_and_locks_engine_type_only():
     assert 'size="max-w-4xl"' in edit_dialog[:300]
     assert '<template #header-extra>' in management
     assert '<template #footer>' in management
-    assert "System Agent" in management
+    assert "系统智能体" in management
+    assert "系统预置" in management
+    assert "排序权重 (Sort Order)" not in edit_dialog[:5000]
+    assert 'title="仅影响聊天页面的智能体选择列表顺序，值越大越靠前"' in management
     assert "执行引擎不可修改" in management
     assert ':disabled="isEditingAgent"' in management
     assert "🔒 当前类型" in management
     assert "当前类型：" not in edit_dialog[:6000]
     assert "showAdvancedSafety" in management
     assert "高级安全设置" in management
+    assert "高级能力设置" not in edit_dialog
+    assert "扩展能力标签" in edit_dialog
+    assert "系统内置标签" in edit_dialog
+    assert "showCapabilityHelp" in management
     assert "查数工具必需，数据集可选" in management
     assert 'v-model="engineConfigUI.base_url"' in management
     assert 'v-model="engineConfigUI.app_id"' in management

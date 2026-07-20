@@ -741,7 +741,7 @@ watch(
             <MagnifyingGlassIcon class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               v-model="searchQuery"
-              type="text"
+              type="search"
               placeholder="搜索提示词..."
               class="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:ring-1 focus:ring-primary focus:border-primary outline-none"
             />

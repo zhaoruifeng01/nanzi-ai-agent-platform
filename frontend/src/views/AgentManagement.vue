@@ -160,7 +160,7 @@ const showToast = (
 };
 
 const isEditingAgent = ref(false);
-const showAdvancedCapabilities = ref(false);
+const showCapabilityHelp = ref(false);
 const showAdvancedSafety = ref(false);
 const AGENT_TYPE_OPTIONS = [
   {
@@ -924,7 +924,7 @@ const startAgentCreation = () => {
 const openAgentModal = (agent?: AIAgent) => {
   if (agent) {
     isOnboardingFlow.value = false;
-    showAdvancedCapabilities.value = false;
+    showCapabilityHelp.value = false;
     showAdvancedSafety.value = false;
     if (agent.is_system && userInfo.value?.role !== "admin") {
       showToast("系统内置智能体仅管理员可编辑", "warning");
@@ -1967,7 +1967,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           </span>
           <input
             v-model="searchKeyword"
-            type="text"
+            type="search"
             placeholder="搜索智能体名称..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
@@ -2592,7 +2592,13 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           title="标记为系统预置智能体，防止误删并提高路由权重"
         >
           <span class="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Admin Only</span>
-          <span class="text-xs font-semibold text-gray-700">System Agent</span>
+          <span
+            class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold transition-colors"
+            :class="agentForm.is_system ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-500'"
+          >
+            <span aria-hidden="true">🛡️</span>
+            系统智能体
+          </span>
           <span class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors" :class="agentForm.is_system ? 'bg-primary' : 'bg-gray-300'">
             <input v-model="agentForm.is_system" type="checkbox" class="sr-only" />
             <span class="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" :class="agentForm.is_system ? 'translate-x-4' : 'translate-x-0.5'"></span>
@@ -2646,18 +2652,19 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1"
-            >排序权重 (Sort Order)</label
-          >
+          <label class="mb-1 flex items-center gap-1 text-sm font-medium text-gray-700">
+            <span>排序权重</span>
+            <span
+              class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-gray-300 text-[10px] font-semibold text-gray-400"
+              title="仅影响聊天页面的智能体选择列表顺序，值越大越靠前"
+            >?</span>
+          </label>
           <input
             type="number"
             v-model.number="agentForm.sort_order"
             placeholder="值越大越靠前 (默认 0)"
             class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
           />
-          <p class="text-[10px] text-gray-400 mt-1 italic">
-            * 仅影响聊天页面的智能体选择列表顺序。值越大越靠前。
-          </p>
         </div>
         </div>
 
@@ -3049,27 +3056,32 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           </div>
         </div>
 
-        <div v-if="agentForm.engine_type === 'LOCAL'" class="rounded-lg border border-gray-200">
-          <button
-            type="button"
-            class="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm font-medium text-gray-700"
-            @click="showAdvancedCapabilities = !showAdvancedCapabilities"
-          >
-            <span>高级能力设置</span>
-            <span class="text-xs text-gray-400">{{ showAdvancedCapabilities ? '收起' : '展开' }}</span>
-          </button>
-          <div v-if="showAdvancedCapabilities" class="border-t border-gray-100 p-3">
-            <div class="mb-3">
-              <p class="mb-2 text-xs font-medium text-gray-500">系统管理能力</p>
-              <span class="inline-flex items-center rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-800">
-                🔒 {{ lockedCapabilityForType(agentForm.agent_type) }}
-              </span>
+        <div v-if="agentForm.engine_type === 'LOCAL'" class="rounded-xl border border-gray-200 p-4">
+          <div class="relative flex items-center gap-1.5">
+            <label class="text-sm font-bold text-gray-800">扩展能力标签</label>
+            <button type="button" @click="showCapabilityHelp = !showCapabilityHelp" class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100" aria-label="查看扩展能力标签说明">?</button>
+            <div v-if="showCapabilityHelp" class="absolute bottom-7 left-0 z-30 w-[min(720px,calc(100vw-4rem))] rounded-xl border border-gray-200 bg-white p-4 shadow-xl">
+              <div class="flex items-center justify-between"><h4 class="text-sm font-bold text-gray-900">扩展能力标签使用说明</h4><button type="button" @click="showCapabilityHelp = false" class="text-gray-400 hover:text-gray-700">×</button></div>
+              <div class="mt-3 grid grid-cols-1 gap-4 text-xs leading-5 text-gray-600 sm:grid-cols-2">
+                <section><h5 class="font-bold text-gray-800">有什么用途</h5><p class="mt-1">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p></section>
+                <section><h5 class="font-bold text-gray-800">如何影响路由</h5><p class="mt-1">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p></section>
+                <section><h5 class="font-bold text-gray-800">如何填写</h5><p class="mt-1">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 contract_review、ops_diagnosis。</p></section>
+                <section><h5 class="font-bold text-gray-800">重要提醒</h5><p class="mt-1">标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</p></section>
+              </div>
             </div>
-            <div class="flex items-center space-x-2 mb-2">
+          </div>
+          <p class="mt-1 text-xs text-gray-500">主类型能力由系统锁定；这里可补充 contract_review 等自定义路由标签。</p>
+          <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-blue-600">系统内置标签</div>
+            <span class="mt-2 inline-flex items-center rounded-full border border-blue-200 bg-white px-2.5 py-1 font-mono text-xs font-semibold text-blue-700">
+              🔒 {{ lockedCapabilityForType(agentForm.agent_type) }}
+            </span>
+          </div>
+          <div class="mt-3 flex items-center space-x-2">
               <input
                 v-model="newCapability"
                 @keyup.enter="addCapability"
-                placeholder="添加扩展能力，例如 reporting"
+                placeholder="输入标签并回车"
                 class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none text-sm"
               />
               <button
@@ -3077,12 +3089,12 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 @click="addCapability"
                 class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium text-xs"
               >添加</button>
-            </div>
-            <div class="flex flex-wrap gap-2 min-h-[30px] p-2 bg-gray-50 rounded-lg border border-dashed border-gray-200">
+          </div>
+          <div class="mt-3 flex min-h-8 flex-wrap gap-2">
               <span
                 v-for="cap in (agentForm.capabilities || []).filter(cap => !primaryCapabilities.has(cap as any))"
                 :key="cap"
-                class="inline-flex items-center px-2 py-1 rounded bg-gray-200 text-gray-700 text-xs font-medium"
+                class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700"
               >
                 {{ cap }}
                 <button
@@ -3093,9 +3105,8 @@ const formatSkillCountLabel = (agent: AIAgent) => {
               </span>
               <span
                 v-if="!(agentForm.capabilities || []).some(cap => !primaryCapabilities.has(cap as any))"
-                class="text-xs text-gray-400 p-1"
+                class="text-xs text-gray-400"
               >暂无扩展能力</span>
-            </div>
           </div>
         </div>
         </div>

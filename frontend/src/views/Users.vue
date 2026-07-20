@@ -26,7 +26,7 @@
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索用户名或姓名..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             @input="debouncedSearch"
@@ -691,7 +691,7 @@
                 >
                 <input
                   v-model="roleSearchQuery"
-                  type="text"
+                  type="search"
                   placeholder="搜索角色..."
                   class="text-xs border border-gray-200 rounded px-2 py-0.5 w-32 focus:outline-none focus:border-blue-400"
                 />
@@ -901,7 +901,7 @@
                         </span>
                         <input
                           v-model="toolSearchQuery"
-                          type="text"
+                          type="search"
                           placeholder="搜索工具名..."
                           class="text-[10px] border border-gray-200 rounded px-2 py-0.5 w-[140px] focus:outline-none focus:border-indigo-500"
                         />
@@ -1330,7 +1330,7 @@
           <div class="relative flex-1 w-full">
             <input
               v-model="ssoSearchQuery"
-              type="text"
+              type="search"
               placeholder="搜索用户名、姓名或部门..."
               class="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 transition-all"
             />

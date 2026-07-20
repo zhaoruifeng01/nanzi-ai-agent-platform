@@ -237,7 +237,14 @@ const externalCreationMissingFields = computed(() => {
             <div class="flex items-center justify-between gap-4">
               <h3 class="text-sm font-bold text-gray-900">智能体信息</h3>
               <label v-if="canConfigureSystemAgent" class="group flex cursor-pointer items-center gap-2" title="系统预置智能体，防止误删并提高路由权重">
-                <span class="text-xs font-semibold text-gray-600">System Agent</span>
+                <span class="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Admin Only</span>
+                <span
+                  class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold transition-colors"
+                  :class="agentForm.is_system ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-500'"
+                >
+                  <span aria-hidden="true">🛡️</span>
+                  系统智能体
+                </span>
                 <span class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors" :class="agentForm.is_system ? 'bg-primary' : 'bg-gray-300'">
                   <input v-model="agentForm.is_system" type="checkbox" class="sr-only" />
                   <span class="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" :class="agentForm.is_system ? 'translate-x-4' : 'translate-x-0.5'"></span>
@@ -449,7 +456,7 @@ const externalCreationMissingFields = computed(() => {
                   <input
                     :value="toolSearchQuery"
                     @input="emit('update:toolSearchQuery', ($event.target as HTMLInputElement).value)"
-                    type="text"
+                    type="search"
                     placeholder="搜索工具名称或描述..."
                     class="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
                   />

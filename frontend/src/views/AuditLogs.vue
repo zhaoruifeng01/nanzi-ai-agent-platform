@@ -90,13 +90,13 @@
           </div>
 
           <!-- User Name -->
-          <div v-if="userInfo?.role === 'admin'"><label class="block text-sm font-medium text-gray-700 mb-1">用户名</label><input v-model="filters.user_name" type="text" placeholder="搜索用户名" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
+          <div v-if="userInfo?.role === 'admin'"><label class="block text-sm font-medium text-gray-700 mb-1">用户名</label><input v-model="filters.user_name" type="search" placeholder="搜索用户名" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
 
           <!-- Endpoint -->
-          <div><label class="block text-sm font-medium text-gray-700 mb-1">接口路径</label><input v-model="filters.endpoint" type="text" placeholder="搜索路径" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">接口路径</label><input v-model="filters.endpoint" type="search" placeholder="搜索路径" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
 
           <!-- Client IP -->
-          <div><label class="block text-sm font-medium text-gray-700 mb-1">客户端IP</label><input v-model="filters.client_ip" type="text" placeholder="搜索IP" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">客户端IP</label><input v-model="filters.client_ip" type="search" placeholder="搜索IP" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none" /></div>
 
           <!-- Page Size -->
           <div><label class="block text-sm font-medium text-gray-700 mb-1">每页条数</label><select v-model.number="size" @change="page = 1; fetchLogs();" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:ring-blue-500 focus:border-blue-500 outline-none"><option :value="10">10</option><option :value="20">20</option><option :value="50">50</option><option :value="100">100</option></select></div>

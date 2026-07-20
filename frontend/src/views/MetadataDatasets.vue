@@ -1001,7 +1001,7 @@ onMounted(async () => {
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索数据集名称、ID或描述..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-4 text-sm shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
@@ -2897,7 +2897,7 @@ relationships:
               </span>
               <input 
                 v-model="roleSearchQuery" 
-                type="text" 
+                type="search"
                 class="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-lg leading-5 bg-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:bg-white sm:text-sm transition-all" 
                 placeholder="搜索角色名称或代码..."
               >
@@ -2977,7 +2977,7 @@ relationships:
               </span>
               <input 
                 v-model="userSearchQuery" 
-                type="text" 
+                type="search"
                 class="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-lg leading-5 bg-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500 focus:bg-white sm:text-sm transition-all" 
                 placeholder="搜索用户姓名、用户名或ID..."
               >

@@ -927,7 +927,7 @@ const dbTypeColor = (type: string) => {
 
           <div class="flex items-center gap-2 bg-gray-50 p-2 rounded-xl border border-gray-200 shrink-0">
             <svg class="w-5 h-5 text-gray-400 ml-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <input v-model="searchQuery" type="text" class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-1" placeholder="搜索表名或备注...">
+            <input v-model="searchQuery" type="search" class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-1" placeholder="搜索表名或备注...">
             <template v-if="activeTab === 'profile'">
               <select
                 :value="profilesSort"
