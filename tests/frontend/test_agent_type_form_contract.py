@@ -111,9 +111,12 @@ def test_agent_list_stacks_engine_and_type_badges_vertically():
     management = Path("frontend/src/views/AgentManagement.vue").read_text()
     list_section = management.split("<!-- List View -->", 1)[1]
 
-    assert 'class="flex w-fit flex-col items-start gap-1"' in list_section
+    assert 'class="flex w-full flex-col items-start gap-1"' in list_section
     assert "getAgentTypeLabel(agent)" in list_section
     assert "NanZi Engine" in list_section
+    assert "w-36 min-w-[9rem]" in list_section
+    assert "w-20 min-w-[5rem]" in list_section
+    assert 'text-center w-32">状态' not in list_section
 
 
 def test_agent_edit_dialog_is_compact_and_locks_engine_type_only():

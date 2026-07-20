@@ -2428,9 +2428,9 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 <th v-if="canDragAgents" class="px-3 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-8"></th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-12 text-center">Icon</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider">智能体名称</th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden md:table-cell">引擎 / 类型</th>
+                <th class="w-36 min-w-[9rem] px-6 py-3 text-[11px] font-bold uppercase tracking-wider text-gray-400 hidden md:table-cell">引擎 / 类型</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden lg:table-cell">能力</th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-center w-32">状态</th>
+                <th class="w-20 min-w-[5rem] px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wider text-gray-400">状态</th>
                 <th class="w-64 min-w-[17rem] px-6 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-gray-400">操作</th>
               </tr>
             </thead>
@@ -2477,15 +2477,15 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     <span class="text-[10px] text-gray-400 font-mono line-clamp-1">{{ agent.description || agent.name }}</span>
                   </div>
                 </td>
-                <td class="px-6 py-4 hidden md:table-cell">
-                  <div class="flex w-fit flex-col items-start gap-1">
+                <td class="w-36 min-w-[9rem] px-6 py-4 hidden md:table-cell">
+                  <div class="flex w-full flex-col items-start gap-1">
                     <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="agent.is_system ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-blue-50 text-blue-600 border-blue-100'">
                       {{ agent.is_system ? 'System' : 'Custom' }}
                     </span>
-                    <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                    <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 whitespace-nowrap">
                       {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
                     </span>
-                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="getAgentTypeBadgeClass(agent)">
+                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap" :class="getAgentTypeBadgeClass(agent)">
                       {{ getAgentTypeLabel(agent) }}
                     </span>
                   </div>
@@ -2521,10 +2521,10 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                   <span v-else-if="(agent.engine_type || 'LOCAL') === 'LOCAL'" class="text-[10px] text-gray-400">未发布</span>
                   <span v-else class="text-[10px] text-gray-300">—</span>
                 </td>
-                <td class="px-6 py-4">
+                <td class="w-20 min-w-[5rem] px-3 py-4">
                   <div class="flex justify-center">
                     <span
-                      class="px-2 py-0.5 rounded text-[10px] font-bold border flex items-center"
+                      class="px-2 py-0.5 rounded text-[10px] font-bold border flex items-center whitespace-nowrap"
                       :class="[
                         agent.is_enabled
                           ? 'bg-green-50 text-green-600 border-green-100'
