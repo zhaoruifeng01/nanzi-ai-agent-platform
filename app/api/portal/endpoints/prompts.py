@@ -63,7 +63,7 @@ async def optimize_prompt(
     data: Dict[str, str],
     user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """请求 AI 对提示词进行 5 个维度的优化建议 (具有优化权限)"""
+    """请求 AI 对提示词进行 8 个维度的优化建议 (具有优化权限)"""
     content = data.get("content")
     if not content:
         raise HTTPException(status_code=400, detail="Missing content")

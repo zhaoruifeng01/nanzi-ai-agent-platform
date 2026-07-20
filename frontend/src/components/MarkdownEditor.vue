@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { renderMarkdown } from '../utils/markdown';
+import PromptAiOptimize from './PromptAiOptimize.vue';
 
 const props = withDefaults(defineProps<{
   modelValue?: string;
@@ -8,13 +9,16 @@ const props = withDefaults(defineProps<{
   height?: string;
   fill?: boolean;
   theme?: 'light' | 'dark';
+  enableOptimize?: boolean;
 }>(), {
   theme: 'light',
   fill: false,
+  enableOptimize: false,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void;
+  (e: 'toast', message: string, type?: 'success' | 'error' | 'info'): void;
 }>();
 
 const activeTab = ref<'edit' | 'preview'>('edit');
@@ -22,6 +26,15 @@ const activeTab = ref<'edit' | 'preview'>('edit');
 const updateValue = (event: Event) => {
   const target = event.target as HTMLTextAreaElement;
   emit('update:modelValue', target.value);
+};
+
+const applyOptimizedContent = (content: string) => {
+  emit('update:modelValue', content);
+  activeTab.value = 'edit';
+};
+
+const forwardToast = (message: string, type?: 'success' | 'error' | 'info') => {
+  emit('toast', message, type);
 };
 </script>
 
@@ -32,30 +45,38 @@ const updateValue = (event: Event) => {
   >
     <!-- Toolbar -->
     <div class="flex items-center justify-between px-3 py-2 bg-gray-50 border-b border-gray-200 flex-shrink-0">
-      <div class="flex p-0.5 rounded-lg bg-gray-100 border border-gray-200">
-        <button
-          type="button"
-          @click="activeTab = 'edit'"
-          class="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all"
-          :class="activeTab === 'edit' ? 'bg-white text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-          </svg>
-          编辑
-        </button>
-        <button
-          type="button"
-          @click="activeTab = 'preview'"
-          class="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all"
-          :class="activeTab === 'preview' ? 'bg-white text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-          </svg>
-          预览
-        </button>
+      <div class="flex items-center">
+        <div class="flex p-0.5 rounded-lg bg-gray-100 border border-gray-200">
+          <button
+            type="button"
+            @click="activeTab = 'edit'"
+            class="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all"
+            :class="activeTab === 'edit' ? 'bg-white text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+            编辑
+          </button>
+          <button
+            type="button"
+            @click="activeTab = 'preview'"
+            class="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all"
+            :class="activeTab === 'preview' ? 'bg-white text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            预览
+          </button>
+        </div>
+        <PromptAiOptimize
+          v-if="enableOptimize && activeTab === 'edit'"
+          :content="modelValue || ''"
+          @apply="applyOptimizedContent"
+          @toast="forwardToast"
+        />
       </div>
       <div class="text-[10px] text-gray-400 font-mono">
         Markdown
@@ -100,21 +121,6 @@ const updateValue = (event: Event) => {
 </template>
 
 <style scoped>
-textarea.custom-scrollbar::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-textarea.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-textarea.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
-}
-textarea.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -123,10 +129,32 @@ textarea.custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.5);
-  border-radius: 3px;
+  background: #e5e7eb;
+  border-radius: 10px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.8);
+  background: #d1d5db;
+}
+
+:deep(.markdown-body) {
+  font-size: 14px;
+  line-height: 1.6;
+}
+:deep(.markdown-body pre) {
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+}
+:deep(.markdown-body code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+}
+:deep(.markdown-body :not(pre) > code) {
+  background-color: #f1f5f9;
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  color: #0f172a;
 }
 </style>

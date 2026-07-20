@@ -91,6 +91,12 @@ async def test_optimize_prompt_parsing():
         data = await PromptService.optimize_prompt(content)
         assert data["suggestions"][0]["title"] == "Optimized"
         assert data["suggestions"][0]["content"] == "Better Prompt"
+        args, _kwargs = mock_chat.generate_text.call_args
+        system_text = args[0][0].content[0].text
+        assert "恰好 8 个" in system_text
+        assert "ReAct / 工具调用规范" in system_text
+        assert "反幻觉 / 取证门禁" in system_text
+        assert "输出契约 (Schema)" in system_text
 
 @pytest.mark.asyncio
 async def test_save_prompt_config():

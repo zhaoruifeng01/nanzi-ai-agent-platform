@@ -70,6 +70,7 @@ const emit = defineEmits<{
   copySystemPrompt: [];
   nextStep: [];
   prevStep: [];
+  toast: [message: string, type?: 'success' | 'error' | 'info' | 'warning'];
 }>();
 
 const llmModels = () => props.models.filter((m) => (m.type === 'llm' || m.type === 'multimodal') && m.is_active);
@@ -693,8 +694,10 @@ const externalCreationMissingFields = computed(() => {
               <MarkdownEditor
                 :model-value="versionForm.system_prompt"
                 @update:model-value="versionForm.system_prompt = $event"
+                @toast="(message, type) => emit('toast', message, type || 'info')"
                 placeholder="你是一个..."
                 fill
+                enable-optimize
               />
             </div>
             <p class="text-[10px] text-gray-400 mt-2 flex-shrink-0">{{ promptCharCount }} 字符</p>

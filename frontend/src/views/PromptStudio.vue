@@ -1303,7 +1303,7 @@ watch(
     <ConfirmModal
       v-if="showOptimizeConfirm"
       title="AI 提示词润色"
-      message="AI 将针对当前内容生成多个侧重点不同的优化方案，大约需要几秒钟。是否开始？"
+      message="AI 将针对当前内容生成 8 个侧重点不同的优化方案（含工具调用、反幻觉、输出契约等高级范式），大约需要几秒钟。是否开始？"
       confirmText="开始润色"
       cancelText="取消"
       @confirm="runOptimize"
@@ -1346,7 +1346,7 @@ watch(
             <div class="text-base font-bold text-gray-900 mb-2">
               AI 正在深度优化中...
             </div>
-            <div class="text-xs text-gray-400">正在为您生成 5 个差异化方案</div>
+            <div class="text-xs text-gray-400">正在为您生成 8 个差异化方案</div>
           </div>
         </div>
       </transition>

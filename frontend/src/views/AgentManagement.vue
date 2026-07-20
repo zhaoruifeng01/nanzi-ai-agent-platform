@@ -3265,6 +3265,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       @copy-system-prompt="copySystemPrompt"
       @next-step="nextVersionStep"
       @prev-step="prevVersionStep"
+      @toast="(message, type) => showToast(message, type || 'info')"
     />
 
     <AgentHistoryModal
