@@ -88,6 +88,17 @@ def test_agent_action_labels_describe_editing_and_publishing():
     assert "版本管理" not in versions_drawer
 
 
+def test_agent_center_filters_and_labels_cards_by_primary_type():
+    management = Path("frontend/src/views/AgentManagement.vue").read_text()
+
+    assert 'value="GENERAL">智能体类型：通用助手' in management
+    assert 'value="CHATBI">智能体类型：ChatBI' in management
+    assert 'value="KNOWLEDGE_BASE">智能体类型：知识库助手' in management
+    assert "a.agent_type || 'GENERAL'" in management
+    assert "getAgentTypeLabel(agent)" in management
+    assert "getAgentTypeBadgeClass(agent)" in management
+
+
 def test_agent_edit_dialog_is_compact_and_locks_engine_type_only():
     management = Path("frontend/src/views/AgentManagement.vue").read_text()
     modal = Path("frontend/src/components/Modal.vue").read_text()

@@ -28,6 +28,8 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "path: 'scenario-templates/:templateId/install'" in router
     assert "name: 'ScenarioTemplateInstall'" in router
     assert "menu:agent_management" in router
+    assert 'ref="dashboardContentRef"' in dashboard
+    assert "dashboardContentRef.value.scrollTop = 0" in dashboard
 
     assert "{ name: '场景模板'" not in dashboard
     assert "/dashboard/scenario-templates" not in dashboard

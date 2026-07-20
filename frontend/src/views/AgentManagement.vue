@@ -265,7 +265,7 @@ const openSafetyModal = (type: 'input' | 'output') => {
 // Search & Filter
 const searchKeyword = ref("");
 const statusFilter = ref<"all" | "enabled" | "disabled">("all"); // New
-const typeFilter = ref<"all" | "system" | "custom">("all"); // New
+const typeFilter = ref<"all" | "system" | "custom" | AgentType>("all"); // New
 const userInfo = ref<any>({});
 
 const filteredAgents = computed(() => {
@@ -292,8 +292,12 @@ const filteredAgents = computed(() => {
 
   // 3. Filter by Type
   if (typeFilter.value !== "all") {
-    const isSystem = typeFilter.value === "system";
-    result = result.filter((a) => a.is_system === isSystem);
+    if (typeFilter.value === "system" || typeFilter.value === "custom") {
+      const isSystem = typeFilter.value === "system";
+      result = result.filter((a) => a.is_system === isSystem);
+    } else {
+      result = result.filter((a) => (a.agent_type || 'GENERAL') === typeFilter.value);
+    }
   }
 
   // 4. Sort: sort_order (descending), then is_system (descending), then Alphabetical
@@ -1878,6 +1882,18 @@ const getEngineShortLabel = (agent: AIAgent) => {
   return 'NanZi'
 }
 
+const getAgentTypeLabel = (agent: AIAgent) => {
+  if (agent.agent_type === 'CHATBI') return 'ChatBI'
+  if (agent.agent_type === 'KNOWLEDGE_BASE') return '知识库'
+  return '通用'
+}
+
+const getAgentTypeBadgeClass = (agent: AIAgent) => {
+  if (agent.agent_type === 'CHATBI') return 'border-violet-100 bg-violet-50 text-violet-700'
+  if (agent.agent_type === 'KNOWLEDGE_BASE') return 'border-emerald-100 bg-emerald-50 text-emerald-700'
+  return 'border-slate-200 bg-slate-50 text-slate-600'
+}
+
 const openCardMenuId = ref<string | null>(null)
 const toggleCardMenu = (agentId: string, e?: Event) => {
   e?.stopPropagation()
@@ -1992,6 +2008,10 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             <option value="all">类型：全部</option>
             <option value="system">类型：系统内置</option>
             <option value="custom">类型：自定义</option>
+            <option disabled>──────────</option>
+            <option value="GENERAL">智能体类型：通用助手</option>
+            <option value="CHATBI">智能体类型：ChatBI</option>
+            <option value="KNOWLEDGE_BASE">智能体类型：知识库助手</option>
           </select>
         </div>
 
@@ -2182,6 +2202,10 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     'bg-blue-50 text-blue-600 border-blue-100': agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW',
                   }"
                 >{{ getEngineShortLabel(agent) }}</span>
+                <span
+                  class="shrink-0 rounded border px-1.5 py-0.5 font-medium"
+                  :class="getAgentTypeBadgeClass(agent)"
+                >{{ getAgentTypeLabel(agent) }}</span>
                 <span
                   v-if="agent.is_system"
                   class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-indigo-50 text-indigo-600 border border-indigo-100"
@@ -2460,6 +2484,9 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     </span>
                     <span class="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                       {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
+                    </span>
+                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="getAgentTypeBadgeClass(agent)">
+                      {{ getAgentTypeLabel(agent) }}
                     </span>
                   </div>
                 </td>
