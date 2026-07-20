@@ -2068,6 +2068,7 @@ watch(
         loadReports: fetchSavedReports,
         openReport: openSavedReportDetail,
         openRunsTab: () => selectSavedReportDetailTab("runs"),
+        openDetailTab: (tab) => selectSavedReportDetailTab(tab),
         getRuns: () => savedReportRuns.value,
         openRun: toggleSavedReportRunDetail,
       });

@@ -5,6 +5,7 @@ interface SavedReportFocusDependencies<TReport, TRun> {
   loadReports: () => Promise<unknown>;
   openReport: (report: TReport) => Promise<unknown>;
   openRunsTab: () => Promise<unknown>;
+  openDetailTab?: (tab: "info" | "runs" | "subscription") => Promise<unknown>;
   getRuns: () => TRun[];
   openRun: (run: TRun) => Promise<unknown>;
 }
@@ -24,9 +25,14 @@ export const focusSavedReportTarget = async <TReport, TRun>(
   if (!report) return false;
 
   await dependencies.openReport(report);
-  await dependencies.openRunsTab();
+  const detailTab = request.detail_tab || "runs";
+  if (dependencies.openDetailTab) {
+    await dependencies.openDetailTab(detailTab);
+  } else {
+    await dependencies.openRunsTab();
+  }
 
-  if (request.run_id) {
+  if (detailTab === "runs" && request.run_id) {
     const run = dependencies.getRuns().find(item => hasMatchingId(item, request.run_id));
     if (run) await dependencies.openRun(run);
   }

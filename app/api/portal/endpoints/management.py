@@ -339,7 +339,7 @@ async def list_users(
     search: Optional[str] = None,
     role: Optional[str] = None,
     status_filter: Optional[int] = Query(None, alias="status"),
-    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    admin: dict = Depends(require_permission("menu", "menu:system:users")),
     db: AsyncSession = Depends(get_db_session)
 ):
     """
@@ -603,7 +603,15 @@ async def get_user_api_key(
         logger.warning(f"Failed to convert current_user_id to int: {current_user_id}")
     
     if current_role != "admin" and user_id != current_user_id:
-        raise HTTPException(status_code=403, detail="You can only view your own API Key")
+        service = PermissionService(db)
+        can_view = await service.check_permission(
+            int(current_user_id), "element", "element:user:view_key"
+        )
+        if not can_view:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing permission element:user:view_key",
+            )
         
     api_key = await AuthService.get_decrypted_api_key(user_id, db=db)
     
@@ -618,7 +626,7 @@ async def get_user_api_key(
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: int,
-    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    admin: dict = Depends(require_permission("element", "element:user:delete")),
     db: AsyncSession = Depends(get_db_session)
 ):
     """
@@ -674,7 +682,7 @@ async def delete_user(
 @router.post("/users/{user_id}/reset-key")
 async def reset_user_api_key(
     user_id: int,
-    admin: dict = Depends(require_permission("element", "element:user:edit")),
+    admin: dict = Depends(require_permission("element", "element:user:reset_key")),
     db: AsyncSession = Depends(get_db_session)
 ):
     """

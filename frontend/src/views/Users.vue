@@ -74,7 +74,7 @@
             <ArrowPathIcon class="h-4 w-4" :class="{ 'animate-spin': loading }" />
           </button>
 
-          <div class="relative shrink-0" @click.stop>
+          <div v-if="showMoreMenuPanel" class="relative shrink-0" @click.stop>
             <button
               type="button"
               class="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
@@ -88,7 +88,7 @@
               class="absolute right-0 z-30 mt-1.5 w-52 rounded-xl border border-gray-200 bg-white py-1 shadow-lg"
             >
               <button
-                v-if="showSsoSync"
+                v-if="showSsoSync && canEditUser"
                 type="button"
                 class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
                 @click="showMoreMenu = false; openSsoModal()"
@@ -97,6 +97,7 @@
                 同步 SSO 用户
               </button>
               <button
+                v-if="canEditUser"
                 type="button"
                 class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
                 @click="showMoreMenu = false; showThirdPartyDrawer = true"
@@ -105,6 +106,7 @@
                 同步第三方用户
               </button>
               <button
+                v-if="canOpenSystemQuota"
                 type="button"
                 class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
                 @click="showMoreMenu = false; showSystemQuotaModal = true"
@@ -116,6 +118,7 @@
           </div>
 
           <button
+            v-if="canEditUser"
             type="button"
             class="ml-auto flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-primary-dark sm:ml-0 sm:flex-none"
             @click="openCreateDialog"
@@ -157,6 +160,7 @@
         <p class="text-sm text-gray-500 mt-4 font-semibold">暂无用户</p>
         <p class="text-xs text-gray-400 mt-1">创建账号，或从「更多」同步 SSO / 第三方用户</p>
         <button
+          v-if="canEditUser"
           type="button"
           @click="openCreateDialog"
           class="mt-5 px-4 py-2 text-sm font-medium text-white bg-primary hover:bg-primary-dark rounded-lg transition-colors"
@@ -221,12 +225,16 @@
                 <td class="px-5 py-4 whitespace-nowrap">
                   <div class="flex items-center">
                     <Switch
+                      v-if="canEditUser"
                       :model-value="user.status === 1"
                       @update:model-value="toggleStatus(user)"
                     />
                     <span
-                      class="ml-2 text-xs"
-                      :class="user.status === 1 ? 'text-emerald-600' : 'text-gray-400'"
+                      class="text-xs"
+                      :class="[
+                        canEditUser ? 'ml-2' : '',
+                        user.status === 1 ? 'text-emerald-600' : 'text-gray-400',
+                      ]"
                     >
                       {{ user.status === 1 ? "已启用" : "已禁用" }}
                     </span>
@@ -236,8 +244,9 @@
                   {{ formatDate(user.created_at) }}
                 </td>
                 <td class="px-5 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div class="flex justify-end items-center gap-0.5">
+                  <div v-if="hasAnyRowAction" class="flex justify-end items-center gap-0.5">
                     <button
+                      v-if="canEditUser"
                       @click="editUser(user)"
                       class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
                       title="编辑用户"
@@ -245,13 +254,14 @@
                       <PencilSquareIcon class="w-4 h-4" />
                     </button>
                     <button
+                      v-if="canViewUserKey"
                       @click="viewApiKey(user)"
                       class="p-1.5 rounded-lg text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
                       title="查看 API Key"
                     >
                       <KeyIcon class="w-4 h-4" />
                     </button>
-                    <div class="relative" @click.stop>
+                    <div v-if="hasRowMoreActions" class="relative" @click.stop>
                       <button
                         type="button"
                         @click="toggleRowMenu(user, $event)"
@@ -262,6 +272,7 @@
                       </button>
                     </div>
                   </div>
+                  <span v-else class="text-xs text-gray-300">—</span>
                 </td>
               </tr>
             </tbody>
@@ -319,9 +330,17 @@
                 {{ user.role === "admin" ? "管理员" : "普通用户" }}
               </span>
               <Switch
+                v-if="canEditUser"
                 :model-value="user.status === 1"
                 @update:model-value="toggleStatus(user)"
               />
+              <span
+                v-else
+                class="text-[10px] font-medium"
+                :class="user.status === 1 ? 'text-emerald-600' : 'text-gray-400'"
+              >
+                {{ user.status === 1 ? "启用" : "禁用" }}
+              </span>
             </div>
           </div>
 
@@ -342,21 +361,21 @@
 
           <div class="flex justify-between items-center pt-3 mt-3 border-t border-gray-100">
             <span class="text-[10px] text-gray-400 font-mono">{{ formatDate(user.created_at).split(" ")[0] }}</span>
-            <div class="flex items-center gap-1">
-              <button @click="editUser(user)" class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="编辑">
+            <div v-if="hasAnyRowAction" class="flex items-center gap-1">
+              <button v-if="canEditUser" @click="editUser(user)" class="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50" title="编辑">
                 <PencilSquareIcon class="w-4 h-4" />
               </button>
-              <button @click="viewApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-indigo-50" title="密钥">
+              <button v-if="canViewUserKey" @click="viewApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-indigo-50" title="密钥">
                 <KeyIcon class="w-4 h-4" />
               </button>
-              <button @click="openSetPasswordDialog(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-emerald-50" title="密码">
+              <button v-if="canEditUser" @click="openSetPasswordDialog(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-emerald-50" title="密码">
                 <LockClosedIcon class="w-4 h-4" />
               </button>
-              <button @click="regenerateApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-amber-50" title="重置 Key">
+              <button v-if="canResetUserKey" @click="regenerateApiKey(user)" class="p-1.5 rounded-lg text-gray-500 hover:bg-amber-50" title="重置 Key">
                 <ArrowPathIcon class="w-4 h-4" />
               </button>
               <button
-                v-if="user.user_name !== 'admin'"
+                v-if="canDeleteUser && user.user_name !== 'admin'"
                 @click="confirmDelete(user)"
                 class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50"
                 title="删除"
@@ -400,6 +419,7 @@
         @click.stop
       >
         <button
+          v-if="canEditUser"
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
           @click="openSetPasswordDialog(openRowMenuUser); closeMenus()"
@@ -408,6 +428,7 @@
           设置密码
         </button>
         <button
+          v-if="canResetUserKey"
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
           @click="regenerateApiKey(openRowMenuUser); closeMenus()"
@@ -416,7 +437,7 @@
           重置 API Key
         </button>
         <button
-          v-if="openRowMenuUser.user_name !== 'admin'"
+          v-if="canDeleteUser && openRowMenuUser.user_name !== 'admin'"
           type="button"
           class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
           @click="confirmDelete(openRowMenuUser); closeMenus()"
@@ -1557,6 +1578,7 @@ import { ref, onMounted, computed, onUnmounted } from "vue";
 import axios from "axios";
 import { useToast } from "../composables/useToast";
 import { useBranding } from "../composables/useBranding";
+import { useUser } from "../composables/useUser";
 import { MENU_TREE } from "../constants/permissions";
 import { copyToClipboard } from "../utils/clipboard";
 import Switch from "../components/Switch.vue";
@@ -1578,6 +1600,25 @@ import {
 
 const { showToast } = useToast();
 const { branding } = useBranding();
+const { hasPermission } = useUser();
+
+const canEditUser = computed(() => hasPermission("element:user:edit"));
+const canViewUserKey = computed(() => hasPermission("element:user:view_key"));
+const canResetUserKey = computed(() => hasPermission("element:user:reset_key"));
+const canDeleteUser = computed(() => hasPermission("element:user:delete"));
+const canOpenSystemQuota = computed(() => hasPermission("menu:system:users"));
+const showMoreMenuPanel = computed(
+  () =>
+    (showSsoSync.value && canEditUser.value) ||
+    canEditUser.value ||
+    canOpenSystemQuota.value,
+);
+const hasRowMoreActions = computed(
+  () => canEditUser.value || canResetUserKey.value || canDeleteUser.value,
+);
+const hasAnyRowAction = computed(
+  () => canEditUser.value || canViewUserKey.value || hasRowMoreActions.value,
+);
 
 const windowWidth = ref(window.innerWidth);
 const isMobile = computed(() => windowWidth.value < 768);

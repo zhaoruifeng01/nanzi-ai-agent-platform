@@ -32,3 +32,10 @@ def test_task_center_modal_supports_visual_notification_channels():
     assert "SYSTEM" in page
     assert "notification_channels" in tools
     assert "merge_notification_channels_into_config" in tools
+
+
+def test_task_center_saved_report_subscription_entry():
+    page = (ROOT / "frontend/src/views/TaskCenter.vue").read_text(encoding="utf-8")
+    assert "订阅设置" in page
+    assert "openSavedReportSubscriptionSettings" in page
+    assert "report_detail_tab" in page

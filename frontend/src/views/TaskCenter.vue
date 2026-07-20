@@ -340,7 +340,7 @@ const openCreateModal = async () => {
 
 const openEditModal = async (task: AgentTask) => {
   if (task.task_type === 'saved_report') {
-    openSavedReportTask(task)
+    openSavedReportSubscriptionSettings(task)
     return
   }
   editingTask.value = { ...task }
@@ -448,14 +448,29 @@ const runTaskNow = async (task: AgentTask) => {
 
 const openLogs = async (task: AgentTask) => {
   if (task.task_type === 'saved_report') {
-    openSavedReportTask(task)
+    openSavedReportTask(task, 'runs')
     return
   }
   selectedTask.value = task; logsPage.value = 1; logs.value = []; showLogsDrawer.value = true; fetchLogs()
 }
 
-const openSavedReportTask = async (task: AgentTask) => {
-  await router.push({ path: '/dashboard/chat', query: { dataset_portal: '1', report_id: task.report_id, run_id: task.last_run_id || '' } })
+const openSavedReportTask = async (
+  task: AgentTask,
+  detailTab: 'runs' | 'subscription' = 'runs',
+) => {
+  const query: Record<string, string> = {
+    dataset_portal: '1',
+    report_id: String(task.report_id || ''),
+    report_detail_tab: detailTab,
+  }
+  if (detailTab === 'runs' && task.last_run_id) {
+    query.run_id = String(task.last_run_id)
+  }
+  await router.push({ path: '/dashboard/chat', query })
+}
+
+const openSavedReportSubscriptionSettings = (task: AgentTask) => {
+  openSavedReportTask(task, 'subscription')
 }
 
 const fetchLogs = async (append = false) => {
@@ -834,7 +849,7 @@ onMounted(async () => {
             <button @click="openLogs(task)" class="p-1.5 text-gray-400 hover:text-primary hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" title="执行历史">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             </button>
-            <button v-if="canManageTask(task)" @click="openEditModal(task)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" :title="task.task_type === 'saved_report' ? '打开报表' : '编辑'">
+            <button v-if="canManageTask(task)" @click="openEditModal(task)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" :title="task.task_type === 'saved_report' ? '订阅设置' : '编辑'">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
             </button>
             <button v-if="canManageTask(task)" @click="toggleStatus(task)" class="p-1.5 text-gray-400 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" :class="task.status === 1 ? 'hover:text-orange-600' : 'hover:text-green-600'" :title="task.status === 1 ? '停止' : '激活'">
@@ -930,7 +945,7 @@ onMounted(async () => {
             <td class="px-5 py-4 text-right">
               <!-- 报表订阅专属操作 -->
               <div v-if="task.task_type === 'saved_report'" class="flex items-center justify-end gap-1.5">
-                <button class="whitespace-nowrap rounded-lg border border-blue-100 bg-blue-50 px-2 py-1.5 text-[10px] font-bold text-blue-600 hover:bg-blue-100" @click="openSavedReportTask(task)">打开报表</button>
+                <button class="whitespace-nowrap rounded-lg border border-blue-100 bg-blue-50 px-2 py-1.5 text-[10px] font-bold text-blue-600 hover:bg-blue-100" @click="openSavedReportSubscriptionSettings(task)">订阅设置</button>
                 <button class="whitespace-nowrap rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[10px] font-bold text-gray-600 hover:border-blue-200 hover:text-blue-600" @click="openLogs(task)">运行历史</button>
                 <button v-if="canManageTask(task)" class="whitespace-nowrap rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50" :disabled="runningTaskIds.has(task.id)" @click="runTaskNow(task)">{{ runningTaskIds.has(task.id) ? '执行中' : '立即执行' }}</button>
                 <button v-if="canManageTask(task)" class="whitespace-nowrap rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[10px] font-bold text-gray-500 hover:text-orange-600" @click="toggleStatus(task)">{{ task.status === 1 ? '暂停' : '恢复' }}</button>
@@ -944,7 +959,7 @@ onMounted(async () => {
                 <button @click="openLogs(task)" class="p-1.5 text-gray-400 hover:text-primary hover:bg-white rounded shadow-sm border border-transparent hover:border-gray-100" title="历史">
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 </button>
-                <button v-if="canManageTask(task)" @click="openEditModal(task)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded shadow-sm border border-transparent hover:border-gray-100" :title="task.task_type === 'saved_report' ? '打开报表' : '编辑'">
+                <button v-if="canManageTask(task)" @click="openEditModal(task)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded shadow-sm border border-transparent hover:border-gray-100" :title="task.task_type === 'saved_report' ? '订阅设置' : '编辑'">
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                 </button>
                 <button v-if="canManageTask(task)" @click="toggleStatus(task)" class="p-1.5 text-gray-400 hover:bg-white rounded shadow-sm border border-transparent hover:border-gray-100" :class="task.status === 1 ? 'hover:text-orange-600' : 'hover:text-green-600'" :title="task.status === 1 ? '停止' : '激活'">

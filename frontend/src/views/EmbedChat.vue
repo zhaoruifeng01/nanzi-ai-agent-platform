@@ -4411,6 +4411,7 @@ const savedReportFocusRequest = ref<{
   report_id: string;
   run_id: string;
   request_id: string;
+  detail_tab?: "info" | "runs" | "subscription";
 } | null>(null);
 let savedReportFocusSequence = 0;
 const openSavedReportFromHost = (target: any) => {
@@ -4423,6 +4424,7 @@ const openSavedReportFromHost = (target: any) => {
     report_id: String(target.report_id),
     run_id: String(target.run_id || ""),
     request_id: requestId,
+    ...(target.detail_tab ? { detail_tab: target.detail_tab } : {}),
   };
   setTimeout(() => openPortalDrawer(), 0);
 };

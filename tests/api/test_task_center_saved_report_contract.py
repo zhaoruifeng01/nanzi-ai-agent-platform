@@ -27,6 +27,7 @@ def test_task_center_frontend_routes_actions_by_task_type():
     assert "task.task_type === 'saved_report'" in view
     assert "报表订阅" in view
     assert "openSavedReportTask" in view
+    assert "openSavedReportSubscriptionSettings" in view
 
 
 def test_task_center_has_type_tabs_with_counts():
@@ -44,7 +45,8 @@ def test_report_subscription_rows_use_readable_schedule_and_actions():
     assert "formatTaskSchedule" in view
     assert "formatNextRunCompact" in view
     assert "每天" in view
-    assert "打开报表" in view
+    assert "订阅设置" in view
+    assert "report_detail_tab" in view
     assert "运行历史" in view
     assert "立即执行" in view
     assert "报表订阅专属操作" in view

@@ -66,3 +66,45 @@ const dependencies = {
             "run:11",
         ],
     }
+
+
+def test_saved_report_focus_opens_subscription_tab_when_requested():
+    script = """
+const fs = require('fs');
+const ts = require('./frontend/node_modules/typescript');
+const source = fs.readFileSync('frontend/src/utils/savedReportFocus.ts', 'utf8');
+const code = ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
+}).outputText;
+const moduleRef = { exports: {} };
+new Function('module', 'exports', 'require', code)(moduleRef, moduleRef.exports, require);
+const api = moduleRef.exports;
+const reports = [{ id: 7, title: '月报' }];
+const calls = [];
+const dependencies = {
+  getReports: () => reports,
+  loadReports: async () => calls.push('load'),
+  openReport: async report => calls.push(`report:${report.id}`),
+  openRunsTab: async () => calls.push('runs-tab'),
+  openDetailTab: async tab => calls.push(`tab:${tab}`),
+  getRuns: () => [],
+  openRun: async run => calls.push(`run:${run.id}`),
+};
+(async () => {
+  const ok = await api.focusSavedReportTarget(
+    { report_id: '7', run_id: '', request_id: 'req-sub', detail_tab: 'subscription' },
+    dependencies,
+  );
+  process.stdout.write(JSON.stringify({ ok, calls }));
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result["ok"] is True
+    assert result["calls"] == ["report:7", "tab:subscription"]

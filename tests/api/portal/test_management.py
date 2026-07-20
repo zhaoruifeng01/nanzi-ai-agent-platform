@@ -15,15 +15,20 @@ async def test_list_users_as_admin(client: AsyncClient, admin_api_key: str):
     assert "items" in data
     assert isinstance(data["items"], list)
 
-    @pytest.mark.asyncio
-    async def test_list_users_as_non_admin(client: AsyncClient, valid_api_key: str):
-        """Test that non-admin users cannot list users"""
-        response = await client.get(
-            "/api/portal/management/users?page=1&size=10",
-            headers={"X-API-Key": valid_api_key}
-        )
-        assert response.status_code == 403
-        assert "Admin access required" in response.json()["message"]
+
+@pytest.mark.asyncio
+async def test_list_users_as_non_admin_without_menu(client: AsyncClient, valid_api_key: str):
+    """Regular users without menu:system:users cannot list users"""
+    response = await client.get(
+        "/api/portal/management/users?page=1&size=10",
+        headers={"X-API-Key": valid_api_key}
+    )
+    assert response.status_code == 403
+    body = response.json()
+    detail = body.get("detail") or body.get("message") or ""
+    assert "menu:system:users" in detail or "Permission" in detail
+
+
 @pytest.mark.asyncio
 async def test_list_users_with_search(client: AsyncClient, admin_api_key: str):
     """Test user list search functionality"""
@@ -71,19 +76,22 @@ async def test_create_user_as_admin(client: AsyncClient, admin_api_key: str):
     assert "api_key" in data  # Should return the full API key
     assert len(data["api_key"]) > 20  # Verify it's a real key
 
-    @pytest.mark.asyncio
-    async def test_create_duplicate_user(client: AsyncClient, admin_api_key: str):
-        """Test that creating duplicate username fails"""
-        response = await client.post(
-            "/api/portal/management/users",
-            headers={"X-API-Key": admin_api_key},
-            json={
-                "user_name": "test_admin",  # Already exists
-                "role": "user"
-            }
-        )
-        assert response.status_code == 400
-        assert "already exists" in response.json()["message"].lower()
+
+@pytest.mark.asyncio
+async def test_create_duplicate_user(client: AsyncClient, admin_api_key: str):
+    """Test that creating duplicate username fails"""
+    response = await client.post(
+        "/api/portal/management/users",
+        headers={"X-API-Key": admin_api_key},
+        json={
+            "user_name": "test_admin",  # Already exists
+            "role": "user"
+        }
+    )
+    assert response.status_code == 400
+    assert "already exists" in response.json()["message"].lower()
+
+
 @pytest.mark.asyncio
 async def test_create_user_as_non_admin(client: AsyncClient, valid_api_key: str):
     """Test that non-admin cannot create users"""
@@ -153,24 +161,27 @@ async def test_disable_user(client: AsyncClient, admin_api_key: str):
     assert response.status_code == 200
     assert "successfully" in response.json()["message"].lower()
 
-    @pytest.mark.asyncio
-    async def test_cannot_disable_self(client: AsyncClient, admin_api_key: str):
-        """Test that admin cannot disable themselves"""
-        # Get current admin's user ID
-        me_response = await client.get(
-            "/api/portal/auth/me",
-            headers={"X-API-Key": admin_api_key}
-        )
-        admin_id = int(me_response.json()["data"]["user_id"])
-    
-        # Try to disable self
-        response = await client.patch(
-            f"/api/portal/management/users/{admin_id}/status",
-            headers={"X-API-Key": admin_api_key},
-            json={"status": 0}
-        )
-        assert response.status_code == 403
-        assert "yourself" in response.json()["message"].lower()
+
+@pytest.mark.asyncio
+async def test_cannot_disable_self(client: AsyncClient, admin_api_key: str):
+    """Test that admin cannot disable themselves"""
+    # Get current admin's user ID
+    me_response = await client.get(
+        "/api/portal/auth/me",
+        headers={"X-API-Key": admin_api_key}
+    )
+    admin_id = int(me_response.json()["data"]["user_id"])
+
+    # Try to disable self
+    response = await client.patch(
+        f"/api/portal/management/users/{admin_id}/status",
+        headers={"X-API-Key": admin_api_key},
+        json={"status": 0}
+    )
+    assert response.status_code == 403
+    assert "yourself" in response.json()["message"].lower()
+
+
 @pytest.mark.asyncio
 async def test_delete_user(client: AsyncClient, admin_api_key: str):
     """Test deleting a user"""
@@ -201,23 +212,26 @@ async def test_delete_user(client: AsyncClient, admin_api_key: str):
     user_ids = [u["id"] for u in get_response.json()["items"]]
     assert user_id not in user_ids
 
-    @pytest.mark.asyncio
-    async def test_cannot_delete_self(client: AsyncClient, admin_api_key: str):
-        """Test that admin cannot delete themselves"""
-        # Get current admin's user ID
-        me_response = await client.get(
-            "/api/portal/auth/me",
-            headers={"X-API-Key": admin_api_key}
-        )
-        admin_id = int(me_response.json()["data"]["user_id"])
-    
-        # Try to delete self
-        response = await client.delete(
-            f"/api/portal/management/users/{admin_id}",
-            headers={"X-API-Key": admin_api_key}
-        )
-        assert response.status_code == 403
-        assert "yourself" in response.json()["message"].lower()
+
+@pytest.mark.asyncio
+async def test_cannot_delete_self(client: AsyncClient, admin_api_key: str):
+    """Test that admin cannot delete themselves"""
+    # Get current admin's user ID
+    me_response = await client.get(
+        "/api/portal/auth/me",
+        headers={"X-API-Key": admin_api_key}
+    )
+    admin_id = int(me_response.json()["data"]["user_id"])
+
+    # Try to delete self
+    response = await client.delete(
+        f"/api/portal/management/users/{admin_id}",
+        headers={"X-API-Key": admin_api_key}
+    )
+    assert response.status_code == 403
+    assert "yourself" in response.json()["message"].lower()
+
+
 @pytest.mark.asyncio
 async def test_pagination(client: AsyncClient, admin_api_key: str):
     """Test pagination works correctly"""

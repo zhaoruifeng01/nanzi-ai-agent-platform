@@ -57,6 +57,12 @@ let timeoutTimer: any = null;
 /** 挂件主动新开会话后清 URL 钉选时，跳过一次 query watch 触发的 INIT，避免重复初始化 */
 let skipNextQueryInit = false;
 
+const parseSavedReportDetailTab = (value: unknown): SavedReportOpenRequest["detail_tab"] | null => {
+  const tab = String(value || "").trim();
+  if (tab === "info" || tab === "runs" || tab === "subscription") return tab;
+  return null;
+};
+
 const initChat = () => {
     // 基础路径
     iframeUrl.value = '/embed/chat';
@@ -98,6 +104,9 @@ const sendInitConfig = () => {
                     report_id: String(route.query.report_id),
                     run_id: String(route.query.run_id || ''),
                     request_id: String(route.query.open_request_id || ''),
+                    ...(parseSavedReportDetailTab(route.query.report_detail_tab)
+                      ? { detail_tab: parseSavedReportDetailTab(route.query.report_detail_tab) }
+                      : {}),
                 } : null,
                 portal_question: route.query.portal_question ? {
                     query: String(route.query.portal_question),
@@ -175,6 +184,7 @@ watch(
         route.query.conversation_id,
         route.query.report_id,
         route.query.run_id,
+        route.query.report_detail_tab,
     ],
     () => {
         if (skipNextQueryInit) {

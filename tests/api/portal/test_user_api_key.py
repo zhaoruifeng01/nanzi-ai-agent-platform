@@ -40,7 +40,8 @@ async def test_regular_user_cannot_get_other_user_api_key(client: AsyncClient, v
     )
     assert response.status_code == 403
     data = response.json()
-    assert "only view your own" in data["message"].lower()
+    msg = (data.get("message") or data.get("detail") or "").lower()
+    assert "view_key" in msg or "only view your own" in msg
 
 @pytest.mark.asyncio
 async def test_admin_can_get_any_user_api_key(client: AsyncClient, admin_api_key: str):

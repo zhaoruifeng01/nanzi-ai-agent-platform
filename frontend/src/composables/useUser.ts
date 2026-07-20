@@ -16,7 +16,10 @@ export function useUser() {
     }
     // Fallback for legacy nested object structure
     if (permissions && typeof permissions === 'object') {
-      return (permissions as any).elements?.includes(perm) || false
+      const menus = (permissions as { menus?: string[]; elements?: string[] }).menus || []
+      const elements = (permissions as { menus?: string[]; elements?: string[] }).elements || []
+      if (perm.startsWith('menu:')) return menus.includes(perm)
+      return elements.includes(perm)
     }
     return false
   }
