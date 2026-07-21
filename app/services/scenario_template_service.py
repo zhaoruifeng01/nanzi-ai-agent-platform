@@ -28,6 +28,7 @@ from app.schemas.scenario_template import (
     ScenarioTemplateSummary,
 )
 from app.services.ai.agent_manager import AgentManagerService
+from app.services.ai.agent_types import normalize_agent_capabilities
 
 
 CHATBI_BUSINESS_ANALYSIS_MANIFEST: Dict[str, Any] = {
@@ -64,7 +65,8 @@ CHATBI_BUSINESS_ANALYSIS_MANIFEST: Dict[str, Any] = {
         "name": "chatbi-business-analysis",
         "display_name": "经营分析 ChatBI 助手",
         "description": "通过自然语言查询经营数据，生成趋势、排名、异常和经营简报。",
-        "capabilities": ["data_query", "knowledge_search"],
+        "agent_type": "CHATBI",
+        "capabilities": ["data_query"],
         "sort_order": 80,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -138,7 +140,8 @@ KNOWLEDGE_QA_MANIFEST: Dict[str, Any] = {
         "name": "knowledge-qa-assistant",
         "display_name": "企业知识问答助手",
         "description": "基于企业知识库回答制度、产品、流程和交付规范问题。",
-        "capabilities": ["knowledge_search"],
+        "agent_type": "KNOWLEDGE_BASE",
+        "capabilities": ["knowledge_base"],
         "sort_order": 70,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -212,7 +215,8 @@ OPS_INSPECTION_MANIFEST: Dict[str, Any] = {
         "name": "ops-inspection-assistant",
         "display_name": "运维巡检助手",
         "description": "连接监控、资产、工单和通知工具，辅助完成巡检与告警排查。",
-        "capabilities": ["tool_use", "data_query"],
+        "agent_type": "GENERAL",
+        "capabilities": ["general_chat", "tool_use", "ops_inspection"],
         "sort_order": 60,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -286,7 +290,8 @@ FINANCE_EXPENSE_ANALYSIS_MANIFEST: Dict[str, Any] = {
         "name": "finance-expense-analysis",
         "display_name": "财务费用分析助手",
         "description": "查询费用、预算和部门成本数据，辅助财务分析与异常定位。",
-        "capabilities": ["data_query", "knowledge_search"],
+        "agent_type": "CHATBI",
+        "capabilities": ["data_query"],
         "sort_order": 75,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -350,7 +355,8 @@ SALES_CUSTOMER_INSIGHT_MANIFEST: Dict[str, Any] = {
         "name": "sales-customer-insight",
         "display_name": "销售客户洞察助手",
         "description": "分析客户、商机和销售数据，辅助销售管理和客户经营。",
-        "capabilities": ["data_query", "knowledge_search"],
+        "agent_type": "CHATBI",
+        "capabilities": ["data_query"],
         "sort_order": 74,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -414,7 +420,8 @@ SUPPORT_TICKET_ANALYSIS_MANIFEST: Dict[str, Any] = {
         "name": "support-ticket-analysis",
         "display_name": "客服工单分析助手",
         "description": "分析客服工单、响应时效和满意度，辅助客服运营复盘。",
-        "capabilities": ["data_query", "knowledge_search"],
+        "agent_type": "CHATBI",
+        "capabilities": ["data_query"],
         "sort_order": 65,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -478,7 +485,8 @@ HR_POLICY_QA_MANIFEST: Dict[str, Any] = {
         "name": "hr-policy-qa",
         "display_name": "人力制度问答助手",
         "description": "基于人力行政制度知识库回答员工常见问题。",
-        "capabilities": ["knowledge_search"],
+        "agent_type": "KNOWLEDGE_BASE",
+        "capabilities": ["knowledge_base"],
         "sort_order": 64,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -542,7 +550,8 @@ LEGAL_CONTRACT_REVIEW_MANIFEST: Dict[str, Any] = {
         "name": "legal-contract-review",
         "display_name": "合同法务审阅助手",
         "description": "基于合同模板、制度和审阅口径提示条款风险。",
-        "capabilities": ["knowledge_search"],
+        "agent_type": "KNOWLEDGE_BASE",
+        "capabilities": ["knowledge_base"],
         "sort_order": 63,
         "engine_type": "LOCAL",
         "engine_config": {
@@ -1183,6 +1192,11 @@ class ScenarioTemplateService:
         target_name = cls._target_agent_name(template, request)
         manifest = template.manifest
         agent_manifest = dict(manifest["agent"])
+        manifest_agent_type = agent_manifest.get("agent_type", "GENERAL")
+        manifest_capabilities = normalize_agent_capabilities(
+            manifest_agent_type,
+            agent_manifest.get("capabilities"),
+        )
         version_manifest = dict(manifest["version"])
         version_manifest["tools"] = cls._version_tools_with_resource_bindings(version_manifest, request)
 
@@ -1209,7 +1223,8 @@ class ScenarioTemplateService:
                     name=target_name,
                     display_name=request.display_name or agent_manifest["display_name"],
                     description=request.description or agent_manifest.get("description"),
-                    capabilities=list(agent_manifest.get("capabilities") or []),
+                    capabilities=manifest_capabilities,
+                    agent_type=manifest_agent_type,
                     is_system=False,
                     sort_order=agent_manifest.get("sort_order", 0),
                     is_enabled=True,

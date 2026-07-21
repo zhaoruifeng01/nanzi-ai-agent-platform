@@ -668,7 +668,7 @@ onUnmounted(() => {
             <p class="text-xs text-gray-500 mt-1">共 {{ configs.length }} 个数据源，元数据导入会读取这份列表。</p>
           </div>
           <div class="relative sm:w-72">
-            <input
+            <input type="search"
               v-model="keyword"
               class="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-white"
               placeholder="搜索名称、主机、库名..."

@@ -8,9 +8,12 @@ from io import BytesIO
 from typing import List, Dict, Any, Optional, Literal
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.dependencies import require_api_key, require_permission
+from app.core.orm import get_db_session
+from app.services.ai.agent_manager import AgentManagerService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,6 +24,20 @@ async def get_skills_stats(
 ):
     from app.services.ai.skills_stats_service import skills_stats_service
     return await skills_stats_service.get_stats()
+
+
+@router.get("/bindings", summary="获取公共技能显式绑定的智能体")
+async def get_skill_bindings(
+    user_info: dict = Depends(require_api_key),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    反查平台技能被哪些智能体显式白名单绑定（skills_custom=true）。
+    每个智能体优先取 DRAFT，否则 PUBLISHED。与调用统计无关。
+    """
+    bindings = await AgentManagerService.get_skill_explicit_bindings(session)
+    return {"status": "success", "bindings": bindings}
+
 
 # Schema defined for creating new skills
 class SkillCreateRequest(BaseModel):

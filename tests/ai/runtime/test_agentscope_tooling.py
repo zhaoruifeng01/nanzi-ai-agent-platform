@@ -127,6 +127,99 @@ async def test_agentscope_tool_wrapper_exposes_tool_shape_and_invokes_spec():
 
 
 @pytest.mark.asyncio
+async def test_agentscope_tool_loop_fuse_remains_blocking_and_guides_model():
+    from app.services.ai.runtime.agentscope.errors import ToolLoopFuseError
+    from app.services.ai.runtime.agentscope.tools import (
+        AgentScopeRuntimeTool,
+        RuntimeToolSpec,
+    )
+    from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
+
+    execution_count = 0
+
+    async def counted_tool() -> str:
+        nonlocal execution_count
+        execution_count += 1
+        return f"executed:{execution_count}"
+
+    tool = AgentScopeRuntimeTool(
+        RuntimeToolSpec(
+            name="get_current_time",
+            description="Return current time",
+            parameters_schema={"type": "object", "properties": {}},
+            source_type="system",
+            callable=counted_tool,
+            permission_scope="read",
+        ),
+        loop_detector=ToolLoopDetector(
+            threshold=3,
+            enabled=True,
+            ping_pong_threshold=0,
+            global_limit=0,
+        ),
+    )
+
+    await tool()
+    await tool()
+
+    for _ in range(2):
+        with pytest.raises(ToolLoopFuseError) as exc_info:
+            await tool()
+        message = str(exc_info.value)
+        assert "停止继续调用任何工具" in message
+        assert "信息不足" in message
+
+    assert execution_count == 2
+
+
+@pytest.mark.asyncio
+async def test_agentscope_native_tool_loop_fuse_remains_blocking_and_guides_model():
+    from agentscope.message import TextBlock, ToolResultState
+    from agentscope.tool import ToolChunk
+
+    from app.services.ai.runtime.agentscope.errors import ToolLoopFuseError
+    from app.services.ai.runtime.agentscope.tools import AgentScopeNativeApprovalTool
+    from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
+
+    class CountedNativeTool:
+        name = "native_probe"
+        description = "Native loop probe"
+        input_schema = {"type": "object", "properties": {}}
+        is_read_only = True
+
+        def __init__(self) -> None:
+            self.execution_count = 0
+
+        async def __call__(self) -> ToolChunk:
+            self.execution_count += 1
+            return ToolChunk(
+                content=[TextBlock(text=f"executed:{self.execution_count}")],
+                state=ToolResultState.SUCCESS,
+            )
+
+    native_tool = CountedNativeTool()
+    tool = AgentScopeNativeApprovalTool(
+        native_tool,
+        loop_detector=ToolLoopDetector(
+            threshold=2,
+            enabled=True,
+            ping_pong_threshold=0,
+            global_limit=0,
+        ),
+    )
+
+    await tool()
+    for _ in range(2):
+        with pytest.raises(ToolLoopFuseError) as exc_info:
+            await tool()
+        message = str(exc_info.value)
+        assert "停止继续调用任何工具" in message
+        assert "信息不足" in message
+
+    assert native_tool.execution_count == 1
+
+
+@pytest.mark.asyncio
 async def test_agentscope_tool_wrapper_maps_runtime_permission_scopes():
     from agentscope.permission import PermissionBehavior
 

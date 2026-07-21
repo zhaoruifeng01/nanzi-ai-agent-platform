@@ -99,7 +99,7 @@ watch(() => props.isOpen, (newVal) => {
             <div class="px-4 py-6 bg-gray-50 border-b border-gray-200 sm:px-6">
               <div class="flex items-start justify-between">
                 <div>
-                  <h2 class="text-lg font-medium text-gray-900">版本管理</h2>
+                  <h2 class="text-lg font-medium text-gray-900">配置与发布</h2>
                   <p class="mt-1 text-sm text-gray-500" v-if="agent">
                      {{ agent.display_name }} ({{ agent.name }})
                   </p>

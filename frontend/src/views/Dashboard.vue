@@ -13,6 +13,7 @@ const { branding, loadBranding, applyDocumentTitle, resolveRepoUrl } = useBrandi
 const repoUrl = computed(() => resolveRepoUrl());
 const isCollapsed = ref(false);
 const showMobileSidebar = ref(false);
+const dashboardContentRef = ref<HTMLElement | null>(null);
 const windowWidth = ref(window.innerWidth);
 const isMobile = computed(() => windowWidth.value < 1024);
 const appVersion = import.meta.env.VITE_APP_VERSION || "Dev Build";
@@ -198,6 +199,9 @@ onUnmounted(() => {
 
 // 监听路由变化，移动端下自动收起侧边栏
 watch(() => route.path, () => {
+  if (dashboardContentRef.value) {
+    dashboardContentRef.value.scrollTop = 0;
+  }
   if (isMobile.value) {
     showMobileSidebar.value = false;
   }
@@ -672,6 +676,7 @@ const filteredMenuGroups = computed(() => {
 
       <!-- Main Scrollable Content -->
       <main 
+        ref="dashboardContentRef"
         class="flex-1 overflow-y-auto bg-gray-100 custom-scrollbar"
         :class="dashboardContentSpacing"
       >

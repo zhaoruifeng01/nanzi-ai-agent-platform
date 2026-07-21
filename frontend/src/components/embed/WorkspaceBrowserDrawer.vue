@@ -1652,7 +1652,7 @@ const closeDrawer = () => {
                     </span>
                     <input
                       v-model="searchQuery"
-                      type="text"
+                      type="search"
                       placeholder="搜索文件名..."
                       class="w-full pl-8 pr-8 py-2 text-xs bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-primary/30 focus:border-primary focus:outline-none transition-all"
                     />

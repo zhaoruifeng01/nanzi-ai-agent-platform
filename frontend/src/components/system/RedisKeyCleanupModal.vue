@@ -223,7 +223,7 @@ watch(groupMode, () => {
 
         <input
           v-model="searchKeyword"
-          type="text"
+          type="search"
           placeholder="搜索 Key 名称..."
           class="flex-1 min-w-[12rem] shadow-sm focus:ring-primary focus:border-primary block sm:text-sm border-gray-300 rounded-md bg-gray-50 p-2 border"
         />

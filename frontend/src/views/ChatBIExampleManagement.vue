@@ -425,7 +425,7 @@ onMounted(async () => {
             </span>
             <input
               v-model="searchQuery"
-              type="text"
+              type="search"
               placeholder="搜索提问内容..."
               class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
@@ -514,7 +514,7 @@ onMounted(async () => {
       <div class="w-full sm:w-40">
         <label class="block text-xs font-medium text-gray-500 mb-1">Agent ID</label>
         <input
-          type="text"
+          type="search"
           v-model="filterAgentId"
           placeholder="搜索 Agent"
           class="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"

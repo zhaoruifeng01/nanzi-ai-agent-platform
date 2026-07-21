@@ -6,6 +6,7 @@ import type {
   AIAgent,
   AIAgentBase,
   AIAgentVersion,
+  AgentType,
 } from "../api/agent";
 import { modelApi, type AIModel } from "../api/model";
 import { toolApi, type SysApiTool } from "../api/tool";
@@ -22,6 +23,7 @@ import DingTalkConfigModal from "../components/agent/DingTalkConfigModal.vue";
 import EmailConfigModal from "../components/agent/EmailConfigModal.vue";
 import WeChatWorkConfigModal from "../components/agent/WeChatWorkConfigModal.vue";
 import axios from "@/utils/axios";
+import { createUuid } from "../utils/conversationId";
 
 const router = useRouter();
 const agents = ref<AIAgent[]>([]);
@@ -87,10 +89,26 @@ const handleRagSelect = async (val: string | string[]) => {
     engineConfigUI.value.dataset_ids = Array.isArray(val)
       ? val.join(",")
       : (val as string);
+    if (isCreatingAgent.value) {
+      agentForm.value.engine_config = {
+        ...(agentForm.value.engine_config || {}),
+        dataset_ids: Array.isArray(val) ? val : [val],
+      };
+    }
   } else if (ragSelectorTarget.value === "agent_kb_immediate") {
     // Immediate update for Agent's KB config
-    if (!selectedAgent.value) return;
     const newIds = Array.isArray(val) ? val : [val];
+
+    if (isCreatingAgent.value && !selectedAgent.value) {
+      engineConfigUI.value.dataset_ids = newIds.join(",");
+      agentForm.value.engine_config = {
+        ...(agentForm.value.engine_config || {}),
+        dataset_ids: newIds,
+      };
+      showToast("知识库已加入初始配置", "success");
+      return;
+    }
+    if (!selectedAgent.value) return;
 
     const newConfig = {
       ...(selectedAgent.value.engine_config || {}),
@@ -143,12 +161,87 @@ const showToast = (
 };
 
 const isEditingAgent = ref(false);
+const showCapabilityHelp = ref(false);
+const showEngineHelp = ref(false);
+const showAdvancedSafety = ref(false);
+const AGENT_TYPE_OPTIONS = [
+  {
+    value: "GENERAL",
+    icon: "✨",
+    label: "通用助手",
+    description: "问答、写作与专业任务",
+    capability: "general_chat",
+  },
+  {
+    value: "CHATBI",
+    icon: "📊",
+    label: "数据分析（ChatBI）",
+    description: "查数、指标与报表分析",
+    capability: "data_query",
+  },
+  {
+    value: "KNOWLEDGE_BASE",
+    icon: "📚",
+    label: "知识库助手",
+    description: "企业文档检索与问答",
+    capability: "knowledge_base",
+  },
+] as const;
+const lockedCapabilityForType = (agentType: AgentType) =>
+  AGENT_TYPE_OPTIONS.find((option) => option.value === agentType)?.capability ||
+  "general_chat";
+const isExternalEngine = (engineType?: string | null) =>
+  engineType === "RAGFLOW" || engineType === "OPENCLAW";
+const normalizeAgentCapabilities = (
+  agentType: AgentType,
+  capabilities: string[] | undefined,
+  engineType?: string | null,
+) => {
+  const locked = isExternalEngine(engineType)
+    ? "general_chat"
+    : lockedCapabilityForType(agentType);
+  const extensions = (capabilities || []).filter(
+    (capability) => !primaryCapabilities.has(capability as any),
+  );
+  return [locked, ...extensions];
+};
+const lockedCapabilityForForm = computed(() => {
+  if (isExternalEngine(agentForm.value.engine_type)) {
+    return "general_chat";
+  }
+  return lockedCapabilityForType(agentForm.value.agent_type || "GENERAL");
+});
+const supportsCapabilityTags = computed(() =>
+  ["LOCAL", "RAGFLOW", "OPENCLAW"].includes(agentForm.value.engine_type || "LOCAL"),
+);
+const selectEngineType = (engineType: "LOCAL" | "RAGFLOW" | "OPENCLAW") => {
+  agentForm.value.engine_type = engineType;
+  if (isExternalEngine(engineType)) {
+    agentForm.value.agent_type = "GENERAL";
+  }
+  agentForm.value.capabilities = normalizeAgentCapabilities(
+    agentForm.value.agent_type || "GENERAL",
+    agentForm.value.capabilities,
+    engineType,
+  );
+};
+const primaryCapabilities = new Set(
+  AGENT_TYPE_OPTIONS.map((option) => option.capability),
+);
+const selectAgentType = (agentType: AgentType) => {
+  const extensions = (agentForm.value.capabilities || []).filter(
+    (capability) => !primaryCapabilities.has(capability as any),
+  );
+  agentForm.value.agent_type = agentType;
+  agentForm.value.capabilities = [lockedCapabilityForType(agentType), ...extensions];
+};
 const agentForm = ref<AIAgentBase>({
   name: "",
   display_name: "",
   description: "",
   avatar_url: "",
   capabilities: [],
+  agent_type: "GENERAL",
 
   is_system: false,
   sort_order: 0,
@@ -209,7 +302,7 @@ const openSafetyModal = (type: 'input' | 'output') => {
 // Search & Filter
 const searchKeyword = ref("");
 const statusFilter = ref<"all" | "enabled" | "disabled">("all"); // New
-const typeFilter = ref<"all" | "system" | "custom">("all"); // New
+const typeFilter = ref<"all" | "system" | "custom" | AgentType>("all"); // New
 const userInfo = ref<any>({});
 
 const filteredAgents = computed(() => {
@@ -236,8 +329,12 @@ const filteredAgents = computed(() => {
 
   // 3. Filter by Type
   if (typeFilter.value !== "all") {
-    const isSystem = typeFilter.value === "system";
-    result = result.filter((a) => a.is_system === isSystem);
+    if (typeFilter.value === "system" || typeFilter.value === "custom") {
+      const isSystem = typeFilter.value === "system";
+      result = result.filter((a) => a.is_system === isSystem);
+    } else {
+      result = result.filter((a) => (a.agent_type || 'GENERAL') === typeFilter.value);
+    }
   }
 
   // 4. Sort: sort_order (descending), then is_system (descending), then Alphabetical
@@ -369,6 +466,12 @@ const versionForm = ref<Partial<AIAgentVersion>>({
   skills: [],
   comment: "",
 });
+type OnboardingStep = "BASIC" | "VERSION" | "RESOURCE";
+const isOnboardingFlow = ref(false);
+const onboardingStep = ref<OnboardingStep>("BASIC");
+const onboardingKey = ref(createUuid());
+const onboardingAgent = ref<AIAgent | null>(null);
+const onboardingVersion = ref<AIAgentVersion | null>(null);
 
 const availableTools = [
   {
@@ -506,16 +609,25 @@ const getMcpGroupSelectedCount = (tools: any[]) => {
   return tools.filter(tool => isToolSelected(tool.name)).length;
 };
 
-type VersionConfigStep = 'model' | 'tools' | 'prompt' | 'review';
+type VersionConfigStep = 'agent' | 'model' | 'tools' | 'prompt' | 'review';
 const versionConfigStep = ref<VersionConfigStep>('model');
 const toolSearchQuery = ref('');
+const isCreatingAgent = ref(false);
+const isPersistingNewAgent = ref(false);
+const isLocalCreationEngine = computed(() => (agentForm.value.engine_type || 'LOCAL') === 'LOCAL');
 
-const versionConfigSteps: { id: VersionConfigStep; label: string }[] = [
-  { id: 'model', label: '模型策略' },
-  { id: 'tools', label: '工具能力' },
-  { id: 'prompt', label: '系统提示词' },
-  { id: 'review', label: '确认保存' },
-];
+const versionConfigSteps = computed<{ id: VersionConfigStep; label: string }[]>(() => {
+  if (isCreatingAgent.value && !isLocalCreationEngine.value) {
+    return [{ id: 'agent', label: '智能体信息' }];
+  }
+  return [
+    ...(isCreatingAgent.value ? [{ id: 'agent' as const, label: '智能体信息' }] : []),
+    { id: 'model', label: '模型策略' },
+    { id: 'tools', label: '工具能力' },
+    { id: 'prompt', label: '系统提示词' },
+    { id: 'review', label: '确认保存' },
+  ];
+});
 
 const selectedToolsCount = computed(() => versionForm.value.tools?.length ?? 0);
 const selectedSkillsCount = computed(() => versionForm.value.skills?.length ?? 0);
@@ -526,11 +638,72 @@ const promptCharCount = computed(() => versionForm.value.system_prompt?.length ?
 
 const versionConfigProgress = computed(() => {
   let count = 0;
+  if (isCreatingAgent.value && agentForm.value.name && agentForm.value.display_name) count++;
   if (versionForm.value.model_name) count++;
   if (selectedToolsCount.value > 0) count++;
   if (versionForm.value.system_prompt?.trim()) count++;
   return count;
 });
+
+const isAgentConfigStepComplete = () => {
+  if (!agentForm.value.name?.trim() || !agentForm.value.display_name?.trim()) return false;
+  if (agentForm.value.engine_type === 'RAGFLOW' && !String(agentForm.value.engine_config?.app_id || '').trim()) {
+    return false;
+  }
+  if (
+    agentForm.value.engine_type === 'OPENCLAW' &&
+    (!String(agentForm.value.engine_config?.base_url || '').trim() ||
+      !String(agentForm.value.engine_config?.model || '').trim())
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const isVersionConfigStepComplete = (step: VersionConfigStep) => {
+  if (step === 'agent') return isAgentConfigStepComplete();
+  if (step === 'model') return Boolean(versionForm.value.model_name?.trim());
+  if (step === 'tools') return true;
+  if (step === 'prompt') return Boolean(versionForm.value.system_prompt?.trim());
+  return true;
+};
+
+const canReachVersionConfigStep = (target: VersionConfigStep) => {
+  const steps = versionConfigSteps.value;
+  const targetIdx = steps.findIndex((item) => item.id === target);
+  if (targetIdx <= 0) return true;
+  for (let i = 0; i < targetIdx; i++) {
+    const step = steps[i];
+    if (step && !isVersionConfigStepComplete(step.id)) return false;
+  }
+  return true;
+};
+
+const describeIncompleteVersionConfigStep = (step: VersionConfigStep) => {
+  if (step === 'agent') {
+    if (!agentForm.value.name?.trim() || !agentForm.value.display_name?.trim()) {
+      return '请先完善智能体信息：填写物理标识符和显示名称';
+    }
+    if (agentForm.value.engine_type === 'RAGFLOW') return '请先完善智能体信息：填写 RAGFlow App ID';
+    if (agentForm.value.engine_type === 'OPENCLAW') return '请先完善智能体信息：填写 OpenClaw 地址和机器人 ID';
+    return '请先完善智能体信息';
+  }
+  if (step === 'model') return '请先完善模型策略：选择编排模型';
+  if (step === 'prompt') return '请先填写系统提示词';
+  return '请先完成前面的配置步骤';
+};
+
+const handleVersionConfigStepChange = (step: VersionConfigStep) => {
+  if (step === versionConfigStep.value) return;
+  if (!canReachVersionConfigStep(step)) {
+    const steps = versionConfigSteps.value;
+    const targetIdx = steps.findIndex((item) => item.id === step);
+    const blocker = steps.slice(0, Math.max(targetIdx, 0)).find((item) => !isVersionConfigStepComplete(item.id));
+    showToast(describeIncompleteVersionConfigStep(blocker?.id || 'agent'), 'warning');
+    return;
+  }
+  versionConfigStep.value = step;
+};
 
 const filteredGroupedTools = computed(() => {
   const q = toolSearchQuery.value.trim().toLowerCase();
@@ -585,22 +758,20 @@ const getStaticGroupSelectedCount = (tools: any[]) => {
   return tools.filter((tool) => isToolSelected(tool.name)).length;
 };
 
-const goVersionStep = (step: VersionConfigStep) => {
-  versionConfigStep.value = step;
-};
-
 const nextVersionStep = () => {
-  const idx = versionConfigSteps.findIndex((s) => s.id === versionConfigStep.value);
-  if (idx < versionConfigSteps.length - 1) {
-    versionConfigStep.value = versionConfigSteps[idx + 1].id;
+  if (!isVersionConfigStepComplete(versionConfigStep.value)) {
+    showToast(describeIncompleteVersionConfigStep(versionConfigStep.value), 'warning');
+    return;
   }
+  const idx = versionConfigSteps.value.findIndex((s) => s.id === versionConfigStep.value);
+  const next = versionConfigSteps.value[idx + 1];
+  if (next) versionConfigStep.value = next.id;
 };
 
 const prevVersionStep = () => {
-  const idx = versionConfigSteps.findIndex((s) => s.id === versionConfigStep.value);
-  if (idx > 0) {
-    versionConfigStep.value = versionConfigSteps[idx - 1].id;
-  }
+  const idx = versionConfigSteps.value.findIndex((s) => s.id === versionConfigStep.value);
+  const previous = versionConfigSteps.value[idx - 1];
+  if (previous) versionConfigStep.value = previous.id;
 };
 
 const setOrchestratorTemperature = (value: number) => {
@@ -800,8 +971,54 @@ const handleDeleteAgent = (agent: AIAgent) => {
   };
 };
 
+const startAgentCreation = () => {
+  isCreatingAgent.value = true;
+  isOnboardingFlow.value = true;
+  onboardingKey.value = createUuid();
+  onboardingAgent.value = null;
+  onboardingVersion.value = null;
+  isEditingAgent.value = false;
+  selectedAgent.value = null;
+  agentForm.value = {
+    name: "",
+    display_name: "",
+    description: "",
+    avatar_url: "",
+    capabilities: ["general_chat"],
+    agent_type: "GENERAL",
+    is_system: false,
+    sort_order: 0,
+    is_enabled: true,
+    engine_type: "LOCAL",
+    engine_config: {
+      dataset_ids: [],
+      safety_check_enabled: true,
+      safety_check_input_strategy: "append",
+      safety_check_output_strategy: "append",
+    },
+  };
+  versionForm.value = {
+    model_name: "",
+    temperature: 0,
+    synthesis_model_name: "",
+    synthesis_temperature: 0.7,
+    system_prompt: "",
+    tools: [],
+    skills_custom: false,
+    skills: [],
+    comment: "Initial version",
+  };
+  fetchTools();
+  toolSearchQuery.value = "";
+  versionConfigStep.value = "agent";
+  showVersionModal.value = true;
+};
+
 const openAgentModal = (agent?: AIAgent) => {
   if (agent) {
+    isOnboardingFlow.value = false;
+    showCapabilityHelp.value = false;
+    showAdvancedSafety.value = false;
     if (agent.is_system && userInfo.value?.role !== "admin") {
       showToast("系统内置智能体仅管理员可编辑", "warning");
       return;
@@ -811,10 +1028,19 @@ const openAgentModal = (agent?: AIAgent) => {
     agentForm.value = {
       ...agent,
       capabilities: agent.capabilities || [],
+      agent_type: agent.agent_type || "GENERAL",
       sort_order: agent.sort_order || 0,
       engine_type: agent.engine_type || "LOCAL",
       engine_config: agent.engine_config || null,
     };
+    if (isExternalEngine(agentForm.value.engine_type)) {
+      agentForm.value.agent_type = "GENERAL";
+    }
+    agentForm.value.capabilities = normalizeAgentCapabilities(
+      agentForm.value.agent_type,
+      agentForm.value.capabilities,
+      agentForm.value.engine_type,
+    );
 
     // Parse Engine Config for UI
     if (agent.engine_config) {
@@ -852,6 +1078,11 @@ const openAgentModal = (agent?: AIAgent) => {
        };
     }
   } else {
+    isOnboardingFlow.value = true;
+    onboardingStep.value = "BASIC";
+    onboardingKey.value = createUuid();
+    onboardingAgent.value = null;
+    onboardingVersion.value = null;
     isEditingAgent.value = false;
     selectedAgent.value = null;
     agentForm.value = {
@@ -860,6 +1091,7 @@ const openAgentModal = (agent?: AIAgent) => {
       description: "",
       avatar_url: "",
       capabilities: [],
+      agent_type: "GENERAL",
       is_system: false,
       sort_order: 0,
       is_enabled: true,
@@ -884,7 +1116,7 @@ const openAgentModal = (agent?: AIAgent) => {
   showAgentModal.value = true;
 };
 
-const saveAgent = async () => {
+const saveAgent = async (exitAfterSave = false) => {
   if (selectedAgent.value && selectedAgent.value.is_editable === false) {
     showToast("无权限修改此智能体", "error");
     return;
@@ -893,6 +1125,14 @@ const saveAgent = async () => {
   if (!agentForm.value.name || !agentForm.value.display_name) {
     showToast("请完善智能体标识和名称", "warning");
     return;
+  }
+  if (agentForm.value.engine_type === 'RAGFLOW' || agentForm.value.engine_type === 'OPENCLAW') {
+    agentForm.value.agent_type = 'GENERAL';
+    agentForm.value.capabilities = normalizeAgentCapabilities(
+      'GENERAL',
+      agentForm.value.capabilities,
+      agentForm.value.engine_type,
+    );
   }
 
   // Sync UI to Engine Config
@@ -946,6 +1186,23 @@ const saveAgent = async () => {
     if (isEditingAgent.value && selectedAgent.value) {
       await agentApi.updateAgent(selectedAgent.value.id, agentForm.value);
       showToast("更新成功", "success");
+    } else if (isOnboardingFlow.value) {
+      const response = await agentApi.createAgentOnboarding({
+        ...agentForm.value,
+        onboarding_key: onboardingKey.value,
+      });
+      onboardingAgent.value = response.data.agent;
+      onboardingVersion.value = response.data.version;
+      selectedAgent.value = response.data.agent;
+      versionForm.value = { ...response.data.version };
+      onboardingStep.value = "VERSION";
+      showToast(
+        response.data.template_fallback
+          ? "智能体和 V1 草稿已创建，当前使用安全基础模板"
+          : "智能体和 V1 草稿已创建",
+        response.data.template_fallback ? "info" : "success",
+      );
+      if (!exitAfterSave) return;
     } else {
       await agentApi.createAgent(agentForm.value);
       showToast("创建成功", "success");
@@ -955,6 +1212,115 @@ const saveAgent = async () => {
   } catch (error: any) {
     console.error("Failed to save agent", error);
     showToast(error.response?.data?.detail || "保存失败，请重试", "error");
+  }
+};
+
+const saveOnboardingVersion = async (exitAfterSave = false) => {
+  if (!onboardingAgent.value || !onboardingVersion.value) return;
+  if (!versionForm.value.model_name || !versionForm.value.system_prompt?.trim()) {
+    showToast("请完善模型和系统提示词", "warning");
+    return;
+  }
+  try {
+    const response = await agentApi.updateVersion(
+      onboardingAgent.value.id,
+      onboardingVersion.value.id,
+      versionForm.value,
+    );
+    onboardingVersion.value = response.data;
+    versionForm.value = { ...response.data };
+    onboardingAgent.value.onboarding_step = "RESOURCE";
+    onboardingStep.value = "RESOURCE";
+    showToast("初始版本已保存", "success");
+    if (exitAfterSave) {
+      showAgentModal.value = false;
+      fetchAgents();
+    }
+  } catch (error: any) {
+    showToast(error.response?.data?.detail || "初始版本保存失败", "error");
+  }
+};
+
+const saveOnboardingResources = async (exitAfterSave = false) => {
+  if (!onboardingAgent.value) return false;
+  const datasetIds = engineConfigUI.value.dataset_ids
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  try {
+    const response = await agentApi.updateAgent(onboardingAgent.value.id, {
+      ...onboardingAgent.value,
+      engine_config: {
+        ...(onboardingAgent.value.engine_config || {}),
+        dataset_ids: datasetIds,
+      },
+    });
+    onboardingAgent.value = response.data;
+    if (exitAfterSave) {
+      showToast("资源配置已保存，可稍后继续", "success");
+      showAgentModal.value = false;
+      fetchAgents();
+    }
+    return true;
+  } catch (error: any) {
+    showToast(error.response?.data?.detail || "资源配置保存失败", "error");
+    return false;
+  }
+};
+
+const saveOnboardingDraft = async () => {
+  if (onboardingStep.value === "BASIC") {
+    await saveAgent(true);
+  } else if (onboardingStep.value === "VERSION") {
+    await saveOnboardingVersion(true);
+  } else {
+    await saveOnboardingResources(true);
+  }
+};
+
+const publishOnboarding = async () => {
+  if (!onboardingAgent.value || !onboardingVersion.value) return;
+  if (!(await saveOnboardingResources(false))) return;
+  try {
+    await agentApi.publishVersion(onboardingAgent.value.id, onboardingVersion.value.id);
+    showToast("智能体已完成配置并发布", "success");
+    showAgentModal.value = false;
+    fetchAgents();
+  } catch (error: any) {
+    const detail = error.response?.data?.detail;
+    const missing = Array.isArray(detail?.missing) ? detail.missing.join("、") : "";
+    showToast(missing ? `尚未就绪：${missing}` : "发布失败", "error");
+  }
+};
+
+const continueAgentOnboarding = async (agent: AIAgent) => {
+  try {
+    const versionsResponse = await agentApi.listVersions(agent.id);
+    const draft = versionsResponse.data
+      .filter((version) => version.status === "DRAFT")
+      .sort((left, right) => left.version_number - right.version_number)[0];
+    if (!draft) {
+      showToast("未找到可继续配置的草稿版本", "warning");
+      return;
+    }
+    isEditingAgent.value = false;
+    isCreatingAgent.value = false;
+    isOnboardingFlow.value = true;
+    onboardingAgent.value = agent;
+    onboardingVersion.value = draft;
+    selectedAgent.value = agent;
+    agentForm.value = { ...agent };
+    versionForm.value = { ...draft };
+    engineConfigUI.value.dataset_ids = Array.isArray(agent.engine_config?.dataset_ids)
+      ? agent.engine_config.dataset_ids.join(",")
+      : "";
+    onboardingStep.value = agent.onboarding_step === "VERSION" ? "VERSION" : "RESOURCE";
+    fetchTools();
+    toolSearchQuery.value = "";
+    versionConfigStep.value = "model";
+    showVersionModal.value = true;
+  } catch (error) {
+    showToast("加载未完成配置失败", "error");
   }
 };
 
@@ -969,6 +1335,7 @@ const openVersionModal = (
   version?: AIAgentVersion,
   isClone: boolean = false
 ) => {
+  isCreatingAgent.value = false;
   fetchTools();
   // This might be called from Drawer emit
   if (version) {
@@ -1037,7 +1404,23 @@ const handleDrawerPublishVersion = (version: AIAgentVersion) => {
           }
         }
       } catch (e) {
-        showToast("发布失败", "error");
+        const error = e as any;
+        const detail = error?.response?.data?.detail;
+        const missing = Array.isArray(detail?.missing) ? detail.missing : [];
+        const labels: Record<string, string> = {
+          published_version: "发布版本",
+          primary_capability: "主类型能力",
+          dataset_binding: "数据集绑定",
+          data_query_tool: "查数工具",
+          knowledge_base_binding: "知识库绑定",
+          knowledge_base_tool: "知识库检索工具",
+        };
+        showToast(
+          detail?.code === "AGENT_NOT_READY"
+            ? `尚未就绪：${missing.map((item: string) => labels[item] || item).join("、")}`
+            : "发布失败",
+          "error",
+        );
         console.error(e);
       }
     },
@@ -1080,7 +1463,121 @@ const openPreview = (agent: AIAgent) => {
   window.open(url, "_blank");
 };
 
+const createExternalEngineAgent = async () => {
+  agentForm.value.agent_type = 'GENERAL';
+  agentForm.value.capabilities = normalizeAgentCapabilities(
+    'GENERAL',
+    agentForm.value.capabilities,
+    agentForm.value.engine_type,
+  );
+  const created = await agentApi.createAgent(agentForm.value);
+  selectedAgent.value = created.data;
+  isCreatingAgent.value = false;
+  showVersionModal.value = false;
+  showToast(`${created.data.engine_type === 'RAGFLOW' ? 'RAGFlow' : 'OpenClaw'} 智能体创建成功`, 'success');
+  fetchAgents();
+  return true;
+};
+
+const persistNewAgentDraft = async (closeAfterSave: boolean) => {
+  if (isPersistingNewAgent.value) return false;
+  if (!agentForm.value.name || !agentForm.value.display_name) {
+    if (closeAfterSave) showVersionModal.value = false;
+    else {
+      versionConfigStep.value = 'agent';
+      showToast("请完善智能体标识和显示名称", "warning");
+    }
+    return false;
+  }
+  if (agentForm.value.engine_type === 'RAGFLOW' && !agentForm.value.engine_config?.app_id) {
+    if (closeAfterSave) {
+      showVersionModal.value = false;
+      return false;
+    }
+    versionConfigStep.value = 'agent';
+    showToast('RAGFlow 模式必须填写 App ID', 'warning');
+    return false;
+  }
+  if (agentForm.value.engine_type === 'OPENCLAW' && (!agentForm.value.engine_config?.base_url || !agentForm.value.engine_config?.model)) {
+    if (closeAfterSave) {
+      showVersionModal.value = false;
+      return false;
+    }
+    versionConfigStep.value = 'agent';
+    showToast('OpenClaw 模式必须填写地址和机器人 ID', 'warning');
+    return false;
+  }
+
+  const desiredVersion = { ...versionForm.value };
+  const rawDatasetIds = agentForm.value.engine_config?.dataset_ids ?? engineConfigUI.value.dataset_ids;
+  const datasetIds = (Array.isArray(rawDatasetIds) ? rawDatasetIds : String(rawDatasetIds || '').split(','))
+    .map((value) => String(value).trim()).filter(Boolean);
+  agentForm.value.engine_config = {
+    ...(agentForm.value.engine_config || {}),
+    dataset_ids: datasetIds,
+  };
+  isPersistingNewAgent.value = true;
+  try {
+    if (!isLocalCreationEngine.value) {
+      // 外部引擎不创建本地版本，由远程引擎直接提供运行能力。
+      return await createExternalEngineAgent();
+    }
+    const created = await agentApi.createAgentOnboarding({
+      ...agentForm.value,
+      onboarding_key: onboardingKey.value,
+    });
+    onboardingAgent.value = created.data.agent;
+    onboardingVersion.value = created.data.version;
+    selectedAgent.value = created.data.agent;
+
+    const toolName = (item: any) => typeof item === 'string' ? item : item?.name;
+    const mergedToolMap = new Map<string, any>();
+    for (const item of [...(created.data.version.tools || []), ...(desiredVersion.tools || [])]) {
+      const name = toolName(item);
+      if (name) mergedToolMap.set(name, item);
+    }
+    const updated = await agentApi.updateVersion(
+      created.data.agent.id,
+      created.data.version.id,
+      {
+        ...created.data.version,
+        ...desiredVersion,
+        model_name: desiredVersion.model_name || created.data.version.model_name,
+        tools: [...mergedToolMap.values()],
+        system_prompt: desiredVersion.system_prompt?.trim() || created.data.version.system_prompt,
+        skills_custom: !!desiredVersion.skills_custom,
+        skills: desiredVersion.skills_custom ? (desiredVersion.skills || []) : [],
+      },
+    );
+    const savedVersion = updated.data;
+    onboardingVersion.value = savedVersion;
+    versionForm.value = { ...savedVersion };
+    isCreatingAgent.value = false;
+    showToast(closeAfterSave ? "智能体草稿已保存，可稍后继续配置" : "智能体和 V1 草稿已创建", "success");
+    if (closeAfterSave) showVersionModal.value = false;
+    fetchAgents();
+    return true;
+  } catch (error: any) {
+    showToast(error.response?.data?.detail || "智能体创建失败", "error");
+    return false;
+  } finally {
+    isPersistingNewAgent.value = false;
+  }
+};
+
+const handleVersionEditorClose = async () => {
+  if (isCreatingAgent.value) {
+    await persistNewAgentDraft(true);
+    return;
+  }
+  showVersionModal.value = false;
+};
+
 const saveVersion = async () => {
+  if (isCreatingAgent.value) {
+    await persistNewAgentDraft(isLocalCreationEngine.value);
+    return;
+  }
   if (!selectedAgent.value) return;
 
   if (!versionForm.value.system_prompt) {
@@ -1128,6 +1625,63 @@ const saveVersion = async () => {
   } catch (error: any) {
     console.error("Failed to save version", error);
     showToast(error.response?.data?.detail || "版本保存失败", "error");
+  }
+};
+
+const publishVersionFromEditor = async () => {
+  if (!versionForm.value.system_prompt?.trim()) {
+    showToast("系统提示词不能为空", "warning");
+    versionConfigStep.value = "prompt";
+    return;
+  }
+  if (versionForm.value.skills_custom && !(versionForm.value.skills?.length)) {
+    showToast("自定义 Skills 开启时至少选择一个公共技能", "warning");
+    versionConfigStep.value = "tools";
+    toolTab.value = "skills";
+    return;
+  }
+
+  try {
+    if (isCreatingAgent.value) {
+      const saved = await persistNewAgentDraft(false);
+      if (!saved) return;
+    } else {
+      if (!selectedAgent.value || !versionForm.value.id) return;
+      const updated = await agentApi.updateVersion(
+        selectedAgent.value.id,
+        versionForm.value.id,
+        {
+          ...versionForm.value,
+          skills_custom: !!versionForm.value.skills_custom,
+          skills: versionForm.value.skills_custom ? (versionForm.value.skills || []) : [],
+        },
+      );
+      versionForm.value = { ...updated.data };
+      onboardingVersion.value = updated.data;
+    }
+
+    const agentId = onboardingAgent.value?.id || selectedAgent.value?.id;
+    const versionId = onboardingVersion.value?.id || versionForm.value.id;
+    if (!agentId || !versionId) return;
+
+    await agentApi.publishVersion(agentId, versionId);
+    showToast("智能体已完成配置并发布", "success");
+    isOnboardingFlow.value = false;
+    showVersionModal.value = false;
+    await fetchAgents();
+    if (versionsDrawerRef.value) versionsDrawerRef.value.refresh();
+  } catch (error: any) {
+    const detail = error.response?.data?.detail;
+    const labels: Record<string, string> = {
+      published_version: "可发布版本",
+      data_query_tool: "查数工具",
+      knowledge_base_tool: "知识库检索工具",
+      knowledge_base: "知识库",
+    };
+    const missing = Array.isArray(detail?.missing)
+      ? detail.missing.map((item: string) => labels[item] || item).join("、")
+      : "";
+    showToast(missing ? `尚未就绪：缺少${missing}` : (detail?.message || detail || "发布失败"), "error");
   }
 };
 
@@ -1224,12 +1778,25 @@ const toggleTool = (toolName: string) => {
   );
 
   if (index > -1) {
+    const requiredForNewAgent = isCreatingAgent.value && (
+      (agentForm.value.agent_type === 'CHATBI' && ['get_dataset_schema', 'execute_sql_query'].includes(toolName)) ||
+      (agentForm.value.agent_type === 'KNOWLEDGE_BASE' && toolName === 'search_knowledge_base')
+    );
+    if (requiredForNewAgent) {
+      showToast('该工具是当前智能体类型的必需能力，创建时不能取消', 'warning');
+      return;
+    }
     tools.splice(index, 1);
   } else {
     tools.push(toolName);
   }
   versionForm.value.tools = tools;
 };
+
+const isVersionToolSelected = (toolName: string) =>
+  (versionForm.value.tools || []).some((item) =>
+    (typeof item === "string" ? item : (item as any).name) === toolName
+  );
 
 const setSkillsCustom = (enabled: boolean) => {
   if (!canEditVersion.value) return;
@@ -1263,7 +1830,7 @@ const isToolSelected = (toolName: string) => {
   );
 };
 
-const isAllMcpSelected = (serverName: string, tools: any[]) => {
+const isAllMcpSelected = (_serverName: string, tools: any[]) => {
   if (!tools || tools.length === 0) return false;
   return tools.every(tool => isToolSelected(tool.name));
 };
@@ -1334,6 +1901,10 @@ const newCapability = ref("");
 const addCapability = () => {
   const cap = newCapability.value.trim();
   if (!cap) return;
+  if (primaryCapabilities.has(cap as any)) {
+    showToast("系统能力由智能体类型自动管理", "warning");
+    return;
+  }
   if (!agentForm.value.capabilities) agentForm.value.capabilities = [];
   if (!agentForm.value.capabilities.includes(cap)) {
     agentForm.value.capabilities.push(cap);
@@ -1414,6 +1985,128 @@ const getEngineShortLabel = (agent: AIAgent) => {
   if (agent.engine_type === 'RAGFLOW') return 'RAGFlow'
   if (agent.engine_type === 'OPENCLAW') return 'OpenClaw'
   return 'NanZi'
+}
+
+const getAgentTypeLabel = (agent: AIAgent) => {
+  if (agent.agent_type === 'CHATBI') return 'ChatBI'
+  if (agent.agent_type === 'KNOWLEDGE_BASE') return '知识库助手'
+  return '通用助手'
+}
+
+const getAgentTypeBadgeClass = (agent: AIAgent) => {
+  if (agent.agent_type === 'CHATBI') return 'border-violet-200 bg-violet-50 text-violet-700'
+  if (agent.agent_type === 'KNOWLEDGE_BASE') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  return 'border-slate-200 bg-slate-100 text-slate-700'
+}
+
+const READINESS_MISSING_LABELS: Record<string, string> = {
+  published_version: '发布版本',
+  primary_capability: '主类型能力',
+  dataset_binding: '数据集绑定',
+  data_query_tool: '查数工具',
+  knowledge_base_binding: '知识库绑定',
+  knowledge_base_tool: '知识库检索工具',
+}
+
+const formatReadinessMissing = (agent: AIAgent) =>
+  (agent.readiness_missing || [])
+    .map((item) => READINESS_MISSING_LABELS[item] || item)
+    .filter(Boolean)
+
+const getPrimaryCardAction = (agent: AIAgent): 'continue' | 'enable' | 'configure' | 'edit' => {
+  if (agent.onboarding_step && agent.onboarding_step !== 'COMPLETE') return 'continue'
+  if (!agent.is_enabled) return 'enable'
+  if (agent.engine_type === 'RAGFLOW' || agent.engine_type === 'OPENCLAW') return 'edit'
+  return 'configure'
+}
+
+const getPrimaryCardActionLabel = (agent: AIAgent) => {
+  const action = getPrimaryCardAction(agent)
+  if (action === 'continue') return '继续配置'
+  if (action === 'enable') return '启用'
+  if (action === 'edit') return '编辑智能体'
+  if (!agent.readiness_ready) return '完善配置'
+  return '配置与发布'
+}
+
+const runPrimaryCardAction = (agent: AIAgent) => {
+  const action = getPrimaryCardAction(agent)
+  if (action === 'continue') {
+    continueAgentOnboarding(agent)
+    return
+  }
+  if (action === 'enable') {
+    if (!agent.is_enabled) toggleAgentStatus(agent)
+    return
+  }
+  if (action === 'edit') {
+    openAgentModal(agent)
+    return
+  }
+  openDrawer(agent)
+}
+
+const followReadinessGap = (agent: AIAgent) => {
+  if (agent.readiness_ready) return
+  if (agent.onboarding_step && agent.onboarding_step !== 'COMPLETE') {
+    continueAgentOnboarding(agent)
+    return
+  }
+  if (agent.engine_type === 'RAGFLOW' || agent.engine_type === 'OPENCLAW') {
+    openAgentModal(agent)
+    return
+  }
+  openDrawer(agent)
+}
+
+const showAgentCenterGuide = ref(localStorage.getItem('agent_center_guide_dismissed') !== '1')
+const dismissAgentCenterGuide = () => {
+  showAgentCenterGuide.value = false
+  localStorage.setItem('agent_center_guide_dismissed', '1')
+}
+
+const batchMode = ref(false)
+const selectedAgentIds = ref<Set<string>>(new Set())
+const selectedAgents = computed(() =>
+  filteredAgents.value.filter((agent) => selectedAgentIds.value.has(agent.id))
+)
+const toggleBatchMode = () => {
+  batchMode.value = !batchMode.value
+  if (!batchMode.value) selectedAgentIds.value = new Set()
+}
+const toggleAgentSelection = (agentId: string) => {
+  const next = new Set(selectedAgentIds.value)
+  if (next.has(agentId)) next.delete(agentId)
+  else next.add(agentId)
+  selectedAgentIds.value = next
+}
+const clearAgentSelection = () => {
+  selectedAgentIds.value = new Set()
+}
+const batchSetEnabled = async (enabled: boolean) => {
+  const targets = selectedAgents.value.filter(
+    (agent) => agent.is_editable !== false && Boolean(agent.is_enabled) !== enabled
+  )
+  if (!targets.length) {
+    showToast(enabled ? '所选智能体均已启用' : '所选智能体均已禁用', 'info')
+    return
+  }
+  try {
+    await Promise.all(
+      targets.map((agent) =>
+        agentApi.updateAgent(agent.id, {
+          ...agent,
+          is_enabled: enabled,
+        })
+      )
+    )
+    showToast(enabled ? `已启用 ${targets.length} 个智能体` : `已禁用 ${targets.length} 个智能体`, 'success')
+    clearAgentSelection()
+    await fetchAgents()
+  } catch (e) {
+    console.error(e)
+    showToast('批量更新失败', 'error')
+  }
 }
 
 const openCardMenuId = ref<string | null>(null)
@@ -1505,7 +2198,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           </span>
           <input
             v-model="searchKeyword"
-            type="text"
+            type="search"
             placeholder="搜索智能体名称..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
@@ -1530,10 +2223,23 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             <option value="all">类型：全部</option>
             <option value="system">类型：系统内置</option>
             <option value="custom">类型：自定义</option>
+            <option disabled>──────────</option>
+            <option value="GENERAL">智能体类型：通用助手</option>
+            <option value="CHATBI">智能体类型：ChatBI</option>
+            <option value="KNOWLEDGE_BASE">智能体类型：知识库助手</option>
           </select>
         </div>
 
         <div v-if="!isMobile" class="flex shrink-0 select-none items-center gap-0.5 rounded-lg border border-gray-300 bg-gray-200/60 p-0.5">
+          <button
+            type="button"
+            class="rounded-md px-2 py-1.5 text-xs font-medium transition-all"
+            :class="batchMode ? 'border border-blue-200 bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'"
+            title="批量选择启用/禁用"
+            @click="toggleBatchMode"
+          >
+            批量
+          </button>
           <button
             type="button"
             class="rounded-md p-1.5 transition-all"
@@ -1563,7 +2269,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             <button
               type="button"
               class="flex flex-1 items-center justify-center gap-2 bg-primary px-4 py-2 text-sm font-medium text-white transition-all hover:bg-primary-dark active:scale-[0.98] sm:flex-none"
-              @click="openAgentModal()"
+              @click="startAgentCreation()"
             >
               <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -1588,7 +2294,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             <button
               type="button"
               class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
-              @click="showCreateAgentMenu = false; openAgentModal()"
+              @click="showCreateAgentMenu = false; startAgentCreation()"
             >
               <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -1616,6 +2322,54 @@ const formatSkillCountLabel = (agent: AIAgent) => {
     >
       拖动卡片或列表行可调整排序
     </p>
+
+    <div
+      v-if="showAgentCenterGuide"
+      class="rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50 to-sky-50 px-4 py-3 flex items-start gap-3"
+    >
+      <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 text-sm font-bold">i</div>
+      <div class="min-w-0 flex-1 text-sm text-blue-900/80 leading-relaxed">
+        <p class="font-medium text-blue-900">智能体中心使用提示</p>
+        <p class="mt-0.5">
+          主类型决定路由与委派能力；完成「配置与发布」并满足就绪条件后即可启用。未就绪卡片可点「完善配置」查看缺项。
+        </p>
+      </div>
+      <button
+        type="button"
+        class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100/80"
+        @click="dismissAgentCenterGuide"
+      >
+        知道了
+      </button>
+    </div>
+
+    <div
+      v-if="batchMode && selectedAgentIds.size > 0"
+      class="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white/95 px-4 py-2.5 shadow-md backdrop-blur"
+    >
+      <span class="text-sm text-gray-600">已选 <span class="font-semibold text-gray-900">{{ selectedAgentIds.size }}</span> 个</span>
+      <button
+        type="button"
+        class="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600"
+        @click="batchSetEnabled(true)"
+      >
+        批量启用
+      </button>
+      <button
+        type="button"
+        class="rounded-lg bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700"
+        @click="batchSetEnabled(false)"
+      >
+        批量禁用
+      </button>
+      <button
+        type="button"
+        class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-100"
+        @click="clearAgentSelection"
+      >
+        清空选择
+      </button>
+    </div>
 
     <!-- Agents Grid -->
     <div v-if="loading" class="py-12 text-center text-gray-400">
@@ -1648,7 +2402,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
     >
       <p class="text-gray-500">没有找到匹配的智能体</p>
       <button
-        @click="openAgentModal()"
+        @click="startAgentCreation()"
         class="mt-4 text-primary hover:underline"
       >
         新建一个?
@@ -1663,22 +2417,37 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           :key="agent.id"
           class="bg-white rounded-xl shadow-sm border hover:shadow-md transition-all duration-200 flex flex-col overflow-hidden group relative"
           :class="[
-            !agent.is_enabled ? 'bg-gray-50/50 grayscale-[0.8] opacity-80' : '',
+            !agent.is_enabled ? 'bg-gray-100/80 grayscale opacity-60' : '',
+            batchMode && selectedAgentIds.has(agent.id) ? 'ring-2 ring-blue-400 border-blue-300' : '',
             getAgentColorTheme(agent).border,
-            canDragAgents ? 'cursor-grab active:cursor-grabbing' : '',
+            canDragAgents && !batchMode ? 'cursor-grab active:cursor-grabbing' : '',
             dragOverId === agent.id ? 'ring-2 ring-primary/40 scale-[1.01]' : '',
             dragSourceId === agent.id ? 'opacity-50' : '',
             savingAgentOrder ? 'pointer-events-none' : '',
           ]"
-          :draggable="canDragAgents"
+          :draggable="canDragAgents && !batchMode"
           @dragstart="handleAgentDragStart($event, agent.id)"
           @dragover="handleAgentDragOver($event, agent.id)"
           @dragleave="handleAgentDragLeave($event)"
           @drop="handleAgentDrop($event, agent.id)"
           @dragend="handleAgentDragEnd()"
+          @click="batchMode && toggleAgentSelection(agent.id)"
         >
         <div
-          v-if="canDragAgents"
+          v-if="batchMode"
+          class="absolute top-3 left-3 z-20"
+          @click.stop
+        >
+          <input
+            type="checkbox"
+            class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+            :checked="selectedAgentIds.has(agent.id)"
+            @click.stop
+            @change="toggleAgentSelection(agent.id)"
+          />
+        </div>
+        <div
+          v-if="canDragAgents && !batchMode"
           class="absolute top-2 left-1/2 -translate-x-1/2 z-10 opacity-0 group-hover:opacity-40 transition-opacity pointer-events-none select-none"
         >
           <svg class="w-4 h-3 text-gray-500" viewBox="0 0 16 10" fill="currentColor">
@@ -1689,7 +2458,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
         <!-- Card Header Accent -->
         <div class="h-1.5 w-full" :class="getAgentColorTheme(agent).accent"></div>
         <!-- Card Header: title left, enable switch right -->
-        <div class="p-5 flex items-start justify-between gap-3">
+        <div class="p-5 flex items-start justify-between gap-3" :class="batchMode ? 'pl-10' : ''">
           <div class="flex items-center space-x-3 min-w-0 flex-1">
             <div
               class="w-11 h-11 rounded-xl flex items-center justify-center text-xl shadow-inner border overflow-hidden shrink-0"
@@ -1703,36 +2472,53 @@ const formatSkillCountLabel = (agent: AIAgent) => {
               <span v-else>{{ getAgentEmoji(agent) }}</span>
             </div>
             <div class="min-w-0">
-              <h3
-                class="font-bold text-gray-900 line-clamp-1"
-                :title="agent.display_name"
-              >
-                {{ agent.display_name }}
-              </h3>
-              <div class="mt-1 flex items-center flex-wrap gap-1.5 text-[11px] text-gray-500">
-                <span class="font-mono truncate max-w-[8rem]" :title="agent.name">{{ agent.name }}</span>
-                <span class="text-gray-300">·</span>
-                <span
-                  class="shrink-0 px-1.5 py-0.5 rounded font-medium border"
-                  :class="{
-                    'bg-purple-50 text-purple-600 border-purple-100': agent.engine_type === 'RAGFLOW',
-                    'bg-orange-50 text-orange-600 border-orange-100': agent.engine_type === 'OPENCLAW',
-                    'bg-blue-50 text-blue-600 border-blue-100': agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW',
-                  }"
-                >{{ getEngineShortLabel(agent) }}</span>
+              <div class="flex items-center gap-1.5 min-w-0">
+                <h3
+                  class="font-bold text-gray-900 line-clamp-1"
+                  :title="agent.display_name"
+                >
+                  {{ agent.display_name }}
+                </h3>
                 <span
                   v-if="agent.is_system"
-                  class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-indigo-50 text-indigo-600 border border-indigo-100"
-                >系统</span>
+                  class="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded-full bg-indigo-50 text-indigo-500 border border-indigo-100"
+                  title="系统内置"
+                >
+                  <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </span>
+              </div>
+              <div class="mt-1.5 flex items-center flex-wrap gap-1.5 text-[11px] text-gray-500">
+                <span
+                  class="shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide"
+                  :class="getAgentTypeBadgeClass(agent)"
+                >{{ getAgentTypeLabel(agent) }}</span>
+                <span
+                  class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium border border-transparent bg-gray-50 text-gray-500"
+                  :title="`执行引擎：${getEngineShortLabel(agent)}`"
+                >{{ getEngineShortLabel(agent) }}</span>
+                <button
+                  type="button"
+                  class="shrink-0 px-1.5 py-0.5 rounded font-medium border text-left"
+                  :class="agent.readiness_ready
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-100 cursor-default'
+                    : 'bg-amber-50 text-amber-700 border-amber-100 hover:bg-amber-100'"
+                  :title="agent.readiness_ready
+                    ? '已满足运行和委派条件'
+                    : `缺少：${formatReadinessMissing(agent).join('、') || '待完善'}`"
+                  @click.stop="followReadinessGap(agent)"
+                >{{ agent.readiness_ready ? '已就绪' : '尚未就绪' }}</button>
                 <span
                   v-if="!agent.is_enabled"
-                  class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-gray-100 text-gray-500 border border-gray-200"
+                  class="shrink-0 px-1.5 py-0.5 rounded font-medium bg-gray-200/80 text-gray-500 border border-gray-300"
                 >已禁用</span>
               </div>
+              <p class="mt-1 font-mono text-[10px] text-gray-400 truncate" :title="agent.name">{{ agent.name }}</p>
             </div>
           </div>
 
-          <div class="shrink-0 pt-0.5">
+          <div class="shrink-0 pt-0.5" @click.stop>
             <button
               v-if="agent.is_editable !== false"
               class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
@@ -1768,13 +2554,20 @@ const formatSkillCountLabel = (agent: AIAgent) => {
         <!-- Description -->
         <div class="px-5 pb-3 flex-1 flex flex-col">
           <p
-            class="text-sm text-gray-600 leading-relaxed line-clamp-3 min-h-[3.75rem]"
+            class="text-sm text-gray-600 leading-relaxed line-clamp-2 min-h-[2.5rem]"
             :title="agent.description || undefined"
           >
             {{ agent.description || '暂无描述' }}
           </p>
 
-          <!-- 已发布版本：Tool / MCP / Skills；显式绑定才显示数据集 / 知识库 -->
+          <div
+            v-if="!agent.readiness_ready && formatReadinessMissing(agent).length"
+            class="mt-2 rounded-lg border border-amber-100 bg-amber-50/70 px-2.5 py-1.5 text-[11px] text-amber-800"
+          >
+            待完善：{{ formatReadinessMissing(agent).slice(0, 3).join('、') }}<span v-if="formatReadinessMissing(agent).length > 3">…</span>
+          </div>
+
+          <!-- 已发布版本：工具 / MCP / 技能；显式绑定才显示数据集 / 知识库 -->
           <div
             v-if="showCapabilityChips(agent)"
             class="mt-3 flex items-center flex-wrap gap-1.5"
@@ -1784,21 +2577,21 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-slate-50 text-slate-600 border border-slate-100"
                 :title="`已配置 ${agent.tool_count ?? 0} 个内置/API 工具`"
               >
-                <span class="text-slate-400 font-normal">Tool</span>
+                <span class="text-slate-400 font-normal">工具</span>
                 <span class="tabular-nums text-slate-800">{{ agent.tool_count ?? 0 }}</span>
               </span>
               <span
                 class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-violet-50 text-violet-700 border border-violet-100"
-                :title="`已配置 ${agent.mcp_count ?? 0} 个 MCP 工具`"
+                :title="`已配置 ${agent.mcp_count ?? 0} 个 MCP 服务`"
               >
                 <span class="text-violet-400 font-normal">MCP</span>
                 <span class="tabular-nums">{{ agent.mcp_count ?? 0 }}</span>
               </span>
               <span
                 class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-100"
-                :title="agent.skills_custom ? `已自定义 ${agent.skill_count ?? 0} 个 Skills` : '使用全部公共 Skills'"
+                :title="agent.skills_custom ? `已自定义 ${agent.skill_count ?? 0} 个技能` : '使用全部公共技能'"
               >
-                <span class="text-amber-400 font-normal">Skills</span>
+                <span class="text-amber-400 font-normal">技能</span>
                 <span class="tabular-nums">{{ formatSkillCountLabel(agent) }}</span>
               </span>
             </template>
@@ -1827,22 +2620,22 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           </div>
 
           <div
-            v-if="!isMobile"
-            class="mt-3 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400"
+            class="mt-3 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400 opacity-70 group-hover:opacity-100 transition-opacity"
           >
-            <span title="创建者">{{ agent.created_by || 'Unknown' }}</span>
+            <span title="创建者">{{ agent.created_by || '未知' }}</span>
             <span class="text-gray-300">·</span>
-            <span title="最后更新">{{ formatDate(agent.updated_at) }}</span>
+            <span title="最后更新">更新于 {{ formatDate(agent.updated_at) }}</span>
             <span class="text-gray-300">·</span>
-            <span title="调用次数">{{ agent.execution_count ?? 0 }} 次调用</span>
+            <span title="调用次数">调用 {{ agent.execution_count ?? 0 }} 次</span>
           </div>
         </div>
 
         <!-- Actions Footer -->
         <div
           class="bg-gray-50 px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2 group-hover:bg-blue-50/30 transition-colors"
+          @click.stop
         >
-          <div class="relative" @click.stop>
+          <div class="relative">
             <button
               @click="toggleCardMenu(agent.id, $event)"
               class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-white border border-transparent hover:border-gray-200 transition-colors"
@@ -1868,7 +2661,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 @click="closeCardMenus(); openAgentModal(agent)"
                 class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                配置元数据
+                编辑智能体
               </button>
               <button
                 v-if="!isMobile"
@@ -1889,32 +2682,16 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           </div>
 
           <button
-            v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
-            @click.stop="openDrawer(agent)"
-            class="px-3 py-1.5 bg-primary text-white text-xs font-medium rounded-lg shadow-sm hover:bg-primary-dark transition-colors flex items-center"
+            type="button"
+            @click.stop="runPrimaryCardAction(agent)"
+            class="px-3 py-1.5 text-white text-xs font-medium rounded-lg shadow-sm transition-colors flex items-center"
+            :class="{
+              'bg-amber-500 hover:bg-amber-600': getPrimaryCardAction(agent) === 'continue' || (getPrimaryCardAction(agent) === 'configure' && !agent.readiness_ready),
+              'bg-emerald-500 hover:bg-emerald-600': getPrimaryCardAction(agent) === 'enable',
+              'bg-primary hover:bg-primary-dark': getPrimaryCardAction(agent) === 'edit' || (getPrimaryCardAction(agent) === 'configure' && agent.readiness_ready),
+            }"
           >
-            <svg
-              class="w-3 h-3 mr-1"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-              />
-            </svg>
-            版本管理
-          </button>
-          <button
-            v-else-if="agent.is_editable !== false"
-            v-has-perm="'element:agent:edit'"
-            @click.stop="openAgentModal(agent)"
-            class="px-3 py-1.5 bg-primary text-white text-xs font-medium rounded-lg shadow-sm hover:bg-primary-dark transition-colors"
-          >
-            配置
+            {{ getPrimaryCardActionLabel(agent) }}
           </button>
         </div>
         </div>
@@ -1922,17 +2699,18 @@ const formatSkillCountLabel = (agent: AIAgent) => {
 
       <!-- List View -->
       <template v-else>
-        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-          <table class="w-full text-left border-collapse">
+        <div class="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+          <table class="w-full min-w-[1100px] text-left border-collapse">
             <thead>
               <tr class="bg-gray-50/50 border-b border-gray-200">
+                <th v-if="batchMode" class="px-3 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-10 text-center">选</th>
                 <th v-if="canDragAgents" class="px-3 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-8"></th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-12 text-center">Icon</th>
+                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider w-12 text-center">图标</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider">智能体名称</th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden md:table-cell">引擎 / 类型</th>
+                <th class="w-36 min-w-[9rem] px-6 py-3 text-[11px] font-bold uppercase tracking-wider text-gray-400 hidden md:table-cell">引擎 / 类型</th>
                 <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider hidden lg:table-cell">能力</th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-center w-32">状态</th>
-                <th class="px-6 py-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider text-right w-48">操作</th>
+                <th class="w-20 min-w-[5rem] px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wider text-gray-400">状态</th>
+                <th class="w-64 min-w-[17rem] px-6 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-gray-400">操作</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
@@ -1941,19 +2719,30 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 :key="agent.id"
                 class="hover:bg-blue-50/30 transition-colors group"
                 :class="[
-                  !agent.is_enabled ? 'opacity-70 grayscale-[0.6] bg-gray-50/30' : '',
-                  canDragAgents ? 'cursor-grab active:cursor-grabbing' : '',
+                  !agent.is_enabled ? 'opacity-55 grayscale bg-gray-50/60' : '',
+                  batchMode && selectedAgentIds.has(agent.id) ? 'bg-blue-50/50' : '',
+                  canDragAgents && !batchMode ? 'cursor-grab active:cursor-grabbing' : '',
                   dragOverId === agent.id ? 'bg-blue-50/60 ring-1 ring-inset ring-primary/30' : '',
                   dragSourceId === agent.id ? 'opacity-50' : '',
                   savingAgentOrder ? 'pointer-events-none' : '',
                 ]"
-                :draggable="canDragAgents"
+                :draggable="canDragAgents && !batchMode"
                 @dragstart="handleAgentDragStart($event, agent.id)"
                 @dragover="handleAgentDragOver($event, agent.id)"
                 @dragleave="handleAgentDragLeave($event)"
                 @drop="handleAgentDrop($event, agent.id)"
                 @dragend="handleAgentDragEnd()"
+                @click="batchMode && toggleAgentSelection(agent.id)"
               >
+                <td v-if="batchMode" class="px-3 py-4 text-center" @click.stop>
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+                    :checked="selectedAgentIds.has(agent.id)"
+                    @click.stop
+                    @change="toggleAgentSelection(agent.id)"
+                  />
+                </td>
                 <td v-if="canDragAgents" class="px-3 py-4 text-gray-300 group-hover:text-gray-400">
                   <svg class="w-4 h-4 mx-auto" viewBox="0 0 16 10" fill="currentColor">
                     <circle cx="4" cy="2" r="1.2"/><circle cx="8" cy="2" r="1.2"/><circle cx="12" cy="2" r="1.2"/>
@@ -1978,27 +2767,30 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     <span class="text-[10px] text-gray-400 font-mono line-clamp-1">{{ agent.description || agent.name }}</span>
                   </div>
                 </td>
-                <td class="px-6 py-4 hidden md:table-cell">
-                  <div class="flex items-center space-x-2">
-                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium border" :class="agent.is_system ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-blue-50 text-blue-600 border-blue-100'">
-                      {{ agent.is_system ? 'System' : 'Custom' }}
+                <td class="w-36 min-w-[9rem] px-6 py-4 hidden md:table-cell">
+                  <div class="flex w-full flex-col items-start gap-1">
+                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium" :class="agent.is_system ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-500 border-slate-100'">
+                      {{ agent.is_system ? '系统内置' : '自定义' }}
                     </span>
-                    <span class="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                    <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 whitespace-nowrap">
                       {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
+                    </span>
+                    <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap" :class="getAgentTypeBadgeClass(agent)">
+                      {{ getAgentTypeLabel(agent) }}
                     </span>
                   </div>
                 </td>
                 <td class="px-6 py-4 hidden lg:table-cell">
                   <div v-if="showCapabilityChips(agent)" class="flex items-center flex-wrap gap-1">
                     <template v-if="hasCapabilitySummary(agent)">
-                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-50 text-slate-600 border border-slate-100 tabular-nums" title="Tool">
-                        T {{ agent.tool_count ?? 0 }}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-50 text-slate-600 border border-slate-100 tabular-nums" title="工具">
+                        工具 {{ agent.tool_count ?? 0 }}
                       </span>
                       <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-100 tabular-nums" title="MCP">
-                        M {{ agent.mcp_count ?? 0 }}
+                        MCP {{ agent.mcp_count ?? 0 }}
                       </span>
-                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-100 tabular-nums" title="Skills">
-                        S {{ formatSkillCountLabel(agent) }}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-100 tabular-nums" title="技能">
+                        技能 {{ formatSkillCountLabel(agent) }}
                       </span>
                     </template>
                     <span
@@ -2006,23 +2798,23 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                       class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-cyan-50 text-cyan-700 border border-cyan-100 tabular-nums"
                       title="元数据集"
                     >
-                      数 {{ agent.metadata_dataset_count }}
+                      数据集 {{ agent.metadata_dataset_count }}
                     </span>
                     <span
                       v-if="agent.knowledge_base_count != null && agent.knowledge_base_count > 0"
                       class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-100 tabular-nums"
                       title="知识库"
                     >
-                      库 {{ agent.knowledge_base_count }}
+                      知识库 {{ agent.knowledge_base_count }}
                     </span>
                   </div>
                   <span v-else-if="(agent.engine_type || 'LOCAL') === 'LOCAL'" class="text-[10px] text-gray-400">未发布</span>
                   <span v-else class="text-[10px] text-gray-300">—</span>
                 </td>
-                <td class="px-6 py-4">
+                <td class="w-20 min-w-[5rem] px-3 py-4">
                   <div class="flex justify-center">
                     <span
-                      class="px-2 py-0.5 rounded text-[10px] font-bold border flex items-center"
+                      class="px-2 py-0.5 rounded text-[10px] font-bold border flex items-center whitespace-nowrap"
                       :class="[
                         agent.is_enabled
                           ? 'bg-green-50 text-green-600 border-green-100'
@@ -2034,16 +2826,28 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     </span>
                   </div>
                 </td>
-                <td class="px-6 py-4 text-right">
-                  <div class="flex items-center justify-end space-x-1">
-                    <!-- Actions for List View -->
+                <td class="min-w-[17rem] px-6 py-4 text-right">
+                  <div class="flex items-center justify-end gap-0.5">
+                    <button
+                      type="button"
+                      @click.stop="runPrimaryCardAction(agent)"
+                      class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-1.5 text-xs font-medium text-white shadow-sm"
+                      :class="{
+                        'bg-amber-500 hover:bg-amber-600': getPrimaryCardAction(agent) === 'continue' || (getPrimaryCardAction(agent) === 'configure' && !agent.readiness_ready),
+                        'bg-emerald-500 hover:bg-emerald-600': getPrimaryCardAction(agent) === 'enable',
+                        'bg-primary hover:bg-primary-dark': getPrimaryCardAction(agent) === 'edit' || (getPrimaryCardAction(agent) === 'configure' && agent.readiness_ready),
+                      }"
+                      :title="getPrimaryCardActionLabel(agent)"
+                    >
+                      {{ getPrimaryCardActionLabel(agent) }}
+                    </button>
                     <button @click.stop="openPreview(agent)" class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" title="预览">
                       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                       </svg>
                     </button>
-                    <button v-has-perm="'element:agent:edit'" v-if="agent.is_editable !== false" @click.stop="openAgentModal(agent)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" title="编辑">
+                    <button v-has-perm="'element:agent:edit'" v-if="agent.is_editable !== false" @click.stop="openAgentModal(agent)" class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" title="编辑智能体">
                       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                       </svg>
@@ -2051,17 +2855,6 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                     <button @click.stop="openHistoryModal(agent)" class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-white rounded-md transition-all shadow-sm border border-transparent hover:border-gray-100" title="历史记录">
                       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </button>
-                    <!-- Version Management Icon Button -->
-                    <button
-                      v-if="agent.engine_type !== 'RAGFLOW' && agent.engine_type !== 'OPENCLAW'"
-                      @click.stop="openDrawer(agent)"
-                      class="p-1.5 text-primary hover:bg-primary/5 rounded-md transition-all shadow-sm border border-transparent hover:border-primary/20"
-                      title="版本管理"
-                    >
-                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                       </svg>
                     </button>
                     <button
@@ -2097,11 +2890,56 @@ const formatSkillCountLabel = (agent: AIAgent) => {
 
     <!-- Agent Modal -->
     <Modal
-      v-if="showAgentModal"
+      v-if="showAgentModal && isEditingAgent"
       :title="isEditingAgent ? '编辑智能体' : '新建智能体'"
+      size="max-w-4xl"
       @close="showAgentModal = false"
     >
+      <template #header-extra>
+        <label
+          v-if="userInfo?.role === 'admin'"
+          class="flex cursor-pointer items-center gap-2"
+          title="标记为系统预置智能体，防止误删并提高路由权重"
+        >
+          <span class="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Admin Only</span>
+          <span
+            class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold transition-colors"
+            :class="agentForm.is_system ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-500'"
+          >
+            <span aria-hidden="true">🛡️</span>
+            系统智能体
+          </span>
+          <span class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors" :class="agentForm.is_system ? 'bg-primary' : 'bg-gray-300'">
+            <input v-model="agentForm.is_system" type="checkbox" class="sr-only" />
+            <span class="h-4 w-4 rounded-full bg-white shadow-sm transition-transform" :class="agentForm.is_system ? 'translate-x-4' : 'translate-x-0.5'"></span>
+          </span>
+        </label>
+      </template>
+
+      <template #footer>
+        <div class="flex items-center justify-end gap-3">
+          <button @click="showAgentModal = false" class="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">取消</button>
+          <button @click="saveAgent(false)" class="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-dark">保存修改</button>
+        </div>
+      </template>
       <div class="space-y-4">
+        <div v-if="isOnboardingFlow" class="grid grid-cols-3 gap-2 rounded-xl bg-gray-50 p-2">
+          <div
+            v-for="(step, index) in [
+              { key: 'BASIC', label: '基本信息' },
+              { key: 'VERSION', label: '初始版本' },
+              { key: 'RESOURCE', label: '资源与发布' },
+            ]"
+            :key="step.key"
+            class="rounded-lg px-3 py-2 text-center text-xs font-semibold transition-colors"
+            :class="onboardingStep === step.key ? 'bg-white text-primary shadow-sm' : 'text-gray-400'"
+          >
+            <span class="mr-1">{{ index + 1 }}</span>{{ step.label }}
+          </div>
+        </div>
+
+        <div v-if="!isOnboardingFlow || onboardingStep === 'BASIC'" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_8rem]">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1"
             >物理标识符 (ID/Name)</label
@@ -2124,30 +2962,41 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1"
-            >排序权重 (Sort Order)</label
-          >
+          <label class="mb-1 flex items-center gap-1 text-sm font-medium text-gray-700">
+            <span>排序权重</span>
+            <span
+              class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-gray-300 text-[10px] font-semibold text-gray-400"
+              title="仅影响聊天页面的智能体选择列表顺序，值越大越靠前"
+            >?</span>
+          </label>
           <input
             type="number"
             v-model.number="agentForm.sort_order"
             placeholder="值越大越靠前 (默认 0)"
             class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
           />
-          <p class="text-[10px] text-gray-400 mt-1 italic">
-            * 仅影响聊天页面的智能体选择列表顺序。值越大越靠前。
-          </p>
+        </div>
         </div>
 
         <!-- Engine Selection -->
-        <div class="bg-gray-50/50 p-4 rounded-xl border border-gray-100">
-          <label class="block text-xs font-black text-gray-500 uppercase tracking-widest mb-3"
-            >执行引擎 (Execution Engine)</label
-          >
+        <div class="rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+          <div class="flex items-center gap-1.5">
+            <label class="block text-[10px] font-black uppercase tracking-widest text-gray-400"
+              >执行引擎 (Execution Engine)</label
+            >
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-white text-xs font-bold text-blue-600 hover:bg-blue-50"
+              aria-label="查看执行引擎说明"
+              title="查看三个引擎的区别"
+              @click="showEngineHelp = true"
+            >?</button>
+          </div>
 
-          <div class="grid grid-cols-3 gap-3">
+          <div v-if="!isEditingAgent" class="mt-3 grid grid-cols-3 gap-3">
             <!-- Local LLM Card -->
             <div
-              @click="agentForm.engine_type = 'LOCAL'"
+              @click="selectEngineType('LOCAL')"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'LOCAL' ? 'bg-blue-50 border-blue-500 shadow-sm' : 'bg-white border-gray-100 hover:border-blue-200'"
             >
@@ -2161,7 +3010,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
 
             <!-- RAGFlow Card -->
             <div
-              @click="agentForm.engine_type = 'RAGFLOW'"
+              @click="selectEngineType('RAGFLOW')"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'RAGFLOW' ? 'bg-indigo-50 border-indigo-500 shadow-sm' : 'bg-white border-gray-100 hover:border-indigo-200'"
             >
@@ -2175,7 +3024,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
 
             <!-- OpenClaw Card -->
             <div
-              @click="agentForm.engine_type = 'OPENCLAW'"
+              @click="selectEngineType('OPENCLAW')"
               class="relative flex flex-col items-center p-3 rounded-xl border-2 transition-all cursor-pointer group"
               :class="agentForm.engine_type === 'OPENCLAW' ? 'bg-orange-50 border-orange-500 shadow-sm' : 'bg-white border-gray-100 hover:border-orange-200'"
             >
@@ -2188,10 +3037,26 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             </div>
           </div>
 
+          <div v-else class="mt-2 flex items-center gap-2 text-sm">
+            <span class="inline-flex items-center rounded-full border px-3 py-1 font-semibold"
+              :class="agentForm.engine_type === 'RAGFLOW'
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                : agentForm.engine_type === 'OPENCLAW'
+                  ? 'border-orange-200 bg-orange-50 text-orange-700'
+                  : 'border-blue-200 bg-blue-50 text-blue-700'"
+            >{{ agentForm.engine_type === 'RAGFLOW' ? '🌊 RAGFlow' : agentForm.engine_type === 'OPENCLAW' ? '🦞 OpenClaw' : '🧠 NanZi Engine' }}</span>
+            <span class="text-xs text-gray-400">执行引擎不可修改；当前引擎参数仍可编辑</span>
+          </div>
+
           <!-- Engine Config Fields -->
-          <div class="space-y-3 mt-4 animate-fade-in-down">
+          <div
+            v-if="agentForm.engine_type !== 'LOCAL'"
+            class="mt-3 border-t border-gray-200 pt-3 animate-fade-in-down"
+            :class="agentForm.engine_type === 'RAGFLOW' ? 'grid grid-cols-1 gap-3 md:grid-cols-2' : 'space-y-3'"
+          >
             <!-- OpenClaw Config (Address, Key, Model) -->
-            <div v-if="agentForm.engine_type === 'OPENCLAW'" class="space-y-3">
+            <div v-if="agentForm.engine_type === 'OPENCLAW'" class="space-y-3 md:col-span-2">
+              <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
               <div>
                 <label class="block text-xs font-bold text-orange-700 mb-1"
                   >OpenClaw 地址 (Base URL) <span class="text-red-500">*</span></label
@@ -2223,23 +3088,32 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                   class="w-full px-3 py-2 text-sm border border-orange-200 rounded focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none"
                 />
               </div>
+              </div>
 
               <!-- Safety Check (OpenClaw Only) -->
-              <div class="pt-2 border-t border-orange-100 mt-2">
-                <div class="flex items-center justify-between mb-2">
+              <div class="mt-2 border-t border-orange-100 pt-2">
+                <div class="flex items-center justify-between gap-3">
                   <div class="flex flex-col">
                     <span class="text-xs font-bold text-orange-800 flex items-center">
                       🛡️ 内容安全审查
                     </span>
                     <span class="text-[10px] text-orange-600/70 mt-0.5">调用系统模型检测用户输入是否合规</span>
                   </div>
-                  <label class="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" v-model="engineConfigUI.safety_check_enabled" class="sr-only peer" />
-                    <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
-                  </label>
+                  <div class="flex items-center gap-3">
+                    <button
+                      v-if="engineConfigUI.safety_check_enabled"
+                      type="button"
+                      @click="showAdvancedSafety = !showAdvancedSafety"
+                      class="rounded-md border border-orange-200 bg-white px-2.5 py-1 text-[10px] font-medium text-orange-700 hover:bg-orange-50"
+                    >高级安全设置 {{ showAdvancedSafety ? '收起' : '展开' }}</button>
+                    <label class="relative inline-flex cursor-pointer items-center">
+                      <input type="checkbox" v-model="engineConfigUI.safety_check_enabled" class="sr-only peer" />
+                      <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500"></div>
+                    </label>
+                  </div>
                 </div>
 
-                <div v-if="engineConfigUI.safety_check_enabled" class="animate-fade-in space-y-4 pt-2">
+                <div v-if="engineConfigUI.safety_check_enabled && showAdvancedSafety" class="animate-fade-in grid grid-cols-1 gap-3 pt-3 md:grid-cols-2">
                   <!-- Input Audit Section -->
                   <div class="p-2.5 bg-white/50 border border-orange-100 rounded-lg">
                     <div class="flex items-center justify-between mb-2">
@@ -2384,7 +3258,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             </div>
 
             <!-- RAGFlow Advanced Params -->
-            <div v-if="agentForm.engine_type === 'RAGFLOW'" class="grid grid-cols-2 gap-4 pt-2 bg-indigo-50/50 p-2 rounded border border-indigo-100">
+            <div v-if="agentForm.engine_type === 'RAGFLOW'" class="grid grid-cols-2 gap-4 pt-2 bg-indigo-50/50 p-2 rounded border border-indigo-100 md:col-span-2">
                <div>
                   <label class="block text-xs font-bold text-gray-700 mb-1 flex justify-between">
                      <span>相似度阈值 (Threshold)</span>
@@ -2447,100 +3321,196 @@ const formatSkillCountLabel = (agent: AIAgent) => {
           >
           <textarea
             v-model="agentForm.description"
-            rows="3"
+            rows="2"
             placeholder="简要描述此智能体的功能，这将用于自动路由匹配。例如：擅长回答销售数据相关的问题。"
             class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
           ></textarea>
         </div>
 
-        <!-- System Agent Toggle (Moved here) -->
-        <div
-          v-if="userInfo?.role === 'admin'"
-          class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200"
-        >
-          <div class="flex flex-col">
-            <span class="text-sm font-bold text-gray-800 flex items-center">
-              System Agent
-              <span
-                class="ml-2 text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200"
-                >Admin Only</span
-              >
-            </span>
-            <span class="text-xs text-gray-500 mt-0.5"
-              >标记为系统预置智能体，防止误删并提高路由权重。</span
-            >
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              v-model="agentForm.is_system"
-              class="sr-only peer"
-            />
-            <div
-              class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"
-            ></div>
+        <div v-if="agentForm.engine_type === 'LOCAL'">
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            智能体类型 <span class="text-red-500">*</span>
           </label>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1"
-            >能力标签 (Orchestration Tags)</label
-          >
-          <div class="flex items-center space-x-2 mb-2">
-            <input
-              v-model="newCapability"
-              @keyup.enter="addCapability"
-              placeholder="输入能力并回车 (e.g. data_query)"
-              class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none text-sm"
-            />
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <button
-              @click="addCapability"
-              class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium text-xs"
+              v-for="option in AGENT_TYPE_OPTIONS"
+              :key="option.value"
+              type="button"
+              :disabled="isEditingAgent"
+              @click="selectAgentType(option.value)"
+              class="text-left rounded-xl border p-3 transition-all"
+              :class="agentForm.agent_type === option.value
+                ? 'border-primary bg-blue-50 ring-1 ring-primary/20'
+                : isEditingAgent
+                  ? 'cursor-not-allowed border-gray-200 bg-gray-50 opacity-55'
+                  : 'border-gray-200 bg-white hover:border-blue-300'"
             >
-              添加
+              <div class="flex items-center gap-2 font-semibold text-gray-800">
+                <span>{{ option.icon }}</span>
+                <span>{{ option.label }}</span>
+              </div>
+              <p class="mt-1 text-xs leading-5 text-gray-500">{{ option.description }}</p>
+              <p
+                v-if="agentForm.agent_type === option.value"
+                class="mt-2 text-xs font-medium text-primary"
+              >
+                {{ isEditingAgent ? '🔒 当前类型' : '✓ 已选择' }}
+              </p>
             </button>
           </div>
-          <div
-            class="flex flex-wrap gap-2 min-h-[30px] p-2 bg-gray-50 rounded-lg border border-dashed border-gray-200"
-          >
-            <span
-              v-for="(cap, index) in agentForm.capabilities"
-              :key="index"
-              class="inline-flex items-center px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs font-medium"
-            >
-              {{ cap }}
-              <button
-                @click="removeCapability(index)"
-                class="ml-1 text-blue-600 hover:text-blue-900 focus:outline-none"
-              >
-                ×
-              </button>
-            </span>
-            <span
-              v-if="!agentForm.capabilities?.length"
-              class="text-xs text-gray-400 p-1"
-              >暂无标签</span
-            >
+          <p v-if="isEditingAgent" class="mt-2 text-xs text-gray-500">
+            智能体类型决定运行流程和门禁规则，创建保存后不可修改。
+          </p>
+
+          <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-gray-600">
+            <template v-if="agentForm.agent_type === 'CHATBI'">
+              数据查询流程和门禁由类型锁定；查数工具必需，数据集可选，未绑定时使用当前用户有权访问的数据集。
+            </template>
+            <template v-else-if="agentForm.agent_type === 'KNOWLEDGE_BASE'">
+              将自动启用知识库能力；发布前需要绑定知识库和检索工具。
+            </template>
+            <template v-else>
+              适合大多数问答、写作和专业任务，可在高级设置中补充扩展能力。
+            </template>
           </div>
         </div>
-        <div class="mt-6 flex justify-end space-x-3">
-          <button
-            @click="showAgentModal = false"
-            class="px-4 py-2 text-gray-500 hover:text-gray-700 font-medium"
-          >
-            取消
-          </button>
-          <button
-            @click="saveAgent"
-            class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors font-medium"
-          >
-            确认保存
-          </button>
+
+        <div
+          v-else-if="agentForm.engine_type === 'RAGFLOW' || agentForm.engine_type === 'OPENCLAW'"
+          class="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-gray-600"
+        >
+          <div class="font-semibold text-gray-800">智能体类型：通用助手</div>
+          <p class="mt-1 leading-5">
+            RAGFlow / OpenClaw 引擎固定为通用类型（<span class="font-mono">general_chat</span>），可在下方补充扩展能力标签用于自动路由与委派。
+          </p>
+        </div>
+
+        <div v-if="supportsCapabilityTags" class="rounded-xl border border-gray-200 p-4">
+          <div class="flex items-center gap-1.5">
+            <label class="text-sm font-bold text-gray-800">扩展能力标签</label>
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100"
+              aria-label="查看扩展能力标签说明"
+              title="查看扩展能力标签说明"
+              @click="showCapabilityHelp = true"
+            >?</button>
+          </div>
+          <p class="mt-1 text-xs text-gray-500">主类型能力由系统锁定；这里可补充 contract_review 等自定义路由标签。</p>
+          <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-blue-600">系统内置标签</div>
+            <span class="mt-2 inline-flex items-center rounded-full border border-blue-200 bg-white px-2.5 py-1 font-mono text-xs font-semibold text-blue-700">
+              🔒 {{ lockedCapabilityForForm }}
+            </span>
+          </div>
+          <div class="mt-3 flex items-center space-x-2">
+              <input
+                v-model="newCapability"
+                @keyup.enter="addCapability"
+                placeholder="输入标签并回车"
+                class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent outline-none text-sm"
+              />
+              <button
+                type="button"
+                @click="addCapability"
+                class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium text-xs"
+              >添加</button>
+          </div>
+          <div class="mt-3 flex min-h-8 flex-wrap gap-2">
+              <span
+                v-for="cap in (agentForm.capabilities || []).filter(cap => !primaryCapabilities.has(cap as any))"
+                :key="cap"
+                class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700"
+              >
+                {{ cap }}
+                <button
+                  type="button"
+                  @click="removeCapability((agentForm.capabilities || []).indexOf(cap))"
+                  class="ml-1 text-gray-500 hover:text-gray-900 focus:outline-none"
+                >×</button>
+              </span>
+              <span
+                v-if="!(agentForm.capabilities || []).some(cap => !primaryCapabilities.has(cap as any))"
+                class="text-xs text-gray-400"
+              >暂无扩展能力</span>
+          </div>
+        </div>
+        </div>
+
+        <div v-if="isOnboardingFlow && onboardingStep === 'VERSION'" class="space-y-5">
+          <div class="rounded-xl border border-blue-100 bg-blue-50/70 p-4">
+            <div class="text-sm font-semibold text-blue-900">V1 初始版本草稿已创建</div>
+            <p class="mt-1 text-xs leading-5 text-blue-700">系统已按智能体类型带入基础模板，你可以直接调整模型、提示词和工具。</p>
+          </div>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-sm font-medium text-gray-700">模型 <span class="text-red-500">*</span></label>
+              <input v-model="versionForm.model_name" list="onboarding-models" class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-primary" />
+              <datalist id="onboarding-models">
+                <option v-for="model in models" :key="model.id || model.name" :value="model.name" />
+              </datalist>
+            </div>
+            <div>
+              <label class="mb-1 block text-sm font-medium text-gray-700">温度 {{ versionForm.temperature ?? 0 }}</label>
+              <input v-model.number="versionForm.temperature" type="range" min="0" max="2" step="0.1" class="mt-3 w-full accent-primary" />
+            </div>
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-gray-700">系统提示词 <span class="text-red-500">*</span></label>
+            <textarea v-model="versionForm.system_prompt" rows="8" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"></textarea>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-gray-700">工具</label>
+            <div class="grid max-h-48 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-3 sm:grid-cols-2">
+              <label v-for="tool in availableTools" :key="tool.name" class="flex cursor-pointer items-start gap-2 rounded-lg p-2 hover:bg-gray-50">
+                <input
+                  type="checkbox"
+                  class="mt-0.5 rounded text-primary"
+                  :checked="isVersionToolSelected(tool.name)"
+                  @change="toggleTool(tool.name)"
+                />
+                <span><span class="block text-xs font-semibold text-gray-700">{{ tool.name }}</span><span class="block text-[10px] leading-4 text-gray-400">{{ tool.description }}</span></span>
+              </label>
+            </div>
+          </div>
+          <div class="flex items-center justify-between pt-2">
+            <button @click="saveOnboardingDraft" class="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">保存草稿，稍后配置</button>
+            <button @click="saveOnboardingVersion(false)" class="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white hover:bg-primary-dark">保存并下一步</button>
+          </div>
+        </div>
+
+        <div v-if="isOnboardingFlow && onboardingStep === 'RESOURCE'" class="space-y-5">
+          <div class="rounded-xl border border-gray-200 p-4">
+            <div class="text-sm font-semibold text-gray-900">{{ agentForm.agent_type === 'GENERAL' ? '通用智能体无需必选业务资源' : agentForm.agent_type === 'CHATBI' ? '绑定 ChatBI 数据集' : '绑定知识库' }}</div>
+            <p class="mt-1 text-xs leading-5 text-gray-500">
+              {{ agentForm.agent_type === 'GENERAL' ? '可以直接发布；需要时再从配置与发布补充工具、技能或资源。' : '发布前需要至少绑定一个可用资源，并确保初始版本包含对应查询工具。' }}
+            </p>
+          </div>
+          <div v-if="agentForm.agent_type !== 'GENERAL'">
+            <label class="mb-1 block text-sm font-medium text-gray-700">{{ agentForm.agent_type === 'CHATBI' ? '数据集 IDs' : '知识库 Dataset IDs' }}</label>
+            <div class="flex gap-2">
+              <input v-model="engineConfigUI.dataset_ids" placeholder="多个 ID 使用逗号分隔" class="flex-1 rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-primary" />
+              <button type="button" @click="openRagSelector('dataset', 'dataset_ids')" class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100">选择资源</button>
+            </div>
+          </div>
+          <div class="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">发布时会自动执行就绪检查；未满足条件时会明确提示缺少的资源或工具，不会产生不可用的已发布智能体。</div>
+          <div class="flex items-center justify-between pt-2">
+            <button @click="onboardingStep = 'VERSION'" class="px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">上一步</button>
+            <div class="flex gap-2">
+              <button @click="saveOnboardingDraft" class="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">保存草稿，稍后配置</button>
+              <button @click="publishOnboarding" class="rounded-lg bg-primary px-6 py-2 text-sm font-medium text-white hover:bg-primary-dark">检查并发布</button>
+            </div>
+          </div>
         </div>
       </div>
     </Modal>
 
     <AgentVersionEditorDrawer
       :show="showVersionModal"
+      :is-creating-agent="isCreatingAgent"
+      :is-onboarding-flow="isOnboardingFlow"
+      :agent-form="agentForm"
+      :can-configure-system-agent="userInfo?.role === 'admin'"
       :version-form="versionForm"
       :selected-agent="selectedAgent"
       :models="models"
@@ -2571,11 +3541,14 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       :is-static-group-collapsed="isStaticGroupCollapsed"
       :get-static-group-selected-count="getStaticGroupSelectedCount"
       :get-model-display-name="getModelDisplayName"
-      @close="showVersionModal = false"
+      :can-reach-version-config-step="canReachVersionConfigStep"
+      :is-version-config-step-complete="isVersionConfigStepComplete"
+      @close="handleVersionEditorClose"
       @save="saveVersion"
+      @publish="publishVersionFromEditor"
       @update:tool-tab="toolTab = $event"
       @update:tool-search-query="toolSearchQuery = $event"
-      @update:version-config-step="versionConfigStep = $event"
+      @update:version-config-step="handleVersionConfigStepChange"
       @toggle-tool="toggleTool"
       @toggle-skill="toggleSkill"
       @set-skills-custom="setSkillsCustom"
@@ -2593,6 +3566,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       @copy-system-prompt="copySystemPrompt"
       @next-step="nextVersionStep"
       @prev-step="prevVersionStep"
+      @toast="(message, type) => showToast(message, type || 'info')"
     />
 
     <AgentHistoryModal
@@ -2600,6 +3574,137 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       :agent="selectedAgent"
       @close="showHistoryModal = false"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="showCapabilityHelp"
+        class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+        @click.self="showCapabilityHelp = false"
+      >
+        <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900">扩展能力标签怎么用？</h3>
+              <p class="mt-1 text-sm text-gray-500">标签用于语义路由与 Main 委派，不会自动增加工具或数据权限。</p>
+            </div>
+            <button
+              type="button"
+              class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              aria-label="关闭"
+              @click="showCapabilityHelp = false"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">有什么用途</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p>
+              </section>
+              <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">如何影响路由</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p>
+              </section>
+              <section class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                <h4 class="text-sm font-bold text-gray-900">如何填写</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 contract_review、ops_diagnosis。</p>
+              </section>
+              <section class="rounded-xl border border-amber-100 bg-amber-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">重要提醒</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</p>
+              </section>
+            </div>
+          </div>
+          <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+            <button
+              type="button"
+              class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+              @click="showCapabilityHelp = false"
+            >知道了</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showEngineHelp"
+        class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+        @click.self="showEngineHelp = false"
+      >
+        <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900">执行引擎怎么选？</h3>
+              <p class="mt-1 text-sm text-gray-500">三个引擎面向不同接入方式，选错会影响后续配置步骤与运行入口。</p>
+            </div>
+            <button
+              type="button"
+              class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              aria-label="关闭"
+              @click="showEngineHelp = false"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+            <div class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">🧠</span>
+                <h4 class="text-sm font-bold text-gray-900">NanZi Engine（平台原生）</h4>
+              </div>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">
+                在本平台内完成编排：模型策略、工具能力、系统提示词、版本发布都由平台托管。适合需要多步配置、草稿发布和平台内调试的标准智能体。
+              </p>
+              <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+                <li>· 创建后走完整向导（模型 → 工具 → 提示词 → 确认）</li>
+                <li>· 支持智能体类型、扩展能力标签与本地版本生命周期</li>
+                <li>· 会话与任务都在平台内执行</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">🌊</span>
+                <h4 class="text-sm font-bold text-gray-900">RAGFlow（外部智能体）</h4>
+              </div>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">
+                接入已在 RAGFlow 侧编排好的外部智能体。平台主要负责登记与路由，对话编排、知识库等仍在 RAGFlow 中维护。
+              </p>
+              <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+                <li>· 单页创建，需填写 RAGFlow App ID</li>
+                <li>· 不走平台内的模型/工具/提示词多步配置</li>
+                <li>· 类型固定为通用对话，适合托管式外部 Agent</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-orange-100 bg-orange-50/40 p-4">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">🦞</span>
+                <h4 class="text-sm font-bold text-gray-900">OpenClaw（外部任务机器人）</h4>
+              </div>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">
+                对接 OpenClaw 任务机器人，适合把外部自动化/任务执行能力挂到平台。平台登记连接信息后，实际执行仍由 OpenClaw 侧完成。
+              </p>
+              <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+                <li>· 单页创建，需填写 Base URL 与 Bot ID</li>
+                <li>· 可选开启安全检查（如路径校验）</li>
+                <li>· 不走平台原生的多步编排向导</li>
+              </ul>
+            </div>
+            <p class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">
+              提示：选择引擎后，页面会自动调整所需字段与后续步骤；创建保存后执行引擎不可再改。
+            </p>
+          </div>
+          <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+            <button
+              type="button"
+              class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+              @click="showEngineHelp = false"
+            >知道了</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Global Components -->
     <ConfirmModal

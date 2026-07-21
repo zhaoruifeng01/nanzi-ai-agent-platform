@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import TypeAdapter
-
 from app.services.ai.runtime.agentscope.pending_store import (
-    PENDING_CONFIRMATION_TTL_SECONDS,
     PendingAgentScopeSnapshot,
     pending_agentscope_store,
 )
+from app.services.ai.runtime.agentscope.serialize import (
+    resolve_awaitables,
+    serialize_agent_state,
+    serialize_jsonable,
+)
+
+# Backward-compatible aliases for existing tests / imports.
+_resolve_snapshot_awaitables = resolve_awaitables
+_serialize_agent_state = serialize_agent_state
 
 
 @dataclass
@@ -53,9 +58,11 @@ class PendingAgentScopeConfirmation:
         )
 
 
-def _serialize_tool_call(tool_call: Any) -> dict[str, Any]:
+async def _serialize_tool_call(tool_call: Any) -> dict[str, Any]:
     if hasattr(tool_call, "model_dump"):
-        return tool_call.model_dump(mode="json")
+        serialized = await serialize_jsonable(tool_call, path="tool_call")
+        if isinstance(serialized, dict):
+            return serialized
     return {
         "id": getattr(tool_call, "id", ""),
         "name": getattr(tool_call, "name", ""),
@@ -70,48 +77,6 @@ def _deserialize_tool_call(payload: dict[str, Any]) -> Any:
         return ToolCallBlock(**payload)
     except Exception:
         return payload
-
-
-async def _resolve_snapshot_awaitables(value: Any, *, path: str) -> Any:
-    """Resolve awaitables leaked into a snapshot payload at this async boundary."""
-    if inspect.isawaitable(value):
-        try:
-            resolved = await value
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to resolve awaitable while serializing {path}: {exc}",
-            ) from exc
-        return await _resolve_snapshot_awaitables(resolved, path=path)
-    if isinstance(value, dict):
-        return {
-            key: await _resolve_snapshot_awaitables(
-                item,
-                path=f"{path}.{key}",
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            await _resolve_snapshot_awaitables(item, path=f"{path}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    if isinstance(value, tuple):
-        return tuple(
-            [
-                await _resolve_snapshot_awaitables(item, path=f"{path}[{index}]")
-                for index, item in enumerate(value)
-            ],
-        )
-    return value
-
-
-async def _serialize_agent_state(state: Any) -> dict[str, Any]:
-    python_state = state.model_dump(mode="python")
-    resolved_state = await _resolve_snapshot_awaitables(
-        python_state,
-        path="agent_state",
-    )
-    return TypeAdapter(dict[str, Any]).dump_python(resolved_state, mode="json")
 
 
 class PendingAgentScopeConfirmationRegistry:
@@ -138,7 +103,17 @@ class PendingAgentScopeConfirmationRegistry:
         await self.prune()
         request_id = pending_agentscope_store.new_request_id()
         evidence_ledger = getattr(runner, "_evidence_ledger", None)
-        serialized_agent_state = await _serialize_agent_state(agent.state)
+        serialized_agent_state = await serialize_agent_state(agent.state)
+        serialized_tool_call = await _serialize_tool_call(tool_call)
+        serialized_stream_state = await serialize_jsonable(state or {}, path="stream_state")
+        serialized_runner_context = await serialize_jsonable(
+            runner_context or {},
+            path="runner_context",
+        )
+        if not isinstance(serialized_stream_state, dict):
+            serialized_stream_state = {"value": serialized_stream_state}
+        if not isinstance(serialized_runner_context, dict):
+            serialized_runner_context = {"value": serialized_runner_context}
         snapshot = PendingAgentScopeSnapshot(
             request_id=request_id,
             kind=kind,
@@ -147,10 +122,10 @@ class PendingAgentScopeConfirmationRegistry:
             trace_id=trace_id,
             reply_id=reply_id,
             agent_name=agent_name,
-            tool_call=_serialize_tool_call(tool_call),
+            tool_call=serialized_tool_call,
             agent_state=serialized_agent_state,
-            stream_state=state or {},
-            runner_context=runner_context or {},
+            stream_state=serialized_stream_state,
+            runner_context=serialized_runner_context,
             evidence_receipts=(
                 evidence_ledger.to_snapshot()
                 if evidence_ledger is not None

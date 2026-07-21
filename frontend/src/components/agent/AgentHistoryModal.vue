@@ -172,7 +172,7 @@ watch(selectedId, () => {
           </span>
           <input
             v-model="keyword"
-            type="text"
+            type="search"
             placeholder="搜索对话内容关键词..."
             class="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none bg-gray-50/80"
             @keyup.enter="handleSearch"

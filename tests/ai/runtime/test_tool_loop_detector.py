@@ -77,9 +77,15 @@ def test_repeat_takes_precedence_over_other_detectors():
 def test_fused_detector_stays_fused():
     detector = ToolLoopDetector(threshold=2, global_limit=0, ping_pong_threshold=0)
     args = {"q": "x"}
+    detector.record("unrelated", {"q": "y"})
     detector.record("t", args)
-    assert detector.record("t", args).fused is True
-    # 已熔断后再记录直接返回非熔断的空判定（record 短路），但 fused 标志保持
+    initial = detector.record("t", args)
+    assert initial.fused is True
+    assert initial.count == 2
     follow = detector.record("t", args)
-    assert follow.fused is False
+    assert follow.fused is True
+    assert follow.reason_code == initial.reason_code == "repeat"
+    assert follow.message == initial.message
+    assert follow.count == initial.count == 2
+    assert detector.total_calls == 3
     assert detector.fused is True

@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 ToolSourceType = Literal["static", "generic_api", "mcp", "class", "system"]
 RuntimePermissionScope = Literal["read", "write", "ask", "dangerous"]
 RuntimeApprovalMode = Literal["ask", "allow", "deny"]
+
+_TOOL_LOOP_MODEL_GUIDANCE = (
+    "请停止继续调用任何工具，基于已经获得的结果直接回答用户；"
+    "如果现有信息不足，请明确说明限制，不要再次尝试工具调用。"
+)
+
+
+def _tool_loop_fuse_message(reason: str) -> str:
+    return f"{reason} {_TOOL_LOOP_MODEL_GUIDANCE}".strip()
+
+
 RuntimeToolAuditStatus = Literal["start", "success", "error"]
 RuntimeEvidencePolicy = Literal["non_empty", "structured_success", "allow_empty_success"]
 
@@ -221,7 +232,7 @@ class AgentScopeRuntimeTool:
             return
         verdict = self.loop_detector.record(self.name, tool_input)
         if verdict.fused:
-            raise ToolLoopFuseError(verdict.message)
+            raise ToolLoopFuseError(_tool_loop_fuse_message(verdict.message))
 
     async def check_permissions(self, tool_input: dict[str, Any], context: Any) -> Any:
         try:
@@ -319,7 +330,7 @@ class AgentScopeNativeApprovalTool:
             return
         verdict = self.loop_detector.record(self.name, tool_input)
         if verdict.fused:
-            raise ToolLoopFuseError(verdict.message)
+            raise ToolLoopFuseError(_tool_loop_fuse_message(verdict.message))
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.native_tool, name)

@@ -9,7 +9,8 @@ const randomByte = (cryptoSource?: Pick<ConversationCrypto, "getRandomValues">):
   return Math.floor(Math.random() * 256);
 };
 
-export const createConversationId = (
+/** UUID for browser use; falls back when `randomUUID` is unavailable (e.g. plain HTTP). */
+export const createUuid = (
   cryptoSource: ConversationCrypto | undefined = globalThis.crypto
 ): string => {
   if (typeof cryptoSource?.randomUUID === "function") {
@@ -21,3 +22,5 @@ export const createConversationId = (
     return (value ^ (randomByte(cryptoSource) & (15 >> (value / 4)))).toString(16);
   });
 };
+
+export const createConversationId = createUuid;

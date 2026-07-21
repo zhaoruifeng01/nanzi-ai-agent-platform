@@ -34,3 +34,9 @@ def test_use_user_resolves_menu_permissions():
     use_user = _read("frontend/src/composables/useUser.ts")
     assert "perm.startsWith('menu:')" in use_user
     assert "menus.includes(perm)" in use_user
+
+
+def test_edit_user_hides_save_on_quota_tab_with_hint():
+    users_vue = _read("frontend/src/views/Users.vue")
+    assert "activeTab !== 'quota'" in users_vue
+    assert "额度请在上方点击「保存额度」" in users_vue

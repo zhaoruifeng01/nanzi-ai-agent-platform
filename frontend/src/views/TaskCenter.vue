@@ -634,7 +634,7 @@ onMounted(async () => {
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索任务名称或指令..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/20"
           />

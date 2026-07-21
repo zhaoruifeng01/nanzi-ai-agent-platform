@@ -254,7 +254,7 @@ onMounted(() => {
           <MagnifyingGlassIcon class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             v-model="filters.keyword"
-            type="text"
+            type="search"
             placeholder="搜索问题或回复内容..."
             class="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-gray-50/80 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
             @keyup.enter="applyFilters"

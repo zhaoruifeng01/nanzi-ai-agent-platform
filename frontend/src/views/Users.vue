@@ -26,7 +26,7 @@
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索用户名或姓名..."
             class="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm shadow-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             @input="debouncedSearch"
@@ -691,7 +691,7 @@
                 >
                 <input
                   v-model="roleSearchQuery"
-                  type="text"
+                  type="search"
                   placeholder="搜索角色..."
                   class="text-xs border border-gray-200 rounded px-2 py-0.5 w-32 focus:outline-none focus:border-blue-400"
                 />
@@ -901,7 +901,7 @@
                         </span>
                         <input
                           v-model="toolSearchQuery"
-                          type="text"
+                          type="search"
                           placeholder="搜索工具名..."
                           class="text-[10px] border border-gray-200 rounded px-2 py-0.5 w-[140px] focus:outline-none focus:border-indigo-500"
                         />
@@ -1091,11 +1091,17 @@
         </div>
 
         <div
-          class="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-end gap-2 pt-4 border-t border-gray-200"
+          class="mt-4 sm:mt-6 flex flex-col sm:flex-row sm:items-center justify-end gap-2 pt-4 border-t border-gray-200"
         >
+          <p
+            v-if="activeTab === 'quota'"
+            class="order-3 sm:order-1 sm:mr-auto text-xs text-gray-400"
+          >
+            额度请在上方点击「保存额度」，与用户信息分开保存
+          </p>
           <button
             @click="closeDialogs"
-            class="order-2 sm:order-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium"
+            class="order-2 sm:order-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium"
           >
             {{ activeTab === 'quota' ? '关闭' : '取消' }}
           </button>
@@ -1103,7 +1109,7 @@
             v-if="!createdApiKey && activeTab !== 'quota'"
             @click="saveUser"
             :disabled="submitting"
-            class="order-1 sm:order-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-md shadow-blue-100"
+            class="order-1 sm:order-3 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-md shadow-blue-100"
           >
             {{ showEditDialog ? "保存更新" : "立即创建用户" }}
           </button>
@@ -1330,7 +1336,7 @@
           <div class="relative flex-1 w-full">
             <input
               v-model="ssoSearchQuery"
-              type="text"
+              type="search"
               placeholder="搜索用户名、姓名或部门..."
               class="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 transition-all"
             />

@@ -30,25 +30,32 @@ const close = () => {
         
         <!-- Modal Container -->
         <div 
-          class="relative bg-white rounded-2xl shadow-2xl flex flex-col w-full overflow-hidden transition-all duration-300"
+          class="relative flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl transition-all duration-300"
           :class="size || 'max-w-md'"
         >
           <!-- Header -->
           <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
             <h3 class="text-lg font-bold text-gray-900">{{ title }}</h3>
-            <button 
-              @click="close"
-              class="p-2 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors"
-            >
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+            <div class="flex items-center gap-3">
+              <slot name="header-extra"></slot>
+              <button
+                @click="close"
+                class="p-2 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors"
+              >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
           
           <!-- Content -->
-          <div class="p-6 overflow-y-auto max-h-[85vh] custom-scrollbar">
+          <div class="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-6">
             <slot></slot>
+          </div>
+
+          <div v-if="$slots.footer" class="border-t border-gray-100 bg-gray-50/80 px-6 py-3">
+            <slot name="footer"></slot>
           </div>
         </div>
       </div>

@@ -57,7 +57,8 @@ export interface UseDatasetPortalOptions {
   /** 关闭数据门户且非「从门户发起提问」时，恢复自动路由 */
   switchToAutoRouting?: () => void;
   onQuickQuestion: (query: string, action?: "send" | "fill") => void | Promise<void>;
-  findDataQueryAgent?: () => unknown;
+  /** 是否存在可查数智能体（用于静默预加载，不要求唯一） */
+  hasDataQueryAgent?: () => boolean;
   keepOpenStorageKey?: string;
   pinStorageKey?: string;
   /** 门户加载态变化（用于 EmbedChat 加载提示轮播等） */
@@ -274,7 +275,7 @@ export function useDatasetPortal(options: UseDatasetPortalOptions) {
 
   const prefetchPortalNavigationIfEligible = async () => {
     if (portalNavigationPayload.value || portalPrefetchInFlight.value || portalLoading.value) return;
-    if (options.findDataQueryAgent && !options.findDataQueryAgent()) return;
+    if (options.hasDataQueryAgent && !options.hasDataQueryAgent()) return;
     portalPrefetchInFlight.value = true;
     try {
       await fetchPortalNavigationData(false, true);

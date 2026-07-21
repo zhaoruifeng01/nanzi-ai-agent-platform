@@ -2949,9 +2949,11 @@ const statsSummary = computed(() => {
   };
 });
 
-/** 知识库问答专家（与路由 agent_name=knowledge-base 对齐） */
-const resolveKnowledgeExpertAgent = () => {
-  return allowedAgents.value.find((a) => {
+/** 知识库问答专家候选（capability 或名称命中） */
+const listKnowledgeExpertAgents = () => {
+  return allowedAgents.value.filter((a: any) => {
+    const capabilities = Array.isArray(a?.capabilities) ? a.capabilities : [];
+    if (capabilities.includes("knowledge_base")) return true;
     const name = String(a?.name || "").toLowerCase();
     const label = String(a?.display_name || "");
     return (
@@ -2960,6 +2962,12 @@ const resolveKnowledgeExpertAgent = () => {
       label.includes("知识库")
     );
   });
+};
+
+/** 仅当恰好 1 个知识库智能体时返回，多个则不自动锁定 */
+const resolveKnowledgeExpertAgent = () => {
+  const matches = listKnowledgeExpertAgents();
+  return matches.length === 1 ? matches[0] : undefined;
 };
 
 const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
@@ -3237,8 +3245,8 @@ const handleSwitchMode = (agent: any) => {
     showAutoRoutingHint.value = false;
 };
 
-const findDataQueryAgent = () => {
-    return allowedAgents.value.find((agent: any) => {
+const listDataQueryAgents = () => {
+    return allowedAgents.value.filter((agent: any) => {
         const capabilities = Array.isArray(agent?.capabilities) ? agent.capabilities : [];
         if (capabilities.includes("data_query")) return true;
         const label = `${agent?.name || ""} ${agent?.display_name || ""} ${agent?.description || ""}`;
@@ -3246,9 +3254,17 @@ const findDataQueryAgent = () => {
     });
 };
 
+/** 仅当恰好 1 个查数智能体时返回，多个则不自动锁定 */
+const findUniqueDataQueryAgent = () => {
+    const matches = listDataQueryAgents();
+    return matches.length === 1 ? matches[0] : undefined;
+};
+
+const hasDataQueryAgent = () => listDataQueryAgents().length > 0;
+
 const lockToDataQueryAgentForDatasetMenu = async (): Promise<boolean> => {
     await fetchAllowedAgents();
-    const dataQueryAgent = findDataQueryAgent();
+    const dataQueryAgent = findUniqueDataQueryAgent();
     if (!dataQueryAgent) return false;
     handleSwitchMode(dataQueryAgent);
     return true;
@@ -5437,7 +5453,7 @@ const {
   lockToDataQueryAgentForDatasetMenu,
   switchToAutoRouting: switchToAuto,
   onQuickQuestion: handleQuickQuestion,
-  findDataQueryAgent,
+  hasDataQueryAgent,
   keepOpenStorageKey: "embed_portal_keep_open",
   pinStorageKey: "embed_portal_pinned",
   onPortalLoadingChange: (loading) => {

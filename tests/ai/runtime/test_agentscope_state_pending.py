@@ -1,3 +1,4 @@
+import json
 import time
 from types import SimpleNamespace
 
@@ -204,3 +205,81 @@ async def test_agent_state_store_no_redis_is_noop(monkeypatch):
     )
     loaded = await store.load("u1", "c1", "GeneralAgent")
     assert loaded is None
+
+
+@pytest.mark.asyncio
+async def test_serialize_jsonable_resolves_nested_coroutine():
+    from app.services.ai.runtime.agentscope.serialize import serialize_jsonable
+
+    async def leaked_value():
+        return "awaited"
+
+    payload = await serialize_jsonable(
+        {"context": [{"metadata": {"pending": leaked_value()}}]},
+        path="agent_state",
+    )
+    assert payload == {"context": [{"metadata": {"pending": "awaited"}}]}
+
+
+@pytest.mark.asyncio
+async def test_agent_state_store_save_resolves_coroutine(monkeypatch):
+    saved: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None):
+            saved["key"] = key
+            saved["value"] = value
+
+    async def _fake_redis():
+        return FakeRedis()
+
+    async def leaked_value():
+        return "ready"
+
+    class CoroutineState:
+        def model_dump(self, mode):
+            if mode == "python":
+                return {"context": [{"metadata": {"pending": leaked_value()}}]}
+            raise ValueError("Unable to serialize unknown type: <class 'coroutine'>")
+
+    monkeypatch.setattr("app.core.redis.get_redis", _fake_redis)
+    store = AgentStateStore()
+    await store.save(
+        user_id="u1",
+        conversation_id="c1",
+        agent_name="GeneralAgent",
+        agent_version="v1",
+        tools_fingerprint="fp1",
+        model_name="gpt-test",
+        state=CoroutineState(),
+    )
+
+    assert "value" in saved
+    payload = json.loads(saved["value"])
+    assert payload["state"] == {"context": [{"metadata": {"pending": "ready"}}]}
+
+
+@pytest.mark.asyncio
+async def test_confirmation_snapshot_resolves_stream_state_coroutine():
+    async def leaked_value():
+        return "stream-ready"
+
+    registry = PendingAgentScopeConfirmationRegistry()
+    agent = SimpleNamespace(
+        state=SimpleNamespace(model_dump=lambda mode: {"context": []})
+    )
+
+    pending = await registry.register(
+        kind="permission",
+        agent=agent,
+        runner=SimpleNamespace(),
+        tools=[],
+        native_model=SimpleNamespace(),
+        tool_call={"id": "call-stream", "name": "Bash", "input": {}},
+        reply_id="reply-1",
+        trace_id="trace-1",
+        agent_name="GeneralAgent",
+        state={"tool_data": {"x": leaked_value()}},
+    )
+
+    assert pending.snapshot.stream_state == {"tool_data": {"x": "stream-ready"}}
