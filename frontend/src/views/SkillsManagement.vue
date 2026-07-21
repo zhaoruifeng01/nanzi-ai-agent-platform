@@ -16,6 +16,18 @@ interface Skill {
   enabled?: string
 }
 
+interface BoundAgent {
+  id: string
+  name: string
+  version_status: 'DRAFT' | 'PUBLISHED' | string
+  version_number: number
+}
+
+interface SkillBindingEntry {
+  count: number
+  agents: BoundAgent[]
+}
+
 interface FileNode {
   name: string
   path: string
@@ -69,6 +81,38 @@ const newSkill = ref({
   description: ''
 })
 const creating = ref(false)
+
+// 公共技能显式绑定智能体
+const skillBindings = ref<Record<string, SkillBindingEntry>>({})
+const showBindingsModal = ref(false)
+const bindingsModalSkill = ref<Skill | null>(null)
+
+const getBindingEntry = (skillId: string): SkillBindingEntry =>
+  skillBindings.value[skillId] || { count: 0, agents: [] }
+
+const openBindingsModal = (skill: Skill, e?: Event) => {
+  e?.stopPropagation()
+  if (skill.scope === 'personal') return
+  bindingsModalSkill.value = skill
+  showBindingsModal.value = true
+}
+
+const closeBindingsModal = () => {
+  showBindingsModal.value = false
+  bindingsModalSkill.value = null
+}
+
+const fetchSkillBindings = async () => {
+  if (props.personalOnly) return
+  try {
+    const res = await axios.get('/api/portal/skills/bindings')
+    if (res.data?.status === 'success') {
+      skillBindings.value = res.data.bindings || {}
+    }
+  } catch (e) {
+    console.warn('Failed to load skill bindings', e)
+  }
+}
 
 // 统计相关
 import * as echarts from 'echarts'
@@ -623,7 +667,7 @@ const requestCloseDrawer = () => {
 
 const handleDrawerKeydown = (e: KeyboardEvent) => {
   if (e.key !== 'Escape' || !showDrawer.value) return
-  if (confirmState.value.show || showCreateModal.value || showImportModal.value || showCreateAssetModal.value || showStatsModal.value || showHelpModal.value) {
+  if (confirmState.value.show || showCreateModal.value || showImportModal.value || showCreateAssetModal.value || showStatsModal.value || showHelpModal.value || showBindingsModal.value) {
     return
   }
   e.preventDefault()
@@ -1100,6 +1144,7 @@ const submitImportSkill = async () => {
 onMounted(() => {
   if (!props.personalOnly) {
     fetchSkills()
+    fetchSkillBindings()
   }
   fetchPersonalSkills().then(() => {
     const targetId = String(props.initialSkillId || '').trim()
@@ -1475,7 +1520,21 @@ onUnmounted(() => {
             <span class="truncate">{{ skill.path }}</span>
           </div>
           <span v-else class="text-[11px] text-gray-400">更新</span>
-          <span class="shrink-0 tabular-nums">{{ formatModifiedAt(skill.modified_at) }}</span>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              v-if="!personalOnly && skill.scope !== 'personal'"
+              type="button"
+              @click.stop="openBindingsModal(skill)"
+              class="rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums transition-colors"
+              :class="getBindingEntry(skill.id).count > 0
+                ? 'bg-violet-50 text-violet-700 hover:bg-violet-100'
+                : 'bg-gray-50 text-gray-400 hover:bg-gray-100'"
+              :title="`显式绑定 ${getBindingEntry(skill.id).count} 个智能体`"
+            >
+              绑定 {{ getBindingEntry(skill.id).count }}
+            </button>
+            <span class="tabular-nums">{{ formatModifiedAt(skill.modified_at) }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1488,6 +1547,7 @@ onUnmounted(() => {
             <tr>
               <th class="px-6 py-4">技能名称与描述</th>
               <th class="px-6 py-4 text-center">物理映射路径</th>
+              <th v-if="!personalOnly && activeScope === 'global'" class="px-6 py-4 text-center">绑定</th>
               <th class="px-6 py-4 text-center">更新时间</th>
               <th class="px-6 py-4 text-center">状态</th>
               <th class="px-6 py-4 text-center">操作</th>
@@ -1533,6 +1593,23 @@ onUnmounted(() => {
               </td>
               <td class="px-6 py-4 text-center font-mono text-xs text-gray-500 max-w-xs truncate" :title="skill.path">
                 {{ skill.path }}
+              </td>
+              <td
+                v-if="!personalOnly && activeScope === 'global'"
+                class="px-6 py-4 text-center whitespace-nowrap"
+                @click.stop
+              >
+                <button
+                  type="button"
+                  @click="openBindingsModal(skill)"
+                  class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums transition-colors"
+                  :class="getBindingEntry(skill.id).count > 0
+                    ? 'bg-violet-50 text-violet-700 hover:bg-violet-100'
+                    : 'bg-gray-50 text-gray-400 hover:bg-gray-100'"
+                  :title="`显式绑定 ${getBindingEntry(skill.id).count} 个智能体`"
+                >
+                  {{ getBindingEntry(skill.id).count }}
+                </button>
               </td>
               <td class="px-6 py-4 text-center text-xs text-gray-500 whitespace-nowrap">
                 {{ formatModifiedAt(skill.modified_at) }}
@@ -2254,6 +2331,68 @@ onUnmounted(() => {
     @confirm="confirmState.onConfirm"
     @cancel="confirmState.show = false"
   />
+
+  <!-- 显式绑定智能体 Modal -->
+  <div
+    v-if="showBindingsModal && bindingsModalSkill"
+    class="fixed inset-0 z-[9990] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-fade-in"
+    @click.self="closeBindingsModal"
+  >
+    <div class="flex max-h-[80vh] w-full max-w-md flex-col rounded-2xl border border-gray-150 bg-white p-5 shadow-2xl">
+      <div class="mb-4 flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 pb-3">
+        <div class="min-w-0">
+          <h2 class="truncate text-lg font-bold text-gray-800">显式绑定智能体</h2>
+          <p class="mt-0.5 truncate text-xs text-gray-500">
+            {{ bindingsModalSkill.name }}
+            <span class="font-mono text-gray-400">· {{ bindingsModalSkill.id }}</span>
+          </p>
+        </div>
+        <button type="button" class="shrink-0 text-gray-400 transition-colors hover:text-gray-600" @click="closeBindingsModal">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <div
+        v-if="getBindingEntry(bindingsModalSkill.id).count === 0"
+        class="flex flex-1 flex-col items-center justify-center py-12 text-center text-gray-400"
+      >
+        <p class="text-sm font-medium text-gray-500">暂无智能体显式绑定此技能</p>
+        <p class="mt-1 text-xs text-gray-400">仅统计开启自定义 Skills 白名单的智能体</p>
+      </div>
+      <ul v-else class="custom-scrollbar flex-1 space-y-2 overflow-y-auto pr-1">
+        <li
+          v-for="agent in getBindingEntry(bindingsModalSkill.id).agents"
+          :key="agent.id"
+          class="flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-gray-50/60 px-3 py-2.5"
+        >
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-gray-800">{{ agent.name }}</p>
+            <p class="mt-0.5 font-mono text-[10px] text-gray-400">v{{ agent.version_number }}</p>
+          </div>
+          <span
+            class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+            :class="agent.version_status === 'DRAFT'
+              ? 'bg-amber-50 text-amber-700'
+              : 'bg-emerald-50 text-emerald-700'"
+          >
+            {{ agent.version_status === 'DRAFT' ? '草稿' : '已发布' }}
+          </span>
+        </li>
+      </ul>
+
+      <div class="mt-4 flex shrink-0 justify-end border-t border-gray-100 pt-3">
+        <button
+          type="button"
+          class="rounded-xl bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-200"
+          @click="closeBindingsModal"
+        >
+          关闭
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- 统计查看 Modal -->
   <div 

@@ -1036,3 +1036,57 @@ class AgentManagerService:
         router_service.invalidate_cache()
         
         return True
+
+    @staticmethod
+    async def get_skill_explicit_bindings(session: AsyncSession) -> Dict[str, Dict[str, Any]]:
+        """
+        反查公共 skill → 显式白名单绑定的智能体。
+        仅 skills_custom=true；每智能体优先 DRAFT，否则 PUBLISHED。
+        """
+        rows = (
+            await session.execute(
+                select(AIAgentVersion, AIAgent)
+                .join(AIAgent, AIAgent.id == AIAgentVersion.agent_id)
+                .where(
+                    AIAgentVersion.skills_custom.is_(True),
+                    AIAgentVersion.status.in_(("DRAFT", "PUBLISHED")),
+                )
+            )
+        ).all()
+
+        chosen: Dict[str, tuple] = {}
+        for version, agent in rows:
+            existing = chosen.get(agent.id)
+            if existing is None:
+                chosen[agent.id] = (version, agent)
+                continue
+            existing_version = existing[0]
+            # DRAFT 优先；同状态取更高版本号
+            if version.status == "DRAFT" and existing_version.status != "DRAFT":
+                chosen[agent.id] = (version, agent)
+            elif (
+                version.status == existing_version.status
+                and int(version.version_number or 0) > int(existing_version.version_number or 0)
+            ):
+                chosen[agent.id] = (version, agent)
+
+        bindings: Dict[str, Dict[str, Any]] = {}
+        for version, agent in chosen.values():
+            skill_ids = AgentManagerService._normalize_skills_list(getattr(version, "skills", None))
+            if not skill_ids:
+                continue
+            agent_item = {
+                "id": agent.id,
+                "name": agent.display_name or agent.name,
+                "version_status": version.status,
+                "version_number": int(version.version_number or 0),
+            }
+            for skill_id in skill_ids:
+                entry = bindings.setdefault(skill_id, {"count": 0, "agents": []})
+                entry["agents"].append(agent_item)
+
+        for entry in bindings.values():
+            entry["agents"].sort(key=lambda a: (a["name"] or "").lower())
+            entry["count"] = len(entry["agents"])
+
+        return bindings
