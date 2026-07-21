@@ -60,17 +60,41 @@ const handleColorInput = (e: any) => {
 };
 
 const handleSetMultiAgent = (enabled: boolean) => {
+    if (props.config.enableMultiAgent === enabled) {
+        saveAndClose();
+        return;
+    }
     props.config.enableMultiAgent = enabled;
+    showToast(
+        enabled ? "多智能体协同已开启" : "多智能体协同已关闭",
+        enabled ? "success" : "info"
+    );
     saveAndClose();
 };
 
 const handleSetSqlPlan = (enabled: boolean) => {
+    if (props.config.enableSqlPlan === enabled) {
+        saveAndClose();
+        return;
+    }
     props.config.enableSqlPlan = enabled;
+    showToast(
+        enabled ? "SQL PLAN 中间层已开启" : "SQL PLAN 中间层已关闭",
+        enabled ? "success" : "info"
+    );
     saveAndClose();
 };
 
 const handleSetExpandThoughts = (enabled: boolean) => {
+    if (props.config.expandThoughts === enabled) {
+        saveAndClose();
+        return;
+    }
     props.config.expandThoughts = enabled;
+    showToast(
+        enabled ? "思考过程默认展开已开启" : "思考过程默认展开已关闭",
+        enabled ? "success" : "info"
+    );
     saveAndClose();
 };
 
