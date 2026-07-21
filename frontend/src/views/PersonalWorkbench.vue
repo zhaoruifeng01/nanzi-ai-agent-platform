@@ -139,7 +139,11 @@
         <section class="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm sm:p-6">
           <p class="text-xs font-medium text-blue-600">开始使用</p>
           <h2 class="mt-1.5 text-lg font-bold text-gray-900">
-            {{ failedSources.length ? "工作台部分数据暂时不可用" : "欢迎使用 NanZi" }}
+            {{
+              failedSources.length
+                ? "工作台部分数据暂时不可用"
+                : `欢迎使用 ${branding.product_name || "NanZi·智能体平台"}`
+            }}
           </h2>
           <p class="mt-1.5 max-w-2xl text-sm text-gray-500">
             {{
@@ -191,9 +195,11 @@ import WorkbenchAgents from "@/components/workbench/WorkbenchAgents.vue"
 import WorkbenchScenarios from "@/components/workbench/WorkbenchScenarios.vue"
 import WorkbenchNextScheduled from "@/components/workbench/WorkbenchNextScheduled.vue"
 import { useWorkbenchHome } from "@/composables/useWorkbenchHome"
+import { useBranding } from "@/composables/useBranding"
 import type { WorkbenchAgent, WorkbenchItem, WorkbenchScenario } from "@/types/workbench"
 
 const router = useRouter()
+const { branding } = useBranding()
 const { payload, loading, refreshing, error, load, refresh } = useWorkbenchHome()
 const activeMode = computed(() => payload.value?.mode === "active")
 const quietMode = computed(() => payload.value?.mode === "quiet")

@@ -1091,11 +1091,17 @@
         </div>
 
         <div
-          class="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-end gap-2 pt-4 border-t border-gray-200"
+          class="mt-4 sm:mt-6 flex flex-col sm:flex-row sm:items-center justify-end gap-2 pt-4 border-t border-gray-200"
         >
+          <p
+            v-if="activeTab === 'quota'"
+            class="order-3 sm:order-1 sm:mr-auto text-xs text-gray-400"
+          >
+            额度请在上方点击「保存额度」，与用户信息分开保存
+          </p>
           <button
             @click="closeDialogs"
-            class="order-2 sm:order-1 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium"
+            class="order-2 sm:order-2 px-4 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium"
           >
             {{ activeTab === 'quota' ? '关闭' : '取消' }}
           </button>
@@ -1103,7 +1109,7 @@
             v-if="!createdApiKey && activeTab !== 'quota'"
             @click="saveUser"
             :disabled="submitting"
-            class="order-1 sm:order-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-md shadow-blue-100"
+            class="order-1 sm:order-3 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-bold shadow-md shadow-blue-100"
           >
             {{ showEditDialog ? "保存更新" : "立即创建用户" }}
           </button>
