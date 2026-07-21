@@ -2414,7 +2414,7 @@
     </div>
 </template>
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from "vue";
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed, triggerRef } from "vue";
 import { useRouter } from "vue-router";
 import axios from "@/utils/axios";
 import { finalizeConversation } from "@/utils/conversationFinalize";
@@ -3439,6 +3439,7 @@ const startThoughtTimer = (msg: Message) => {
         (Date.now() - msg.thoughtStartTime) /
         1000
       ).toFixed(1);
+      triggerRef(messages);
     }
     // Switch message every 3 seconds (30 * 100ms)
     if (ticks % 30 === 0) {
@@ -3448,6 +3449,7 @@ const startThoughtTimer = (msg: Message) => {
       } else {
         msg.thinkingText = "任务处理中，请稍候...";
       }
+      triggerRef(messages);
     }
   }, 100);
 };
