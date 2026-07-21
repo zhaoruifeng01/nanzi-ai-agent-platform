@@ -99,6 +99,10 @@ const handleSetExpandThoughts = (enabled: boolean) => {
 };
 
 const handleSetMarkdownTheme = (theme: string) => {
+    if (props.config.markdownTheme === theme) {
+        saveAndClose();
+        return;
+    }
     props.config.markdownTheme = theme;
     localStorage.setItem("user_has_custom_theme", "true");
     localStorage.setItem("yovole_markdown_theme", theme);
@@ -106,6 +110,21 @@ const handleSetMarkdownTheme = (theme: string) => {
     void axios.put("/api/portal/portal-prefs/markdown-theme", { theme }).catch((err) => {
         console.error("Failed to sync markdown theme preference to Redis", err);
     });
+
+    const themeNames: Record<string, string> = {
+        default: "现代",
+        minimal: "极简",
+        academic: "学术",
+        apple: "苹果",
+        warm: "护眼",
+        compact: "紧凑",
+        bauhaus: "包豪斯",
+        editorial: "日报",
+        zen: "禅意",
+    };
+    const name = themeNames[theme] || theme;
+    showToast(`排版样式已切换为: ${name}`, "success");
+
     saveAndClose();
 };
 
