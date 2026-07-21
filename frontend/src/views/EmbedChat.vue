@@ -933,6 +933,7 @@
                                                                 <MessageRenderer
                                                                   v-if="!msg.groundingBlocked && !msg.datasetNavigation?.groups?.length"
                                                                   :content="msg.content"
+                                                                  :theme="config.markdownTheme"
                                                                   @quick-question="handleQuickQuestion"
                                                                   @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
                                                                   @open-canvas="handleOpenCanvas"
@@ -1488,7 +1489,7 @@
                                 <div>
                                     <div class="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 opacity-70">回答 · Response</div>
                                     <div class="text-gray-600 dark:text-gray-300 text-xs sm:text-sm leading-relaxed">
-                                        <MessageRenderer :content="turn.summary || 'N/A'" />
+                                        <MessageRenderer :content="turn.summary || 'N/A'" :theme="config.markdownTheme" />
                                     </div>
                                 </div>
                             </div>
@@ -3106,6 +3107,7 @@ const config = reactive({
   enableSqlPlan: false,
   enableGrounding: false,
   expandThoughts: true, // 思考过程默认展示开关
+  markdownTheme: "default" as "default" | "minimal" | "academic" | "apple" | "warm" | "compact",
 });
 const showAutoRoutingHint = ref(false);
 const showMultiAgentHint = ref(false);
@@ -3121,6 +3123,7 @@ const saveRoutingSettings = () => {
     localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
     localStorage.setItem("yovole_embed_theme", config.theme || "light");
     localStorage.setItem("yovole_expand_thoughts", config.expandThoughts ? "1" : "0");
+    localStorage.setItem("yovole_markdown_theme", config.markdownTheme || "default");
 };
 const triggerMultiAgentHint = (enabled: boolean) => {
     multiAgentHintMessage.value = enabled ? "已开启多智能体协同模式" : "已切换为单智能体模式";
@@ -3200,6 +3203,20 @@ const generateNewConversation = () => {
 // const showMentionList = ref(false); // Removed
 // const mentionKeyword = ref(""); // Removed
 // const mentionPosition = reactive({ top: 0, left: 0 }); // Removed
+const fetchUserMarkdownThemePreference = async () => {
+    try {
+        const res = await axios.get("/api/portal/portal-prefs");
+        if (res.data?.data?.markdown_theme) {
+            config.markdownTheme = res.data.data.markdown_theme;
+            localStorage.setItem("user_has_custom_theme", "true");
+        } else {
+            localStorage.removeItem("user_has_custom_theme");
+        }
+    } catch (error) {
+        console.warn("Failed to fetch user markdown theme preference from Redis", error);
+    }
+};
+
 const allowedAgents = ref<any[]>([]);
 const hasFetchedAgents = ref(false);
 const isLoadingAgents = ref(false);
@@ -3213,10 +3230,26 @@ const fetchAllowedAgents = async (force = false) => {
     if (hasFetchedAgents.value && !force) return;
     isLoadingAgents.value = true;
     try {
+        // 先获取用户在后端持久化的排版样式偏好
+        await fetchUserMarkdownThemePreference();
+
         const res = await axios.get("/api/portal/agents/allowed");
         if (res.data) {
             allowedAgents.value = res.data; // Already filtered by backend
             hasFetchedAgents.value = true;
+            
+            // 自动应用当前激活智能体推荐的排版风格
+            if (config.expertAgentId) {
+                const currentAgent = res.data.find((a: any) => a.id === config.expertAgentId);
+                const hasCustomTheme = localStorage.getItem("user_has_custom_theme") === "true";
+                if (!hasCustomTheme) {
+                    const recommendedTheme = currentAgent?.engine_config?.default_markdown_theme;
+                    if (recommendedTheme) {
+                        config.markdownTheme = recommendedTheme;
+                    }
+                }
+            }
+            
             console.log(`[LifeCycle] Successfully fetched ${res.data.length} allowed agents.`);
             void prefetchPortalNavigationIfEligible();
         }
@@ -3234,6 +3267,22 @@ watch(() => config.token, (newToken) => {
         console.log("[LifeCycle] Token detected/changed, re-fetching context...");
         fetchAllowedAgents(true);
         fetchSlashCommands();
+    }
+}, { immediate: true });
+
+// 监听当前激活的智能体变更，自动应用其配置的推荐排版风格
+watch(() => config.expertAgentId, (newAgentId) => {
+    if (newAgentId && allowedAgents.value.length > 0) {
+        const currentAgent = allowedAgents.value.find(a => a.id === newAgentId);
+        const hasCustomTheme = localStorage.getItem("user_has_custom_theme") === "true";
+        if (!hasCustomTheme) {
+            const recommendedTheme = currentAgent?.engine_config?.default_markdown_theme;
+            if (recommendedTheme) {
+                config.markdownTheme = recommendedTheme;
+            } else {
+                config.markdownTheme = "default";
+            }
+        }
     }
 }, { immediate: true });
 
@@ -6348,6 +6397,17 @@ onMounted(() => {
   }
   const savedExpandThoughts = localStorage.getItem("yovole_expand_thoughts");
   if (savedExpandThoughts !== null) config.expandThoughts = savedExpandThoughts === "1";
+  const savedMarkdownTheme = localStorage.getItem("yovole_markdown_theme");
+  if (
+    savedMarkdownTheme === "default" ||
+    savedMarkdownTheme === "minimal" ||
+    savedMarkdownTheme === "academic" ||
+    savedMarkdownTheme === "apple" ||
+    savedMarkdownTheme === "warm" ||
+    savedMarkdownTheme === "compact"
+  ) {
+    config.markdownTheme = savedMarkdownTheme;
+  }
   const query = new URLSearchParams(window.location.search);
   if (query.get("token")) {
     const token = query.get("token")!;
