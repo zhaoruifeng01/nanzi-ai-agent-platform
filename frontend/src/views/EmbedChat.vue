@@ -606,7 +606,7 @@
               class="px-4 py-3 rounded-2xl rounded-tl-sm shadow-md border border-gray-100 dark:border-gray-700 border-l-4 border-l-primary/60 dark:border-l-primary/40 text-sm leading-relaxed min-h-[46px] transition-all duration-300 relative group/bubble"
               :class="[
                 msg.isThinking
-                    ? 'bg-slate-50/80 dark:bg-slate-800/80 shimmer-thought-card'
+                    ? 'bg-slate-50/80 dark:bg-slate-800/80'
                     : 'bg-white dark:bg-gray-800'
               ]"
             >
@@ -6779,7 +6779,7 @@ onUnmounted(() => {
   border-color: #10b981;
 }
 
-/* 思维链扫光动效 */
+/* 思维链扫光动效 (已关闭)
 .shimmer-thought-card {
   position: relative !important;
   overflow: hidden !important;
@@ -6817,6 +6817,7 @@ onUnmounted(() => {
     transform: translateX(100%);
   }
 }
+*/
 
 .custom-table-render :deep(table) {
   width: 100%;
