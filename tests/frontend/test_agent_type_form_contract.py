@@ -52,10 +52,15 @@ def test_agent_creation_reuses_version_drawer_with_agent_step():
     assert "系统内置标签" in drawer_source
     assert "lockedPrimaryCapability" in drawer_source
     assert "showCapabilityHelp" in drawer_source
+    assert "扩展能力标签怎么用" in drawer_source
+    assert 'showCapabilityHelp = !showCapabilityHelp' not in drawer_source
     assert "如何影响路由" in drawer_source
     assert "contract_review" in drawer_source
     assert "只影响路由和委派" in drawer_source
     assert "showAgentTypeHelp" in drawer_source
+    assert "智能体类型怎么选" in drawer_source
+    assert "查看智能体类型说明" in drawer_source
+    assert 'showAgentTypeHelp = !showAgentTypeHelp' not in drawer_source
     assert "showEngineHelp" in drawer_source
     assert "执行引擎怎么选" in drawer_source
     assert "查看执行引擎说明" in drawer_source

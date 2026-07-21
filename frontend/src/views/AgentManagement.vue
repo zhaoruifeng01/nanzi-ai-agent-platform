@@ -3324,18 +3324,15 @@ const formatSkillCountLabel = (agent: AIAgent) => {
         </div>
 
         <div v-if="agentForm.engine_type === 'LOCAL'" class="rounded-xl border border-gray-200 p-4">
-          <div class="relative flex items-center gap-1.5">
+          <div class="flex items-center gap-1.5">
             <label class="text-sm font-bold text-gray-800">扩展能力标签</label>
-            <button type="button" @click="showCapabilityHelp = !showCapabilityHelp" class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100" aria-label="查看扩展能力标签说明">?</button>
-            <div v-if="showCapabilityHelp" class="absolute bottom-7 left-0 z-30 w-[min(720px,calc(100vw-4rem))] rounded-xl border border-gray-200 bg-white p-4 shadow-xl">
-              <div class="flex items-center justify-between"><h4 class="text-sm font-bold text-gray-900">扩展能力标签使用说明</h4><button type="button" @click="showCapabilityHelp = false" class="text-gray-400 hover:text-gray-700">×</button></div>
-              <div class="mt-3 grid grid-cols-1 gap-4 text-xs leading-5 text-gray-600 sm:grid-cols-2">
-                <section><h5 class="font-bold text-gray-800">有什么用途</h5><p class="mt-1">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p></section>
-                <section><h5 class="font-bold text-gray-800">如何影响路由</h5><p class="mt-1">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p></section>
-                <section><h5 class="font-bold text-gray-800">如何填写</h5><p class="mt-1">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 contract_review、ops_diagnosis。</p></section>
-                <section><h5 class="font-bold text-gray-800">重要提醒</h5><p class="mt-1">标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</p></section>
-              </div>
-            </div>
+            <button
+              type="button"
+              class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100"
+              aria-label="查看扩展能力标签说明"
+              title="查看扩展能力标签说明"
+              @click="showCapabilityHelp = true"
+            >?</button>
           </div>
           <p class="mt-1 text-xs text-gray-500">主类型能力由系统锁定；这里可补充 contract_review 等自定义路由标签。</p>
           <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2">
@@ -3515,6 +3512,58 @@ const formatSkillCountLabel = (agent: AIAgent) => {
       :agent="selectedAgent"
       @close="showHistoryModal = false"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="showCapabilityHelp"
+        class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+        @click.self="showCapabilityHelp = false"
+      >
+        <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900">扩展能力标签怎么用？</h3>
+              <p class="mt-1 text-sm text-gray-500">标签用于语义路由与 Main 委派，不会自动增加工具或数据权限。</p>
+            </div>
+            <button
+              type="button"
+              class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              aria-label="关闭"
+              @click="showCapabilityHelp = false"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">有什么用途</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p>
+              </section>
+              <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">如何影响路由</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p>
+              </section>
+              <section class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                <h4 class="text-sm font-bold text-gray-900">如何填写</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 contract_review、ops_diagnosis。</p>
+              </section>
+              <section class="rounded-xl border border-amber-100 bg-amber-50/60 p-4">
+                <h4 class="text-sm font-bold text-gray-900">重要提醒</h4>
+                <p class="mt-2 text-sm leading-relaxed text-gray-600">标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</p>
+              </section>
+            </div>
+          </div>
+          <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+            <button
+              type="button"
+              class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+              @click="showCapabilityHelp = false"
+            >知道了</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div

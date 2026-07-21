@@ -306,18 +306,15 @@ const externalCreationMissingFields = computed(() => {
               </div>
             </div>
             <div v-if="agentForm.engine_type === 'LOCAL'">
-              <div class="relative mb-2 flex items-center gap-1.5">
+              <div class="mb-2 flex items-center gap-1.5">
                 <label class="text-sm font-medium text-gray-700">智能体类型 <span class="text-red-500">*</span></label>
-                <button type="button" @click="showAgentTypeHelp = !showAgentTypeHelp" class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100" aria-label="查看智能体类型说明">?</button>
-                <div v-if="showAgentTypeHelp" class="absolute left-0 top-7 z-30 w-[min(680px,calc(100vw-4rem))] rounded-xl border border-gray-200 bg-white p-4 shadow-xl">
-                  <div class="flex items-center justify-between"><h4 class="text-sm font-bold text-gray-900">智能体类型差异</h4><button type="button" @click="showAgentTypeHelp = false" class="text-gray-400 hover:text-gray-700">×</button></div>
-                  <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div class="rounded-lg border border-gray-200 p-3"><div class="font-bold text-gray-900">💬 通用助手</div><div class="mt-1 font-mono text-[10px] text-blue-600">general_chat</div><p class="mt-2 text-xs leading-5 text-gray-600">通用型智能体。配置相应工具后即可获得对应能力，适合问答、写作、任务处理和大部分通用场景。</p></div>
-                    <div class="rounded-lg border border-blue-200 bg-blue-50/40 p-3"><div class="font-bold text-gray-900">📊 ChatBI</div><div class="mt-1 font-mono text-[10px] text-blue-600">data_query</div><p class="mt-2 text-xs leading-5 text-gray-600">专注数据库查数、指标统计和数据分析，执行 Schema、权限、SQL 安全与结果校验等门禁，不能回答非查数需求。</p><p class="mt-2 text-[11px] leading-4 text-blue-700">查数工具必填；数据集可选，未显式绑定时，自动使用当前用户有权访问的数据集。</p></div>
-                    <div class="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3"><div class="font-bold text-gray-900">📚 知识库助手</div><div class="mt-1 font-mono text-[10px] text-emerald-600">knowledge_base</div><p class="mt-2 text-xs leading-5 text-gray-600">专注已授权知识库的检索、归纳和基于资料回答，不能处理知识库检索以外的通用任务或数据库查数。</p><p class="mt-2 text-[11px] leading-4 text-emerald-700">必须显式绑定知识库和检索工具。</p></div>
-                  </div>
-                  <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">类型决定运行流程、门禁规则和 Main 的委派方式。创建保存后不可修改，请在创建前确认。</div>
-                </div>
+                <button
+                  type="button"
+                  class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100"
+                  aria-label="查看智能体类型说明"
+                  title="查看智能体类型差异"
+                  @click="showAgentTypeHelp = true"
+                >?</button>
               </div>
               <div v-if="isCreatingAgent" class="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <button v-for="option in agentTypes" :key="option.value" type="button" @click="selectAgentType(option.value)" class="rounded-xl border p-4 text-left transition-all" :class="agentForm.agent_type === option.value ? 'border-primary bg-blue-50 ring-1 ring-primary/20' : 'border-gray-200 hover:border-blue-300'">
@@ -358,22 +355,15 @@ const externalCreationMissingFields = computed(() => {
               </div>
             </div>
             <div v-if="agentForm.engine_type === 'LOCAL'" class="rounded-xl border border-gray-200 p-4">
-              <div class="relative flex items-center gap-1.5">
+              <div class="flex items-center gap-1.5">
                 <label class="text-sm font-bold text-gray-800">扩展能力标签</label>
-                <button type="button" @click="showCapabilityHelp = !showCapabilityHelp" class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100" aria-label="查看扩展能力标签说明">?</button>
-                <div v-if="showCapabilityHelp" class="absolute left-0 top-7 z-30 w-[min(720px,calc(100vw-4rem))] rounded-xl border border-gray-200 bg-white p-4 shadow-xl">
-                  <div class="flex items-center justify-between"><h4 class="text-sm font-bold text-gray-900">扩展能力标签使用说明</h4><button type="button" @click="showCapabilityHelp = false" class="text-gray-400 hover:text-gray-700">×</button></div>
-                  <div class="mt-3 grid grid-cols-1 gap-4 text-xs leading-5 text-gray-600 sm:grid-cols-2">
-                    <section><h5 class="font-bold text-gray-800">有什么用途</h5><p class="mt-1">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p></section>
-                    <section><h5 class="font-bold text-gray-800">如何影响路由</h5><p class="mt-1">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p></section>
-                    <section><h5 class="font-bold text-gray-800">如何填写</h5><p class="mt-1">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 <code class="rounded bg-gray-100 px-1">contract_review</code>、<code class="rounded bg-gray-100 px-1">ops_diagnosis</code>、<code class="rounded bg-gray-100 px-1">content_writing</code>。</p></section>
-                    <section><h5 class="font-bold text-gray-800">示例</h5><p class="mt-1">“擅长审核销售合同并识别风险条款”的通用助手，可填写 <code class="rounded bg-gray-100 px-1">contract_review</code>。合同审核问题会更容易路由到它。</p></section>
-                  </div>
-                  <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                    <div class="font-bold">重要提醒</div>
-                    <ul class="mt-1 list-disc pl-4"><li>标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</li><li>不要手动填写 general_chat、data_query、knowledge_base。</li><li>普通助手不要填写 reporting、sql_generation 等查数倾向标签，否则可能产生误路由。</li><li>标签应与实际模型、提示词和工具配置保持一致，过多或冲突的标签会降低路由准确性。</li></ul>
-                  </div>
-                </div>
+                <button
+                  type="button"
+                  class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-blue-50 text-xs font-bold text-blue-600 hover:bg-blue-100"
+                  aria-label="查看扩展能力标签说明"
+                  title="查看扩展能力标签说明"
+                  @click="showCapabilityHelp = true"
+                >?</button>
               </div>
               <p class="mt-1 text-xs text-gray-500">主类型能力由系统锁定；这里可补充 contract_review 等自定义路由标签。</p>
               <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2">
@@ -815,6 +805,142 @@ const externalCreationMissingFields = computed(() => {
               >保存并发布</button>
             </template>
           </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="showCapabilityHelp"
+      class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+      @click.self="showCapabilityHelp = false"
+    >
+      <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div>
+            <h3 class="text-lg font-bold text-gray-900">扩展能力标签怎么用？</h3>
+            <p class="mt-1 text-sm text-gray-500">标签用于语义路由与 Main 委派，不会自动增加工具或数据权限。</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="关闭"
+            @click="showCapabilityHelp = false"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+              <h4 class="text-sm font-bold text-gray-900">有什么用途</h4>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">标签会与智能体名称、描述一起提供给语义路由器，并进入 Main 的可委派智能体通讯录，用来表达这个智能体擅长处理什么任务。</p>
+            </section>
+            <section class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+              <h4 class="text-sm font-bold text-gray-900">如何影响路由</h4>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">Main 会构建“能力 → 子智能体”映射。多个智能体拥有相同标签时，优先选择排序权重更高且当前用户有权限调用的智能体。</p>
+            </section>
+            <section class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+              <h4 class="text-sm font-bold text-gray-900">如何填写</h4>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">建议填写 1～3 个简短、明确的小写英文标签，使用下划线分词，例如 <code class="rounded bg-white px-1">contract_review</code>、<code class="rounded bg-white px-1">ops_diagnosis</code>、<code class="rounded bg-white px-1">content_writing</code>。</p>
+            </section>
+            <section class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+              <h4 class="text-sm font-bold text-gray-900">示例</h4>
+              <p class="mt-2 text-sm leading-relaxed text-gray-600">“擅长审核销售合同并识别风险条款”的通用助手，可填写 <code class="rounded bg-white px-1">contract_review</code>。合同审核问题会更容易路由到它。</p>
+            </section>
+          </div>
+          <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+            <div class="font-bold">重要提醒</div>
+            <ul class="mt-2 list-disc space-y-1 pl-4">
+              <li>标签只影响路由和委派，不会自动安装工具、开放数据权限或增加执行能力。</li>
+              <li>不要手动填写 general_chat、data_query、knowledge_base。</li>
+              <li>普通助手不要填写 reporting、sql_generation 等查数倾向标签，否则可能产生误路由。</li>
+              <li>标签应与实际模型、提示词和工具配置保持一致，过多或冲突的标签会降低路由准确性。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+          <button
+            type="button"
+            class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+            @click="showCapabilityHelp = false"
+          >知道了</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="showAgentTypeHelp"
+      class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+      @click.self="showAgentTypeHelp = false"
+    >
+      <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div>
+            <h3 class="text-lg font-bold text-gray-900">智能体类型怎么选？</h3>
+            <p class="mt-1 text-sm text-gray-500">类型决定运行流程、门禁规则和 Main 的委派方式；创建保存后不可修改。</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="关闭"
+            @click="showAgentTypeHelp = false"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+          <div class="rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">💬</span>
+              <div>
+                <h4 class="text-sm font-bold text-gray-900">通用助手</h4>
+                <div class="mt-0.5 font-mono text-[10px] text-blue-600">general_chat</div>
+              </div>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              通用型智能体。配置相应工具后即可获得对应能力，适合问答、写作、任务处理和大部分通用场景。
+            </p>
+          </div>
+          <div class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">📊</span>
+              <div>
+                <h4 class="text-sm font-bold text-gray-900">ChatBI</h4>
+                <div class="mt-0.5 font-mono text-[10px] text-blue-600">data_query</div>
+              </div>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              专注数据库查数、指标统计和数据分析，执行 Schema、权限、SQL 安全与结果校验等门禁，不能回答非查数需求。
+            </p>
+            <p class="mt-2 text-xs leading-5 text-blue-700">查数工具必填；数据集可选，未显式绑定时，自动使用当前用户有权访问的数据集。</p>
+          </div>
+          <div class="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">📚</span>
+              <div>
+                <h4 class="text-sm font-bold text-gray-900">知识库助手</h4>
+                <div class="mt-0.5 font-mono text-[10px] text-emerald-600">knowledge_base</div>
+              </div>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              专注已授权知识库的检索、归纳和基于资料回答，不能处理知识库检索以外的通用任务或数据库查数。
+            </p>
+            <p class="mt-2 text-xs leading-5 text-emerald-700">必须显式绑定知识库和检索工具。</p>
+          </div>
+          <p class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+            创建保存后不可修改，请在创建前确认类型选择。
+          </p>
+        </div>
+        <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+          <button
+            type="button"
+            class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+            @click="showAgentTypeHelp = false"
+          >知道了</button>
         </div>
       </div>
     </div>
