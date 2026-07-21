@@ -21,6 +21,11 @@ def _assert_embed_portal_contract(source: str) -> None:
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
     assert "lockToDataQueryAgentForDatasetMenu" in source
+    assert "findUniqueDataQueryAgent" in source
+    assert "matches.length === 1" in source
+    assert "listKnowledgeExpertAgents" in source
+    assert "resolveKnowledgeExpertAgent" in source
+    assert "capabilities.includes(\"knowledge_base\")" in source
     assert "capabilities.includes(\"data_query\")" in source
     assert "refreshDatasetMenuNavigation" in source
     assert "recordDatasetMenuQuestionClick" in source
@@ -40,6 +45,10 @@ def _assert_agent_debug_portal_contract(source: str) -> None:
     assert "DatasetCapabilityMenu" in source
     assert "datasetNavigation?: DatasetNavigationPayload;" in source
     assert "lockToDataQueryAgentForDatasetMenu" in source
+    assert "findUniqueDataQueryAgent" in source
+    assert "matches.length === 1" in source
+    assert "listKnowledgeExpertAgents" in source
+    assert "resolveKnowledgeExpertAgent" in source
     assert "refreshDatasetMenuNavigation" in source
     assert "recordPortalQuestionClick" in source
 
