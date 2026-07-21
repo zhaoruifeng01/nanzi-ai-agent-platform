@@ -2729,12 +2729,21 @@ function getDisplayLogs(msg: Message) {
 }
 
 function getThoughtPanelTitle(msg: Message) {
-  return getEmbedThoughtSummaryTitle({
+  const baseTitle = getEmbedThoughtSummaryTitle({
     logs: getDisplayLogs(msg),
     isThinking: msg.isThinking,
     thinkingText: msg.thinkingText,
     turnType: msg.turnType,
   });
+
+  if (msg.isThinking && !msg.isThoughtExpanded) {
+    const logs = getDisplayLogs(msg);
+    const activeLog = logs.find(log => isActiveThoughtStep(log, msg.isThinking));
+    if (activeLog && activeLog.title) {
+      return `${baseTitle} · 正在进行: ${activeLog.title}`;
+    }
+  }
+  return baseTitle;
 }
 
 function getHiddenLogCount(msg: Message) {
