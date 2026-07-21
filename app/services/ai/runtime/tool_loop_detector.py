@@ -45,6 +45,7 @@ class ToolLoopDetector:
     fused: bool = False
     fuse_reason: str = ""
     fuse_reason_code: str = ""
+    fuse_count: int = 0
 
     @staticmethod
     def normalize_arg_value(value: Any) -> Any:
@@ -88,8 +89,15 @@ class ToolLoopDetector:
         return length
 
     def record(self, tool_name: str, tool_args: dict[str, Any] | None) -> ToolLoopVerdict:
-        if not self.enabled or self.fused or not tool_name:
+        if not self.enabled or not tool_name:
             return ToolLoopVerdict(fused=False, count=0)
+        if self.fused:
+            return ToolLoopVerdict(
+                fused=True,
+                count=self.fuse_count,
+                message=self.fuse_reason,
+                reason_code=self.fuse_reason_code,
+            )
 
         self.total_calls += 1
         self._sequence.append(tool_name)
@@ -142,4 +150,5 @@ class ToolLoopDetector:
         self.fused = True
         self.fuse_reason = message
         self.fuse_reason_code = reason_code
+        self.fuse_count = count
         return ToolLoopVerdict(fused=True, count=count, message=message, reason_code=reason_code)
