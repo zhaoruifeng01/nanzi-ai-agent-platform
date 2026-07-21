@@ -101,6 +101,17 @@ class AgentStateStore:
         if not redis:
             return
         key = self._key(user_id, conversation_id, agent_name)
+        try:
+            from app.services.ai.runtime.agentscope.serialize import serialize_jsonable
+
+            serialized_state = await serialize_jsonable(state, path="agent_state")
+        except Exception as exc:
+            logger.warning(
+                "[AgentStateStore] Failed to serialize state key=%s: %s",
+                key,
+                exc,
+            )
+            return
         payload = {
             "schema_version": SCHEMA_VERSION,
             "agent_name": agent_name,
@@ -108,7 +119,7 @@ class AgentStateStore:
             "tools_fingerprint": tools_fingerprint,
             "model_name": model_name,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "state": state.model_dump(mode="json") if hasattr(state, "model_dump") else state,
+            "state": serialized_state,
         }
         try:
             await redis.set(

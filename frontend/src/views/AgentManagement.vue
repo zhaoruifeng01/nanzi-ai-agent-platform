@@ -23,6 +23,7 @@ import DingTalkConfigModal from "../components/agent/DingTalkConfigModal.vue";
 import EmailConfigModal from "../components/agent/EmailConfigModal.vue";
 import WeChatWorkConfigModal from "../components/agent/WeChatWorkConfigModal.vue";
 import axios from "@/utils/axios";
+import { createUuid } from "../utils/conversationId";
 
 const router = useRouter();
 const agents = ref<AIAgent[]>([]);
@@ -433,7 +434,7 @@ const versionForm = ref<Partial<AIAgentVersion>>({
 type OnboardingStep = "BASIC" | "VERSION" | "RESOURCE";
 const isOnboardingFlow = ref(false);
 const onboardingStep = ref<OnboardingStep>("BASIC");
-const onboardingKey = ref(crypto.randomUUID());
+const onboardingKey = ref(createUuid());
 const onboardingAgent = ref<AIAgent | null>(null);
 const onboardingVersion = ref<AIAgentVersion | null>(null);
 
@@ -938,7 +939,7 @@ const handleDeleteAgent = (agent: AIAgent) => {
 const startAgentCreation = () => {
   isCreatingAgent.value = true;
   isOnboardingFlow.value = true;
-  onboardingKey.value = crypto.randomUUID();
+  onboardingKey.value = createUuid();
   onboardingAgent.value = null;
   onboardingVersion.value = null;
   isEditingAgent.value = false;
@@ -1036,7 +1037,7 @@ const openAgentModal = (agent?: AIAgent) => {
   } else {
     isOnboardingFlow.value = true;
     onboardingStep.value = "BASIC";
-    onboardingKey.value = crypto.randomUUID();
+    onboardingKey.value = createUuid();
     onboardingAgent.value = null;
     onboardingVersion.value = null;
     isEditingAgent.value = false;

@@ -234,3 +234,12 @@ def test_external_engine_creation_requires_parameters_before_save():
     assert "请先填写" in drawer
     assert ':disabled="externalCreationMissingFields.length > 0"' in drawer
     assert "persistNewAgentDraft(isLocalCreationEngine.value)" in source
+
+
+def test_agent_onboarding_key_works_on_plain_http():
+    """crypto.randomUUID 在非 HTTPS 生产 IP 不可用，setup 阶段调用会导致整页白屏且不请求 agents。"""
+    source = Path("frontend/src/views/AgentManagement.vue").read_text()
+
+    assert "crypto.randomUUID" not in source
+    assert 'from "../utils/conversationId"' in source
+    assert "createUuid" in source
