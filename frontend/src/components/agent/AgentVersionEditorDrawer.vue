@@ -116,6 +116,7 @@ const engineConfig = computed<Record<string, any>>(() => {
 });
 const newCapability = ref('');
 const showAgentTypeHelp = ref(false);
+const showEngineHelp = ref(false);
 const showCapabilityHelp = ref(false);
 const primaryCapabilities = new Set(['general_chat', 'data_query', 'knowledge_base']);
 const extensionCapabilities = computed(() =>
@@ -267,7 +268,16 @@ const externalCreationMissingFields = computed(() => {
             </div>
             <p class="text-sm text-gray-500">先选择执行引擎，页面会自动调整所需配置和后续流程。</p>
             <div class="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
-              <label class="block text-xs font-black uppercase tracking-widest text-gray-600">执行引擎</label>
+              <div class="flex items-center gap-1.5">
+                <label class="block text-xs font-black uppercase tracking-widest text-gray-600">执行引擎</label>
+                <button
+                  type="button"
+                  class="flex h-5 w-5 items-center justify-center rounded-full border border-blue-200 bg-white text-xs font-bold text-blue-600 hover:bg-blue-50"
+                  aria-label="查看执行引擎说明"
+                  title="查看三个引擎的区别"
+                  @click="showEngineHelp = true"
+                >?</button>
+              </div>
               <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <button v-for="engine in [{ value: 'LOCAL', label: 'NanZi Engine', icon: '🧠', note: '平台原生编排' }, { value: 'RAGFLOW', label: 'RAGFlow', icon: '🌊', note: '外部智能体' }, { value: 'OPENCLAW', label: 'OpenClaw', icon: '🦞', note: '外部任务机器人' }]" :key="engine.value" type="button" @click="selectEngine(engine.value as any)" class="rounded-xl border-2 bg-white p-4 text-left transition-all" :class="agentForm.engine_type === engine.value ? 'border-primary shadow-sm ring-1 ring-primary/10' : 'border-white hover:border-blue-200'">
                   <div class="flex items-center gap-2"><span class="text-xl">{{ engine.icon }}</span><span class="text-sm font-bold text-gray-800">{{ engine.label }}</span></div><div class="mt-2 text-[11px] text-gray-500">{{ engine.note }}</div>
@@ -805,6 +815,85 @@ const externalCreationMissingFields = computed(() => {
               >保存并发布</button>
             </template>
           </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div
+      v-if="showEngineHelp"
+      class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4"
+      @click.self="showEngineHelp = false"
+    >
+      <div class="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div>
+            <h3 class="text-lg font-bold text-gray-900">执行引擎怎么选？</h3>
+            <p class="mt-1 text-sm text-gray-500">三个引擎面向不同接入方式，选错会影响后续配置步骤与运行入口。</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="关闭"
+            @click="showEngineHelp = false"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5">
+          <div class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🧠</span>
+              <h4 class="text-sm font-bold text-gray-900">NanZi Engine（平台原生）</h4>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              在本平台内完成编排：模型策略、工具能力、系统提示词、版本发布都由平台托管。适合需要多步配置、草稿发布和平台内调试的标准智能体。
+            </p>
+            <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+              <li>· 创建后走完整向导（模型 → 工具 → 提示词 → 确认）</li>
+              <li>· 支持智能体类型、扩展能力标签与本地版本生命周期</li>
+              <li>· 会话与任务都在平台内执行</li>
+            </ul>
+          </div>
+          <div class="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🌊</span>
+              <h4 class="text-sm font-bold text-gray-900">RAGFlow（外部智能体）</h4>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              接入已在 RAGFlow 侧编排好的外部智能体。平台主要负责登记与路由，对话编排、知识库等仍在 RAGFlow 中维护。
+            </p>
+            <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+              <li>· 单页创建，需填写 RAGFlow App ID</li>
+              <li>· 不走平台内的模型/工具/提示词多步配置</li>
+              <li>· 类型固定为通用对话，适合托管式外部 Agent</li>
+            </ul>
+          </div>
+          <div class="rounded-xl border border-orange-100 bg-orange-50/40 p-4">
+            <div class="flex items-center gap-2">
+              <span class="text-xl">🦞</span>
+              <h4 class="text-sm font-bold text-gray-900">OpenClaw（外部任务机器人）</h4>
+            </div>
+            <p class="mt-2 text-sm leading-relaxed text-gray-600">
+              对接 OpenClaw 任务机器人，适合把外部自动化/任务执行能力挂到平台。平台登记连接信息后，实际执行仍由 OpenClaw 侧完成。
+            </p>
+            <ul class="mt-3 space-y-1.5 text-xs text-gray-500">
+              <li>· 单页创建，需填写 Base URL 与 Bot ID</li>
+              <li>· 可选开启安全检查（如路径校验）</li>
+              <li>· 不走平台原生的多步编排向导</li>
+            </ul>
+          </div>
+          <p class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">
+            提示：选择引擎后，页面会自动调整所需字段与后续步骤；创建保存后执行引擎不可再改。
+          </p>
+        </div>
+        <div class="flex justify-end border-t border-gray-100 px-6 py-4">
+          <button
+            type="button"
+            class="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-dark"
+            @click="showEngineHelp = false"
+          >知道了</button>
         </div>
       </div>
     </div>

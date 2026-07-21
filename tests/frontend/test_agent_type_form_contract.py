@@ -56,6 +56,10 @@ def test_agent_creation_reuses_version_drawer_with_agent_step():
     assert "contract_review" in drawer_source
     assert "只影响路由和委派" in drawer_source
     assert "showAgentTypeHelp" in drawer_source
+    assert "showEngineHelp" in drawer_source
+    assert "执行引擎怎么选" in drawer_source
+    assert "查看执行引擎说明" in drawer_source
+    assert "z-[10000]" in drawer_source
     assert "创建保存后不可修改" in drawer_source
     assert "未显式绑定时，自动使用当前用户有权访问的数据集" in drawer_source
     assert "isCreatingAgent" in drawer_source
