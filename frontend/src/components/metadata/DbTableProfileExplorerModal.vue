@@ -440,7 +440,7 @@ defineExpose({ refresh })
           </svg>
           <input
             v-model="searchQ"
-            type="text"
+            type="search"
             placeholder="搜索表名 / 业务备注 / 描述 / 标签..."
             class="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary/30 focus:border-primary outline-none bg-gray-50 focus:bg-white"
             @input="scheduleSearch"

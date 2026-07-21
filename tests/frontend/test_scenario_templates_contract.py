@@ -28,6 +28,8 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "path: 'scenario-templates/:templateId/install'" in router
     assert "name: 'ScenarioTemplateInstall'" in router
     assert "menu:agent_management" in router
+    assert 'ref="dashboardContentRef"' in dashboard
+    assert "dashboardContentRef.value.scrollTop = 0" in dashboard
 
     assert "{ name: '场景模板'" not in dashboard
     assert "/dashboard/scenario-templates" not in dashboard
@@ -38,7 +40,7 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "更多创建方式" in agent_management
     assert "空白新建" in agent_management
     assert "从场景模板交付" in agent_management
-    assert "showCreateAgentMenu = false; openAgentModal()" in agent_management
+    assert "showCreateAgentMenu = false; startAgentCreation()" in agent_management
     assert "showCreateAgentMenu = false; router.push('/dashboard/scenario-templates')" in agent_management
     assert "router.push('/dashboard/scenario-templates')" in agent_management
 
@@ -103,6 +105,9 @@ def test_scenario_templates_use_separate_market_detail_and_install_routes():
     assert "完成交付" in install
     assert "上一步" in install
     assert "下一步" in install
+    assert "currentStep.id === 'done' ? openAgentCenter() : goNext()" in install
+    assert "currentStep.id === 'done' ? '完成' : '下一步'" in install
+    assert ':disabled="currentStep.id !== \'done\' && !canGoNext"' in install
     assert "交付清单" in install
     assert "没有绑定时不能安装" in install
     assert "安装记录" in install

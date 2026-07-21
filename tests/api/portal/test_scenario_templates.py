@@ -7,12 +7,34 @@ from app.models.agent import AIAgent, AIAgentVersion
 from app.models.scenario_template import ScenarioTemplateInstallRun, ScenarioTemplateInstance
 from app.core.orm import engine
 from app.services.auth_service import AuthService
+from app.services.ai.agent_types import LOCKED_CAPABILITY_BY_TYPE, AgentType
+from app.services.scenario_template_service import ScenarioTemplateService
 
 
 async def _ensure_scenario_template_tables():
     async with engine.begin() as conn:
         await conn.run_sync(ScenarioTemplateInstance.__table__.create, checkfirst=True)
         await conn.run_sync(ScenarioTemplateInstallRun.__table__.create, checkfirst=True)
+
+
+@pytest.mark.no_infrastructure
+def test_builtin_scenario_manifests_declare_primary_agent_types():
+    expected = {
+        "chatbi-business-analysis": AgentType.CHATBI,
+        "finance-expense-analysis": AgentType.CHATBI,
+        "sales-customer-insight": AgentType.CHATBI,
+        "support-ticket-analysis": AgentType.CHATBI,
+        "knowledge-qa-assistant": AgentType.KNOWLEDGE_BASE,
+        "hr-policy-qa": AgentType.KNOWLEDGE_BASE,
+        "legal-contract-review": AgentType.KNOWLEDGE_BASE,
+        "ops-inspection-assistant": AgentType.GENERAL,
+    }
+
+    assert set(ScenarioTemplateService._templates) == set(expected)
+    for template_id, agent_type in expected.items():
+        agent_manifest = ScenarioTemplateService.get_template(template_id).manifest["agent"]
+        assert agent_manifest["agent_type"] == agent_type.value
+        assert LOCKED_CAPABILITY_BY_TYPE[agent_type] in agent_manifest["capabilities"]
 
 
 @pytest.mark.asyncio
@@ -162,6 +184,8 @@ async def test_chatbi_scenario_template_precheck_and_install(db_session):
         )
     ).scalars().all()
     assert len(versions) == 1
+    assert agent.agent_type == "CHATBI"
+    assert agent.capabilities[0] == "data_query"
     assert "经营分析" in versions[0].system_prompt
     assert agent.engine_config["dataset_ids"] == ["kb_sales_policy", "kb_metric_manual"]
     assert agent.engine_config["resource_bindings"]["knowledge_base"] == ["kb_sales_policy", "kb_metric_manual"]

@@ -48,7 +48,8 @@ def test_workbench_page_has_three_dynamic_states_without_zero_dashboard():
     assert "failedSources" in page
     assert "部分数据暂时无法获取" in page
     assert "open_task" in page
-    assert "欢迎使用 NanZi" in page
+    assert "欢迎使用 ${branding.product_name" in page
+    assert "useBranding" in page
     assert "浏览场景包" in page
 
 

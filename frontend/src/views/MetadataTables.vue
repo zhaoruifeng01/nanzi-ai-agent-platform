@@ -580,7 +580,7 @@ defineExpose({ fetchMetrics })
             </span>
             <input 
               v-model="searchQuery" 
-              type="text" 
+              type="search"
               class="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-lg leading-5 bg-gray-50 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm transition-all focus:bg-white" 
               placeholder="搜索物理表名、业务名或描述..."
             >
@@ -880,7 +880,7 @@ defineExpose({ fetchMetrics })
             </span>
             <input 
               v-model="candidateSearchQuery"
-              type="text"
+              type="search"
               class="block w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl leading-5 bg-gray-50 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-xs transition-all focus:bg-white"
               :placeholder="assignType === 'role' ? '搜索角色名称或代码...' : '搜索用户姓名或账号...'"
             />

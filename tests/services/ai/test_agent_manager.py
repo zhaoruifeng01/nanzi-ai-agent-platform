@@ -5,6 +5,8 @@ from app.services.ai.agent_manager import AgentManagerService
 from app.models.agent import AIAgent, AIAgentVersion
 from app.schemas.agent import AIAgentBase, AIAgentVersionBase
 
+pytestmark = pytest.mark.no_infrastructure
+
 # --- Mocks ---
 
 @pytest.fixture
@@ -201,6 +203,36 @@ async def test_create_agent_success(mock_session, mock_user_normal):
         mock_session.commit.assert_called_once()
         mock_invalidate.assert_called_once()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("engine_type", "engine_config", "message"),
+    [
+        ("RAGFLOW", {}, "RAGFlow 模式必须填写 App ID"),
+        ("OPENCLAW", {"base_url": "", "model": ""}, "OpenClaw 模式必须填写地址和机器人 ID"),
+    ],
+)
+async def test_create_external_agent_rejects_missing_engine_parameters(
+    mock_session,
+    mock_user_admin,
+    engine_type,
+    engine_config,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        await AgentManagerService.create_agent(
+            mock_session,
+            AIAgentBase(
+                name="external-agent",
+                display_name="External Agent",
+                engine_type=engine_type,
+                engine_config=engine_config,
+            ),
+            mock_user_admin,
+        )
+
+    mock_session.add.assert_not_called()
+
 @pytest.mark.asyncio
 async def test_update_agent_permission(mock_session, mock_user_normal):
     """测试更新 Agent 权限校验 (非 Admin 不能改 System 或他人 Agent)"""
@@ -218,11 +250,137 @@ async def test_update_agent_permission(mock_session, mock_user_normal):
     res = await AgentManagerService.update_agent(mock_session, "o1", AIAgentBase(name="x", display_name="X"), mock_user_normal)
     assert res is None # Forbidden
 
+
+@pytest.mark.asyncio
+async def test_update_agent_keeps_original_primary_type(mock_session, mock_user_admin):
+    agent = AIAgent(
+        id="a1",
+        name="fixed-type",
+        display_name="Fixed Type",
+        created_by="admin",
+        agent_type="CHATBI",
+        capabilities=["data_query", "reporting"],
+        engine_type="LOCAL",
+    )
+    mock_session.get.return_value = agent
+
+    await AgentManagerService.update_agent(
+        mock_session,
+        "a1",
+        AIAgentBase(
+            name="fixed-type",
+            display_name="Fixed Type Updated",
+            agent_type="GENERAL",
+            capabilities=["general_chat", "writing"],
+        ),
+        mock_user_admin,
+    )
+
+    assert agent.agent_type == "CHATBI"
+    assert agent.capabilities == ["data_query", "writing"]
+
+
+@pytest.mark.asyncio
+async def test_update_agent_rejects_engine_type_change_without_touching_engine_config(mock_session, mock_user_admin):
+    agent = AIAgent(
+        id="a1",
+        name="external-agent",
+        display_name="External Agent",
+        created_by="admin",
+        agent_type="GENERAL",
+        capabilities=["general_chat"],
+        engine_type="OPENCLAW",
+        engine_config={"base_url": "https://old.example.com", "model": "bot-old"},
+    )
+    mock_session.get.return_value = agent
+
+    with pytest.raises(ValueError, match="执行引擎创建后不可修改"):
+        await AgentManagerService.update_agent(
+            mock_session,
+            "a1",
+            AIAgentBase(
+                name="external-agent",
+                display_name="External Agent",
+                engine_type="RAGFLOW",
+                engine_config={"app_id": "ragflow-app"},
+            ),
+            mock_user_admin,
+        )
+
+    assert agent.engine_type == "OPENCLAW"
+    assert agent.engine_config == {"base_url": "https://old.example.com", "model": "bot-old"}
+
+
+@pytest.mark.asyncio
+async def test_update_agent_allows_parameters_for_existing_engine(mock_session, mock_user_admin):
+    agent = AIAgent(
+        id="a1",
+        name="external-agent",
+        display_name="External Agent",
+        created_by="admin",
+        agent_type="GENERAL",
+        capabilities=["general_chat"],
+        engine_type="OPENCLAW",
+        engine_config={"base_url": "https://old.example.com", "model": "bot-old"},
+    )
+    mock_session.get.return_value = agent
+
+    await AgentManagerService.update_agent(
+        mock_session,
+        "a1",
+        AIAgentBase(
+            name="external-agent",
+            display_name="External Agent",
+            engine_type="OPENCLAW",
+            engine_config={"base_url": "https://new.example.com", "model": "bot-new"},
+        ),
+        mock_user_admin,
+    )
+
+    assert agent.engine_type == "OPENCLAW"
+    assert agent.engine_config == {"base_url": "https://new.example.com", "model": "bot-new"}
+
+
+@pytest.mark.asyncio
+async def test_update_agent_allows_engine_config_when_engine_type_is_omitted(mock_session, mock_user_admin):
+    agent = AIAgent(
+        id="a1",
+        name="external-agent",
+        display_name="External Agent",
+        created_by="admin",
+        agent_type="GENERAL",
+        capabilities=["general_chat"],
+        engine_type="OPENCLAW",
+        engine_config={"base_url": "https://old.example.com", "model": "bot-old"},
+    )
+    mock_session.get.return_value = agent
+
+    await AgentManagerService.update_agent(
+        mock_session,
+        "a1",
+        AIAgentBase.model_validate({
+            "name": "external-agent",
+            "display_name": "External Agent",
+            "engine_config": {"base_url": "https://new.example.com", "model": "bot-new"},
+        }),
+        mock_user_admin,
+    )
+
+    assert agent.engine_type == "OPENCLAW"
+    assert agent.engine_config == {"base_url": "https://new.example.com", "model": "bot-new"}
+
 @pytest.mark.asyncio
 async def test_publish_version_logic(mock_session, mock_user_admin):
     """测试版本发布逻辑"""
-    agent = AIAgent(id="a1", created_by="admin")
-    mock_session.get.return_value = agent
+    agent = AIAgent(
+        id="a1",
+        created_by="admin",
+        agent_type="GENERAL",
+        capabilities=["general_chat"],
+        engine_config={},
+    )
+    version = AIAgentVersion(id="v_new", agent_id="a1", tools=[])
+    mock_session.get.side_effect = [agent, version]
     
     await AgentManagerService.publish_version(mock_session, "a1", "v_new", mock_user_admin)
     
@@ -231,3 +389,34 @@ async def test_publish_version_logic(mock_session, mock_user_admin):
     # 2. Publish new
     assert mock_session.execute.call_count == 2
     mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_publish_version_rejects_chatbi_without_query_tool_before_archiving(mock_session, mock_user_admin):
+    from app.services.ai.agent_manager import AgentNotReadyError
+
+    agent = AIAgent(
+        id="chatbi-1",
+        created_by="admin",
+        agent_type="CHATBI",
+        capabilities=["data_query"],
+        engine_config={"dataset_ids": []},
+    )
+    version = AIAgentVersion(
+        id="draft-1",
+        agent_id="chatbi-1",
+        tools=[],
+    )
+    mock_session.get.side_effect = [agent, version]
+
+    with pytest.raises(AgentNotReadyError) as exc_info:
+        await AgentManagerService.publish_version(
+            mock_session,
+            "chatbi-1",
+            "draft-1",
+            mock_user_admin,
+        )
+
+    assert exc_info.value.missing == ("data_query_tool",)
+    mock_session.execute.assert_not_called()
+    mock_session.commit.assert_not_called()

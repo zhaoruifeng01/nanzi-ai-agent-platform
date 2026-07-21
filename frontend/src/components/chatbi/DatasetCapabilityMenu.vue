@@ -94,7 +94,7 @@
           </span>
           <input
             v-model="searchQuery"
-            type="text"
+            type="search"
             placeholder="搜索场景、表名或指标..."
             class="w-full pl-9 pr-8 py-1.5 text-xs rounded-xl border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900/30 text-gray-850 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-xs"
           />
@@ -512,7 +512,7 @@
             </div>
             <input
               v-model="shareUserSearch"
-              type="text"
+              type="search"
               placeholder="搜索用户名或姓名..."
               class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
             />
@@ -545,7 +545,7 @@
             </div>
             <input
               v-model="shareRoleSearch"
-              type="text"
+              type="search"
               placeholder="搜索角色名称或代码..."
               class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-950 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
             />

@@ -39,7 +39,7 @@
           <input
             ref="searchInputRef"
             v-model="searchQuery"
-            type="text"
+            type="search"
             class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-0.5 outline-none"
             placeholder="搜索字段名、中文备注或示例..."
             @click.stop

@@ -249,22 +249,21 @@ router.beforeEach((to: any, _from: any, next: any) => {
 
       const userMenus = userInfo.permissions?.menus || []
       
-      // 1. 如果没有任何菜单权限，强制跳转到无权限提示页
+      // 1. 本地会话没有任何菜单权限 → 无权限页（「尝试刷新」会重新拉取 /me）
       if (userMenus.length === 0) {
         next({ name: 'NoPermission' })
         return
       }
 
-      // 2. 校验目标路由权限
+      // 2. 缺目标页权限时落到第一个有权限的页面，避免误送无权限页
       const requiredPerm = to.meta.perm
       if (requiredPerm && !userMenus.includes(requiredPerm)) {
         console.warn(`[Guard] Access denied to ${to.path}. Missing ${requiredPerm}`)
-        // 如果访问首页没权限，尝试重定向到第一个有权限的菜单
-        if (to.name === 'Overview') {
-           // Simple redirect logic or stay on current / just error
-           next({ name: 'NoPermission' }) 
+        const fallback = resolveFirstAllowedRoute(userMenus)
+        if (fallback.name === to.name) {
+          next({ name: 'NoPermission' })
         } else {
-           next({ name: 'Overview' }) // Fallback to overview or show toast
+          next(fallback)
         }
         return
       }
@@ -275,5 +274,24 @@ router.beforeEach((to: any, _from: any, next: any) => {
 
   next()
 })
+
+/** 菜单权限 → 默认落地路由（按业务优先级） */
+const MENU_HOME_CANDIDATES: Array<{ perm: string; name: string }> = [
+  { perm: 'menu:ai_chat', name: 'PersonalWorkbench' },
+  { perm: 'menu:dashboard', name: 'Overview' },
+  { perm: 'menu:agent_management', name: 'AgentManagement' },
+  { perm: 'menu:chat_logs', name: 'ChatLogs' },
+  { perm: 'menu:metadata', name: 'Metadata' },
+  { perm: 'menu:task_center', name: 'TaskCenter' },
+]
+
+const resolveFirstAllowedRoute = (userMenus: string[]) => {
+  for (const item of MENU_HOME_CANDIDATES) {
+    if (userMenus.includes(item.perm)) {
+      return { name: item.name }
+    }
+  }
+  return { name: 'PersonalCenter' }
+}
 
 export default router

@@ -195,7 +195,7 @@
                     </span>
                     <input
                       v-model="searchQuery"
-                      type="text"
+                      type="search"
                       placeholder="搜索分类标签、名称或描述..."
                       class="w-full pl-9 pr-8 py-1.5 text-[11px] rounded-xl border border-gray-150 dark:border-gray-800 bg-white dark:bg-gray-900/30 text-gray-850 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-all shadow-xs"
                     />

@@ -1388,7 +1388,7 @@ onMounted(async () => {
           <div class="relative">
             <input
               v-model="searchQuery"
-              type="text"
+              type="search"
               placeholder="搜索知识库、文档或归属部门..."
               class="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all placeholder-gray-400"
             />
@@ -2639,7 +2639,7 @@ onMounted(async () => {
           </span>
           <input 
             v-model="candidateSearchQuery"
-            type="text"
+            type="search"
             class="block w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl leading-5 bg-gray-50 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary sm:text-xs transition-all focus:bg-white"
             :placeholder="assignType === 'role' ? '搜索角色名称或代码...' : '搜索用户姓名或账号...'"
           />

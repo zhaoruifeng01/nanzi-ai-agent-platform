@@ -924,7 +924,7 @@ const overlayBackdropClass = computed(() =>
               <div class="relative">
                 <input
                   v-model="csvSearchQuery"
-                  type="text"
+                  type="search"
                   placeholder="全局模糊搜索过滤数据..."
                   class="w-full text-xs bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-750 focus:border-primary focus:ring-1 focus:ring-primary rounded-lg pl-8 pr-3 py-2 outline-none text-gray-700 dark:text-gray-300 transition-all"
                 />

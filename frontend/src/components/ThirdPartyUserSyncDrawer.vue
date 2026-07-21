@@ -102,7 +102,7 @@
                       <input
                         ref="tableSearchInputRef"
                         v-model="tableSearchQuery"
-                        type="text"
+                        type="search"
                         class="flex-1 min-w-0 bg-transparent border-none focus:ring-0 text-sm py-0.5 outline-none"
                         placeholder="搜索表名或中文备注..."
                         @click.stop
