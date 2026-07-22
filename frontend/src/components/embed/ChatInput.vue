@@ -132,6 +132,11 @@ const showMentionList = ref(false);
 const mentionKeyword = ref("");
 const mentionPosition = reactive({ top: 0, left: 0 });
 const showCommandMenu = ref(false);
+const showNewConversationMenu = ref(false);
+const newConversationMenuRef = ref<HTMLElement | HTMLElement[] | null>(null);
+const setNewConversationMenuRef = (el: Element | null) => {
+  newConversationMenuRef.value = (el as HTMLElement | null) ?? null;
+};
 const activeCommandIndex = ref(0);
 const mentionListRef = ref<any>(null);
 const isDrawerExpanded = ref(false);
@@ -142,6 +147,15 @@ const openCommandDrawer = () => {
 
 const closeCommandDrawer = () => {
   isDrawerExpanded.value = false;
+};
+
+const toggleNewConversationMenu = () => {
+  showNewConversationMenu.value = !showNewConversationMenu.value;
+};
+
+const selectNewConversationType = (command: string) => {
+  showNewConversationMenu.value = false;
+  emit('system-command', command);
 };
 
 const showShortcutBar = computed(() => props.showShortcuts && props.windowWidth >= 640);
@@ -421,7 +435,7 @@ const visibleUserCount = ref(Number.POSITIVE_INFINITY);
 let shortcutResizeObserver: ResizeObserver | null = null;
 
 const visibleRowSystemCommands = computed(() =>
-  filteredSystemCommands.value.slice(0, visibleSystemCount.value),
+  filteredSystemCommands.value.filter((cmd) => cmd.id !== 'sys_project').slice(0, visibleSystemCount.value),
 );
 const visibleRowUserCommands = computed(() =>
   filteredUserCommands.value.slice(0, visibleUserCount.value),
@@ -539,6 +553,16 @@ const handleGlobalClick = (event: MouseEvent) => {
   if (showModelDropdown.value && modelDropdownRef.value && !modelDropdownRef.value.contains(event.target as Node)) {
     showModelDropdown.value = false;
   }
+  // 新会话类型菜单：点击外部关闭（勿用 mouseleave，否则空隙会误关）
+  if (showNewConversationMenu.value) {
+    const target = event.target as Node;
+    const root = newConversationMenuRef.value;
+    // ref 写在 v-for 内时可能是数组
+    const el = Array.isArray(root) ? root[0] : root;
+    if (el && !el.contains(target)) {
+      showNewConversationMenu.value = false;
+    }
+  }
 };
 
 const handleGlobalKeydown = (event: KeyboardEvent) => {
@@ -553,6 +577,10 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
     }
     if (showSkillCascade.value) {
       showSkillCascade.value = false;
+      return;
+    }
+    if (showNewConversationMenu.value) {
+      showNewConversationMenu.value = false;
       return;
     }
     showPlusMenu.value = false;
@@ -713,6 +741,13 @@ const closeExpertCascade = () => {
   showExpertCascade.value = false;
 };
 
+/** 桌面端：悬停到加号菜单的非级联项时，收起技能/专家飞出层 */
+const closePlusCascadesOnHover = () => {
+  if (isMobileViewport.value) return;
+  showSkillCascade.value = false;
+  showExpertCascade.value = false;
+};
+
 const mountSkillFromCascade = (skill: SkillItem) => {
   if (attachedSkillIds.value.includes(skill.id)) {
     return;
@@ -853,7 +888,7 @@ defineExpose({
 </script>
 
 <template>
-    <div class="flex-shrink-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-800 flex flex-col relative z-20">
+    <div class="flex-shrink-0 bg-white dark:bg-gray-900 flex flex-col relative z-20">
       <slot name="banner"></slot>
 
       <!-- Active LTM Preference Banner -->
@@ -914,7 +949,7 @@ defineExpose({
                 >
                     <div class="flex items-center gap-2">
                         <button
-                            v-for="cmd in filteredSystemCommands"
+                            v-for="cmd in filteredSystemCommands.filter((item) => item.id !== 'sys_project')"
                             :key="'measure-sys-' + cmd.id"
                             data-measure-sys
                             type="button"
@@ -932,10 +967,29 @@ defineExpose({
                 <transition enter-active-class="transition-all duration-300 ease-out" enter-from-class="opacity-0 -translate-y-2" enter-to-class="opacity-100 translate-y-0" leave-active-class="transition-all duration-200 ease-in" leave-to-class="opacity-0 -translate-y-2">
                     <div class="w-full">
                         <div v-if="!isDrawerExpanded" ref="shortcutRowRef" class="flex flex-1 min-w-0 items-center gap-2">
-                            <div class="relative flex-1 min-w-0 overflow-hidden">
+                            <div class="relative flex-1 min-w-0 overflow-visible">
                                 <div class="flex items-center gap-2 min-w-0">
                                     <template v-for="cmd in visibleRowSystemCommands" :key="'row-sys-'+cmd.id">
-                                        <button :disabled="cmd.disabled" @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-100">{{ cmd.label }}</button>
+                                        <div
+                                          v-if="cmd.id === 'sys_clear'"
+                                          :ref="setNewConversationMenuRef"
+                                          class="relative flex items-center shrink-0"
+                                        >
+                                          <button :disabled="cmd.disabled" @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-l-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">{{ cmd.label }}</button>
+                                          <button type="button" @mousedown.stop @click.stop="toggleNewConversationMenu" class="px-1.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-r-full border-l border-white/70 dark:border-gray-700 hover:bg-gray-200" title="选择会话类型">⌄</button>
+                                          <!-- pt-2 桥接触发区与面板，避免空隙导致指针落空 -->
+                                          <div
+                                            v-if="showNewConversationMenu"
+                                            @mousedown.stop
+                                            class="absolute left-0 top-full z-[100] pt-2"
+                                          >
+                                            <div class="w-40 rounded-xl border border-gray-200 bg-white dark:bg-gray-800 shadow-xl p-1">
+                                              <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700" @click.stop="selectNewConversationType('/new')">💬 新建普通会话</button>
+                                              <button type="button" class="w-full text-left px-3 py-2 rounded-lg text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700" @click.stop="selectNewConversationType('/project')">📁 新建项目会话</button>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <button v-else :disabled="cmd.disabled" @click="handleShortcutClick(cmd)" class="px-2.5 py-1 text-[10px] font-bold bg-gray-100/80 dark:bg-gray-800 text-gray-500 rounded-full whitespace-nowrap hover:bg-gray-200 transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-100">{{ cmd.label }}</button>
                                     </template>
                                     <div v-if="showShortcutDivider" class="w-px h-3 bg-gray-200 dark:bg-gray-700 flex-shrink-0"></div>
                                     <template v-for="cmd in visibleRowUserCommands" :key="'row-user-'+cmd.id">
@@ -1151,6 +1205,7 @@ defineExpose({
                                     <!-- Data Portal -->
                                     <button
                                       v-if="filteredSystemCommands.some(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID)"
+                                      @mouseenter="closePlusCascadesOnHover"
                                       @click="openDataPortalFromPlusMenu"
                                       class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
                                     >
@@ -1159,7 +1214,12 @@ defineExpose({
                                     </button>
 
                                     <!-- Knowledge Base -->
-                                    <button :disabled="isKnowledgePortalDisabled" @click="isKnowledgePortalDisabled ? null : (showPlusMenu = false, showSkillCascade = false, showExpertCascade = false, emit('select-knowledge-base'));" class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
+                                    <button
+                                      :disabled="isKnowledgePortalDisabled"
+                                      @mouseenter="closePlusCascadesOnHover"
+                                      @click="isKnowledgePortalDisabled ? null : (showPlusMenu = false, showSkillCascade = false, showExpertCascade = false, emit('select-knowledge-base'));"
+                                      class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                    >
                                         <div class="flex items-center space-x-3">
                                             <span class="text-lg">📚</span>
                                             <span class="font-medium text-left">打开知识库中心</span>
@@ -1167,19 +1227,31 @@ defineExpose({
                                     </button>
 
                                     <!-- Browse Workspace -->
-                                    <button @click="showPlusMenu = false; showSkillCascade = false; showExpertCascade = false; emit('select-local-fs');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                    <button
+                                      @mouseenter="closePlusCascadesOnHover"
+                                      @click="showPlusMenu = false; showSkillCascade = false; showExpertCascade = false; emit('select-local-fs');"
+                                      class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
+                                    >
                                         <span class="text-lg">💻</span>
                                         <span class="font-medium text-left">浏览工作空间</span>
                                     </button>
 
                                     <!-- Upload File -->
-                                    <button @click="triggerFileInput" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                    <button
+                                      @mouseenter="closePlusCascadesOnHover"
+                                      @click="triggerFileInput"
+                                      class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
+                                    >
                                         <span class="text-lg">📁</span>
                                         <span class="font-medium text-left">上传本地文件</span>
                                     </button>
 
                                     <!-- Memory Records (moved up) -->
-                                    <button @click="showPlusMenu = false; showSkillCascade = false; showExpertCascade = false; emit('select-memory');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                    <button
+                                      @mouseenter="closePlusCascadesOnHover"
+                                      @click="showPlusMenu = false; showSkillCascade = false; showExpertCascade = false; emit('select-memory');"
+                                      class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
+                                    >
                                         <span class="text-lg">🧠</span>
                                         <span class="font-medium text-left">选择记忆记录</span>
                                     </button>
