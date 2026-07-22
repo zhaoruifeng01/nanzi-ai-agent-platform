@@ -1329,7 +1329,7 @@
         @delete-command="confirmDeleteCommand"
         @switch-mode="handleSwitchMode"
         @reorder-commands="handleReorderCommands"
-        @select-skill="openSkillSelector"
+        :agent-id="effectiveEmbedChatAgentId"
         @select-knowledge-base="openKnowledgePortal"
         @select-local-fs="showWorkspaceDrawer = true"
         @select-memory="openMemorySelector"
@@ -1402,16 +1402,6 @@
       :attached-conversation-ids="attachedMemoryConversationIds"
       @mount="handleMemoryMount"
       @cleared="handleMemoryCleared"
-    />
-
-    <SkillBrowserDrawer
-      v-model="showSkillDrawer"
-      v-model:keep-open-on-select="skillKeepOpenOnSelect"
-      v-model:pinned="skillPinned"
-      :pinned-dock-class="skillPinnedDockClass"
-      :attached-skill-ids="attachedSkillIds"
-      :agent-id="effectiveEmbedChatAgentId"
-      @select="handleSelectSkill"
     />
 
     <div
@@ -2493,7 +2483,6 @@ import ChatInput from "@/components/embed/ChatInput.vue";
 import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
 import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
 import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
-import SkillBrowserDrawer from "@/components/embed/SkillBrowserDrawer.vue";
 import SkillCreatedBanner from "@/components/chat/SkillCreatedBanner.vue";
 import { parseSkillCreatedMarker, type SkillCreatedInfo } from "@/utils/skillCreated";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
@@ -2955,28 +2944,6 @@ const memoryPinned = ref(
 );
 watch(memoryPinned, (val) => {
   localStorage.setItem("embed_memory_pinned", val ? "1" : "0");
-});
-
-const showSkillDrawer = ref(false);
-
-const skillKeepOpenOnSelect = ref(
-  readStoredBoolean(
-    "embed_skill_keep_open",
-    typeof window !== "undefined" &&
-      !window.matchMedia("(max-width: 639px)").matches,
-  ),
-);
-watch(skillKeepOpenOnSelect, (val) => {
-  localStorage.setItem("embed_skill_keep_open", val ? "1" : "0");
-});
-
-const skillPinned = ref(
-  typeof window !== "undefined" &&
-    !window.matchMedia("(max-width: 639px)").matches &&
-    readStoredBoolean("embed_skill_pinned", false),
-);
-watch(skillPinned, (val) => {
-  localStorage.setItem("embed_skill_pinned", val ? "1" : "0");
 });
 
 const attachedMemoryConversationIds = computed(() => {
@@ -4349,16 +4316,6 @@ watch(showSettings, (val) => {
 const activeColor = ref("#1677ff");
 
 // 技能工作流选择器
-const attachedSkillIds = computed(() =>
-  (chatInputRef.value?.uploadedFiles || [])
-    .filter((f: any) => f.type === "skill")
-    .map((f: any) => String(f.url)),
-);
-
-const openSkillSelector = () => {
-  showSkillDrawer.value = true;
-};
-
 const skillCreatedInfo = ref<SkillCreatedInfo | null>(null);
 
 watch(
@@ -5671,13 +5628,12 @@ watch(
 
 
 
-const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "skill" | "knowledge") => {
+const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" | "knowledge") => {
   let rem = 0;
   if (exclude !== "portal" && showPortalDrawer.value && portalPinned.value) rem += 28;
   if (exclude !== "knowledge" && showKnowledgePortal.value && knowledgePinned.value) rem += 28;
   if (exclude !== "workspace" && showWorkspaceDrawer.value && workspacePinned.value) rem += 28;
   if (exclude !== "memory" && showMemoryDrawer.value && memoryPinned.value) rem += 28;
-  if (exclude !== "skill" && showSkillDrawer.value && skillPinned.value) rem += 28;
   return rem;
 };
 
@@ -5715,7 +5671,6 @@ const totalPinnedDrawerPx = computed(() => {
   px += workspaceDrawerWidthPx.value;
   px += canvasPinnedWidthPx.value;
   if (showMemoryDrawer.value && memoryPinned.value) px += 448;
-  if (showSkillDrawer.value && skillPinned.value) px += 448;
   return px;
 });
 
@@ -5731,11 +5686,6 @@ const workspacePinnedDockClass = computed(() => {
 
 const memoryPinnedDockClass = computed(() => {
   const rem = pinnedDrawerDockOffsetRem("memory");
-  return rem > 0 ? `right-[${rem}rem]` : "right-0";
-});
-
-const skillPinnedDockClass = computed(() => {
-  const rem = pinnedDrawerDockOffsetRem("skill");
   return rem > 0 ? `right-[${rem}rem]` : "right-0";
 });
 

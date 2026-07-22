@@ -2,6 +2,8 @@
 import { ref, reactive, nextTick, computed, watch, onMounted, onUnmounted } from "vue";
 import MentionList from "@/components/agent/MentionList.vue";
 import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
+import SkillCascadeMenu from "@/components/embed/SkillCascadeMenu.vue";
+import type { SkillItem } from "@/components/embed/SkillCascadeMenu.vue";
 import { isImageAttachment } from "@/utils/attachmentImages";
 import { DATASET_PORTAL_SYSTEM_COMMAND_ID } from "@/constants/datasetPortalCommand";
 
@@ -47,6 +49,8 @@ const props = defineProps<{
   selectedModel?: string;
   availableModels?: ModelOption[];
   activeLtmPreference?: any;
+  /** 当前会话有效智能体 ID，用于过滤平台技能列表 */
+  agentId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -65,7 +69,6 @@ const emit = defineEmits<{
   (e: 'drag-start', event: DragEvent, index: number): void;
   (e: 'drop-cmd', event: DragEvent, index: number): void;
   (e: 'reorder-commands', data: any[]): void;
-  (e: 'select-skill'): void;
   (e: 'select-knowledge-base'): void;
   (e: 'select-local-fs'): void;
   (e: 'select-memory'): void;
@@ -321,6 +324,7 @@ const handleShortcutClick = (cmd: any) => {
 const openDataPortalFromPlusMenu = () => {
     if (props.isProcessing) return;
     showPlusMenu.value = false;
+    showSkillCascade.value = false;
     const cmd = filteredSystemCommands.value.find((c) => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID);
     handleShortcutClick(cmd);
 };
@@ -498,6 +502,7 @@ const updateApprovalMenuPosition = () => {
 const handleGlobalClick = (event: MouseEvent) => {
   if (showPlusMenu.value && plusMenuContainerRef.value && !plusMenuContainerRef.value.contains(event.target as Node)) {
     showPlusMenu.value = false;
+    showSkillCascade.value = false;
   }
   if (showApprovalMenu.value) {
     const target = event.target as Node;
@@ -514,6 +519,10 @@ const handleGlobalClick = (event: MouseEvent) => {
 
 const handleGlobalKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape') {
+    if (showSkillCascade.value) {
+      showSkillCascade.value = false;
+      return;
+    }
     showPlusMenu.value = false;
     showApprovalMenu.value = false;
     showModelDropdown.value = false;
@@ -539,19 +548,66 @@ onUnmounted(() => {
   shortcutResizeObserver?.disconnect();
 });
 const showPlusMenu = ref(false);
+const showSkillCascade = ref(false);
+const skillCascadeRef = ref<InstanceType<typeof SkillCascadeMenu> | null>(null);
 const isUploading = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const attachedSkillIds = computed(() =>
+  uploadedFiles.value
+    .filter((f) => f.type === "skill")
+    .map((f) => String(f.url)),
+);
 
 const togglePlusMenu = () => {
   if (props.isProcessing) return;
   showPlusMenu.value = !showPlusMenu.value;
-  if (showPlusMenu.value) showApprovalMenu.value = false;
+  if (showPlusMenu.value) {
+    showApprovalMenu.value = false;
+  } else {
+    showSkillCascade.value = false;
+  }
+};
+
+const openSkillCascade = () => {
+  showSkillCascade.value = true;
+  nextTick(() => {
+    skillCascadeRef.value?.resetSearch?.();
+  });
+};
+
+const mountSkillFromCascade = (skill: SkillItem) => {
+  if (attachedSkillIds.value.includes(skill.id)) {
+    return;
+  }
+  const scope = skill.scope === "personal" ? "personal" : "global";
+  uploadedFiles.value.push({
+    type: "skill",
+    url: skill.id,
+    filename: `${skill.name} (技能)`,
+    size: 0,
+    ext: "skill",
+    scope,
+    skillMeta: {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description || "",
+      scope,
+    },
+  });
+  showSkillCascade.value = false;
+  showPlusMenu.value = false;
 };
 
 const triggerFileInput = () => {
   showPlusMenu.value = false;
+  showSkillCascade.value = false;
   fileInputRef.value?.click();
 };
+
+watch(showPlusMenu, (open) => {
+  if (!open) showSkillCascade.value = false;
+});
 
 const isImage = isImageAttachment;
 
@@ -925,7 +981,7 @@ defineExpose({
               </div>
             </div>
 
-            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @focus="handleFocus" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed" :class="isProcessing ? 'min-h-[46px] opacity-0 pointer-events-none' : 'min-h-[46px] opacity-100'" :placeholder="isProcessing ? '' : '输入消息，或 \'/\' 使用快捷指令...'"></textarea>
+            <textarea ref="inputRef" :value="modelValue" :disabled="isProcessing" @input="handleInput" @focus="handleFocus" @keydown="handleKeydown" @compositionstart="handleCompositionStart" @compositionend="handleCompositionEnd" @paste="handlePaste" rows="1" class="w-full bg-transparent border-none outline-none focus:ring-0 text-base sm:text-sm placeholder:text-sm px-0 py-1 resize-none max-h-32 text-gray-900 dark:text-gray-100 placeholder-gray-400 peer z-10 relative disabled:cursor-not-allowed" :class="isProcessing ? 'min-h-[46px] opacity-0 pointer-events-none' : 'min-h-[46px] opacity-100'" :placeholder="isProcessing ? '' : '今天帮你做些什么？ @ 选择智能体专家， / 调用技能与指令'"></textarea>
 
             <div class="relative z-20 mt-1 flex min-h-9 flex-wrap items-center gap-1.5 sm:gap-2">
                 <!-- Plus Button & Menu (Premium Glassmorphism Style) -->
@@ -947,48 +1003,82 @@ defineExpose({
                       leave-from-class="transform opacity-100 scale-100"
                       leave-to-class="transform opacity-0 scale-95"
                     >
-                        <div v-if="showPlusMenu" class="absolute bottom-full left-0 mb-2 w-52 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/50 dark:border-gray-700/50 py-1.5 z-50 animate-fade-in-up">
-                            <!-- Data Portal -->
-                            <button
-                              v-if="filteredSystemCommands.some(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID)"
-                              @click="openDataPortalFromPlusMenu"
-                              class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
-                            >
-                                <span class="text-lg">📊</span>
-                                <span class="font-medium text-left">打开数据门户</span>
-                            </button>
+                        <div v-if="showPlusMenu" class="absolute bottom-full left-0 mb-2 z-50">
+                            <div class="relative">
+                                <div class="w-52 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/50 dark:border-gray-700/50 py-1.5 animate-fade-in-up">
+                                    <!-- Data Portal -->
+                                    <button
+                                      v-if="filteredSystemCommands.some(c => c.id === DATASET_PORTAL_SYSTEM_COMMAND_ID)"
+                                      @click="openDataPortalFromPlusMenu"
+                                      class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150"
+                                    >
+                                        <span class="text-lg">📊</span>
+                                        <span class="font-medium text-left">打开数据门户</span>
+                                    </button>
 
-                            <!-- Knowledge Base -->
-                            <button :disabled="isKnowledgePortalDisabled" @click="isKnowledgePortalDisabled ? null : (showPlusMenu = false, emit('select-knowledge-base'));" class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
-                                <div class="flex items-center space-x-3">
-                                    <span class="text-lg">📚</span>
-                                    <span class="font-medium text-left">打开知识库中心</span>
+                                    <!-- Knowledge Base -->
+                                    <button :disabled="isKnowledgePortalDisabled" @click="isKnowledgePortalDisabled ? null : (showPlusMenu = false, showSkillCascade = false, emit('select-knowledge-base'));" class="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">
+                                        <div class="flex items-center space-x-3">
+                                            <span class="text-lg">📚</span>
+                                            <span class="font-medium text-left">打开知识库中心</span>
+                                        </div>
+                                    </button>
+
+                                    <!-- Browse Workspace -->
+                                    <button @click="showPlusMenu = false; showSkillCascade = false; emit('select-local-fs');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                        <span class="text-lg">💻</span>
+                                        <span class="font-medium text-left">浏览工作空间</span>
+                                    </button>
+
+                                    <!-- Upload File (Active) -->
+                                    <button @click="triggerFileInput" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                        <span class="text-lg">📁</span>
+                                        <span class="font-medium text-left">上传本地文件</span>
+                                    </button>
+
+                                    <!-- Skills cascade -->
+                                    <button
+                                      type="button"
+                                      class="w-full flex items-center justify-between px-3 py-2 text-sm transition-all duration-150"
+                                      :class="showSkillCascade
+                                        ? 'bg-gray-100 dark:bg-gray-700/80 text-gray-900 dark:text-gray-100'
+                                        : 'text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary'"
+                                      @mouseenter="openSkillCascade"
+                                      @click.stop="openSkillCascade"
+                                    >
+                                        <div class="flex items-center space-x-3">
+                                            <span class="text-lg">⚙️</span>
+                                            <span class="font-medium text-left">调用技能工作流</span>
+                                        </div>
+                                        <svg class="w-3.5 h-3.5 flex-shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                                        </svg>
+                                    </button>
+
+                                    <!-- Memory Records -->
+                                    <button @click="showPlusMenu = false; showSkillCascade = false; emit('select-memory');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
+                                        <span class="text-lg">🧠</span>
+                                        <span class="font-medium text-left">选择记忆记录</span>
+                                    </button>
                                 </div>
-                            </button>
 
-                            <!-- Browse Workspace -->
-                            <button @click="showPlusMenu = false; emit('select-local-fs');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
-                                <span class="text-lg">💻</span>
-                                <span class="font-medium text-left">浏览工作空间</span>
-                            </button>
-
-                            <!-- Upload File (Active) -->
-                            <button @click="triggerFileInput" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
-                                <span class="text-lg">📁</span>
-                                <span class="font-medium text-left">上传本地文件</span>
-                            </button>
-
-                            <!-- Skills (Active) -->
-                            <button @click="showPlusMenu = false; emit('select-skill');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
-                                <span class="text-lg">⚙️</span>
-                                <span class="font-medium text-left">调用技能工作流</span>
-                            </button>
-
-                            <!-- Memory Records -->
-                            <button @click="showPlusMenu = false; emit('select-memory');" class="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary/10 dark:hover:bg-primary/20 hover:text-primary transition-all duration-150">
-                                <span class="text-lg">🧠</span>
-                                <span class="font-medium text-left">选择记忆记录</span>
-                            </button>
+                                <div
+                                  v-if="showSkillCascade"
+                                  class="absolute z-[60]"
+                                  :class="isMobileViewport
+                                    ? 'left-0 bottom-full mb-1.5'
+                                    : 'left-full top-0 ml-1.5'"
+                                  @click.stop
+                                >
+                                  <SkillCascadeMenu
+                                    ref="skillCascadeRef"
+                                    :agent-id="agentId"
+                                    :attached-skill-ids="attachedSkillIds"
+                                    :compact="isMobileViewport"
+                                    @select="mountSkillFromCascade"
+                                  />
+                                </div>
+                            </div>
                         </div>
                     </transition>
                 </div>
