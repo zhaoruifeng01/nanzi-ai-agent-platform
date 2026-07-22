@@ -238,6 +238,72 @@ def looks_like_platform_self_service_query(user_question: str) -> bool:
     return any(sig in q for sig in _PLATFORM_SELF_SERVICE_ACTIONS)
 
 
+_RESOURCE_CATALOG_SUBJECTS = (
+    "数据集",
+    "知识库",
+    "dataset",
+    "knowledge base",
+    "knowledgebase",
+)
+_RESOURCE_CATALOG_LIST_SIGNALS = (
+    "我有哪些",
+    "我有什么",
+    "我能访问",
+    "我能看",
+    "我可以看",
+    "我可以用",
+    "有权限",
+    "权限有哪些",
+    "可访问",
+    "可用的",
+    "列出",
+    "清单",
+    "目录",
+)
+_RESOURCE_CATALOG_BLOCKERS = (
+    "数据集里",
+    "知识库里",
+    "表结构",
+    "字段",
+    "sql",
+    "订单",
+    "销售额",
+    "趋势",
+    "多少条",
+    "工单",
+    "机房",
+    "metric",
+    "统计",
+)
+
+
+def looks_like_accessible_resource_catalog_query(user_question: str) -> bool:
+    """用户在问「我有权限的数据集/知识库目录」，而非查业务数据或检索文档正文。"""
+    q = (user_question or "").strip().lower()
+    if not q or len(q) > 64:
+        return False
+    if any(blocker in q for blocker in _RESOURCE_CATALOG_BLOCKERS):
+        return False
+    has_subject = any(subject in q for subject in _RESOURCE_CATALOG_SUBJECTS)
+    if not has_subject:
+        return False
+    if q in {
+        "知识库列表",
+        "数据集列表",
+        "dataset list",
+        "knowledge list",
+        "knowledge base list",
+    }:
+        return True
+    if "列表" in q and any(token in q for token in ("我", "有权限", "可访问", "可用")):
+        return True
+    if any(sig in q for sig in _RESOURCE_CATALOG_LIST_SIGNALS):
+        return True
+    if "权限" in q:
+        return True
+    return False
+
+
 def looks_like_public_profile_lookup(user_question: str) -> bool:
     """用户在查公开主体资料，而不是内部业务库记录。
 
@@ -326,6 +392,7 @@ def resolve_data_agent_session_affinity(user_question: str) -> DataSessionAffini
         or looks_like_public_profile_lookup(q)
         or looks_like_platform_self_service_query(q)
         or looks_like_runtime_diagnostic_query(q)
+        or looks_like_accessible_resource_catalog_query(q)
     ):
         return DataSessionAffinity.BREAK
     return DataSessionAffinity.UNCERTAIN

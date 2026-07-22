@@ -124,19 +124,21 @@ class RouterService:
 
 ## 5. 输出格式 (Output Format)
 必须返回纯 JSON，严禁包含 Markdown 标记或额外文字。
+【关键】字段顺序必须如下，且 thought 不超过 40 个汉字，避免输出被截断：
 {
-  "thought": "1.指代消解结果 2.是否沿用上一轮及理由 3.命中清单里哪个/哪些 name 及理由",
   "agent_name": "清单中的某个 name",
-  "secondary_agents": [],
   "confidence": 0.95,
+  "secondary_agents": [],
   "turn_labels": ["continuation_followup", "business_related", "same_topic"],
   "relation_to_previous": "followup",
-  "user_action_type": "transform_context"
+  "user_action_type": "transform_context",
+  "thought": "一句话理由"
 }
 
 ## 6. 示例 (名称以"清单"为准，下例仅示意格式)
-- 用户："你好" -> {"thought": "纯打招呼，无业务意图。", "agent_name": "{fallback_agent_name}", "secondary_agents": [], "confidence": 0.9, "turn_labels": ["general_chat"], "relation_to_previous": "standalone", "user_action_type": "chat"}
-- 上一轮由 data-agent 处理，用户："那再画个柱状图" -> {"thought": "追问且无新领域意图，沿用上一轮 data-agent。", "agent_name": "data-agent", "secondary_agents": [], "confidence": 0.92, "turn_labels": ["continuation_followup", "business_related", "same_topic"], "relation_to_previous": "followup", "user_action_type": "transform_context"}"""
+- 用户："你好" -> {"agent_name": "{fallback_agent_name}", "confidence": 0.9, "secondary_agents": [], "turn_labels": ["general_chat"], "relation_to_previous": "standalone", "user_action_type": "chat", "thought": "纯打招呼"}
+- 上一轮由 data-agent 处理，用户："那再画个柱状图" -> {"agent_name": "data-agent", "confidence": 0.92, "secondary_agents": [], "turn_labels": ["continuation_followup", "business_related", "same_topic"], "relation_to_previous": "followup", "user_action_type": "transform_context", "thought": "数据结果追问，沿用上一轮"}
+- 用户："我有哪些数据集/知识库" -> {"agent_name": "{fallback_agent_name}", "confidence": 0.93, "secondary_agents": [], "turn_labels": ["meta_action", "general_chat"], "relation_to_previous": "standalone", "user_action_type": "manage_agent_or_skill", "thought": "权限内资源目录，走通用助手工具"}"""
 
     ALLOWED_TURN_LABELS = {
         "new_business_request",
@@ -215,6 +217,7 @@ class RouterService:
 
         from app.services.ai.intent_service import (
             DataSessionAffinity,
+            looks_like_accessible_resource_catalog_query,
             looks_like_greeting,
             looks_like_web_search_query,
             resolve_data_agent_session_affinity,
@@ -235,6 +238,22 @@ class RouterService:
                     turn_labels=["general_chat"],
                     relation_to_previous="standalone",
                     user_action_type="chat",
+                )
+
+        if looks_like_accessible_resource_catalog_query(user_input):
+            fallback_agent = self._find_fallback_agent(agents_metadata)
+            if fallback_agent:
+                logger.info(
+                    "Resource catalog shortcut: routing to %s without LLM",
+                    fallback_agent["name"],
+                )
+                return RouteResult(
+                    agent_id=fallback_agent["id"],
+                    confidence=0.94,
+                    reasoning="权限内数据集/知识库资源目录询问，启发式短路至通用助手（跳过路由 LLM）",
+                    turn_labels=["meta_action", "general_chat"],
+                    relation_to_previous="standalone",
+                    user_action_type="manage_agent_or_skill",
                 )
 
         if looks_like_web_search_query(user_input):
@@ -354,7 +373,33 @@ class RouterService:
             try:
                 llm = await get_llm_async(temperature=0.0)  # Use deterministic output
                 chat_client = chat_client_from_handle(llm)
-                content = (await chat_client.generate_text(messages)).strip()
+                attempt_messages = messages
+                if attempt > 0:
+                    # 第二次用极简提示，强制先写 agent_name，降低截断重伤概率。
+                    compact_prompt = (
+                        "你是路由助手。只返回一行纯 JSON，字段顺序固定为："
+                        '{"agent_name":"...","confidence":0.9,"secondary_agents":[],'
+                        '"turn_labels":["ambiguous"],"relation_to_previous":"unknown",'
+                        '"user_action_type":"unknown","thought":"短理由"}。'
+                        f"agent_name 必须是清单中的英文 name；不确定时用 {fallback_agent_name}。"
+                        f"\n可用智能体：\n{agents_str}"
+                    )
+                    attempt_messages = [
+                        RuntimeMessage(
+                            role="system",
+                            content=[RuntimeContentBlock(type="text", text=compact_prompt)],
+                        ),
+                        RuntimeMessage(
+                            role="user",
+                            content=[
+                                RuntimeContentBlock(
+                                    type="text",
+                                    text=f"Latest User Query: {user_input}",
+                                )
+                            ],
+                        ),
+                    ]
+                content = (await chat_client.generate_text(attempt_messages)).strip()
                 result_json = self._parse_router_json(content)
                 if result_json is None:
                     raise ValueError(f"Unparseable router response: {content[:200]!r}")
@@ -599,15 +644,40 @@ class RouterService:
                 content = "\n".join(lines[1:-1]) if lines[-1].startswith("```") else "\n".join(lines[1:])
             content = content.strip()
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             import re
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 try:
-                    return json.loads(match.group())
+                    parsed = json.loads(match.group())
+                    if isinstance(parsed, dict):
+                        return parsed
                 except json.JSONDecodeError:
-                    return None
+                    pass
+            # 截断场景：优先捞 agent_name / confidence，避免整轮重试白跑。
+            name_match = re.search(r'"agent_name"\s*:\s*"([^"\\]+)"', content)
+            if not name_match:
+                return None
+            recovered: dict = {
+                "agent_name": name_match.group(1).strip(),
+                "thought": "recovered from truncated router JSON",
+                "secondary_agents": [],
+                "turn_labels": ["ambiguous"],
+                "relation_to_previous": "unknown",
+                "user_action_type": "unknown",
+            }
+            conf_match = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', content)
+            if conf_match:
+                try:
+                    recovered["confidence"] = float(conf_match.group(1))
+                except ValueError:
+                    recovered["confidence"] = 0.6
+            else:
+                recovered["confidence"] = 0.6
+            return recovered
         return None
 
     def _match_agent(self, name: Optional[str], agents_metadata: List[dict]) -> Optional[dict]:

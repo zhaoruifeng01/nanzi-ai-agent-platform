@@ -687,6 +687,107 @@ async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
     mock_chat.generate_text.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "我有哪些数据集权限",
+        "我能访问哪些数据集",
+        "列出我的数据集",
+        "我有哪些知识库",
+        "知识库列表",
+        "我能看哪些知识库权限",
+    ],
+)
+@pytest.mark.asyncio
+async def test_route_query_resource_catalog_shortcut_skips_llm(mock_agents_metadata, query):
+    """权限内资源目录询问应短路至通用助手，跳过意图与路由 LLM。"""
+    service = RouterService()
+    mock_chat = _mock_chat_client("{}")
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_get_llm.return_value = object()
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query(query)
+
+    assert result is not None
+    assert result.agent_id == "agent-general"
+    assert result.confidence >= 0.9
+    assert "数据集" in result.reasoning or "知识库" in result.reasoning or "资源目录" in result.reasoning
+    mock_get_llm.assert_not_called()
+    mock_identify.assert_not_called()
+    mock_chat.generate_text.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "数据集里有哪些订单表",
+        "统计客户订单有哪些",
+        "查一下机房数据集的负载趋势",
+    ],
+)
+@pytest.mark.asyncio
+async def test_route_query_resource_catalog_shortcut_does_not_steal_data_queries(
+    mock_agents_metadata,
+    query,
+):
+    """真实查数句不应被资源目录短路误伤。"""
+    service = RouterService()
+    llm_resp_content = json.dumps({
+        "thought": "Business data query.",
+        "agent_name": "ChatBI",
+        "confidence": 0.91,
+    })
+    mock_chat = _mock_chat_client(llm_resp_content)
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.DATA_QUERY,
+            confidence=0.93,
+            reasoning="业务查数",
+            entities=[],
+        )
+        mock_get_llm.return_value = object()
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query(query)
+
+    assert result.agent_id == "agent-chatbi"
+    mock_get_llm.assert_called()
+
+
+def test_parse_router_json_recovers_agent_name_from_truncated_payload():
+    """thought 被截断时，只要 agent_name 已写出就应恢复路由。"""
+    truncated = (
+        '{\n  "agent_name": "general-chat",\n  "confidence": 0.88,\n'
+        '  "thought": "1. 指代消解：用户询问权限清单。\\n2. 语义匹配：'
+        'chat-bi 专注于数据查询、SQL '
+    )
+    parsed = RouterService._parse_router_json(truncated)
+    assert parsed is not None
+    assert parsed["agent_name"] == "general-chat"
+    assert float(parsed.get("confidence", 0)) == 0.88
+
+
+def test_parse_router_json_returns_none_when_agent_name_missing():
+    truncated = (
+        '{\n  "thought": "1. 指代消解：用户询问“我有哪些数据集权限”，意图明确。\\n'
+        '3. 语义匹配：清单中的 `chat-bi` 专注于“数据查询、SQL '
+    )
+    assert RouterService._parse_router_json(truncated) is None
+
+
 @pytest.mark.asyncio
 async def test_route_query_uncertain_topic_after_chatbi_reaches_semantic_router(mock_agents_metadata):
     """上一轮 ChatBI 后的灰区话题应重新分诊，不能由粘性规则直接判给通用助手。"""
