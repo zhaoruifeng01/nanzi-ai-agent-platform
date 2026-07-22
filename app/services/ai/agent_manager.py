@@ -574,6 +574,62 @@ class AgentManagerService:
         return visible_agents
 
     @staticmethod
+    def _extract_user_identity(user: Any) -> tuple[bool, str, str]:
+        if isinstance(user, dict):
+            is_admin = user.get("role", "") == "admin"
+            username = user.get("user_name", "") or ""
+            user_id = str(user.get("user_id", user.get("id", "")) or "")
+        else:
+            is_admin = getattr(user, "role", "") == "admin"
+            username = getattr(user, "user_name", "") or ""
+            user_id = str(getattr(user, "id", "") or "")
+        return bool(is_admin), username, user_id
+
+    @staticmethod
+    async def _user_can_execute_agent(session: AsyncSession, agent: AIAgent, user: Any) -> bool:
+        """Whether the user may chat with this agent (same rules as list_allowed_agents)."""
+        if not user or not agent:
+            return False
+        is_admin, username, user_id = AgentManagerService._extract_user_identity(user)
+        if is_admin:
+            return True
+        if not agent.is_system:
+            return bool(username) and agent.created_by == username
+        from app.services.permission_service import PermissionService
+
+        perm_service = PermissionService(session)
+        try:
+            uid_int = int(user_id)
+            perms = await perm_service.get_user_permissions(uid_int)
+            allowed_ids = perms.permissions.agents or []
+        except (ValueError, TypeError):
+            allowed_ids = []
+        return agent.id in allowed_ids
+
+    @staticmethod
+    async def resolve_embed_agent_access(
+        session: AsyncSession,
+        agent_key: str,
+        user: Any = None,
+    ) -> AIAgent:
+        """
+        Resolve EmbedChat ?agent_id= deep-link access.
+        Raises LookupError when missing/disabled; PermissionError when unauthorized.
+        """
+        key = str(agent_key or "").strip()
+        if not key:
+            raise LookupError("agent_not_found")
+
+        stmt = select(AIAgent).where(or_(AIAgent.id == key, AIAgent.name == key)).limit(1)
+        agent = (await session.execute(stmt)).scalar_one_or_none()
+        if not agent or not agent.is_enabled:
+            raise LookupError("agent_not_found")
+
+        if not await AgentManagerService._user_can_execute_agent(session, agent, user):
+            raise PermissionError("agent_forbidden")
+        return agent
+
+    @staticmethod
     async def list_allowed_agents(session: AsyncSession, user: Any = None, keyword: Optional[str] = None) -> List[Any]:
         """
         List ONLY agents that the user has permission to EXECUTE/CHAT with.
@@ -584,14 +640,7 @@ class AgentManagerService:
             return []
 
         # User Info extraction
-        if isinstance(user, dict):
-            is_admin = user.get('role', '') == 'admin'
-            username = user.get('user_name', '')
-            user_id = user.get('user_id', user.get('id', ''))
-        else:
-            is_admin = getattr(user, 'role', '') == 'admin'
-            username = getattr(user, 'user_name', '')
-            user_id = getattr(user, 'id', '')
+        is_admin, username, user_id = AgentManagerService._extract_user_identity(user)
 
         stmt = select(AIAgent).where(AIAgent.is_enabled == True)
 

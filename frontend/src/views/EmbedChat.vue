@@ -48,8 +48,8 @@
                         <template v-if="isProcessing">
                             {{ lastAgentMessage?.agentDisplayName || lastAgentMessage?.agentName || '智能体' }}
                         </template>
-                        <template v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent">
-                            {{ currentExpertAgent.display_name || currentExpertAgent.name }}
+                        <template v-else-if="headerExpertLabel">
+                            {{ headerExpertLabel }}
                         </template>
                         <template v-else>
                             {{ branding.default_agent_name || 'NanZi · AI' }}
@@ -60,19 +60,20 @@
                         <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
                     </span>
                     <span
-                        v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent"
+                        v-else-if="headerExpertLabel"
                         class="inline-flex items-center px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[9px] font-black uppercase tracking-wider shrink-0"
                     >
-                        专家
+                        锁定
                     </span>
                 </div>
                 <div class="text-[10px] font-bold uppercase tracking-widest truncate flex items-center gap-1.5 min-w-0">
                     <template v-if="isProcessing">
                         <span class="text-gray-400">正在处理您的请求...</span>
                     </template>
-                    <template v-else-if="isMobile && config.routingMode === 'expert' && currentExpertAgent">
-                        <span class="text-primary/80 normal-case tracking-normal font-semibold">专家模式</span>
+                    <template v-else-if="headerExpertLabel">
+                        <span class="text-gray-400 normal-case tracking-normal">准备就绪</span>
                         <button
+                            v-if="isMobile && !isUrlAgentPinned"
                             type="button"
                             @click.stop="switchToAuto"
                             class="text-gray-400 hover:text-red-500 normal-case tracking-normal font-bold transition-colors shrink-0"
@@ -131,6 +132,7 @@
       </div>
 
       <ExpertCapsule
+          v-if="!isUrlAgentPinned"
           :config="config"
           :current-expert-agent="currentExpertAgent"
           :show-auto-routing-hint="showAutoRoutingHint"
@@ -190,6 +192,48 @@
           认证失败，请检查您的账号是否有权限访问！
         </p>
       </div>
+      <!-- URL agent_id deep-link error -->
+      <div
+        v-else-if="urlAgentAccessError"
+        class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white dark:bg-gray-900 p-6 text-center"
+      >
+        <div
+          class="p-4 rounded-full mb-4"
+          :class="urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? 'bg-amber-50 dark:bg-amber-900/10' : 'bg-red-50 dark:bg-red-900/10'"
+        >
+          <svg
+            class="w-12 h-12"
+            :class="urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? 'text-amber-500' : 'text-red-500'"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.5"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
+          </svg>
+        </div>
+        <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">
+          {{ urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? '无权使用该智能体' : '智能体不存在' }}
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 max-w-sm leading-relaxed mb-2">
+          {{ urlAgentAccessError.message }}
+        </p>
+        <p v-if="urlAgentAccessError.agentKey" class="text-xs text-gray-400 font-mono mb-4 break-all">
+          agent_id={{ urlAgentAccessError.agentKey }}
+          <template v-if="urlAgentAccessError.displayName">
+            （{{ urlAgentAccessError.displayName }}）
+          </template>
+        </p>
+        <p class="text-xs text-gray-400 max-w-sm leading-relaxed">
+          {{ urlAgentAccessError.code === 'AGENT_FORBIDDEN'
+            ? '请更换有权限的账号 / Token，或联系管理员开通该智能体。'
+            : '请检查链接中的 agent_id 是否正确，或联系管理员确认智能体配置。' }}
+        </p>
+      </div>
       <!-- Connection Status Overlay -->
       <div
         v-if="connectionStatus !== 'connected'"
@@ -236,7 +280,7 @@
       <WelcomeDashboard
         v-else-if="messages.length === 0"
         :welcome-message="config.welcomeMessage"
-        :slash-commands="slashCommands"
+        :slash-commands="effectiveSlashCommands"
         @quick-question="handleQuickQuestion"
         @open-data-portal="openPortalDrawer"
         @select-knowledge-base="openKnowledgePortal"
@@ -1205,7 +1249,7 @@
     />
 
     <!-- Input Area -->
-    <div class="flex-shrink-0 bg-white dark:bg-gray-900 relative z-20">
+    <div v-if="hasPermission && !urlAgentAccessError" class="flex-shrink-0 bg-white dark:bg-gray-900 relative z-20">
       <div
         v-if="quotaBannerMessage"
         class="px-4 py-2 text-xs border-b"
@@ -1225,7 +1269,7 @@
         v-model="userInput"
         :is-processing="isProcessing"
         :show-shortcuts="!isMobile && config.showShortcuts"
-        :slash-commands="slashCommands"
+        :slash-commands="effectiveSlashCommands"
         :allowed-agents="allowedAgents"
         :current-user="currentUser"
         :window-width="windowWidth"
@@ -1237,6 +1281,7 @@
         :routing-mode="config.routingMode"
         :expert-agent-id="config.expertAgentId"
         :is-loading-agents="isLoadingAgents"
+        :lock-expert-agent="isUrlAgentPinned"
         @update:approval-mode="(mode) => { config.approvalMode = mode; saveRoutingSettings(); }"
         @update:selected-model="(model) => { config.overrideModel = model; saveRoutingSettings(); }"
         @send="sendMessage"
@@ -1681,7 +1726,6 @@
     <!-- Delete Group Confirmation Modal -->
     <ConfirmModal
       v-if="showDeleteGroupModal"
-      style="z-index: 200;"
       title="一键删除分组会话"
       :message="`确定要一键删除“${groupToDelete?.title}”分组下的这 ${groupToDelete?.items?.length || 0} 个会话吗？此操作无法撤销。`"
       type="danger"
@@ -1691,7 +1735,6 @@
     <!-- Delete Confirmation Modal -->
     <ConfirmModal
       v-if="showDeleteModal"
-      style="z-index: 200;"
       title="删除历史记录"
       message="确定要删除这条对话记录吗？此操作无法撤销。"
       type="danger"
@@ -1701,7 +1744,6 @@
     <!-- Delete Command Confirmation Modal -->
     <ConfirmModal
       v-if="showDeleteCommandModal"
-      style="z-index: 200;"
       title="删除快捷指令"
       :message="`确定要删除指令 [${commandToDelete?.label}] 吗？`"
       type="danger"
@@ -1711,7 +1753,6 @@
     <!-- Clear Session Confirmation Modal -->
     <ConfirmModal
       v-if="showConfirmModal"
-      style="z-index: 200;"
       title="确定要开始新对话吗？"
       message="当前内容将保存至历史记录。"
       type="primary"
@@ -2956,7 +2997,11 @@ const displayMessages = computed(() => {
 });
 const currentExpertAgent = computed(() => {
   if (config.routingMode === 'expert' && config.expertAgentId) {
-    return allowedAgents.value.find(a => a.id === config.expertAgentId);
+    return (
+      allowedAgents.value.find(a => a.id === config.expertAgentId)
+      || (pinnedAgentId.value === config.expertAgentId ? pinnedAgent.value : null)
+      || null
+    );
   }
   return null;
 });
@@ -3238,6 +3283,100 @@ const showConfirmModal = ref(false);
 const multiAgentHintMessage = ref("");
 let expertSwitchHintTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** URL ?agent_id= 深链锁定：禁止切换专家 / 自动路由 / @提及 */
+const urlPinnedAgentKey = ref("");
+const pinnedAgent = ref<any | null>(null);
+const pinnedAgentId = ref("");
+const pinnedAgentCapabilities = ref<string[]>([]);
+const urlAgentAccessError = ref<null | {
+  code: "AGENT_NOT_FOUND" | "AGENT_FORBIDDEN";
+  message: string;
+  agentKey: string;
+  displayName?: string;
+}>(null);
+const isUrlAgentPinned = computed(
+  () => Boolean(urlPinnedAgentKey.value) && !urlAgentAccessError.value && Boolean(pinnedAgentId.value),
+);
+const pinnedAgentLabel = computed(() => {
+  const agent = pinnedAgent.value;
+  return String(agent?.display_name || agent?.name || urlPinnedAgentKey.value || "").trim();
+});
+/** 专家模式（URL 锁定或手动选定）时左上角展示名 */
+const headerExpertLabel = computed(() => {
+  if (isUrlAgentPinned.value && pinnedAgentLabel.value) {
+    return pinnedAgentLabel.value;
+  }
+  if (config.routingMode === "expert" && config.expertAgentId) {
+    const agent = currentExpertAgent.value;
+    return String(agent?.display_name || agent?.name || config.expertAgentId || "").trim();
+  }
+  return "";
+});
+const agentHasCapability = (cap: string) => {
+  const caps = pinnedAgentCapabilities.value;
+  if (!Array.isArray(caps) || caps.length === 0) return false;
+  return caps.includes(cap);
+};
+const effectiveSlashCommands = computed(() => {
+  const list = slashCommands.value || [];
+  if (!isUrlAgentPinned.value) return list;
+  return list.filter((cmd: any) => {
+    if (cmd.id === DATASET_PORTAL_SYSTEM_COMMAND_ID) {
+      return agentHasCapability("data_query");
+    }
+    if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+      return agentHasCapability("knowledge_base") && !cmd.disabled;
+    }
+    return true;
+  });
+});
+
+const resolveUrlPinnedAgent = async (): Promise<boolean> => {
+  const key = String(urlPinnedAgentKey.value || "").trim();
+  if (!key) {
+    urlAgentAccessError.value = null;
+    pinnedAgent.value = null;
+    pinnedAgentId.value = "";
+    pinnedAgentCapabilities.value = [];
+    return true;
+  }
+  try {
+    const res = await axios.get(`/api/portal/agents/${encodeURIComponent(key)}/embed-access`);
+    const agent = res.data;
+    pinnedAgent.value = agent;
+    pinnedAgentId.value = String(agent?.id || "");
+    pinnedAgentCapabilities.value = Array.isArray(agent?.capabilities) ? agent.capabilities : [];
+    urlAgentAccessError.value = null;
+    config.agentId = pinnedAgentId.value || key;
+    config.overrideAgentId = "";
+    switchToExpert(pinnedAgentId.value || key);
+    return true;
+  } catch (e: any) {
+    const status = e?.response?.status;
+    const body = e?.response?.data || {};
+    const detailObj = (body.data && typeof body.data === "object")
+      ? body.data
+      : (body.detail && typeof body.detail === "object" ? body.detail : null);
+    const code = detailObj?.code === "AGENT_FORBIDDEN" || status === 403
+      ? "AGENT_FORBIDDEN"
+      : "AGENT_NOT_FOUND";
+    urlAgentAccessError.value = {
+      code,
+      message: String(
+        detailObj?.message
+        || body.message
+        || (code === "AGENT_FORBIDDEN" ? "无权使用该智能体" : "智能体不存在或已停用")
+      ),
+      agentKey: key,
+      displayName: detailObj?.display_name || detailObj?.agent_name || undefined,
+    };
+    pinnedAgent.value = null;
+    pinnedAgentId.value = "";
+    pinnedAgentCapabilities.value = [];
+    return false;
+  }
+};
+
 const saveRoutingSettings = () => {
     localStorage.setItem("yovole_routing_mode", config.routingMode);
     localStorage.setItem("yovole_expert_agent_id", config.expertAgentId || "");
@@ -3259,6 +3398,10 @@ const triggerMultiAgentHint = (enabled: boolean) => {
     }, 3000);
 };
 const switchToAuto = () => {
+    if (isUrlAgentPinned.value) {
+      showToast("当前链接已锁定指定智能体，无法切换到自动路由", "warning");
+      return;
+    }
     config.routingMode = "auto";
     saveRoutingSettings();
     showExpertSwitchHint.value = false;
@@ -3268,14 +3411,18 @@ const switchToAuto = () => {
     }, 3000);
 };
 const switchToExpert = (agentId: string) => {
+    if (isUrlAgentPinned.value && pinnedAgentId.value && agentId !== pinnedAgentId.value) {
+      showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+      return;
+    }
     config.expertAgentId = agentId;
     config.routingMode = "expert";
     saveRoutingSettings();
-    const agent = allowedAgents.value.find((a: any) => a.id === agentId);
+    const agent = allowedAgents.value.find((a: any) => a.id === agentId) || pinnedAgent.value;
     expertSwitchHintName.value = agent?.display_name || agent?.name || "专家";
     showAutoRoutingHint.value = false;
     showMultiAgentHint.value = false;
-    showExpertSwitchHint.value = true;
+    showExpertSwitchHint.value = !isUrlAgentPinned.value;
     if (expertSwitchHintTimer) clearTimeout(expertSwitchHintTimer);
     expertSwitchHintTimer = setTimeout(() => {
         showExpertSwitchHint.value = false;
@@ -3760,6 +3907,10 @@ watch(() => config.expertAgentId, (newAgentId) => {
 }, { immediate: true });
 
 const handleSwitchMode = (agent: any) => {
+    if (isUrlAgentPinned.value) {
+      showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+      return;
+    }
     config.overrideAgentId = "";
     switchToExpert(agent.id);
 };
@@ -3782,6 +3933,9 @@ const findUniqueDataQueryAgent = () => {
 const hasDataQueryAgent = () => listDataQueryAgents().length > 0;
 
 const lockToDataQueryAgentForDatasetMenu = async (): Promise<boolean> => {
+    if (isUrlAgentPinned.value) {
+      return agentHasCapability("data_query");
+    }
     await fetchAllowedAgents();
     const dataQueryAgent = findUniqueDataQueryAgent();
     if (!dataQueryAgent) return false;
@@ -5313,8 +5467,24 @@ const initChat = async () => {
     Promise.all([fetchModels(), fetchAccountInfo(), fetchSlashCommands()]).catch(err => {
       console.warn("[Init] Non-critical background loading failed:", err.message);
     });
-    // 5. Preload Agents & Validate Expert Mode
+    // 5. Preload Agents & Validate Expert Mode / URL agent lock
+    if (urlPinnedAgentKey.value) {
+      const ok = await resolveUrlPinnedAgent();
+      if (!ok) {
+        isInitialLoading.value = false;
+        return;
+      }
+    }
     fetchAllowedAgents().then(() => {
+        if (isUrlAgentPinned.value) {
+            // 锁定模式下保持 URL 指定专家，不因列表时序降级到自动路由
+            if (pinnedAgentId.value) {
+              config.expertAgentId = pinnedAgentId.value;
+              config.routingMode = "expert";
+              saveRoutingSettings();
+            }
+            return;
+        }
         if (config.routingMode === 'expert' && config.expertAgentId) {
             const isValid = allowedAgents.value.some(a => a.id === config.expertAgentId);
             if (!isValid) {
@@ -5510,21 +5680,41 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, allowedAgents.value);
   if (isDatasetPortalSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    await openPortalDrawer();
+    if (isUrlAgentPinned.value && !agentHasCapability("data_query")) {
+      showToast("当前智能体不支持数据查询，无法打开数据门户", "warning");
+      return true;
+    }
+    if (showPortalDrawer.value) {
+      closePortalDrawer();
+    } else {
+      await openPortalDrawer();
+    }
     return true;
   }
   if (isWorkspaceSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    showWorkspaceDrawer.value = true;
+    showWorkspaceDrawer.value = !showWorkspaceDrawer.value;
     return true;
   }
   if (isKnowledgePortalSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    await openKnowledgePortal();
+    if (isUrlAgentPinned.value && !agentHasCapability("knowledge_base")) {
+      showToast("当前智能体不支持知识库能力，无法打开知识库中心", "warning");
+      return true;
+    }
+    if (showKnowledgePortal.value) {
+      closeKnowledgePortal();
+    } else {
+      await openKnowledgePortal();
+    }
     return true;
   }
   if (normalizedCmd === "/switch_to_auto" || normalizedCmd === "/switch_agent_auto") {
     userInput.value = "";
+    if (isUrlAgentPinned.value) {
+      showToast("当前链接已锁定指定智能体，无法切换到自动路由", "warning");
+      return true;
+    }
     switchToAuto();
     showToast("已切换为自动路由模式", "success");
     return true;
@@ -5533,6 +5723,10 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
     userInput.value = "";
     const agentId = normalizedCmd.split("?agent_id=")[1];
     if (agentId) {
+      if (isUrlAgentPinned.value && pinnedAgentId.value && agentId !== pinnedAgentId.value) {
+        showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+        return true;
+      }
       switchToExpert(agentId);
       showToast("已切换到指定智能体", "success");
     }
@@ -5559,7 +5753,15 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
       return true;
     case "/project":
       userInput.value = "";
+      // 与新会话一致：先清空当前对话内容并换新 conversation_id，再打开项目资源配置
+      messages.value = [];
+      config.enableGrounding = true;
       generateNewConversation();
+      postMessageToHost({
+        type: "CONVERSATION_CHANGED",
+        conversation_id: conversationId.value,
+        clear_host_conversation_pin: true,
+      });
       openResourceScopeModal();
       return true;
   }
@@ -5961,7 +6163,7 @@ const {
   portalBackgroundRefreshing,
   portalKeepOpenOnQuestion,
   portalPinned,
-  openPortalDrawer,
+  openPortalDrawer: rawOpenPortalDrawer,
   closePortalDrawer,
   refreshPortalNavigation,
   handlePortalQuickQuestion,
@@ -5984,6 +6186,14 @@ const {
     else stopPortalLoadingTips();
   },
 });
+
+const openPortalDrawer = async () => {
+  if (isUrlAgentPinned.value && !agentHasCapability("data_query")) {
+    showToast("当前智能体不支持数据查询，无法打开数据门户", "warning");
+    return;
+  }
+  await rawOpenPortalDrawer();
+};
 
 const {
   showKnowledgePortal,
@@ -6019,7 +6229,12 @@ const {
 });
 
 const openKnowledgePortal = async () => {
+  if (isUrlAgentPinned.value && !agentHasCapability("knowledge_base")) {
+    showToast("当前智能体不支持知识库能力，无法打开知识库中心", "warning");
+    return;
+  }
   await rawOpenKnowledgePortal();
+  if (isUrlAgentPinned.value) return;
   const kbExpert = resolveKnowledgeExpertAgent();
   if (kbExpert) {
     config.overrideAgentId = "";
@@ -6038,7 +6253,7 @@ watch(showPortalDrawer, (val) => {
 watch(showKnowledgePortal, (val) => {
   if (!val) {
     // 只有在未打开数据门户的情况下，关闭知识库中心才退回到自动路由
-    if (!showPortalDrawer.value) {
+    if (!showPortalDrawer.value && !isUrlAgentPinned.value) {
       config.routingMode = "auto";
       config.expertAgentId = "";
       saveRoutingSettings();
@@ -6901,8 +7116,9 @@ onMounted(() => {
   }
   if (query.get("agent_id")) {
     const agentId = query.get("agent_id")!;
+    urlPinnedAgentKey.value = agentId;
     config.agentId = agentId;
-    switchToExpert(agentId);
+    // 正式锁定在 initChat -> resolveUrlPinnedAgent 成功后完成
   }
   if (query.get("theme")) applyTheme(query.get("theme")!);
   postMessageToHost({ type: "NANZI_WIDGET_READY" });

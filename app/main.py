@@ -213,15 +213,23 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     elif exc.status_code == 403: code = ErrorCode.ACCESS_DENIED
     elif exc.status_code == 404: code = ErrorCode.RESOURCE_NOT_FOUND
     elif exc.status_code == 429: code = ErrorCode.TOO_MANY_REQUESTS
+
+    detail = exc.detail
+    if isinstance(detail, dict):
+        message = str(detail.get("message") or detail.get("code") or detail)
+        data = detail
+    else:
+        message = str(detail)
+        data = None
     
     execution_mode = await _get_execution_mode()
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "code": code,
-            "message": str(exc.detail),
+            "message": message,
             "detail": None,
-            "data": None,
+            "data": data,
             "timestamp": datetime.datetime.now().isoformat(),
             "trace_id": trace_id,
             "execution_mode": execution_mode
