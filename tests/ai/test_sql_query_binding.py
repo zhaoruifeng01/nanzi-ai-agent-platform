@@ -329,3 +329,39 @@ async def test_resolve_sql_schema_preflight_enriches_permission_allowed_table(mo
     assert err == ""
     assert binding.get_table("hrmresource").dataset_name == "HR_ds"
     assert binding.preflight_validated is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_infrastructure
+async def test_scope_checks_only_tables_referenced_by_current_sql():
+    from unittest.mock import AsyncMock
+
+    from app.services.ai.chatbi_sql_query_binding import (
+        SchemaColumnMeta,
+        SqlQueryBinding,
+        TableBinding,
+        resolve_sql_schema_preflight_with_binding,
+    )
+
+    binding = SqlQueryBinding(
+        tables={
+            "orders": TableBinding(
+                physical_name="orders",
+                dataset_name="mounted_ds",
+                columns=[SchemaColumnMeta(name="id")],
+            ),
+            "customers": TableBinding(
+                physical_name="customers",
+                dataset_name="not_mounted_ds",
+                columns=[SchemaColumnMeta(name="id")],
+            ),
+        }
+    )
+    err = await resolve_sql_schema_preflight_with_binding(
+        AsyncMock(),
+        sql="SELECT id FROM orders",
+        binding=binding,
+        data_source="postgresql_demo",
+        allowed_dataset_names={"mounted_ds"},
+    )
+    assert err == ""

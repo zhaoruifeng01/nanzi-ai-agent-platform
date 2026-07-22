@@ -46,11 +46,20 @@ async def validate_federated_subquery_before_execute(
         cols = binding.schema_table_columns()
         schema_table_columns = cols if cols else None
 
+    resource_scope = getattr(agent_runner, "debug_options", {}) or {}
+    mounted_datasets = resource_scope.get("resource_scope", {}).get("datasets", []) or []
+    allowed_dataset_names = {
+        str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip()
+        for item in mounted_datasets
+        if isinstance(item, dict) and str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip()
+    } or None
+
     preflight_error = await agent_runner._resolve_sql_schema_preflight_error(
         sql_text,
         data_source,
         binding=binding,
         schema_table_columns=schema_table_columns,
+        allowed_dataset_names=allowed_dataset_names,
     )
     if preflight_error:
         return preflight_error

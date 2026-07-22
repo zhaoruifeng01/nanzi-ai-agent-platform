@@ -38,12 +38,25 @@ logger = logging.getLogger(__name__)
 def _apply_session_resource_scope(dataset_menu: str, debug_options: dict[str, Any] | None) -> str:
     """项目会话有手动挂载数据集时，只把挂载的数据集注入本轮 Schema 上下文。"""
     scope = (debug_options or {}).get("resource_scope") or {}
-    mounted = {str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip() for item in scope.get("datasets", []) if isinstance(item, dict)}
+    mounted = {
+        str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip().casefold()
+        for item in scope.get("datasets", [])
+        if isinstance(item, dict)
+    }
     mounted.discard("")
     if not mounted:
         return dataset_menu
     blocks = re.split(r"(?=^- Dataset:)", str(dataset_menu or ""), flags=re.MULTILINE)
-    return "".join(block for block in blocks if not block.lstrip().startswith("- Dataset:") or any(name in block.splitlines()[0] for name in mounted))
+    filtered: list[str] = []
+    for block in blocks:
+        first_line = block.splitlines()[0] if block.splitlines() else ""
+        if not first_line.lstrip().startswith("- Dataset:"):
+            filtered.append(block)
+            continue
+        dataset_name = first_line.split(":", 1)[1].strip().casefold()
+        if dataset_name in mounted:
+            filtered.append(block)
+    return "".join(filtered)
 
 
 @dataclass

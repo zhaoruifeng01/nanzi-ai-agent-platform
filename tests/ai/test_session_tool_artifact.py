@@ -1,4 +1,5 @@
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -117,3 +118,34 @@ def test_build_session_artifact_prompt_block_contains_rules():
         }
     )
     assert "不要对同一工具重复" in block
+
+
+@pytest.mark.asyncio
+async def test_persist_without_candidate_invalidates_previous_snapshot():
+    from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
+
+    redis = AsyncMock()
+    with patch("app.core.redis.get_redis", new_callable=AsyncMock, return_value=redis):
+        await persist_turn_artifact_candidate(
+            user_id="7",
+            conversation_id="conv-1",
+            turn_state={"best": None},
+        )
+
+    redis.delete.assert_awaited_once_with("conversation:7:conv-1:session_tool_artifact_v1")
+
+
+@pytest.mark.asyncio
+async def test_persist_on_interrupt_keeps_previous_snapshot_when_empty():
+    from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
+
+    redis = AsyncMock()
+    with patch("app.core.redis.get_redis", new_callable=AsyncMock, return_value=redis):
+        await persist_turn_artifact_candidate(
+            user_id="7",
+            conversation_id="conv-1",
+            turn_state={"best": None},
+            clear_if_empty=False,
+        )
+
+    redis.delete.assert_not_awaited()

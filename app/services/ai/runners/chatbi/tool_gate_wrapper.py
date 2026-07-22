@@ -18,14 +18,35 @@ from app.services.ai.time_anchor import build_time_range_gate_message, detect_ti
 
 
 def wrap_tools_with_schema_gate(runner: Any, tools: list[RuntimeToolSpec], state: DataRunState) -> list[RuntimeToolSpec]:
-    if not state.requires_fresh_data:
+    resource_scope = (getattr(runner, "debug_options", {}) or {}).get("resource_scope", {}) or {}
+    has_mounted_dataset_scope = bool(resource_scope.get("datasets"))
+    if not state.requires_fresh_data and not has_mounted_dataset_scope:
         return tools
+
+    def mounted_dataset_names() -> set[str] | None:
+        names = {
+            str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip()
+            for item in ((getattr(runner, "debug_options", {}) or {}).get("resource_scope", {}) or {}).get("datasets", []) or []
+            if isinstance(item, dict)
+            and str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip()
+        }
+        return names or None
+
     wrapped: list[RuntimeToolSpec] = []
     for spec in tools:
         if spec.name == "get_dataset_schema":
             original_callable = spec.callable
 
             async def invoke_schema_controlled(*, _original=original_callable, **kwargs: Any) -> Any:
+                scope = runner.debug_options.get("resource_scope", {}) or {}
+                mounted_dataset_ids = [
+                    str(item.get("id")).strip()
+                    for item in (scope.get("datasets", []) or [])
+                    if isinstance(item, dict) and str(item.get("id") or "").strip()
+                ]
+                if mounted_dataset_ids:
+                    # Schema 工具本身也必须带上项目会话的元数据 ID，不能只靠菜单文本过滤。
+                    kwargs["metadata_dataset_ids"] = mounted_dataset_ids
                 controlled_keywords = str(state.controlled_schema_retry_keywords or "").strip()
                 use_controlled = bool(
                     controlled_keywords and (state.pending_schema_retry or state.schema_miss)
@@ -47,6 +68,51 @@ def wrap_tools_with_schema_gate(runner: Any, tools: list[RuntimeToolSpec], state
             continue
         if spec.name != "execute_sql_query":
             wrapped.append(spec)
+            continue
+
+        if not state.requires_fresh_data:
+            if not has_mounted_dataset_scope:
+                wrapped.append(spec)
+                continue
+            # 非查数轮次仍可能误调 SQL：至少强制项目会话数据集范围。
+            original_callable = spec.callable
+
+            async def invoke_sql_scope_only(*, _original=original_callable, **kwargs: Any) -> Any:
+                current_sql = str(kwargs.get("sql") or kwargs.get("query") or "").strip()
+                from app.services.ai.chatbi_sql_query_binding import (
+                    build_sql_query_binding,
+                    reset_current_sql_query_binding,
+                    set_current_sql_query_binding,
+                )
+                from app.services.sql_query_execution_service import dialect_from_data_source
+
+                dialect = dialect_from_data_source(str(kwargs.get("data_source") or ""))
+                binding = build_sql_query_binding(
+                    schema_output=state.schema_output,
+                    sql=current_sql,
+                    primary_dataset_name=str(kwargs.get("dataset_name") or ""),
+                    table_bindings=state.table_bindings,
+                    dialect=dialect,
+                )
+                preflight_error = await runner._resolve_sql_schema_preflight_error(
+                    current_sql,
+                    str(kwargs.get("data_source") or ""),
+                    binding=binding,
+                    schema_table_columns=state.schema_table_columns,
+                    allowed_dataset_names=mounted_dataset_names(),
+                )
+                if preflight_error:
+                    return preflight_error
+                binding_token = set_current_sql_query_binding(binding)
+                try:
+                    result = _original(**kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+                finally:
+                    reset_current_sql_query_binding(binding_token)
+
+            wrapped.append(replace(spec, callable=invoke_sql_scope_only))
             continue
         original_callable = spec.callable
 
@@ -119,11 +185,7 @@ def wrap_tools_with_schema_gate(runner: Any, tools: list[RuntimeToolSpec], state
                 str(kwargs.get("data_source") or ""),
                 binding=state.sql_query_binding,
                 schema_table_columns=state.schema_table_columns,
-                allowed_dataset_names={
-                    str(item.get("dataset_name") or item.get("name") or item.get("id") or "").strip()
-                    for item in (runner.debug_options.get("resource_scope", {}).get("datasets", []) or [])
-                    if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
-                } or None,
+                allowed_dataset_names=mounted_dataset_names(),
             )
             if preflight_error:
                 return preflight_error

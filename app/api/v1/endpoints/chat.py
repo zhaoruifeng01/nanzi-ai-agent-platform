@@ -88,6 +88,140 @@ class ConversationResourceScopeRequest(BaseModel):
     knowledge_bases: List[Dict[str, Any]] = Field(default_factory=list)
     skills: List[Dict[str, Any]] = Field(default_factory=list)
 
+
+async def _normalize_conversation_resource_scope(
+    db: AsyncSession,
+    user_info: Dict[str, Any],
+    raw_scope: Dict[str, Any],
+) -> Dict[str, Any]:
+    """把客户端提交的资源 token 收敛为当前用户可见目录中的可信快照。"""
+    from app.models.knowledge import KnowledgeBaseMetadata
+    from app.services.metadata_service import MetadataService
+    from app.core.config import settings
+    from app.services.ai.skill_resolver import get_user_personal_skills_dir
+    from app.api.portal.endpoints.skills import parse_skill_metadata
+    from sqlalchemy import select
+
+    user_id = user_info.get("user_id") or user_info.get("id")
+    is_admin = user_info.get("role") == "admin"
+    datasets = await MetadataService.list_accessible_dataset_options(
+        db, user_id=user_id, is_admin=is_admin, status=1
+    )
+    dataset_by_token: Dict[str, Any] = {}
+    for dataset in datasets:
+        for token in (
+            dataset.id,
+            dataset.name,
+            getattr(dataset, "dataset_name", None),
+        ):
+            if token is not None and str(token).strip():
+                dataset_by_token[str(token).strip().casefold()] = dataset
+
+    def normalize_dataset(item: Any) -> Dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        dataset = next(
+            (
+                dataset_by_token.get(str(item.get(key) or "").strip().casefold())
+                for key in ("id", "dataset_name", "name")
+                if str(item.get(key) or "").strip().casefold() in dataset_by_token
+            ),
+            None,
+        )
+        if dataset is None:
+            return None
+        return {
+            "id": str(dataset.id),
+            "name": str(getattr(dataset, "display_name", None) or dataset.name or dataset.id),
+            "dataset_name": str(dataset.name or ""),
+            "description": str(getattr(dataset, "description", None) or ""),
+        }
+
+    kb_access = await PermissionService(db).get_knowledge_base_access(
+        int(user_id), user_info.get("user_name")
+    ) if user_id is not None else {"is_admin": False, "accessible_ids": set()}
+    kb_stmt = select(KnowledgeBaseMetadata).where(KnowledgeBaseMetadata.status != "deleted")
+    kb_rows = list((await db.execute(kb_stmt)).scalars().all())
+    allowed_kb_ids = kb_access.get("accessible_ids")
+    kb_by_token: Dict[str, Any] = {}
+    for kb in kb_rows:
+        if allowed_kb_ids is not None and str(kb.ragflow_dataset_id) not in allowed_kb_ids:
+            continue
+        for token in (kb.ragflow_dataset_id, kb.name, kb.id):
+            if token is not None and str(token).strip():
+                kb_by_token[str(token).strip().casefold()] = kb
+
+    def normalize_kb(item: Any) -> Dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        kb = next(
+            (
+                kb_by_token.get(str(item.get(key) or "").strip().casefold())
+                for key in ("id", "dataset_id", "name")
+                if str(item.get(key) or "").strip().casefold() in kb_by_token
+            ),
+            None,
+        )
+        if kb is None:
+            return None
+        return {
+            "id": str(kb.ragflow_dataset_id),
+            "name": str(kb.name or kb.ragflow_dataset_id),
+            "description": str(kb.description or ""),
+        }
+
+    skill_by_token: Dict[tuple[str, str], Dict[str, Any]] = {}
+
+    def collect_skills(root: str, scope_name: str) -> None:
+        if not root or not os.path.isdir(root):
+            return
+        try:
+            entries = os.listdir(root)
+        except OSError:
+            return
+        for skill_id in entries:
+            skill_dir = os.path.join(root, skill_id)
+            skill_md = os.path.join(skill_dir, "SKILL.md")
+            if not os.path.isdir(skill_dir) or skill_id.startswith(".") or not os.path.isfile(skill_md):
+                continue
+            meta = parse_skill_metadata(skill_id, skill_md)
+            if str(meta.get("enabled", "true")).strip().lower() in {"false", "0", "no", "off"}:
+                continue
+            skill_by_token[(scope_name, skill_id.casefold())] = {
+                "id": skill_id,
+                "name": str(meta.get("name") or skill_id),
+                "description": str(meta.get("description") or ""),
+                "scope": scope_name,
+            }
+
+    collect_skills(str(getattr(settings, "SKILLS_DIR", "") or ""), "global")
+    try:
+        collect_skills(str(get_user_personal_skills_dir(user_info) or ""), "personal")
+    except Exception:
+        pass
+
+    normalized_skills: list[Dict[str, Any]] = []
+    for item in raw_scope.get("skills", []) or []:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("id") or "").strip()
+        requested_scope = str(item.get("scope") or "").strip().lower()
+        candidates = (
+            [(requested_scope, skill_id.casefold())]
+            if requested_scope in {"global", "personal"}
+            else [("global", skill_id.casefold()), ("personal", skill_id.casefold())]
+        )
+        skill = next((skill_by_token.get(key) for key in candidates if skill_by_token.get(key)), None)
+        if skill:
+            normalized_skills.append(skill)
+
+    return {
+        "project_name": str(raw_scope.get("project_name") or "").strip()[:100],
+        "datasets": [item for raw in raw_scope.get("datasets", []) or [] if (item := normalize_dataset(raw))],
+        "knowledge_bases": [item for raw in raw_scope.get("knowledge_bases", []) or [] if (item := normalize_kb(raw))],
+        "skills": normalized_skills,
+    }
+
 class ChatCompletionResponse(BaseModel):
     content: str
     intent: str
@@ -857,6 +991,21 @@ async def get_history(
     history_user_id = (user_info or {}).get("user_id") or (user_info or {}).get("id")
     if group_by_conversation:
         rows = result.all()
+        if (user_info or {}).get("role") == "admin":
+            from app.models.user import User
+            usernames = {row_obj.username for row_obj, _ in rows if row_obj.username}
+            owner_result = await db.execute(select(User.user_name, User.id).where(User.user_name.in_(usernames))) if usernames else None
+            owner_map = {str(row.user_name): row.id for row in owner_result.all()} if owner_result else {}
+            scopes = await ConversationResourceService.get_many_for_owners(
+                [(owner_map.get(row_obj.username), row_obj.conversation_id) for row_obj, _ in rows if row_obj.conversation_id and owner_map.get(row_obj.username) is not None]
+            )
+            scope_key = lambda item: (str(owner_map.get(item.username)), item.conversation_id)
+        else:
+            scopes = await ConversationResourceService.get_many(
+                history_user_id,
+                [row_obj.conversation_id for row_obj, _ in rows if row_obj.conversation_id],
+            )
+            scope_key = lambda item: item.conversation_id
         for row_obj, turn_count in rows:
             item = AgentExecutionHistoryResponse.from_orm(row_obj)
             item.turn_count = turn_count
@@ -864,18 +1013,33 @@ async def get_history(
                 item.agent_name = agent_map[item.agent_id][0]
                 item.agent_display_name = agent_map[item.agent_id][1]
             if item.conversation_id:
-                scope = await ConversationResourceService.get(history_user_id, item.conversation_id)
+                scope = scopes.get(scope_key(row_obj), {})
                 item.project_name = scope.get("project_name") or None
             items.append(item)
     else:
         rows = result.scalars().all()
+        if (user_info or {}).get("role") == "admin":
+            from app.models.user import User
+            usernames = {row.username for row in rows if row.username}
+            owner_result = await db.execute(select(User.user_name, User.id).where(User.user_name.in_(usernames))) if usernames else None
+            owner_map = {str(row.user_name): row.id for row in owner_result.all()} if owner_result else {}
+            scopes = await ConversationResourceService.get_many_for_owners(
+                [(owner_map.get(row.username), row.conversation_id) for row in rows if row.conversation_id and owner_map.get(row.username) is not None]
+            )
+            scope_key = lambda item: (str(owner_map.get(item.username)), item.conversation_id)
+        else:
+            scopes = await ConversationResourceService.get_many(
+                history_user_id,
+                [row.conversation_id for row in rows if row.conversation_id],
+            )
+            scope_key = lambda item: item.conversation_id
         for row in rows:
             item = AgentExecutionHistoryResponse.from_orm(row)
             if item.agent_id in agent_map:
                 item.agent_name = agent_map[item.agent_id][0]
                 item.agent_display_name = agent_map[item.agent_id][1]
             if item.conversation_id:
-                scope = await ConversationResourceService.get(history_user_id, item.conversation_id)
+                scope = scopes.get(scope_key(row), {})
                 item.project_name = scope.get("project_name") or None
             items.append(item)
     
@@ -953,13 +1117,18 @@ async def batch_delete_history(
         is_admin = user_info.get("role") == "admin"
         username = user_info.get("user_name")
 
-    # 2. 查询对应的 trace_id 列表，以便级联删除 AgentExecutionTrace
-    stmt = select(AgentExecutionHistory.trace_id).where(AgentExecutionHistory.conversation_id.in_(payload.conversation_ids))
+    # 2. 同时取出会话归属人；Redis key 的 user_id 必须使用目标用户，而不是当前管理员。
+    stmt = select(
+        AgentExecutionHistory.conversation_id,
+        AgentExecutionHistory.trace_id,
+        AgentExecutionHistory.username,
+    ).where(AgentExecutionHistory.conversation_id.in_(payload.conversation_ids))
     if user_info and not is_admin:
         stmt = stmt.where(AgentExecutionHistory.username == username)
     
     result = await db.execute(stmt)
-    trace_ids = [row for row in result.scalars().all() if row]
+    history_rows = result.all()
+    trace_ids = [row.trace_id for row in history_rows if row.trace_id]
 
     # 3. 执行批量级联删除
     if trace_ids:
@@ -975,10 +1144,27 @@ async def batch_delete_history(
 
     # 数据库历史删除后同步清理会话 Redis，避免项目资源范围和记忆残留。
     from app.services.ai.memory_service import memory_service
-    if user_info:
-        user_id = user_info.get("user_id") or user_info.get("id")
-        for conversation_id in payload.conversation_ids:
-            await memory_service.clear_history(user_id, conversation_id)
+    owner_ids: Dict[str, Any] = {}
+    if history_rows:
+        from app.models.user import User
+        usernames = {str(row.username).strip() for row in history_rows if row.username}
+        if usernames:
+            owner_result = await db.execute(
+                select(User.user_name, User.id).where(User.user_name.in_(usernames))
+            )
+            owner_ids = {str(row.user_name): row.id for row in owner_result.all()}
+    current_user_id = (user_info or {}).get("user_id") or (user_info or {}).get("id")
+    for conversation_id in payload.conversation_ids:
+        matching_owners = {
+            owner_ids.get(str(row.username).strip())
+            for row in history_rows
+            if row.conversation_id == conversation_id and row.username
+        }
+        matching_owners.discard(None)
+        if not matching_owners and not is_admin and current_user_id is not None:
+            matching_owners.add(current_user_id)
+        for owner_id in matching_owners:
+            await memory_service.clear_history(owner_id, conversation_id)
 
     return StandardResponse(data={"success": True})
 
@@ -1215,7 +1401,9 @@ async def update_conversation_resource_scope(
     conversation_id: str,
     body: ConversationResourceScopeRequest,
     user_info: dict = Depends(require_api_key),
+    db: AsyncSession = Depends(get_db_session),
 ):
     user_id = user_info.get("user_id") or user_info.get("id")
-    scope = await ConversationResourceService.replace(user_id, conversation_id, body.model_dump())
+    normalized = await _normalize_conversation_resource_scope(db, user_info, body.model_dump())
+    scope = await ConversationResourceService.replace(user_id, conversation_id, normalized)
     return StandardResponse(data=scope)

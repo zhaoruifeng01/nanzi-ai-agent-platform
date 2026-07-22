@@ -1199,14 +1199,16 @@ class AssistantAgentRunner(BaseExecutor):
                         interrupted = True
                     yield chunk
 
-                if not interrupted and self.conversation_id:
+                if self.conversation_id:
                     from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
 
                     await persist_turn_artifact_candidate(
                         user_id=self._runtime_user_id(),
                         conversation_id=self.conversation_id,
                         turn_state=getattr(self, "_session_artifact_turn", None),
+                        clear_if_empty=not interrupted,
                     )
+                if not interrupted and self.conversation_id:
                     await agent_state_store.save(
                         user_id=self._runtime_user_id(),
                         conversation_id=self.conversation_id,
@@ -1714,6 +1716,11 @@ class AssistantAgentRunner(BaseExecutor):
                     )
                 interrupted = False
                 user_query = str(state.get("user_query") or "")
+                self._session_artifact_turn = {
+                    "user_question": user_query,
+                    "trace_id": self.trace_id,
+                    "best": None,
+                }
                 grounding_enabled = self._grounding_enabled()
                 requirement = (
                     self._resolve_turn_grounding_requirement(user_query, ctx)
@@ -1789,6 +1796,15 @@ class AssistantAgentRunner(BaseExecutor):
                         for buffered_chunk in buffered_content:
                             yield buffered_chunk
 
+                if self.conversation_id:
+                    from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
+
+                    await persist_turn_artifact_candidate(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        turn_state=getattr(self, "_session_artifact_turn", None),
+                        clear_if_empty=not interrupted,
+                    )
                 if not interrupted and self.conversation_id:
                     tools_fingerprint = build_tools_fingerprint(self.config, tools)
                     await agent_state_store.save(

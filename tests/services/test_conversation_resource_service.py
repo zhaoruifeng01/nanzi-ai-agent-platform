@@ -27,3 +27,20 @@ async def test_replace_keeps_only_explicit_project_resources():
     assert [item["id"] for item in scope["datasets"]] == ["sales_ds"]
     redis.set.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_get_many_uses_one_redis_mget_for_history_scopes():
+    redis = AsyncMock()
+    redis.mget.return_value = [
+        '{"project_name":"p1","datasets":[]}',
+        None,
+    ]
+    with patch("app.services.conversation_resource_service.get_redis", new_callable=AsyncMock, return_value=redis):
+        scopes = await ConversationResourceService.get_many(7, ["conv-1", "conv-2"])
+
+    redis.mget.assert_awaited_once_with([
+        "conversation:7:conv-1:resource_scope_v1",
+        "conversation:7:conv-2:resource_scope_v1",
+    ])
+    assert scopes["conv-1"]["project_name"] == "p1"
+    assert scopes["conv-2"]["datasets"] == []

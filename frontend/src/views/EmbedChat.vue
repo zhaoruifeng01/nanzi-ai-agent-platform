@@ -1489,7 +1489,7 @@
       v-model:vector-weight="knowledgeVectorWeight"
       v-model:metadata-top-k="knowledgeMetadataTopK"
       :generated-at="knowledgeGeneratedAt"
-      :project-resource-scope="resourceScope.project_name ? '仅显示当前项目会话资源' : ''"
+      :project-resource-scope="projectSessionHasKnowledgeScope ? '仅显示当前项目会话已挂载的知识库' : ''"
       :datasets="scopedKnowledgeDatasets"
       :active-dataset-ids="scopedActiveDatasetIds"
       :recommendations="datasetRecommendations"
@@ -2503,7 +2503,7 @@
       v-model:pinned="portalPinned"
       v-model:drawer-width="portalDrawerWidthReactive"
       :payload="scopedPortalNavigationPayload"
-      :project-resource-scope="resourceScope.project_name ? '仅显示当前项目会话资源' : ''"
+      :project-resource-scope="projectSessionHasDatasetScope ? '仅显示当前项目会话已挂载的数据集' : ''"
       :initial-loading="portalLoading && !portalNavigationPayload"
       :background-refreshing="portalBackgroundRefreshing"
       :focus-saved-report-request="savedReportFocusRequest"
@@ -3489,9 +3489,9 @@ const projectSessionHasDatasetScope = computed(() => Boolean(resourceScope.value
 const projectSessionHasKnowledgeScope = computed(() => Boolean(resourceScope.value.project_name) && resourceScope.value.knowledge_bases.length > 0);
 const scopedKnowledgeDatasets = computed(() => {
   if (!resourceScope.value.project_name) return knowledgeDatasets.value;
-  if (!projectSessionHasKnowledgeScope.value) return [];
-  const allowed = new Set(resourceScope.value.knowledge_bases.flatMap((item: any) => [item.id, item.name].filter(Boolean).map(String)));
-  return knowledgeDatasets.value.filter((item: any) => allowed.has(String(item.id || item.ragflow_dataset_id || item.dataset_id)) || allowed.has(String(item.name || item.platform_name || '')));
+  if (!projectSessionHasKnowledgeScope.value) return knowledgeDatasets.value;
+  const allowed = new Set(resourceScope.value.knowledge_bases.flatMap((item: any) => [item.id, item.name, item.dataset_id, item.ragflow_dataset_id].filter(Boolean).map((value: any) => String(value))));
+  return knowledgeDatasets.value.filter((item: any) => [item.id, item.ragflow_dataset_id, item.dataset_id, item.name, item.platform_name].filter(Boolean).some((value: any) => allowed.has(String(value))));
 });
 const scopedActiveDatasetIds = computed(() => {
   if (!resourceScope.value.project_name) return activeDatasetIds.value;
@@ -3500,23 +3500,38 @@ const scopedActiveDatasetIds = computed(() => {
 });
 const scopedPortalNavigationPayload = computed(() => {
   if (!projectSessionHasDatasetScope.value || !portalNavigationPayload.value) return portalNavigationPayload.value;
-  const allowed = new Set(resourceScope.value.datasets.flatMap((item: any) => [item.id, item.name, item.dataset_name].filter(Boolean).map(String)));
+  const allowed = new Set(resourceScope.value.datasets.flatMap((item: any) => [item.id, item.name, item.dataset_name, item.display_name].filter(Boolean).map((value: any) => String(value))));
   return {
     ...portalNavigationPayload.value,
     groups: (portalNavigationPayload.value.groups || []).map((group: any) => ({
       ...group,
-      related_data: (group.related_data || []).filter((item: any) => allowed.has(String(item.dataset || item.display_name || item.id || ''))),
+      related_data: (group.related_data || []).filter((item: any) => [item.dataset, item.dataset_name, item.display_name, item.name, item.id].filter(Boolean).some((value: any) => allowed.has(String(value)))),
     })).filter((group: any) => (group.related_data || []).length > 0),
     dataset_count: resourceScope.value.datasets.length,
   };
 });
+const resourceScopeEntryKey = (type: ResourceScopeGroupKey | string, item: any, index = 0) => {
+  const id = String(item?.id || item?.name || index);
+  const scope = String(item?.scope || '').trim();
+  return scope ? `${type}:${scope}:${id}` : `${type}:${id}`;
+};
+
+const resourceScopeEntriesMatch = (left: any, right: any) => {
+  if (String(left?.id || '') !== String(right?.id || '')) return false;
+  const leftScope = String(left?.scope || '').trim();
+  const rightScope = String(right?.scope || '').trim();
+  if (leftScope && rightScope) return leftScope === rightScope;
+  return true;
+};
+
 const mountedResourceLabels = computed(() => [
-  ...resourceScope.value.datasets.map((item: any) => ({ key: `dataset:${item.id}`, icon: '📊', label: item.name || item.id, type: 'datasets', id: item.id })),
-  ...resourceScope.value.knowledge_bases.map((item: any) => ({ key: `knowledge:${item.id}`, icon: '📚', label: item.name || item.id, type: 'knowledge_bases', id: item.id })),
-  ...resourceScope.value.skills.map((item: any) => ({ key: `skill:${item.id}`, icon: '🧩', label: item.name || item.id, type: 'skills', id: item.id })),
+  ...resourceScope.value.datasets.map((item: any, index: number) => ({ key: resourceScopeEntryKey('datasets', item, index), icon: '📊', label: item.name || item.id, type: 'datasets', id: item.id, scope: item.scope })),
+  ...resourceScope.value.knowledge_bases.map((item: any, index: number) => ({ key: resourceScopeEntryKey('knowledge_bases', item, index), icon: '📚', label: item.name || item.id, type: 'knowledge_bases', id: item.id, scope: item.scope })),
+  ...resourceScope.value.skills.map((item: any, index: number) => ({ key: resourceScopeEntryKey('skills', item, index), icon: '🧩', label: item.name || item.id, type: 'skills', id: item.id, scope: item.scope })),
 ]);
 
 const resourceEntryMatchesOption = (entry: any, option: any) => {
+  if (entry?.scope && option?.scope && String(entry.scope) !== String(option.scope)) return false;
   const eid = String(entry?.id ?? '').trim();
   const oid = String(option?.id ?? '').trim();
   const ename = String(entry?.name ?? '').trim();
@@ -3576,7 +3591,7 @@ const modalSelectedCount = (type: ResourceScopeGroupKey) => modalDraftSelections
 const modalSelectedChips = (type: ResourceScopeGroupKey) => {
   const orphans = new Set(modalOrphanSelections(type));
   return modalDraftSelections(type).map((item: any, index: number) => ({
-    key: `${type}:${item.id || item.name || index}`,
+    key: resourceScopeEntryKey(type, item, index),
     item,
     label: item.name || item.id || '未命名',
     orphan: orphans.has(item),
@@ -3615,13 +3630,14 @@ const toggleModalResourceOption = (type: ResourceScopeGroupKey, option: any) => 
           id: option.id,
           name: option.name || option.id,
           ...(option.dataset_name ? { dataset_name: option.dataset_name } : {}),
+          ...(option.scope ? { scope: option.scope } : {}),
         },
       ];
   resourceScopeModalDraft.value = { ...resourceScopeModalDraft.value, [type]: items };
 };
 
 const removeModalDraftResource = (type: ResourceScopeGroupKey, item: any) => {
-  const items = modalDraftSelections(type).filter((entry) => entry !== item && String(entry.id || '') !== String(item.id || ''));
+  const items = modalDraftSelections(type).filter((entry) => entry !== item && !resourceScopeEntriesMatch(entry, item));
   resourceScopeModalDraft.value = { ...resourceScopeModalDraft.value, [type]: items };
 };
 
@@ -3669,10 +3685,10 @@ const loadResourceOptions = async () => {
         }));
     }
     resourceOptions.skills = [];
-    for (const result of [globalSkills, personalSkills]) {
+    for (const [result, scope] of [[globalSkills, 'global'], [personalSkills, 'personal']] as const) {
       if (result.status === 'fulfilled') resourceOptions.skills.push(...(result.value.data?.data || [])
         .filter((item: any) => item.enabled === undefined || item.enabled === true || item.enabled === 'true' || item.enabled === 1 || item.enabled === '1')
-        .map((item: any) => ({ id: String(item.id), name: item.name, description: item.description })));
+        .map((item: any) => ({ id: String(item.id), name: item.name, description: item.description, scope })));
     }
     for (const group of resourceOptionGroups) {
       const options = resourceOptions[group.key] || [];
@@ -3708,8 +3724,11 @@ const refreshResourceOptions = async () => {
 
 const loadResourceScope = async () => {
   if (!conversationId.value) return;
+  const requestedId = conversationId.value;
+  const requestId = ++resourceScopeLoadSequence;
   try {
-    const res = await axios.get(`/api/v1/chat/conversation/${encodeURIComponent(conversationId.value)}/resource-scope`, { headers: embedAuthHeaders() });
+    const res = await axios.get(`/api/v1/chat/conversation/${encodeURIComponent(requestedId)}/resource-scope`, { headers: embedAuthHeaders() });
+    if (requestId !== resourceScopeLoadSequence || conversationId.value !== requestedId) return;
     resourceScope.value = res.data?.data || emptyResourceScopeState();
     syncResourceScopeDraftStrings(resourceScope.value);
   } catch (error) { console.warn('[ResourceScope] load failed', error); }
@@ -3722,6 +3741,7 @@ const buildPersistableScope = (source: typeof resourceScope.value) => {
       id: String(item.id).trim(),
       name: item.name || String(item.id).trim(),
       ...(item.dataset_name ? { dataset_name: item.dataset_name } : {}),
+      ...(item.scope ? { scope: item.scope } : {}),
     }));
   return {
     project_name: (source.project_name || '').trim(),
@@ -3767,7 +3787,7 @@ const saveResourceScope = async () => {
 
 const removeMountedResource = async (item: any) => {
   const resourceType = item.type as ResourceScopeGroupKey;
-  const nextItems = resourceScope.value[resourceType].filter((entry: any) => entry.id !== item.id);
+  const nextItems = resourceScope.value[resourceType].filter((entry: any) => !resourceScopeEntriesMatch(entry, item));
   resourceScope.value = { ...resourceScope.value, [resourceType]: nextItems };
   resourceScopeSaving.value = true;
   try {
@@ -3780,6 +3800,7 @@ const removeMountedResource = async (item: any) => {
   }
 };
 let requestedConversationId = "";
+let resourceScopeLoadSequence = 0;
 
 const embedAuthHeaders = (): Record<string, string> | undefined => {
   if (!config.token) return undefined;
@@ -3818,6 +3839,7 @@ const generateNewConversation = () => {
   // 工作台等入口通过 INIT_CONFIG 写入的 resume id，新会话时必须清掉，
   // 否则随后 initChat() 会再次强制切回旧会话并重载历史。
   requestedConversationId = "";
+  resourceScopeLoadSequence += 1;
   conversationId.value = createConversationId();
   resourceScope.value = emptyResourceScopeState();
   Object.assign(resourceScopeDraft, { project_name: '', datasets: '', knowledge_bases: '', skills: '' });
