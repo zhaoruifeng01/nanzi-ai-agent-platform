@@ -4,8 +4,10 @@ from app.services.ai.intent_service import IntentType
 from app.services.ai.request_decision import (
     RequestCapability,
     RequestSource,
+    apply_chatbi_qualification,
     resolve_request_decision,
 )
+from app.services.ai.chatbi_qualification import ChatBIMode, qualify_chatbi_request
 
 
 pytestmark = pytest.mark.no_infrastructure
@@ -103,10 +105,69 @@ def test_my_server_status_query_is_runtime_diagnostic():
     assert decision.capability == RequestCapability.RUNTIME_TOOL
 
 
+def test_server_load_query_is_runtime_diagnostic_even_with_data_intent_evidence():
+    decision = resolve_request_decision(
+        "查询一下服务器负载情况",
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+    )
+
+    assert decision.source == RequestSource.RUNTIME_DIAGNOSTIC
+    assert decision.capability == RequestCapability.RUNTIME_TOOL
+    assert decision.allows_data_route is False
+
+
 def test_server_status_concept_explanation_is_not_runtime_diagnostic():
     decision = resolve_request_decision("服务器状态是什么意思")
 
     assert decision.source != RequestSource.RUNTIME_DIAGNOSTIC
+
+
+def test_chatbi_qualification_removes_delegate_for_non_business_domain():
+    decision = resolve_request_decision(
+        "统计一下我机器的文件数",
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+    )
+    qualified = apply_chatbi_qualification(
+        decision,
+        qualify_chatbi_request(
+            domain="local_file",
+            operation="aggregate",
+            dataset_candidates=[],
+        ),
+    )
+
+    assert qualified.chatbi_mode == ChatBIMode.DENY.value
+    assert qualified.allows_data_route is False
+    assert qualified.should_delegate is False
+
+
+def test_chatbi_qualification_keeps_business_candidate_eligible():
+    decision = resolve_request_decision(
+        "统计客户订单数量",
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+    )
+    qualified = apply_chatbi_qualification(
+        decision,
+        qualify_chatbi_request(
+            domain="chatbi_business_data",
+            operation="aggregate",
+            dataset_candidates=[
+                {
+                    "dataset_id": 3,
+                    "display_name": "订单分析",
+                    "similarity": 0.78,
+                    "content": "订单数量与客户信息",
+                }
+            ],
+        ),
+    )
+
+    assert qualified.chatbi_mode == ChatBIMode.DIRECT.value
+    assert qualified.allows_data_route is True
+    assert qualified.should_delegate is True
 
 
 def test_dynamic_public_fact_requires_web_evidence():

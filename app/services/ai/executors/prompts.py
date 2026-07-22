@@ -2447,11 +2447,20 @@ class AssistantPrompts:
         semantic_intent_value = getattr(semantic_intent, "value", semantic_intent)
         semantic_confidence = route_hints.get("semantic_confidence")
         semantic_reasoning = route_hints.get("semantic_reasoning")
+        semantic_domain = str(route_hints.get("semantic_domain") or "unknown").strip()
+        semantic_operation = str(route_hints.get("semantic_operation") or "unknown").strip()
+        chatbi_mode = str(route_hints.get("chatbi_mode") or "").strip().lower()
+        chatbi_evidence_level = str(
+            route_hints.get("chatbi_evidence_level") or "none"
+        ).strip()
+        chatbi_reason = str(route_hints.get("chatbi_reason") or "").strip()
+        matched_dataset_ids = route_hints.get("matched_dataset_ids") or []
         if (
             not labels
             and relation == "unknown"
             and action_type == "unknown"
             and not semantic_intent_value
+            and not chatbi_mode
         ):
             return ""
         labels_text = ", ".join(str(label) for label in labels) if labels else "无"
@@ -2460,20 +2469,45 @@ class AssistantPrompts:
             f"- turn_labels: {labels_text}\n"
             f"- relation_to_previous: {relation}\n"
             f"- user_action_type: {action_type}\n"
+            f"- semantic_domain: {semantic_domain}\n"
+            f"- semantic_operation: {semantic_operation}\n"
             "以上只是路由层基于上下文得到的 hint。请结合完整对话自行判断，"
             "不要机械服从；若 hint 与用户当前问题冲突，以用户问题和对话上下文为准。"
         )
+        if chatbi_mode:
+            datasets_text = ", ".join(str(item) for item in matched_dataset_ids) or "无"
+            hint += (
+                "\n【ChatBI 来源资格】\n"
+                f"- mode: {chatbi_mode}\n"
+                f"- evidence: {chatbi_evidence_level}\n"
+                f"- matched_dataset_ids: {datasets_text}\n"
+                f"- reason: {chatbi_reason or '未提供'}"
+            )
         if str(semantic_intent_value or "").upper() != "DATA_QUERY":
             return hint
         confidence_text = "未知" if semantic_confidence is None else str(semantic_confidence)
         reasoning_text = str(semantic_reasoning or "未提供")
+        if chatbi_mode == "deny":
+            action_guidance = (
+                "ChatBI 资格为 DENY：本轮不是 ChatBI 业务数据请求，禁止调用 data_query/ChatBI 子智能体；"
+                "请按当前请求的真实来源使用本机工具、联网工具或直接回答。"
+            )
+        elif chatbi_mode == "clarify":
+            action_guidance = (
+                "ChatBI 资格为 CLARIFY：当前只有业务语义，没有足够的数据集证据；"
+                "不要盲目调用 data_query 子智能体，必要时先向用户确认数据集或业务范围。"
+            )
+        else:
+            action_guidance = (
+                "该请求具备 ChatBI 资格。若当前智能体不具备 data_query 能力，"
+                "应优先通过已绑定的 sub_agent_call 或其他可用数据工具获取结果，禁止编造数据。"
+            )
         return (
             f"【请求语义证据】\n"
             f"- semantic_intent: {semantic_intent_value}\n"
             f"- semantic_confidence: {confidence_text}\n"
             f"- semantic_reasoning: {reasoning_text}\n"
-            "该请求可能需要真实结构化数据。若当前智能体不具备 data_query 能力，"
-            "应优先通过已绑定的 sub_agent_call 或其他可用数据工具获取结果，禁止编造数据。\n\n"
+            f"{action_guidance}\n\n"
             f"{hint}"
         )
 

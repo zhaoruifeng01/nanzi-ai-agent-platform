@@ -8,6 +8,12 @@ from app.services.ai.tool_nudge_policy import (
     should_consider_tool_nudge,
 )
 from app.services.ai.intent_service import IntentType
+from app.services.ai.request_decision import (
+    RequestCapability,
+    RequestDecision,
+    RequestSource,
+    resolve_request_decision,
+)
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -354,6 +360,31 @@ def test_runtime_diagnostic_data_intent_does_not_force_data_sub_agent():
     assert nudge is None
 
 
+def test_canonical_runtime_decision_blocks_chatbi_sub_agent_when_turn_is_misclassified():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+    request_decision = resolve_request_decision(
+        "查询一下我机器的负载情况",
+        turn_intent=IntentType.DATA_QUERY,
+    )
+
+    nudge = resolve_tool_nudge(
+        "查询一下我机器的负载情况",
+        tools,
+        available_sub_agent_names={"chat-bi"},
+        sub_agent_candidates_by_capability={"data_query": ["chat-bi"]},
+        semantic_intent=IntentType.DATA_QUERY,
+        semantic_confidence=0.9,
+        turn_intent=IntentType.DATA_QUERY,
+        request_decision=request_decision,
+    )
+
+    assert request_decision.capability.value == "runtime_tool"
+    assert request_decision.allows_data_route is False
+    assert nudge is None
+
+
 def test_generic_data_intent_forces_data_sub_agent_without_business_signal():
     """意图已是 DATA_QUERY 时，即使没有强业务关键词也强制委派。"""
     tools = [
@@ -480,6 +511,58 @@ def test_runtime_diagnostic_data_intent_prefers_shell_tool():
     assert nudge is not None
     assert nudge.tool_name == "exec_command"
     assert nudge.should_force_first_call is False
+
+
+def test_chatbi_denied_source_does_not_force_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+    decision = RequestDecision(
+        source=RequestSource.INTERNAL_STRUCTURED_DATA,
+        capability=RequestCapability.DATA_QUERY,
+        confidence=0.9,
+        reasoning="动作词触发了旧的 DATA_QUERY 语义，但来源是本机文件",
+        chatbi_mode="deny",
+        chatbi_evidence_level="source_conflict",
+        allows_data_route=False,
+        should_delegate=False,
+    )
+
+    nudge = resolve_tool_nudge(
+        "统计一下我机器的文件数",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
+        request_decision=decision,
+    )
+
+    assert nudge is None
+
+
+def test_chatbi_clarify_source_does_not_force_data_sub_agent():
+    tools = [
+        _tool("sub_agent_call", "委派其他专有子智能体执行特定任务（如查数、查手册等）"),
+    ]
+    decision = RequestDecision(
+        source=RequestSource.INTERNAL_STRUCTURED_DATA,
+        capability=RequestCapability.DATA_QUERY,
+        confidence=0.9,
+        reasoning="只有业务语义，尚无数据集证据",
+        chatbi_mode="clarify",
+        chatbi_evidence_level="semantic_only",
+        allows_data_route=True,
+        should_delegate=False,
+    )
+
+    nudge = resolve_tool_nudge(
+        "统计一下客户订单",
+        tools,
+        available_sub_agent_names={"biz-data-agent"},
+        sub_agent_candidates_by_capability={"data_query": ["biz-data-agent"]},
+        request_decision=decision,
+    )
+
+    assert nudge is None
 
 
 def test_sub_agent_call_nudge_skips_when_target_agent_unavailable():

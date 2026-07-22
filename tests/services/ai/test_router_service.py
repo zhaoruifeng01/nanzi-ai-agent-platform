@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 from app.services.ai.router_service import RouterService, RouteResult
+from app.services.ai.chatbi_qualification import DatasetCandidate
 from app.services.ai.intent_service import (
     DataSessionAffinity,
     IntentResponse,
@@ -228,6 +229,41 @@ async def test_route_prompt_guides_local_machine_load_to_general(mock_agents_met
     system_prompt = routed_messages[0].content[0].text
     assert "当前系统/本机/这台机器/服务器运行状态" in system_prompt
     assert "不要因为出现\"负载/利用率/CPU/内存\"等词就直接判为数据查询" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_route_query_local_file_domain_blocks_chatbi_even_when_llm_selects_it(mock_agents_metadata):
+    """本机文件统计中的“统计”不能把请求升级为 ChatBI。"""
+    service = RouterService()
+    mock_chat = _mock_chat_client(json.dumps({
+        "thought": "错误地把本机文件统计选成了数据智能体",
+        "agent_name": "ChatBI",
+        "confidence": 0.95,
+    }))
+    evidence = IntentResponse(
+        intent=IntentType.DATA_QUERY,
+        confidence=0.95,
+        reasoning="模型仅因统计动作词产生了数据意图",
+        entities=["机器文件数"],
+        domain="local_file",
+        operation="aggregate",
+    )
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+        mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = evidence
+        mock_get_llm.return_value = object()
+        mock_chat_factory.return_value = mock_chat
+
+        result = await service.route_query("统计一下我机器的文件数")
+
+    assert result.agent_id == "agent-general"
+    assert result.chatbi_mode == "deny"
+    assert result.request_should_delegate is False
+    assert result.request_capability == "data_query"
 
 
 @pytest.mark.asyncio
@@ -513,6 +549,7 @@ async def test_route_query_constrains_candidates_for_high_confidence_data_intent
         confidence=0.91,
         reasoning="请求系统结构化记录",
         entities=["任意业务对象"],
+        domain="chatbi_business_data",
     )
     router_response = json.dumps({
         "thought": "在数据候选中选择 SQL 分析专家",
@@ -523,10 +560,19 @@ async def test_route_query_constrains_candidates_for_high_confidence_data_intent
 
     with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
          patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.resolve_authorized_dataset_candidates", new_callable=AsyncMock) as mock_candidates, \
          patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
          patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
         mock_fetch.return_value = mock_agents_metadata
         mock_identify.return_value = evidence
+        mock_candidates.return_value = [
+            DatasetCandidate(
+                dataset_id=7,
+                display_name="系统记录",
+                similarity=0.84,
+                content="系统中的业务记录",
+            )
+        ]
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 

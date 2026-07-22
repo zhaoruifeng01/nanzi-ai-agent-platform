@@ -19,7 +19,7 @@ async def test_intent_service_uses_agentscope_chat_client():
     service = IntentService()
     llm = object()
     chat_client = _mock_chat_client(
-        '{"intent":"DATA_QUERY","confidence":0.91,"reasoning":"查询业务数据","entities":["PUE"]}'
+        '{"intent":"DATA_QUERY","confidence":0.91,"reasoning":"查询业务数据","entities":["PUE"],"domain":"chatbi_business_data","operation":"lookup"}'
     )
 
     with patch(
@@ -30,6 +30,8 @@ async def test_intent_service_uses_agentscope_chat_client():
 
     assert result.intent == IntentType.DATA_QUERY
     assert result.confidence == 0.91
+    assert result.domain == "chatbi_business_data"
+    assert result.operation == "lookup"
     called_messages = chat_client.generate_text.await_args.args[0]
     assert called_messages[0].role == "system"
     assert called_messages[1].role == "user"
@@ -52,6 +54,15 @@ async def test_intent_service_parses_json_inside_text():
 
     assert result.intent == IntentType.GENERAL
     assert result.reasoning == "闲聊"
+
+
+def test_intent_service_marks_legacy_data_response_as_unqualified():
+    result = IntentService._parse_response(
+        '{"intent":"DATA_QUERY","confidence":0.9,"reasoning":"旧格式","entities":[]}'
+    )
+
+    assert result.domain == "unqualified_data_intent"
+    assert result.operation == "unknown"
 
 
 @pytest.mark.asyncio

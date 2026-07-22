@@ -344,6 +344,11 @@ class AssistantAgentRunner(BaseExecutor):
             capability = None
         semantic_intent = str(self.route_hints.get("semantic_intent") or "").strip().upper()
         semantic_confidence = float(self.route_hints.get("semantic_confidence") or 0.0)
+        raw_dataset_ids = self.route_hints.get("matched_dataset_ids") or []
+        try:
+            matched_dataset_ids = tuple(int(value) for value in raw_dataset_ids)
+        except (TypeError, ValueError):
+            matched_dataset_ids = ()
         if source == RequestSource.UNKNOWN and semantic_confidence >= 0.7:
             if semantic_intent == IntentType.DATA_QUERY.value:
                 source = RequestSource.INTERNAL_STRUCTURED_DATA
@@ -359,6 +364,12 @@ class AssistantAgentRunner(BaseExecutor):
                 reasoning=str(self.route_hints.get("request_reasoning") or "router evidence contract"),
                 semantic_intent=self.route_hints.get("semantic_intent"),
                 semantic_confidence=semantic_confidence,
+                chatbi_mode=self.route_hints.get("chatbi_mode"),
+                chatbi_evidence_level=str(
+                    self.route_hints.get("chatbi_evidence_level") or "none"
+                ),
+                chatbi_reason=self.route_hints.get("chatbi_reason"),
+                matched_dataset_ids=matched_dataset_ids,
             )
             if source == RequestSource.GENERAL:
                 inferred_decision = resolve_request_decision(user_query)
@@ -926,6 +937,7 @@ class AssistantAgentRunner(BaseExecutor):
                                 getattr(self.turn_classification, "intent", None)
                                 or getattr(self.intent_info, "intent", None)
                             ),
+                            request_decision=grounding_request_decision,
                         )
                     if tool_nudge is None and grounding_requires_tool:
                         capability_name = next(
@@ -968,7 +980,7 @@ class AssistantAgentRunner(BaseExecutor):
                             )
 
                             intent_label = (
-                                "内部数据、指标或资产查询"
+                                "ChatBI 业务数据、指标或资产查询"
                                 if capability_name == "data_query"
                                 else "内部制度、SOP或操作规程查询"
                             )

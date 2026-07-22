@@ -12,7 +12,14 @@ from app.services.ai.intent_service import (
 from app.services.ai.request_decision import (
     RequestDecision,
     RequestSource,
+    apply_chatbi_qualification,
     resolve_request_decision,
+)
+from app.services.ai.chatbi_qualification import (
+    ChatBIQualification,
+    ChatBIMode,
+    qualify_chatbi_request,
+    resolve_authorized_dataset_candidates,
 )
 from app.services.ai.runtime.agentscope.chat import chat_client_from_handle
 from app.services.ai.runtime.agentscope.messages import RuntimeContentBlock, RuntimeMessage
@@ -35,6 +42,10 @@ class RouteResult(BaseModel):
     request_should_delegate: bool = False
     request_delegate_capability: Optional[str] = None
     request_reasoning: Optional[str] = None
+    chatbi_mode: Optional[str] = None
+    chatbi_evidence_level: str = "none"
+    chatbi_reason: Optional[str] = None
+    matched_dataset_ids: List[int] = []
 
 class LLMRouterResponse(BaseModel):
     """Internal structure for LLM output."""
@@ -75,15 +86,15 @@ class RouterService:
 ### Step 3 语义匹配 (Semantic Matching)
 - 逐一对照清单中每个智能体的 name / 中文名 / Description / Capabilities，选出职责与用户真实意图最吻合的那一个。
 - 你对"领域/职责"的判断必须来自上面清单里的描述，【禁止】脑补清单之外的智能体或领域。
-- 区分"业务数据指标查询"与"当前运行环境诊断"：
+- 区分"ChatBI 业务数据指标查询"与"当前运行环境诊断"：
   - 用户询问当前系统/本机/这台机器/服务器运行状态、负载、CPU、内存、磁盘、进程、端口、网络连通性、服务状态、日志、或要求执行命令时，这是平台运行环境诊断/工具执行意图，应选择 {fallback_agent_name}。
-  - 用户是查询、统计系统数据库中存储的结构化业务数据（如：销售额、订单量、转化率、库存、成本、完成率等历史/业务指标，以及客户/员工/产品/工单/审批等业务记录或数据列表）时，才按清单匹配数据查询类智能体。
+  - 用户是通过 ChatBI 查询、统计系统数据库中存储的结构化业务数据（如：销售额、订单量、转化率、库存、成本、完成率等历史/业务指标，以及客户/员工/产品/工单/审批等业务记录或数据列表）时，才按清单匹配 ChatBI 数据查询类智能体。
   - 不要因为出现"负载/利用率/CPU/内存"等词就直接判为数据查询；必须先判断用户是在看"当前这台机器"还是查"业务/监控数据指标"。
 - 区分"泛化查询词"与"内部业务查数"：
   - 天气、公共常识、外部事实、代码/API/编程问题、文本分析/改写/翻译、系统使用帮助等属于通用助手，即使带有「查询/查一下」也应选择 {fallback_agent_name}。
-  - 凡未明确指向平台已接入业务库的结构化数据（记录/列表/指标/报表/SQL 明细），而更像第三方平台指标、公网资讯、个人项目/外部系统状态时，应选择 {fallback_agent_name}，不要路由到 data_query 智能体。
+  - 凡未明确指向平台已接入业务库的结构化数据（记录/列表/指标/报表/SQL 明细），而更像第三方平台指标、公网资讯、个人项目/外部系统状态时，应选择 {fallback_agent_name}，不要路由到 ChatBI 的 data_query 智能体。
   - 内部 SOP/流程/规范/手册/怎么操作/处理步骤属于知识库或文档类智能体，即使带有「查询/查一下」也不要路由到数据查询类智能体。
-  - 只有用户明确要内部业务数据的真实记录、列表、数量、指标、趋势、报表、SQL 明细时，才选择具备 data_query 能力的智能体。
+  - 只有用户明确要通过 ChatBI 查询内部业务数据的真实记录、列表、数量、指标、趋势、报表、SQL 明细时，才选择具备 data_query 能力的智能体；data_query 在本平台专指 ChatBI，不包括机器运行状态、CPU、内存、进程、端口或日志。
   - 当通用、知识库、数据查询三者难以区分时，优先选择 {fallback_agent_name}，由通用助手澄清用户到底要查数据、查知识库，还是普通问答。
 
 ### Step 4 复合意图判定 (Multi-Intent) — 保守
@@ -272,6 +283,23 @@ class RouterService:
             semantic_intent=getattr(intent_info, "intent", None),
             semantic_confidence=getattr(intent_info, "confidence", None),
         )
+        previous_chatbi_result = bool(
+            last_agent_name
+            and self._is_data_query_agent(agents_metadata, last_agent_name)
+            and should_inherit_data_agent_session(user_input)
+        )
+        chatbi_qualification = await self._resolve_chatbi_qualification(
+            user_input,
+            intent_info,
+            request_decision,
+            previous_chatbi_result=previous_chatbi_result,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        request_decision = apply_chatbi_qualification(
+            request_decision,
+            chatbi_qualification,
+        )
         source_frame = self._source_frame_from_request_decision(request_decision)
         data_route_allowed = (
             request_decision.allows_data_route
@@ -286,6 +314,7 @@ class RouterService:
             intent_info,
             source_frame=source_frame,
             data_route_allowed=bool(data_route_allowed),
+            request_decision=request_decision,
         )
 
         # 2. Unified LLM Routing
@@ -347,6 +376,7 @@ class RouterService:
                     agents_metadata,
                     "Router returned no eligible candidate",
                     intent_info=intent_info,
+                    request_decision=request_decision,
                 )
             except Exception as e:  # noqa: BLE001 - retry then fall back
                 last_error = e
@@ -357,6 +387,7 @@ class RouterService:
             agents_metadata,
             f"Routing exception ({str(last_error)})",
             intent_info=intent_info,
+            request_decision=request_decision,
         )
 
     @staticmethod
@@ -371,11 +402,62 @@ class RouterService:
             logger.warning("Semantic evidence failed before routing: %s", exc)
             return None
 
+    @staticmethod
+    async def _resolve_chatbi_qualification(
+        user_input: str,
+        intent_info: Optional[IntentResponse],
+        request_decision: RequestDecision,
+        *,
+        previous_chatbi_result: bool,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> ChatBIQualification:
+        """Resolve source + authorized metadata evidence before ChatBI routing."""
+        domain = str(getattr(intent_info, "domain", "unknown") or "unknown").strip().lower()
+        operation = str(getattr(intent_info, "operation", "unknown") or "unknown").strip().lower()
+
+        # Preserve the stronger deterministic boundaries even if the semantic
+        # model returns an over-broad domain.
+        if request_decision.source == RequestSource.RUNTIME_DIAGNOSTIC:
+            domain = "runtime_environment"
+        elif request_decision.source == RequestSource.PUBLIC_WEB:
+            domain = "public_web"
+        elif request_decision.source == RequestSource.INTERNAL_DOCS:
+            domain = "internal_docs"
+
+        # Existing embedders may construct IntentResponse without the new
+        # domain field.  Keep those callers compatible; parsed legacy model
+        # responses are marked ``unqualified_data_intent`` and remain closed.
+        if (
+            domain == "unknown"
+            and getattr(intent_info, "intent", None) == IntentType.DATA_QUERY
+            and request_decision.source == RequestSource.INTERNAL_STRUCTURED_DATA
+        ):
+            domain = "chatbi_business_data"
+
+        candidates = []
+        if domain == "chatbi_business_data":
+            candidates = await resolve_authorized_dataset_candidates(
+                user_input,
+                user_id=user_id,
+                is_admin=is_admin,
+                top_k=3,
+            )
+
+        return qualify_chatbi_request(
+            domain=domain,
+            operation=operation,
+            dataset_candidates=candidates,
+            previous_chatbi_result=previous_chatbi_result,
+            explicit_dataset=bool(getattr(intent_info, "explicit_dataset", False)),
+        )
+
     def _should_constrain_to_data_agents(
         self,
         intent_info: Optional[IntentResponse],
         source_frame: Optional[IntentSourceFrame],
         data_route_allowed: bool,
+        request_decision: Optional[RequestDecision] = None,
     ) -> bool:
         """是否满足将候选收缩到数据查询智能体的全部条件。
 
@@ -390,6 +472,11 @@ class RouterService:
             return False
         if source_frame is None or source_frame.source != IntentSource.INTERNAL_STRUCTURED_DATA:
             return False
+        if request_decision is not None and request_decision.chatbi_mode not in {
+            None,
+            ChatBIMode.DIRECT.value,
+        }:
+            return False
         return data_route_allowed
 
     def _constrain_candidates_by_intent(
@@ -399,9 +486,15 @@ class RouterService:
         *,
         source_frame: Optional[IntentSourceFrame] = None,
         data_route_allowed: bool = False,
+        request_decision: Optional[RequestDecision] = None,
     ) -> List[dict]:
         """Constrain to data agents only when the request source is truly data."""
-        if not self._should_constrain_to_data_agents(intent_info, source_frame, data_route_allowed):
+        if not self._should_constrain_to_data_agents(
+            intent_info,
+            source_frame,
+            data_route_allowed,
+            request_decision,
+        ):
             return agents
 
         data_agents = [
@@ -654,6 +747,14 @@ class RouterService:
                 request_decision.delegate_capability if request_decision else None
             ),
             request_reasoning=(request_decision.reasoning if request_decision else None),
+            chatbi_mode=(request_decision.chatbi_mode if request_decision else None),
+            chatbi_evidence_level=(
+                request_decision.chatbi_evidence_level if request_decision else "none"
+            ),
+            chatbi_reason=(request_decision.chatbi_reason if request_decision else None),
+            matched_dataset_ids=(
+                list(request_decision.matched_dataset_ids) if request_decision else []
+            ),
         )
 
     def _normalize_turn_labels(self, value) -> List[str]:
@@ -771,6 +872,14 @@ class RouterService:
                     request_decision.delegate_capability if request_decision else None
                 ),
                 request_reasoning=(request_decision.reasoning if request_decision else None),
+                chatbi_mode=(request_decision.chatbi_mode if request_decision else None),
+                chatbi_evidence_level=(
+                    request_decision.chatbi_evidence_level if request_decision else "none"
+                ),
+                chatbi_reason=(request_decision.chatbi_reason if request_decision else None),
+                matched_dataset_ids=(
+                    list(request_decision.matched_dataset_ids) if request_decision else []
+                ),
             )
         return None
 

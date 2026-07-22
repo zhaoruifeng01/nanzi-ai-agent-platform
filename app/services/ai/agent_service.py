@@ -646,6 +646,10 @@ class AgentService:
             r_request_source = getattr(route_details, "request_source", None)
             r_request_capability = getattr(route_details, "request_capability", None)
             r_request_reasoning = getattr(route_details, "request_reasoning", None)
+            r_chatbi_mode = getattr(route_details, "chatbi_mode", None)
+            r_chatbi_evidence_level = getattr(route_details, "chatbi_evidence_level", "none")
+            r_chatbi_reason = getattr(route_details, "chatbi_reason", None)
+            r_matched_dataset_ids = getattr(route_details, "matched_dataset_ids", []) or []
 
             trace_buffer.append(AgentExecutionStep(
                 step_number=0,
@@ -664,9 +668,15 @@ class AgentService:
                     "semantic_intent": getattr(r_intent_info, "intent", None),
                     "semantic_confidence": getattr(r_intent_info, "confidence", None),
                     "semantic_reasoning": getattr(r_intent_info, "reasoning", None),
+                    "semantic_domain": getattr(r_intent_info, "domain", None),
+                    "semantic_operation": getattr(r_intent_info, "operation", None),
                     "request_source": r_request_source,
                     "request_capability": r_request_capability,
                     "request_reasoning": r_request_reasoning,
+                    "chatbi_mode": r_chatbi_mode,
+                    "chatbi_evidence_level": r_chatbi_evidence_level,
+                    "chatbi_reason": r_chatbi_reason,
+                    "matched_dataset_ids": r_matched_dataset_ids,
                 },
                 status="success",
                 execution_time_ms=route_elapsed_ms
@@ -1209,6 +1219,10 @@ class AgentService:
                 r_request_source = getattr(route_details, "request_source", None)
                 r_request_capability = getattr(route_details, "request_capability", None)
                 r_request_reasoning = getattr(route_details, "request_reasoning", None)
+                r_chatbi_mode = getattr(route_details, "chatbi_mode", None)
+                r_chatbi_evidence_level = getattr(route_details, "chatbi_evidence_level", "none")
+                r_chatbi_reason = getattr(route_details, "chatbi_reason", None)
+                r_matched_dataset_ids = getattr(route_details, "matched_dataset_ids", []) or []
                 route_hints = {
                     "turn_labels": r_turn_labels,
                     "relation_to_previous": r_relation,
@@ -1216,9 +1230,15 @@ class AgentService:
                     "semantic_intent": getattr(route_intent_evidence, "intent", None),
                     "semantic_confidence": getattr(route_intent_evidence, "confidence", None),
                     "semantic_reasoning": getattr(route_intent_evidence, "reasoning", None),
+                    "semantic_domain": getattr(route_intent_evidence, "domain", None),
+                    "semantic_operation": getattr(route_intent_evidence, "operation", None),
                     "request_source": r_request_source,
                     "request_capability": r_request_capability,
                     "request_reasoning": r_request_reasoning,
+                    "chatbi_mode": r_chatbi_mode,
+                    "chatbi_evidence_level": r_chatbi_evidence_level,
+                    "chatbi_reason": r_chatbi_reason,
+                    "matched_dataset_ids": r_matched_dataset_ids,
                 }
                 yield {
                     "type": "router_log",
@@ -1231,9 +1251,15 @@ class AgentService:
                     "semantic_intent": getattr(route_intent_evidence, "intent", None),
                     "semantic_confidence": getattr(route_intent_evidence, "confidence", None),
                     "semantic_reasoning": getattr(route_intent_evidence, "reasoning", None),
+                    "semantic_domain": getattr(route_intent_evidence, "domain", None),
+                    "semantic_operation": getattr(route_intent_evidence, "operation", None),
                     "request_source": r_request_source,
                     "request_capability": r_request_capability,
                     "request_reasoning": r_request_reasoning,
+                    "chatbi_mode": r_chatbi_mode,
+                    "chatbi_evidence_level": r_chatbi_evidence_level,
+                    "chatbi_reason": r_chatbi_reason,
+                    "matched_dataset_ids": r_matched_dataset_ids,
                     "status": "success",
                     "execution_time_ms": route_elapsed_ms
                 }
