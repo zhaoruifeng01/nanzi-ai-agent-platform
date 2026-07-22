@@ -2,12 +2,12 @@ from typing import Any, Dict, Optional
 
 from app.services.config_service import ConfigService
 
-DEFAULT_PRODUCT_NAME = "NanZi·智能体平台"
-DEFAULT_LOGIN_SUBTITLE = "NanZi Intelligent Agent Platform"
+DEFAULT_PRODUCT_NAME = "Hose·智能体平台"
+DEFAULT_LOGIN_SUBTITLE = "Hose Intelligent Agent Platform"
 DEFAULT_ICON_URL = "/favicon.png"
-DEFAULT_AGENT_NAME = "NanZi · AI"
+DEFAULT_AGENT_NAME = "Hose · AI"
 # 历史默认名：读取时映射到新兜底，不写库
-_LEGACY_DEFAULT_AGENT_NAMES = frozenset({"南孜智能助手", "南孜 · 智能助手"})
+_LEGACY_DEFAULT_AGENT_NAMES = frozenset({"Hose智能助手", "Hose · 智能助手"})
 
 
 def _normalize_default_agent_name(value: Optional[str]) -> str:

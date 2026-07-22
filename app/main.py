@@ -77,12 +77,12 @@ async def lifespan(app: FastAPI):
     await redis.close_redis()
 
 app = FastAPI(
-    title="南孜·智能体平台",
+    title="合思·智能体平台",
     description="""
 ## 概述
 
-南孜智能体平台提供统一的 AI 智能体服务，支持 ChatBI、知识库问答、自动化工作流等能力。
-通过对接南孜数据服务平台，为业务人员提供自然语言交互的取数与分析体验。
+合思智能体平台提供统一的 AI 智能体服务，支持 ChatBI、知识库问答、自动化工作流等能力。
+通过对接合思数据服务平台，为业务人员提供自然语言交互的取数与分析体验。
 
 ## 核心特性
 
@@ -125,7 +125,7 @@ X-API-Key: your_api_key_here
     """,
     version="1.0.0",
     contact={
-        "name": "南孜智能体团队",
+        "name": "合思智能体团队",
         "email": "support@yovole.com",
         "url": "https://www.yovole.com"
     },

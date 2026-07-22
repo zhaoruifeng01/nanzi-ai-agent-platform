@@ -306,14 +306,14 @@ const showSecrets = ref<{ [key: string]: boolean }>({})
 
 const brandingConfig = ref({
   enabled: false,
-  product_name: 'NanZi·智能体平台',
-  login_subtitle: 'NanZi Intelligent Agent Platform',
+  product_name: 'Hose·智能体平台',
+  login_subtitle: 'Hose Intelligent Agent Platform',
   icon_url: '/favicon.png',
   hide_login_sso: false,
   hide_version_link: false,
   contact_markdown: '',
   copyright_text: '',
-  default_agent_name: 'NanZi · AI',
+  default_agent_name: 'Hose · AI',
 })
 const brandingIconInput = ref<HTMLInputElement | null>(null)
 
@@ -323,14 +323,14 @@ const fetchBrandingConfig = async () => {
     const data = res.data || {}
     brandingConfig.value = {
       enabled: !!data.enabled,
-      product_name: data.product_name || 'NanZi·智能体平台',
-      login_subtitle: data.login_subtitle || 'NanZi Intelligent Agent Platform',
+      product_name: data.product_name || 'Hose·智能体平台',
+      login_subtitle: data.login_subtitle || 'Hose Intelligent Agent Platform',
       icon_url: data.icon_url || '/favicon.png',
       hide_login_sso: !!data.hide_login_sso,
       hide_version_link: !!data.hide_version_link,
       contact_markdown: data.contact_markdown || '',
       copyright_text: data.copyright_text || '',
-      default_agent_name: data.default_agent_name || 'NanZi · AI',
+      default_agent_name: data.default_agent_name || 'Hose · AI',
     }
   } catch {
     showToast('品牌配置加载失败', 'error')
@@ -1565,7 +1565,7 @@ onMounted(() => {
                 v-model="brandingConfig.product_name"
                 type="text"
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                placeholder="NanZi·智能体平台"
+                placeholder="Hose·智能体平台"
               />
               <p class="text-xs text-gray-400 mt-1">影响浏览器标题、左侧菜单栏名称、登录页</p>
             </div>
@@ -1576,7 +1576,7 @@ onMounted(() => {
                 v-model="brandingConfig.login_subtitle"
                 type="text"
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                placeholder="NanZi Intelligent Agent Platform"
+                placeholder="Hose Intelligent Agent Platform"
               />
             </div>
 
@@ -1586,7 +1586,7 @@ onMounted(() => {
                 v-model="brandingConfig.default_agent_name"
                 type="text"
                 class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                placeholder="NanZi · AI"
+                placeholder="Hose · AI"
               />
               <p class="text-xs text-gray-400 mt-1">影响未开启品牌个性化时或未指定时的智能助手默认名称（例如：Nexus AI）</p>
             </div>

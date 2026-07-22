@@ -1984,7 +1984,7 @@ const getAgentColorTheme = (agent: AIAgent) => {
 const getEngineShortLabel = (agent: AIAgent) => {
   if (agent.engine_type === 'RAGFLOW') return 'RAGFlow'
   if (agent.engine_type === 'OPENCLAW') return 'OpenClaw'
-  return 'NanZi'
+  return 'Hose'
 }
 
 const getAgentTypeLabel = (agent: AIAgent) => {
@@ -2773,7 +2773,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                       {{ agent.is_system ? '系统内置' : '自定义' }}
                     </span>
                     <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 whitespace-nowrap">
-                      {{ agent.engine_type === 'LOCAL' ? 'NanZi Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
+                      {{ agent.engine_type === 'LOCAL' ? 'Hose Engine' : agent.engine_type === 'RAGFLOW' ? 'RAGFlow' : agent.engine_type === 'OPENCLAW' ? 'OpenClaw' : agent.engine_type }}
                     </span>
                     <span class="rounded border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap" :class="getAgentTypeBadgeClass(agent)">
                       {{ getAgentTypeLabel(agent) }}
@@ -3001,7 +3001,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
               :class="agentForm.engine_type === 'LOCAL' ? 'bg-blue-50 border-blue-500 shadow-sm' : 'bg-white border-gray-100 hover:border-blue-200'"
             >
               <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-xl mb-2 group-hover:scale-110 transition-transform">🧠</div>
-              <div class="text-[11px] font-bold" :class="agentForm.engine_type === 'LOCAL' ? 'text-blue-700' : 'text-gray-600'">NanZi Engine</div>
+              <div class="text-[11px] font-bold" :class="agentForm.engine_type === 'LOCAL' ? 'text-blue-700' : 'text-gray-600'">Hose Engine</div>
               <div class="text-[9px] text-gray-400 mt-0.5">自主智能体</div>
               <div v-if="agentForm.engine_type === 'LOCAL'" class="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-sm">
                 <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
@@ -3044,7 +3044,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
                 : agentForm.engine_type === 'OPENCLAW'
                   ? 'border-orange-200 bg-orange-50 text-orange-700'
                   : 'border-blue-200 bg-blue-50 text-blue-700'"
-            >{{ agentForm.engine_type === 'RAGFLOW' ? '🌊 RAGFlow' : agentForm.engine_type === 'OPENCLAW' ? '🦞 OpenClaw' : '🧠 NanZi Engine' }}</span>
+            >{{ agentForm.engine_type === 'RAGFLOW' ? '🌊 RAGFlow' : agentForm.engine_type === 'OPENCLAW' ? '🦞 OpenClaw' : '🧠 Hose Engine' }}</span>
             <span class="text-xs text-gray-400">执行引擎不可修改；当前引擎参数仍可编辑</span>
           </div>
 
@@ -3652,7 +3652,7 @@ const formatSkillCountLabel = (agent: AIAgent) => {
             <div class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
               <div class="flex items-center gap-2">
                 <span class="text-xl">🧠</span>
-                <h4 class="text-sm font-bold text-gray-900">NanZi Engine（平台原生）</h4>
+                <h4 class="text-sm font-bold text-gray-900">Hose Engine（平台原生）</h4>
               </div>
               <p class="mt-2 text-sm leading-relaxed text-gray-600">
                 在本平台内完成编排：模型策略、工具能力、系统提示词、版本发布都由平台托管。适合需要多步配置、草稿发布和平台内调试的标准智能体。

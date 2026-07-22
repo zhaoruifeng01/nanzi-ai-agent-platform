@@ -1318,7 +1318,7 @@ const loadGreeting = async () => {
       {
         id: Date.now(),
         role: "agent",
-        content: "您好！我是南孜智能体，期待为您服务。",
+        content: "您好！我是Hose智能体，期待为您服务。",
         isGreeting: true,
       },
     ];
@@ -2747,7 +2747,7 @@ const sendMessage = async () => {
     isThoughtExpanded: true, // Default expanded to show progress
     thoughtStartTime: Date.now(),
     thoughtDuration: "0.0",
-    thinkingText: "南孜正在处理您的请求...",
+    thinkingText: "Hose正在处理您的请求...",
   });
   messages.value.push(agentMsg.value);
 
@@ -4681,23 +4681,6 @@ onUnmounted(() => {
                   </div>
                 </transition>
               </div>
-
-
-
-
-              <style scoped>
-              .typing-cursor::after {
-                content: '▋';
-                animation: blink 1s step-start infinite;
-                display: inline-block;
-                margin-left: 2px;
-                vertical-align: baseline;
-                color: #2563eb; /* Primary blue */
-              }
-              @keyframes blink {
-                50% { opacity: 0; }
-              }
-              </style>
               </div>
 
               <!-- Thinking Indicator (Removed in favor of dynamic timeline indicator) -->
@@ -5910,6 +5893,17 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.typing-cursor::after {
+  content: '▋';
+  animation: blink 1s step-start infinite;
+  display: inline-block;
+  margin-left: 2px;
+  vertical-align: baseline;
+  color: #2563eb; /* Primary blue */
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
 }

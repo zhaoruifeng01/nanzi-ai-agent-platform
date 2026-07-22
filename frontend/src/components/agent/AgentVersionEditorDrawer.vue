@@ -310,7 +310,7 @@ const externalCreationMissingFields = computed(() => {
                 >?</button>
               </div>
               <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <button v-for="engine in [{ value: 'LOCAL', label: 'NanZi Engine', icon: '🧠', note: '平台原生编排' }, { value: 'RAGFLOW', label: 'RAGFlow', icon: '🌊', note: '外部智能体' }, { value: 'OPENCLAW', label: 'OpenClaw', icon: '🦞', note: '外部任务机器人' }]" :key="engine.value" type="button" @click="selectEngine(engine.value as any)" class="rounded-xl border-2 bg-white p-4 text-left transition-all" :class="agentForm.engine_type === engine.value ? 'border-primary shadow-sm ring-1 ring-primary/10' : 'border-white hover:border-blue-200'">
+                <button v-for="engine in [{ value: 'LOCAL', label: 'Hose Engine', icon: '🧠', note: '平台原生编排' }, { value: 'RAGFLOW', label: 'RAGFlow', icon: '🌊', note: '外部智能体' }, { value: 'OPENCLAW', label: 'OpenClaw', icon: '🦞', note: '外部任务机器人' }]" :key="engine.value" type="button" @click="selectEngine(engine.value as any)" class="rounded-xl border-2 bg-white p-4 text-left transition-all" :class="agentForm.engine_type === engine.value ? 'border-primary shadow-sm ring-1 ring-primary/10' : 'border-white hover:border-blue-200'">
                   <div class="flex items-center gap-2"><span class="text-xl">{{ engine.icon }}</span><span class="text-sm font-bold text-gray-800">{{ engine.label }}</span></div><div class="mt-2 text-[11px] text-gray-500">{{ engine.note }}</div>
                 </button>
               </div>
@@ -1011,7 +1011,7 @@ const externalCreationMissingFields = computed(() => {
           <div class="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
             <div class="flex items-center gap-2">
               <span class="text-xl">🧠</span>
-              <h4 class="text-sm font-bold text-gray-900">NanZi Engine（平台原生）</h4>
+              <h4 class="text-sm font-bold text-gray-900">Hose Engine（平台原生）</h4>
             </div>
             <p class="mt-2 text-sm leading-relaxed text-gray-600">
               在本平台内完成编排：模型策略、工具能力、系统提示词、版本发布都由平台托管。适合需要多步配置、草稿发布和平台内调试的标准智能体。

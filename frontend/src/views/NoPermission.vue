@@ -38,7 +38,7 @@
       </div>
 
       <div class="mt-8 border-t border-gray-50 pt-6">
-        <span class="text-[10px] uppercase font-bold text-gray-300 tracking-widest">NanZi AI Agent Platform</span>
+        <span class="text-[10px] uppercase font-bold text-gray-300 tracking-widest">Hose AI Agent Platform</span>
       </div>
     </div>
   </div>
