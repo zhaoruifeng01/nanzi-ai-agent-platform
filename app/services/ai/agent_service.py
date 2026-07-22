@@ -1706,8 +1706,7 @@ class AgentService:
                 final_status = "awaiting_external_execution"
             elif chunk_type == "error" or chunk.get("status") == "error":
                 final_status = "error"
-            if "content" in chunk:
-                full_content += chunk["content"]
+            full_content = _accumulate_stream_content(full_content, chunk)
             if "agent_name" in chunk:
                 agent_name_resp = chunk["agent_name"]
 

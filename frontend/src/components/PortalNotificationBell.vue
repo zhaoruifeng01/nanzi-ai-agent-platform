@@ -36,6 +36,7 @@ const notificationKindLabel = (item: any) => {
 
 const detailHtml = computed(() => renderMarkdown(String(detailItem.value?.content || "")));
 
+const detailCopied = ref(false);
 const closeNotifications = () => {
   open.value = false;
   if (listTimer) clearInterval(listTimer);
@@ -44,6 +45,20 @@ const closeNotifications = () => {
 
 const closeDetail = () => {
   detailItem.value = null;
+  detailCopied.value = false;
+};
+
+const copyDetailContent = async () => {
+  if (!detailItem.value?.content) return;
+  try {
+    await navigator.clipboard.writeText(detailItem.value.content);
+    detailCopied.value = true;
+    setTimeout(() => {
+      detailCopied.value = false;
+    }, 2000);
+  } catch (err) {
+    console.warn("Failed to copy notification content", err);
+  }
 };
 
 const fetchUnreadCount = async () => {
@@ -299,9 +314,26 @@ onUnmounted(() => {
               <h3 class="text-base font-black text-gray-800">{{ detailItem.title }}</h3>
               <p class="mt-1 text-[11px] text-gray-400">{{ formatDate(detailItem.created_at) }}</p>
             </div>
-            <button type="button" class="shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="关闭详情" aria-label="关闭详情" @click="closeDetail">
-              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition-all shadow-sm active:scale-95 border"
+                :class="detailCopied ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200'"
+                :title="detailCopied ? '已复制到剪贴板' : '复制消息完整内容'"
+                @click="copyDetailContent"
+              >
+                <svg v-if="detailCopied" class="h-3.5 w-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+                </svg>
+                <svg v-else class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span>{{ detailCopied ? '已复制' : '复制内容' }}</span>
+              </button>
+              <button type="button" class="shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="关闭详情" aria-label="关闭详情" @click="closeDetail">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
           </div>
           <div class="notification-detail-body flex-1 overflow-y-auto px-5 py-4">
             <div class="markdown-body text-sm text-gray-700 leading-relaxed" v-html="detailHtml"></div>
