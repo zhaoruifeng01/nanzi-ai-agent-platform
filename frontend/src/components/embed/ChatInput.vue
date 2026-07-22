@@ -304,19 +304,31 @@ const selectCommand = (cmd: any) => {
   }
 };
 
-const handleMentionSelect = (agent: any) => {
+/** 清除输入中的 @关键字片段，并可选触发专家切换 */
+const clearMentionTrigger = () => {
   const target = inputRef.value;
-  if (!target) return;
+  if (!target) return false;
   const val = props.modelValue;
   const cursor = target.selectionStart;
-  const lastAt = val.lastIndexOf('@', cursor - 1);
-  if (lastAt !== -1) {
-      const before = val.slice(0, lastAt);
-      const after = val.slice(cursor);
-      emit('update:modelValue', before + after);
-      nextTick(() => { target.selectionStart = target.selectionEnd = before.length; target.focus(); });
-      emit('switch-mode', agent);
-  }
+  const lastAt = Math.max(val.lastIndexOf('@', cursor - 1), val.lastIndexOf('＠', cursor - 1));
+  if (lastAt === -1) return false;
+  const before = val.slice(0, lastAt);
+  const after = val.slice(cursor);
+  emit('update:modelValue', before + after);
+  nextTick(() => {
+    target.selectionStart = target.selectionEnd = before.length;
+    target.focus();
+  });
+  return true;
+};
+
+const handleMentionSelect = (agent: any) => {
+  if (clearMentionTrigger()) emit('switch-mode', agent);
+  showMentionList.value = false;
+};
+
+const handleMentionSelectAuto = () => {
+  if (clearMentionTrigger()) emit('switch-to-auto');
   showMentionList.value = false;
 };
 
@@ -1683,7 +1695,18 @@ defineExpose({
         </div>
       </div>
 
-      <MentionList ref="mentionListRef" :visible="showMentionList" :keyword="mentionKeyword" :agents="allowedAgents" :position="mentionPosition" @select="handleMentionSelect" @close="showMentionList = false" />
+      <MentionList
+        ref="mentionListRef"
+        :visible="showMentionList"
+        :keyword="mentionKeyword"
+        :agents="allowedAgents"
+        :position="mentionPosition"
+        :routing-mode="routingMode"
+        :expert-agent-id="expertAgentId"
+        @select="handleMentionSelect"
+        @select-auto="handleMentionSelectAuto"
+        @close="showMentionList = false"
+      />
 
       <!-- Mobile command drawer (opened from header shortcut button) -->
       <Teleport to="body">
