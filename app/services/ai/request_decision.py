@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Optional
+
+from app.services.ai.chatbi_qualification import ChatBIQualification, ChatBIMode
 
 from app.services.ai.intent_service import (
     IntentType,
@@ -41,6 +43,8 @@ class RequestSource(str, Enum):
 
 class RequestCapability(str, Enum):
     ANSWER = "answer"
+    # Backward-compatible value: data_query is the platform's ChatBI query
+    # capability, not a generic capability for every structured fact lookup.
     DATA_QUERY = "data_query"
     KNOWLEDGE_SEARCH = "knowledge_search"
     WEB_SEARCH = "web_search"
@@ -60,6 +64,10 @@ class RequestDecision:
     allows_data_route: bool = False
     semantic_intent: Optional[str] = None
     semantic_confidence: float = 0.0
+    chatbi_mode: Optional[str] = None
+    chatbi_evidence_level: str = "none"
+    chatbi_reason: Optional[str] = None
+    matched_dataset_ids: tuple[int, ...] = ()
 
 
 def _intent_name(value: Any) -> str:
@@ -101,6 +109,46 @@ def _decision(
     )
 
 
+def apply_chatbi_qualification(
+    decision: RequestDecision,
+    qualification: ChatBIQualification,
+) -> RequestDecision:
+    """Apply the ChatBI evidence gate without changing other capabilities."""
+    is_chatbi_decision = (
+        decision.capability == RequestCapability.DATA_QUERY
+        or decision.delegate_capability == RequestCapability.DATA_QUERY.value
+    )
+    if qualification.mode == ChatBIMode.DIRECT and is_chatbi_decision:
+        allows_data_route = True
+        should_delegate = decision.should_delegate
+    elif qualification.mode == ChatBIMode.CLARIFY and is_chatbi_decision:
+        # A direct ChatBI route may ask the user to choose a dataset, but a
+        # General agent must not silently spend a sub-agent call on it.
+        allows_data_route = True
+        should_delegate = False
+    elif is_chatbi_decision:
+        allows_data_route = False
+        should_delegate = False
+    else:
+        # Carry the qualification metadata even when another, stronger
+        # capability (runtime tool, web, knowledge, etc.) already won.
+        allows_data_route = decision.allows_data_route
+        should_delegate = decision.should_delegate
+
+    return replace(
+        decision,
+        allows_data_route=allows_data_route,
+        should_delegate=should_delegate,
+        delegate_capability=(
+            decision.delegate_capability if should_delegate else None
+        ),
+        chatbi_mode=qualification.mode.value,
+        chatbi_evidence_level=qualification.evidence_level,
+        chatbi_reason=qualification.reason,
+        matched_dataset_ids=qualification.matched_dataset_ids,
+    )
+
+
 def resolve_request_decision(
     query: str,
     *,
@@ -114,7 +162,7 @@ def resolve_request_decision(
     """统一判断请求来源、所需能力和是否允许委派。
 
     判定顺序按“强边界优先”排列：平台自服务、公网、运行环境、通用问答等先拦截，
-    内部知识库/内部数据只在有明确来源证据时才打开。
+    内部知识库/ChatBI 业务数据只在有明确来源证据时才打开。
     """
     q = (query or "").strip()
     semantic_name = _intent_name(semantic_intent)
@@ -240,7 +288,7 @@ def resolve_request_decision(
             RequestCapability.DATA_QUERY,
             max(semantic_score, 0.86),
             (
-                "internal structured data signal"
+                "ChatBI internal structured data signal"
                 if looks_like_strong_business_data_request(q)
                 else "confirmed data_query intent requires data agent"
             ),

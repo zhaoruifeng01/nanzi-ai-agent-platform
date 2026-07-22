@@ -198,3 +198,44 @@ async def test_ai_enrichment_includes_optional_subscription_instruction():
 
     assert "只展示异常机器，并使用管理层语言" in captured["prompt"]
     assert result["analysis_instruction"] == "只展示异常机器，并使用管理层语言"
+
+
+@pytest.mark.asyncio
+async def test_subscription_ai_prompt_forbids_quick_suggestions():
+    from app.services.saved_report_digest_service import enrich_digest_with_ai
+
+    captured = {}
+    digest = {
+        "title": "机器负载日报", "scope": "按订阅条件",
+        "key_findings": ["本次共查询到 1 条数据"], "records": [{"服务器": "server-03"}],
+        "analysis": [], "risk_note": None, "generation_mode": "fallback", "ai_status": "disabled",
+    }
+
+    async def generator(prompt):
+        captured["prompt"] = prompt
+        return '{"key_findings":["server-03 需要关注"],"analysis":["当前结果仅包含一台机器"],"risk_note":null}'
+
+    result = await enrich_digest_with_ai(digest, enabled=True, generator=generator)
+
+    assert "quick_suggestions_forbidden=true" in captured["prompt"]
+    assert "禁止输出任何 quick" in captured["prompt"]
+    assert result["ai_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_subscription_ai_quick_markup_falls_back_to_clean_digest():
+    from app.services.saved_report_digest_service import enrich_digest_with_ai
+
+    digest = {
+        "title": "机器负载日报", "scope": "按订阅条件",
+        "key_findings": ["本次共查询到 1 条数据"], "records": [{"服务器": "server-03"}],
+        "analysis": [], "risk_note": None, "generation_mode": "fallback", "ai_status": "disabled",
+    }
+
+    async def generator(_prompt):
+        return '{"key_findings":["查看详情 [🙋 继续分析](quick:继续分析)"],"analysis":["当前结果仅包含一台机器"],"risk_note":null}'
+
+    result = await enrich_digest_with_ai(digest, enabled=True, generator=generator)
+
+    assert result["ai_status"] == "fallback"
+    assert all("quick:" not in str(value) for value in result["key_findings"])

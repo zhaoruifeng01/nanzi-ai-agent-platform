@@ -34,6 +34,10 @@ from app.services.ai.tools.memory_ltm_tools import (
     update_user_preference, fetch_user_long_term_memory, delete_user_preference
 )
 from app.services.ai.tools.memory_search_tool import memory_search
+from app.services.ai.tools.resource_catalog_tools import (
+    list_accessible_datasets,
+    list_accessible_knowledge_bases,
+)
 from app.services.ai.tools.agent_delegate_tool import sub_agent_call
 from app.services.ai.tools.excel_document_tool import excel_document_read, excel_document_write
 from app.services.ai.tools.word_document_tool import word_document_read, word_document_write
@@ -263,6 +267,8 @@ class ToolRegistry:
         "fetch_user_long_term_memory": fetch_user_long_term_memory,
         "delete_user_preference": delete_user_preference,
         "memory_search": memory_search,
+        "list_accessible_datasets": list_accessible_datasets,
+        "list_accessible_knowledge_bases": list_accessible_knowledge_bases,
         "sub_agent_call": sub_agent_call,
         "excel_document_read": excel_document_read,
         "excel_document_write": excel_document_write,
@@ -734,6 +740,8 @@ class ToolRegistry:
             fetch_user_long_term_memory,
             delete_user_preference,
             memory_search,
+            list_accessible_datasets,
+            list_accessible_knowledge_bases,
             create_skills,
             list_available_skills,
             read_skill_instruction,

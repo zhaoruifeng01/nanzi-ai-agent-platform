@@ -19,9 +19,11 @@ from typing import Any, List, Mapping, Optional, Sequence, Set
 
 from app.services.ai.request_decision import (
     RequestCapability,
+    RequestDecision,
     RequestSource,
     resolve_request_decision,
 )
+from app.services.ai.chatbi_qualification import ChatBIMode
 
 # 不主动促发的工具（写入/管理/记忆维护类）：避免推动模型产生副作用或与专门机制重复。
 _NUDGE_EXCLUDED_TOOLS = frozenset({
@@ -344,26 +346,28 @@ def resolve_tool_nudge(
     semantic_intent: Any = None,
     semantic_confidence: Any = None,
     turn_intent: Any = None,
+    request_decision: Optional[RequestDecision] = None,
 ) -> Optional[ToolNudge]:
     """解析本轮是否需要工具促发；返回相关度最高的一条便签或 None。
 
     相关度完全由 ``tools`` 的 name + description 与问题的字符重叠决定，
     不依赖任何写死的工具名或类别。
 
-    强查数/强知识库委派：强制调用 sub_agent_call，但 agent_name 由模型按
+    强 ChatBI/强知识库委派：强制调用 sub_agent_call，但 agent_name 由模型按
     通讯录语义选择（与自动路由对齐），不再按 sort_order 点名唯一目标。
     ``sub_agent_targets_by_capability`` 仅为兼容旧调用方，等价于单元素候选。
     """
     query = (user_query or "").strip()
     if not query or not should_consider_tool_nudge(query):
         return None
-    request_decision = resolve_request_decision(
-        query,
-        semantic_intent=semantic_intent,
-        semantic_confidence=semantic_confidence,
-        turn_intent=turn_intent,
-        semantic_intent_blocks_followup=True,
-    )
+    if request_decision is None:
+        request_decision = resolve_request_decision(
+            query,
+            semantic_intent=semantic_intent,
+            semantic_confidence=semantic_confidence,
+            turn_intent=turn_intent,
+            semantic_intent_blocks_followup=True,
+        )
 
     capability_candidates = dict(sub_agent_candidates_by_capability or {})
     if sub_agent_targets_by_capability:
@@ -381,6 +385,22 @@ def resolve_tool_nudge(
                 message=_build_explicit_sub_agent_message(explicit_sub_agent),
                 force_first_call=True,
             )
+
+    # data_query is a ChatBI capability in this platform, not a generic
+    # "anything that looks like data" capability.  Only allow it when the
+    # canonical source decision explicitly permits the ChatBI route.  In
+    # particular, runtime diagnostics must never be sent to a ChatBI agent
+    # just because a lower-level turn classifier said DATA_QUERY.
+    chatbi_route_allowed = (
+        request_decision.should_delegate
+        and request_decision.delegate_capability == "data_query"
+        and request_decision.allows_data_route
+        and request_decision.chatbi_mode in {None, ChatBIMode.DIRECT.value}
+        and request_decision.source in {
+            RequestSource.INTERNAL_STRUCTURED_DATA,
+            RequestSource.CONVERSATION_CONTEXT,
+        }
+    )
 
     if sub_agent_tool and request_decision.source != RequestSource.PLATFORM_SELF_HELP:
         def _sub_agent_available(name: str) -> bool:
@@ -415,10 +435,7 @@ def resolve_tool_nudge(
                 ),
                 force_first_call=True,
             )
-        elif (
-            request_decision.should_delegate
-            and request_decision.delegate_capability == "data_query"
-        ):
+        elif chatbi_route_allowed:
             candidates = _available_candidates_for("data_query")
             if not candidates:
                 return None

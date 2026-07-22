@@ -122,6 +122,12 @@ _QUICK_SECTION_BLOCK = re.compile(
     r"(?:\n\s*- \[[^\]]+\]\(quick:[^)]+\))+)",
     re.IGNORECASE | re.MULTILINE,
 )
+_QUICK_MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(\s*quick:[^)]+\)", re.IGNORECASE)
+_QUICK_PROTOCOL = re.compile(r"\(?\s*quick:[^)\n]+\)?", re.IGNORECASE)
+_QUICK_SECTION_TITLE = re.compile(
+    r"^\s*#{2,6}\s*(?:💬\s*)?(?:您可能还想了解|您可以这样继续|一键继续)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def move_quick_suggestions_to_end(text: str) -> str:
@@ -142,6 +148,21 @@ def move_quick_suggestions_to_end(text: str) -> str:
     without_quick = (raw[:quick_start] + raw[quick_end:]).strip()
     without_quick = re.sub(r"\n{3,}", "\n\n", without_quick)
     return f"{without_quick}\n\n{quick_block}\n"
+
+
+def suppress_quick_suggestions(text: str) -> str:
+    """Remove interactive quick protocol from non-interactive delivery output."""
+    cleaned = _QUICK_SECTION_BLOCK.sub("", text or "")
+    cleaned = re.sub(
+        r"^\s*[-*]\s*\[[^\]]+\]\(\s*quick:[^)]+\)\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    cleaned = _QUICK_MARKDOWN_LINK.sub("", cleaned)
+    cleaned = _QUICK_PROTOCOL.sub("", cleaned)
+    cleaned = _QUICK_SECTION_TITLE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def finalize_visible_reply(text: str, *, collapse_duplicates: bool = True) -> str:

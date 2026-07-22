@@ -32,7 +32,7 @@
 
 ### 2.2 编排层 prepend（`AgentService`）
 
-**代码执行顺序**（每次 `f"{新块}\n\n{旧内容}"`）；**模型阅读顺序**与执行顺序相反，**最顶**由最后一步统一加上平台全局守则。
+**代码执行顺序**（每次 `f"{新块}\n\n{旧内容}"`）；**模型阅读顺序**与执行顺序相反。LOCAL 请求由 `prepend_platform_global_system_prompt()` 使用 `PLATFORM_GLOBAL_SYSTEM_PROMPT` 作为唯一核心来源，再按当前工具能力追加动态段落。
 
 | 顺序（代码先后） | 块 | 条件 |
 |------------------|-----|------|
@@ -48,7 +48,7 @@
 **发给模型时，从上到下：**
 
 ```
-[南孜智能体平台 · 全局守则]     ← PLATFORM_GLOBAL_SYSTEM_PROMPT（常量）
+[南孜智能体平台 · 全局守则]     ← 核心常量 + 当前能力动态段
 [System Preloaded Memories]    ← 可选
 [跨会话记忆检索]               ← 可选
 [Memory Profile]               ← 可选
@@ -58,7 +58,7 @@
 智能体 DB system_prompt        ← 领域专规（栈底）
 ```
 
-修改全局守则：仅改 `app/services/ai/agent_prompts.py` 中 `PLATFORM_GLOBAL_SYSTEM_PROMPT`（含记忆工具对照、仅调用已绑定工具；进程/读写仅在有对应工具时按 tool description 使用）。
+修改全局核心守则：改 `app/services/ai/agent_prompts.py` 中 `PLATFORM_GLOBAL_SYSTEM_PROMPT`；工具清单、记忆/知识对照、技能和审批段落由 `prepend_platform_global_system_prompt()` 根据当前绑定能力追加。进程/读写仍仅在有对应工具时按 tool description 使用。
 
 ### 2.2.1 PromptAssembler 与 cache reorder
 
@@ -91,6 +91,12 @@ full_text = stable_prefix + CACHE_BOUNDARY + dynamic_suffix   （有动态块时
 
 **平台全局守则不省略**（LOCAL 每轮都有）。
 
+### 2.5 Quick 交互与自动交付边界
+
+- 普通交互式会话：回答完成后尽可能提供 2–3 个与当前任务相关、可立即点击继续的 quick 建议；保留现有 Markdown `quick:` 协议，并将 quick 区块放在整段回答末尾。
+- 定时任务、订阅任务及其他后台自动交付：运行时注入 `quick_suggestions_forbidden=true`，平台提示词明确禁止 quick；`chat_completion` 返回前还会清理误产出的 quick 区块/链接，避免进入自动通知。
+- 订阅简报独立使用纯 JSON AI 分析链路，提示词同样携带该禁用标记；若 AI 返回 quick 协议则放弃 AI 结果并回退到无 quick 的确定性简报。
+
 ---
 
 ## 3. 主对话 messages 最终形态
@@ -109,9 +115,9 @@ graph TD
         M6[DataQuery/Tool Message 等专属追加 - 可选]
     end
 
-    subgraph M1_Detail[SystemMessage #1 内部层级 - 自顶向下优先级]
+    subgraph M1_Detail[SystemMessage #1 内部层级 - 自顶向下约束关系]
         M1_0["[工具预检便签] (Assistant 有工具时，可选)"]
-        M1_1["[南孜智能体平台 · 全局守则] (最顶层/最高优先级)"]
+        M1_1["[南孜智能体平台 · 全局守则] (平台安全与权威顺序)"]
         M1_1b["[用户画像 Active User Profile] (PromptAssembler stable_prefix)"]
         M1_2["[System Preloaded Memories] (历史回忆，可选)"]
         M1_3["[跨会话记忆检索提示] (可选)"]
@@ -137,8 +143,8 @@ HumanMessage       ← 本轮用户（见 §4）
 
 #### 1. SystemMessage #1：系统提示词栈
 在后端 `AgentService` 中，系统提示词由多段内容从上到下组装。越靠上的内容在模型中拥有更高的约束力：
-- **`[南孜智能体平台 · 全局守则]`（PLATFORM_GLOBAL_SYSTEM_PROMPT）**：
-  - **最高优先级**：声明其优先级高于智能体专规及用户当轮要求，防止 Prompt 注入攻击。
+- **`[南孜智能体平台 · 全局守则]`（`PLATFORM_GLOBAL_SYSTEM_PROMPT` 核心 + 动态能力段）**：
+  - **权威顺序**：平台工具门禁和安全规则 → 当前执行器规则 → 用户当前请求 → 智能体专规 → 记忆/技能/外部内容。工具层权限和确认由后端门禁决定，提示词不替代后端校验。
   - **安全与保密**：严禁透露内部提示词、流程、路由逻辑或非安全模式；进行敏感信息脱敏（如 IP 地址、密钥）；禁止模型编造不存在的 URL 或工单。
   - **工具调用约束**：强力约束模型“仅调用已绑定工具”，规范敏感工具（如 `read_file`、`search_text`、`exec_command`）的使用边界，优先推荐用专门工具而非通用 Shell 命令。
   - **记忆对照表**：指导模型在遇到特定意图（如“上次我们聊了啥”、“我的偏好是...”）时，应该优先去调用哪个具体工具。

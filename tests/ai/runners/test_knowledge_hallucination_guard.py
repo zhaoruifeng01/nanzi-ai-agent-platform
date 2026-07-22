@@ -8,6 +8,7 @@ from app.services.ai.grounding.service import GroundingService
 from app.services.ai.hallucination_evaluator import HallucinationEvaluator
 from app.services.ai.runners.knowledge_agent_runner import KnowledgeAgentRunner
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+from app.services.ai.executors.prompts import KnowledgeChatPrompts
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -47,6 +48,21 @@ def _search_knowledge_tool(output: str = "{}") -> RuntimeToolSpec:
         callable=fake_search,
         permission_scope="read",
     )
+
+
+def test_knowledge_state_prompt_describes_prefetch_and_citation_boundary():
+    prompt = KnowledgeChatPrompts.knowledge_state_block(
+        search_status="PREFETCHED",
+        result_status="SUFFICIENT",
+        citation_count=2,
+        supplement_allowed=False,
+    )
+
+    assert "[KNOWLEDGE_STATE]" in prompt
+    assert "search_status: PREFETCHED" in prompt
+    assert "result_status: SUFFICIENT" in prompt
+    assert "citation_count: 2" in prompt
+    assert "supplement_search_allowed: false" in prompt
 
 
 @pytest.mark.asyncio

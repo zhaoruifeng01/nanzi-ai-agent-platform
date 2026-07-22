@@ -32,6 +32,7 @@ class PromptAssemblyInput:
     cache_boundary_enabled: bool = False
     cache_reorder_enabled: bool = False
     sub_agents_context: Optional[str] = None
+    quick_suggestions_forbidden: bool = False
 
 
 def _prepend_block(current: str, block: Optional[str]) -> str:
@@ -95,6 +96,7 @@ def _platform_global_only(params: PromptAssemblyInput) -> str:
     return AgentServicePrompts.prepend_platform_global_system_prompt(
         None,
         agent_config=params.agent_config,
+        quick_suggestions_forbidden=params.quick_suggestions_forbidden,
     ).strip()
 
 
@@ -144,6 +146,7 @@ def assemble_system_prompt(params: PromptAssemblyInput) -> AssembledSystemPrompt
             full_text = AgentServicePrompts.prepend_platform_global_system_prompt(
                 stack_without_platform or None,
                 agent_config=params.agent_config,
+                quick_suggestions_forbidden=params.quick_suggestions_forbidden,
             )
     else:
         full_text = stack_without_platform
