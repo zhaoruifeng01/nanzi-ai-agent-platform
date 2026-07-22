@@ -815,6 +815,7 @@ const externalCreationMissingFields = computed(() => {
                 placeholder="你是一个..."
                 fill
                 enable-optimize
+                :disabled="!canEditVersion"
               />
             </div>
             <p class="text-[10px] text-gray-400 mt-2 flex-shrink-0">{{ promptCharCount }} 字符</p>
