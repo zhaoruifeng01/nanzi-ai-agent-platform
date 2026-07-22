@@ -115,13 +115,15 @@ interface ContentSegment {
 
   const FILE_PATH_EXTENSIONS =
     'md|csv|txt|py|js|ts|sh|sql|json|pdf|html|css|yaml|yml|log|env|docx?|xlsx?|xlsm|pptx?';
-  const FILE_PATH_SEGMENT = String.raw`[^/\s<>"'，。；：！？、]+`;
+  const FILE_PATH_SEGMENT = String.raw`[^/#\s<>"'，。；：！？、]+`;
   const filePathRegex = new RegExp(
     String.raw`(?:\./|/)?(?:${FILE_PATH_SEGMENT}/)+${FILE_PATH_SEGMENT}\.(?:${FILE_PATH_EXTENSIONS})`,
     'giu',
   );
 
-  const appendOpenLinkToPath = (pathVal: string) => {
+  const appendOpenLinkToPath = (rawPathVal: string) => {
+    const pathVal = rawPathVal.replace(/###HTML_TAG_PLACEHOLDER_\d+###/g, '').trim();
+    if (!pathVal) return rawPathVal;
     const canvasUrl = `canvas://file?path=${encodeURIComponent(pathVal)}`;
     return `${pathVal}<a href="${canvasUrl}" class="inline-flex items-center text-blue-600 dark:text-blue-400 hover:underline font-bold ml-1.5 text-[10.5px]" title="点击在画布中打开文件" style="cursor: pointer;">[打开]</a>`;
   };

@@ -1342,6 +1342,8 @@
 
     <ChatCanvas
       :visible="canvasVisible"
+      v-model:pinned="canvasPinned"
+      v-model:canvas-width="canvasPinnedWidthReactive"
       :data="canvasData"
       :overlay="canvasFromWorkspace"
       :dock-side="canvasFromWorkspace ? 'left' : 'right'"
@@ -1355,6 +1357,7 @@
     <KnowledgePortalDrawer
       v-model="showKnowledgePortal"
       v-model:pinned="knowledgePinned"
+      v-model:drawer-width="knowledgeDrawerWidthReactive"
       v-model:keep-open-on-question="knowledgeKeepOpenOnQuestion"
       v-model:hallucination-check="hallucinationCheckEnabled"
       v-model:similarity-threshold="knowledgeSimilarityThreshold"
@@ -1383,6 +1386,7 @@
       v-model="showWorkspaceDrawer"
       v-model:keep-open-on-select="workspaceKeepOpenOnSelect"
       v-model:pinned="workspacePinned"
+      v-model:drawer-width="workspaceDrawerWidthReactive"
       :pinned-dock-class="workspacePinnedDockClass"
       :conversation-id="conversationId"
       :session-started="messages.length > 0"
@@ -2385,6 +2389,7 @@
       v-model="showPortalDrawer"
       v-model:keep-open-on-question="portalKeepOpenOnQuestion"
       v-model:pinned="portalPinned"
+      v-model:drawer-width="portalDrawerWidthReactive"
       :payload="portalNavigationPayload"
       :initial-loading="portalLoading && !portalNavigationPayload"
       :background-refreshing="portalBackgroundRefreshing"
@@ -3719,8 +3724,12 @@ const handlePreviewImageUrl = (url: string, filename: string) => {
   });
 };
 
-const resolveFileUrl = (url: string): string => {
-  if (!url) return '';
+const resolveFileUrl = (rawUrl: string): string => {
+  if (!rawUrl) return '';
+  let url = rawUrl;
+  if (url.includes('###HTML_TAG_PLACEHOLDER_')) {
+    url = url.replace(/###HTML_TAG_PLACEHOLDER_\d+###/g, '').trim();
+  }
   if (isDirectRenderableUrl(url)) {
     return url;
   }
@@ -3749,6 +3758,9 @@ const {
   resolveFileUrl,
   showToast,
 });
+
+// 画布钉住状态（钉住后侧边固定，不遮挡对话）
+const canvasPinned = ref(false);
 
 // Long-Term Memory States
 const activeLtmPreference = ref<any>(null);
@@ -5669,23 +5681,47 @@ const pinnedDrawerDockOffsetRem = (exclude?: "portal" | "workspace" | "memory" |
   return rem;
 };
 
-const pinnedDrawerRightRem = computed(() => {
-  if (isMobile.value) return 0;
-  return pinnedDrawerDockOffsetRem();
+// 响应式抽屉宽度 refs（由各抽屉组件通过 v-model:drawerWidth / v-model:canvasWidth 实时同步）
+const portalDrawerWidthReactive = ref(448);
+const knowledgeDrawerWidthReactive = ref(448);
+const workspaceDrawerWidthReactive = ref(448);
+const canvasPinnedWidthReactive = ref(520);
+
+const portalDrawerWidthPx = computed(() => {
+  if (!showPortalDrawer.value || !portalPinned.value || isMobile.value) return 0;
+  return portalDrawerWidthReactive.value;
 });
 
-const saveReportModalOverlayStyle = computed(() => {
-  const rem = pinnedDrawerRightRem.value;
-  return { right: rem > 0 ? `${rem}rem` : "0" };
+const knowledgeDrawerWidthPx = computed(() => {
+  if (!showKnowledgePortal.value || !knowledgePinned.value || isMobile.value) return 0;
+  return knowledgeDrawerWidthReactive.value;
 });
-const saveReportModalOverlayClass = computed(() => {
-  const isPinned = (showPortalDrawer.value && portalPinned.value) || (showKnowledgePortal.value && knowledgePinned.value);
-  return isPinned ? 'right-[28rem]' : 'right-0';
+
+const canvasPinnedWidthPx = computed(() => {
+  if (!canvasVisible.value || !canvasPinned.value || isMobile.value) return 0;
+  return canvasPinnedWidthReactive.value;
+});
+
+const workspaceDrawerWidthPx = computed(() => {
+  if (!showWorkspaceDrawer.value || !workspacePinned.value || isMobile.value) return 0;
+  return workspaceDrawerWidthReactive.value;
+});
+
+const totalPinnedDrawerPx = computed(() => {
+  if (isMobile.value) return 0;
+  let px = 0;
+  px += portalDrawerWidthPx.value;
+  px += knowledgeDrawerWidthPx.value;
+  px += workspaceDrawerWidthPx.value;
+  px += canvasPinnedWidthPx.value;
+  if (showMemoryDrawer.value && memoryPinned.value) px += 448;
+  if (showSkillDrawer.value && skillPinned.value) px += 448;
+  return px;
 });
 
 const pinnedDrawerMarginStyle = computed(() => {
-  const rem = pinnedDrawerRightRem.value;
-  return { marginRight: rem > 0 ? `min(${rem}rem, 100vw)` : "" };
+  const px = totalPinnedDrawerPx.value;
+  return px > 0 ? { marginRight: `min(${px}px, 100vw)` } : {};
 });
 
 const workspacePinnedDockClass = computed(() => {

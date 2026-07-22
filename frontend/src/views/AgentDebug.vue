@@ -2087,6 +2087,8 @@ const showQuotaStatusInChat = async () => {
   scrollToBottom(true);
 };
 
+const canvasPinned = ref(false);
+
 const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, agents.value);
   if (isDatasetPortalSlashCommand(normalizedCmd)) {
@@ -4749,6 +4751,7 @@ onUnmounted(() => {
 
       <ChatCanvas
         :visible="canvasVisible"
+        v-model:pinned="canvasPinned"
         :data="canvasData"
         :overlay="canvasFromWorkspace"
         :dock-side="canvasFromWorkspace ? 'left' : 'right'"
