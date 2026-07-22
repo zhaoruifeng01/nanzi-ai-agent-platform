@@ -149,8 +149,9 @@ const markItemRead = async (item: any) => {
 };
 const openNotification = async (item: any) => {
   const meta = item.metadata || {};
-  const savedReportOpenRequest = isSavedReportNotification(item) && meta.report_id
-    ? createSavedReportOpenRequest({ report_id: meta.report_id, run_id: item.resource_id || "" })
+  const reportId = meta.report_id || (item.category === "saved_report" || item.resource_type === "saved_report" ? item.resource_id : null);
+  const savedReportOpenRequest = isSavedReportNotification(item) && reportId
+    ? createSavedReportOpenRequest({ report_id: reportId, run_id: item.resource_id || "" })
     : null;
   const notificationTarget = savedReportOpenRequest
     ? {
@@ -174,7 +175,10 @@ const openNotification = async (item: any) => {
     return;
   }
 
-  // 普通站内消息：打开详情并渲染 Markdown
+  // 智能体/系统站内消息：打开详情弹窗并自动关闭下拉弹框；黄金报表消息保持原样
+  if (!isSavedReportNotification(item)) {
+    closeNotifications();
+  }
   detailItem.value = item;
 };
 const markAllRead = async () => {
