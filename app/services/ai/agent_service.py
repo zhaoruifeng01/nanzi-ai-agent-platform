@@ -84,6 +84,26 @@ class AgentService:
         return {"role": "system", "content": content}
 
     @staticmethod
+    def _should_forbid_quick_suggestions(user_info: Optional[Dict[str, Any]]) -> bool:
+        """Only automatic delivery contexts may suppress the interactive quick guidance."""
+        if not user_info:
+            return False
+
+        def enabled(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        return any(
+            enabled(user_info.get(key))
+            for key in (
+                "quick_suggestions_forbidden",
+                "is_scheduled_task",
+                "is_subscription_task",
+            )
+        )
+
+    @staticmethod
     def _parse_bool_config(value: Any, default: bool) -> bool:
         if value is None:
             return default
@@ -1420,6 +1440,7 @@ class AgentService:
                     cache_boundary_enabled=cache_boundary_enabled,
                     cache_reorder_enabled=cache_reorder_enabled,
                     sub_agents_context=sub_agents_context,
+                    quick_suggestions_forbidden=self._should_forbid_quick_suggestions(user_info),
                 )
             )
             agent_config.system_prompt = assembled_prompt.full_text
@@ -1730,6 +1751,11 @@ class AgentService:
             full_content = _accumulate_stream_content(full_content, chunk)
             if "agent_name" in chunk:
                 agent_name_resp = chunk["agent_name"]
+
+        if self._should_forbid_quick_suggestions(user_info):
+            from app.services.ai.runtime.agentscope.stream_reconcile import suppress_quick_suggestions
+
+            full_content = suppress_quick_suggestions(full_content)
 
         return {
             "content": full_content,

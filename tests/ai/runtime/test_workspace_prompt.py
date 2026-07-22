@@ -40,6 +40,19 @@ def test_workspace_prompt_mentions_common_container_commands():
     assert "不要凭记忆断言未安装" in prompt
 
 
+def test_workspace_prompt_distinguishes_tool_paths_from_user_delivery_paths():
+    from app.services.ai.agent_prompts import AgentServicePrompts
+
+    prompt = AgentServicePrompts.session_workspace_sandbox_block(
+        session_workdir="/tmp/workspaces/u1/sessions/conv-1",
+        docs_dir="/tmp/workspaces/u1/docs",
+        file_tool_names=["Read", "Write"],
+    )
+
+    assert "工具调用路径" in prompt
+    assert "最终展示给用户" in prompt
+
+
 @pytest.mark.asyncio
 async def test_append_workspace_prompt_when_file_tools_and_conversation(monkeypatch):
     async def _root():

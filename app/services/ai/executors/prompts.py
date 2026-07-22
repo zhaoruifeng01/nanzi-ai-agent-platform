@@ -2492,6 +2492,24 @@ class AssistantPrompts:
 class KnowledgeChatPrompts:
     """KnowledgeExecutor 使用的系统级提示词。"""
 
+    @staticmethod
+    def knowledge_state_block(
+        *,
+        search_status: str,
+        result_status: str,
+        citation_count: int = 0,
+        supplement_allowed: bool = False,
+    ) -> str:
+        """返回知识库当前状态；状态提示不替代检索、引用或幻觉校验。"""
+        return (
+            "[KNOWLEDGE_STATE]\n"
+            f"search_status: {str(search_status or 'UNKNOWN').upper()}\n"
+            f"result_status: {str(result_status or 'UNKNOWN').upper()}\n"
+            f"citation_count: {max(int(citation_count or 0), 0)}\n"
+            f"supplement_search_allowed: {str(bool(supplement_allowed)).lower()}\n"
+            "[/KNOWLEDGE_STATE]"
+        )
+
     CITATION_FORMAT_RULE = (
         "【引用标注规范（必须遵守）】\n"
         "凡引用知识库检索结果中的陈述，必须在对应句子末尾标注英文方括号引用序号 [ID:n]，"

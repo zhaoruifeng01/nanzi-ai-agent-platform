@@ -431,6 +431,7 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
         prefetched_citations_raw: list | None = None
         knowledge_service_unavailable = False
         prefetch_had_citations = False
+        knowledge_state_prompt = ""
 
         if is_followup:
             yield {
@@ -451,6 +452,12 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                 import re
                 last_citations = re.findall(r"\[ID:\s*(\d+)\]", last_assistant_content)
                 self._valid_citation_ids = set(last_citations)
+            knowledge_state_prompt = KnowledgeChatPrompts.knowledge_state_block(
+                search_status="REUSED",
+                result_status="SUFFICIENT" if self._valid_citation_ids else "UNKNOWN",
+                citation_count=len(self._valid_citation_ids),
+                supplement_allowed=False,
+            )
         else:
             resolved_dataset_ids, dataset_error = await resolve_knowledge_dataset_ids(
                 query=user_question,
@@ -480,7 +487,16 @@ class KnowledgeAgentRunner(AssistantAgentRunner):
                     yield chunk
                 return
 
+            knowledge_state_prompt = KnowledgeChatPrompts.knowledge_state_block(
+                search_status="PREFETCHED",
+                result_status="SUFFICIENT" if prefetch_had_citations else "INSUFFICIENT",
+                citation_count=len(self._valid_citation_ids),
+                supplement_allowed=not prefetch_had_citations,
+            )
+
         self._rag_empty = False
+        if knowledge_state_prompt:
+            system_content += "\n\n" + knowledge_state_prompt
         if prefetched_knowledge_output:
             try:
                 import json
