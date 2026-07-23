@@ -1,4 +1,4 @@
-"""Contract: 新会话类型菜单不应因 mouseleave / 空隙误关。"""
+"""Contract: 新会话类型菜单不应因 mouseleave / 空隙误关；且不被快捷指令横向滚动裁切。"""
 
 from pathlib import Path
 
@@ -15,11 +15,12 @@ def test_new_conversation_menu_stays_open_until_click_outside():
     assert "selectNewConversationType('/project')" in text
     # 点击打开：禁止用 mouseleave 关菜单（空隙会导致来不及点第二项）
     assert '@mouseleave="showNewConversationMenu = false"' not in text
-    assert "newConversationMenuRef.value" in text
-    assert "el.contains(target)" in text or "!el.contains(target)" in text
-    # 用 padding 桥接而非 margin 空隙
-    assert "top-full z-[100] pt-2" in text
-    assert 'top-full mt-2 z-[100]' not in text
+    assert "newConversationMenuPanelRef" in text
+    assert "getNewConversationTriggerEl" in text
+    assert "Teleport to=\"body\"" in text or "Teleport to='body'" in text
+    # 菜单用 fixed 挂到 body，避免 overflow-x-auto 裁切
+    assert "newConversationMenuPosition" in text
+    assert "updateNewConversationMenuPosition" in text
 
 
 def test_new_conversation_menu_closes_on_escape():

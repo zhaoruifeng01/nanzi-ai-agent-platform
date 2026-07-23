@@ -27,6 +27,8 @@ def test_system_implicit_tools_registry():
         "list_available_skills",
         "read_skill_instruction",
         "send_portal_notification",
+        "list_accessible_datasets",
+        "list_accessible_knowledge_bases",
     }.issubset(set(tool_names))
 
     assert {

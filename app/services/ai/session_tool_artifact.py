@@ -307,16 +307,23 @@ async def persist_turn_artifact_candidate(
     user_id: str | int | None,
     conversation_id: str | None,
     turn_state: Dict[str, Any] | None,
+    clear_if_empty: bool = True,
 ) -> None:
-    if not user_id or not conversation_id or not turn_state:
+    if not user_id or not conversation_id:
         return
-    best = turn_state.get("best")
-    if not isinstance(best, dict):
-        return
-    payload = {k: v for k, v in best.items() if k != "_score"}
+    best = (turn_state or {}).get("best")
     try:
         from app.services.ai.memory_service import memory_service
 
-        await memory_service.set_session_tool_artifact(str(user_id), conversation_id, payload)
+        if isinstance(best, dict):
+            payload = {k: v for k, v in best.items() if k != "_score"}
+            await memory_service.set_session_tool_artifact(str(user_id), conversation_id, payload)
+        elif clear_if_empty:
+            # 正常轮次结束且无成功候选时，失效上一轮快照；用户中断时保留。
+            from app.core.redis import get_redis
+
+            redis = await get_redis()
+            if redis:
+                await redis.delete(memory_service._get_session_tool_artifact_key(str(user_id), conversation_id))
     except Exception as exc:
         logger.warning("[SessionToolArtifact] persist failed: %s", exc)

@@ -25,6 +25,51 @@ async def list_allowed_agents(
     """获取当前用户有权限使用的智能体列表 (用于 @提及)"""
     return await AgentManagerService.list_allowed_agents(session, user=user, keyword=keyword)
 
+
+@router.get("/{agent_id}/embed-access", response_model=AIAgentResponse)
+async def get_embed_agent_access(
+    agent_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    EmbedChat URL 深链校验：支持按 id 或 name 解析。
+    - 404：智能体不存在或已停用
+    - 403：智能体存在但当前用户无权使用
+    """
+    from sqlalchemy import or_, select
+    from app.models.agent import AIAgent
+
+    key = str(agent_id or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "AGENT_NOT_FOUND", "message": "智能体不存在或已停用", "agent_key": agent_id},
+        )
+
+    stmt = select(AIAgent).where(or_(AIAgent.id == key, AIAgent.name == key)).limit(1)
+    agent = (await session.execute(stmt)).scalar_one_or_none()
+    if not agent or not agent.is_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "AGENT_NOT_FOUND", "message": "智能体不存在或已停用", "agent_key": agent_id},
+        )
+
+    can_use = await AgentManagerService._user_can_execute_agent(session, agent, user)
+    if not can_use:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "AGENT_FORBIDDEN",
+                "message": "无权使用该智能体",
+                "agent_key": agent_id,
+                "agent_id": agent.id,
+                "agent_name": agent.name,
+                "display_name": agent.display_name,
+            },
+        )
+    return agent
+
 @router.get("/", response_model=List[AIAgentResponse], include_in_schema=False)
 @router.get("", response_model=List[AIAgentResponse])
 async def list_agents(session: AsyncSession = Depends(get_db_session), user: Dict[str, Any] = Depends(require_permission("menu", "menu:agent_management"))):

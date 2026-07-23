@@ -3282,6 +3282,55 @@ async def test_data_agent_runner_schema_gate_blocks_sql_tool(data_config):
 
 
 @pytest.mark.asyncio
+async def test_project_dataset_scope_gates_sql_without_fresh_data(data_config):
+    from unittest.mock import AsyncMock
+
+    from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
+    from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec
+
+    called = False
+
+    async def fake_sql(**kwargs):
+        nonlocal called
+        called = True
+        return {"ok": 1}
+
+    runner = DataAgentRunner(
+        config=data_config,
+        trace_id="trace-scope-nofresh",
+        trace_buffer=[],
+        debug_options={
+            "resource_scope": {
+                "datasets": [{"id": "1", "dataset_name": "mounted_ds", "name": "Mounted"}],
+            }
+        },
+    )
+    runner._resolve_sql_schema_preflight_error = AsyncMock(return_value="当前项目会话未挂载数据集")
+    state = _DataRunState(requires_fresh_data=False, schema_completed=False)
+    wrapped = runner._wrap_tools_with_schema_gate(
+        [
+            RuntimeToolSpec(
+                name="execute_sql_query",
+                description="sql",
+                parameters_schema={},
+                source_type="static",
+                callable=fake_sql,
+                permission_scope="read",
+            )
+        ],
+        state,
+    )[0]
+
+    result = await wrapped.callable(sql="SELECT 1", data_source="pg", dataset_name="other")
+
+    assert called is False
+    assert "未挂载" in str(result)
+    assert runner._resolve_sql_schema_preflight_error.await_args.kwargs["allowed_dataset_names"] == {
+        "mounted_ds"
+    }
+
+
+@pytest.mark.asyncio
 async def test_data_agent_runner_sql_repeat_gate_blocks_second_sql(data_config):
     from app.services.ai.runners.data_agent_runner import DataAgentRunner, _DataRunState
     from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec

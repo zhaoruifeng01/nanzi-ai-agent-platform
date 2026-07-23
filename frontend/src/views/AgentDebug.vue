@@ -2060,17 +2060,25 @@ const handleSystemCommand = async (cmd: string): Promise<boolean> => {
   const normalizedCmd = normalizeAgentSwitchCommand(cmd, agents.value);
   if (isDatasetPortalSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    await openPortalDrawer();
+    if (showPortalDrawer.value) {
+      closePortalDrawer();
+    } else {
+      await openPortalDrawer();
+    }
     return true;
   }
   if (isWorkspaceSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    showWorkspaceDrawer.value = true;
+    showWorkspaceDrawer.value = !showWorkspaceDrawer.value;
     return true;
   }
   if (isKnowledgePortalSlashCommand(normalizedCmd)) {
     userInput.value = "";
-    await openKnowledgePortal();
+    if (showKnowledgePortal.value) {
+      closeKnowledgePortal();
+    } else {
+      await openKnowledgePortal();
+    }
     return true;
   }
   if (normalizedCmd === "/switch_to_auto" || normalizedCmd === "/switch_agent_auto") {

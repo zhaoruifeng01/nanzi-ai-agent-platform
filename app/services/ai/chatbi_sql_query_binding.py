@@ -487,14 +487,30 @@ async def resolve_sql_schema_preflight_with_binding(
     if not sql.strip() or not table_columns:
         return ""
 
+    from app.services.sql_query_execution_service import (
+        check_physical_table_refs_permission,
+        dialect_from_data_source,
+    )
+
+    dialect = dialect_from_data_source(data_source)
+    actual_refs_error, actual_refs = _extract_physical_table_refs(sql, dialect)
+    actual_table_keys = set(actual_refs) if not actual_refs_error else set()
+
     if allowed_dataset_names:
-        mounted = {str(name).strip() for name in allowed_dataset_names if str(name).strip()}
+        if actual_refs_error:
+            return "当前项目会话无法确认 SQL 的物理表引用范围，已阻止执行，请先修正 SQL 后重试。"
+        mounted = {
+            str(name).strip().casefold()
+            for name in allowed_dataset_names
+            if str(name).strip()
+        }
+        # 只校验 SQL 实际引用的表；binding 里的其他候选表不能影响本次查询。
         referenced = {
             str(item.dataset_name or "").strip()
-            for item in (binding.tables.values() if binding else [])
-            if str(item.dataset_name or "").strip()
+            for key, item in (binding.tables.items() if binding else [])
+            if key in actual_table_keys and str(item.dataset_name or "").strip()
         }
-        outside = sorted(referenced - mounted)
+        outside = sorted(name for name in referenced if name.casefold() not in mounted)
         if outside:
             return (
                 "当前项目会话已限定数据集范围，SQL 引用了未挂载的数据集："
@@ -502,12 +518,6 @@ async def resolve_sql_schema_preflight_with_binding(
                 + "。请先在项目会话资源范围中追加该数据集。"
             )
 
-    from app.services.sql_query_execution_service import (
-        check_physical_table_refs_permission,
-        dialect_from_data_source,
-    )
-
-    dialect = dialect_from_data_source(data_source)
     unknown_tables = collect_preflight_unknown_tables(
         sql,
         table_columns,
@@ -544,7 +554,12 @@ async def resolve_sql_schema_preflight_with_binding(
                         current.data_source = table_binding.data_source
                     if not current.columns:
                         current.columns = list(table_binding.columns)
-                if allowed_dataset_names and table_binding.dataset_name and table_binding.dataset_name not in allowed_dataset_names:
+                if (
+                    allowed_dataset_names
+                    and table_binding.dataset_name
+                    and table_binding.dataset_name.strip().casefold()
+                    not in {str(name).strip().casefold() for name in allowed_dataset_names}
+                ):
                     return (
                         f"当前项目会话未挂载数据集「{table_binding.dataset_name}」，"
                         "请先在项目会话资源范围中追加后再查询。"

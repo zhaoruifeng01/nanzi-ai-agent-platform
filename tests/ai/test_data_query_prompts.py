@@ -1,6 +1,8 @@
 import pytest
+from types import SimpleNamespace
 
 from app.services.ai.executors.prompts import DataQueryPrompts
+from app.services.ai.runners.chatbi.system_prompt import build_data_query_state_hint
 
 pytestmark = pytest.mark.no_infrastructure
 
@@ -45,6 +47,30 @@ def test_should_skip_clarification_llm_for_stable_scenarios():
     assert not DataQueryPrompts.should_skip_clarification_llm(
         DataQueryPrompts.CLARIFICATION_SCENARIO_VAGUE_QUERY
     )
+
+
+def test_chatbi_state_hint_describes_fresh_query_next_action():
+    hint = build_data_query_state_hint(
+        SimpleNamespace(_requires_fresh_data=True, _requires_sql_query=True),
+        context_action_result=None,
+        include_context_action=False,
+    )
+
+    assert "[DATA_QUERY_STATE]" in hint
+    assert "schema_ready: false" in hint
+    assert "allowed_next_action: get_dataset_schema" in hint
+
+
+def test_chatbi_state_hint_describes_reusable_result_without_new_query():
+    hint = build_data_query_state_hint(
+        SimpleNamespace(_requires_fresh_data=False, _requires_sql_query=False),
+        context_action_result={"rows": [{"value": 1}]},
+        include_context_action=True,
+    )
+
+    assert "reusable_result: true" in hint
+    assert "allowed_next_action: reuse_previous_result" in hint
+    assert "schema_ready: false" not in hint
 
 
 def test_build_clarification_response_uses_rule_lead_and_quick():

@@ -344,6 +344,11 @@ class AssistantAgentRunner(BaseExecutor):
             capability = None
         semantic_intent = str(self.route_hints.get("semantic_intent") or "").strip().upper()
         semantic_confidence = float(self.route_hints.get("semantic_confidence") or 0.0)
+        raw_dataset_ids = self.route_hints.get("matched_dataset_ids") or []
+        try:
+            matched_dataset_ids = tuple(int(value) for value in raw_dataset_ids)
+        except (TypeError, ValueError):
+            matched_dataset_ids = ()
         if source == RequestSource.UNKNOWN and semantic_confidence >= 0.7:
             if semantic_intent == IntentType.DATA_QUERY.value:
                 source = RequestSource.INTERNAL_STRUCTURED_DATA
@@ -359,6 +364,12 @@ class AssistantAgentRunner(BaseExecutor):
                 reasoning=str(self.route_hints.get("request_reasoning") or "router evidence contract"),
                 semantic_intent=self.route_hints.get("semantic_intent"),
                 semantic_confidence=semantic_confidence,
+                chatbi_mode=self.route_hints.get("chatbi_mode"),
+                chatbi_evidence_level=str(
+                    self.route_hints.get("chatbi_evidence_level") or "none"
+                ),
+                chatbi_reason=self.route_hints.get("chatbi_reason"),
+                matched_dataset_ids=matched_dataset_ids,
             )
             if source == RequestSource.GENERAL:
                 inferred_decision = resolve_request_decision(user_query)
@@ -926,6 +937,7 @@ class AssistantAgentRunner(BaseExecutor):
                                 getattr(self.turn_classification, "intent", None)
                                 or getattr(self.intent_info, "intent", None)
                             ),
+                            request_decision=grounding_request_decision,
                         )
                     if tool_nudge is None and grounding_requires_tool:
                         capability_name = next(
@@ -968,7 +980,7 @@ class AssistantAgentRunner(BaseExecutor):
                             )
 
                             intent_label = (
-                                "内部数据、指标或资产查询"
+                                "ChatBI 业务数据、指标或资产查询"
                                 if capability_name == "data_query"
                                 else "内部制度、SOP或操作规程查询"
                             )
@@ -1199,14 +1211,16 @@ class AssistantAgentRunner(BaseExecutor):
                         interrupted = True
                     yield chunk
 
-                if not interrupted and self.conversation_id:
+                if self.conversation_id:
                     from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
 
                     await persist_turn_artifact_candidate(
                         user_id=self._runtime_user_id(),
                         conversation_id=self.conversation_id,
                         turn_state=getattr(self, "_session_artifact_turn", None),
+                        clear_if_empty=not interrupted,
                     )
+                if not interrupted and self.conversation_id:
                     await agent_state_store.save(
                         user_id=self._runtime_user_id(),
                         conversation_id=self.conversation_id,
@@ -1714,6 +1728,11 @@ class AssistantAgentRunner(BaseExecutor):
                     )
                 interrupted = False
                 user_query = str(state.get("user_query") or "")
+                self._session_artifact_turn = {
+                    "user_question": user_query,
+                    "trace_id": self.trace_id,
+                    "best": None,
+                }
                 grounding_enabled = self._grounding_enabled()
                 requirement = (
                     self._resolve_turn_grounding_requirement(user_query, ctx)
@@ -1789,6 +1808,15 @@ class AssistantAgentRunner(BaseExecutor):
                         for buffered_chunk in buffered_content:
                             yield buffered_chunk
 
+                if self.conversation_id:
+                    from app.services.ai.session_tool_artifact import persist_turn_artifact_candidate
+
+                    await persist_turn_artifact_candidate(
+                        user_id=self._runtime_user_id(),
+                        conversation_id=self.conversation_id,
+                        turn_state=getattr(self, "_session_artifact_turn", None),
+                        clear_if_empty=not interrupted,
+                    )
                 if not interrupted and self.conversation_id:
                     tools_fingerprint = build_tools_fingerprint(self.config, tools)
                     await agent_state_store.save(

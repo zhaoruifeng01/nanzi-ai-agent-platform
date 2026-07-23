@@ -359,6 +359,7 @@ async def _scheduled_task_wrapper(task_id: int, is_manual: bool = False):
             "real_name": user.real_name,
             "role": user.role,
             "is_scheduled_task": True,
+            "quick_suggestions_forbidden": True,
             "task_name": task.name,
             "requires_tool_execution": True,
         }
@@ -639,6 +640,8 @@ async def _saved_report_subscription_wrapper(subscription_id: int, is_manual: bo
             "user_id": str(user.id), "user_name": user.user_name, "real_name": user.real_name,
             "role": user.role, "dept_code": user.dept_code, "org_path": user.org_path,
             "extra_data": user.extra_data,
+            "is_subscription_task": True,
+            "quick_suggestions_forbidden": True,
         }
         try:
             await _execute_saved_report_impl(
