@@ -5,6 +5,7 @@ import uuid
 import asyncio
 from datetime import datetime
 from typing import List, Dict, Any, Optional, AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.agent import AgentExecutionStep, ChatConfig
 from app.services.ai.agent_manager import AgentManagerService
@@ -14,6 +15,7 @@ from app.services.ai.context_manager import AgentContextManager
 from app.services.ai.dispatcher import AgentDispatcher
 from app.services.ai.memory_service import memory_service
 from app.services.ai.agent_prompts import AgentServicePrompts
+from app.services.config_service import ConfigService
 from app.services.ai.prompt_assembler import (
     PromptAssemblyInput,
     assemble_system_prompt,
@@ -23,6 +25,7 @@ from app.services.ai.runtime.session_run_lane import (
     ConversationRunBusyError,
     conversation_run_lane,
 )
+from app.services.ai.stream_debug import log_chat_stream_stage
 from app.services.ai.executors.common import _attachment_abs_path, extract_tokens_from_message
 from app.services.ai.runtime.agentscope.compat import HumanMessage, SystemMessage
 from app.core.orm import AsyncSessionLocal
@@ -614,11 +617,29 @@ class AgentService:
         user_info: Optional[dict[str, Any]],
         trace_buffer: list[AgentExecutionStep],
         user_query: str,
+        trace_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
     ) -> tuple[Any, Any, float, Optional[str]]:
         """解析并校验智能体配置与权限。
         返回: (agent_config, route_details, route_elapsed_ms, permission_denied_err_msg)
         """
         route_start = asyncio.get_running_loop().time()
+        log_chat_stream_stage(
+            logger,
+            event_type="router",
+            title="智能路由决策",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="start",
+            status="pending",
+            fields={
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "enable_multi_agent": enable_multi_agent,
+                "query_chars": len(user_query or ""),
+            },
+        )
         agent_config, route_details = await AgentContextManager.resolve_agent_config(
             messages,
             agent_id=agent_id,
@@ -626,8 +647,26 @@ class AgentService:
             version_id=version_id,
             enable_multi_agent=enable_multi_agent,
             user_info=user_info,
+            db=db,
         )
         route_elapsed_ms = (asyncio.get_running_loop().time() - route_start) * 1000
+        log_chat_stream_stage(
+            logger,
+            event_type="router",
+            title="智能路由决策",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="end",
+            status="success" if agent_config else "error",
+            elapsed_ms=route_elapsed_ms,
+            agent_name=getattr(agent_config, "agent_name", None) if agent_config else None,
+            model_name=getattr(route_details, "model", None) if route_details else None,
+            fields={
+                "selected_agent": getattr(route_details, "agent_id", None) if route_details else None,
+                "confidence": getattr(route_details, "confidence", None) if route_details else None,
+                "has_route_details": bool(route_details),
+            },
+        )
 
         if not agent_config:
             return None, None, route_elapsed_ms, None
@@ -689,13 +728,18 @@ class AgentService:
             u_id = user_info.get("user_id", user_info.get("id"))
             if u_role != "admin" and u_id:
                 from app.services.permission_service import PermissionService
-                async with AsyncSessionLocal() as session:
+                session = db or AsyncSessionLocal()
+                owns_session = db is None
+                try:
                     perm_service = PermissionService(session)
                     agent_id_str = str(agent_config.agent_id)
                     has_perm = await perm_service.check_permission(int(u_id), "agent", agent_id_str)
                     if not has_perm:
                         err_msg = AgentServicePrompts.permission_denied(agent_config.agent_name)
                         return agent_config, route_details, route_elapsed_ms, err_msg
+                finally:
+                    if owns_session:
+                        await session.close()
 
         return agent_config, route_details, route_elapsed_ms, None
 
@@ -1138,6 +1182,7 @@ class AgentService:
         conversation_id: Optional[str],
         session_turn: Optional[tuple],
         route_hints: Optional[dict],
+        runtime_context: Optional[dict] = None,
     ) -> Any:
         """调度并返回执行器实例。"""
         executor = await AgentDispatcher.dispatch(
@@ -1152,6 +1197,7 @@ class AgentService:
             conversation_id,
             shared_turn=session_turn,
             route_hints=route_hints,
+            runtime_context=runtime_context,
         )
         return executor
 
@@ -1182,6 +1228,8 @@ class AgentService:
         execution_status = "success"
         has_data_output = False
         executor = None
+        init_session: Optional[AsyncSession] = AsyncSessionLocal()
+        runtime_context: Dict[str, Any] = {}
 
         try:
             # 1. Resolve and Verify Agent Configuration and Permissions
@@ -1194,6 +1242,20 @@ class AgentService:
                 user_info=user_info,
                 trace_buffer=trace_buffer,
                 user_query=user_query,
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                db=init_session,
+            )
+
+            log_chat_stream_stage(
+                logger,
+                event_type="agent_resolved",
+                title="智能体解析与权限校验完成",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                agent_name=getattr(agent_config, "agent_name", None) if agent_config else None,
             )
 
             if agent_config and shared_state is not None:
@@ -1279,6 +1341,17 @@ class AgentService:
                 messages,
             )
 
+            _ctx_start = asyncio.get_running_loop().time()
+            log_chat_stream_stage(
+                logger,
+                event_type="ctx_setup",
+                title="上下文初始化(setup_context)",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             await AgentContextManager.setup_context(
                 config=agent_config,
                 debug_options=debug_options,
@@ -1289,6 +1362,18 @@ class AgentService:
                 authorized_attachment_paths=self._authorized_attachment_paths(messages),
                 current_turn_attachment_paths=self._current_turn_attachment_paths(messages),
                 trace_buffer=trace_buffer,
+                db=init_session,
+            )
+            log_chat_stream_stage(
+                logger,
+                event_type="ctx_setup",
+                title="上下文初始化(setup_context)",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=(asyncio.get_running_loop().time() - _ctx_start) * 1000,
+                agent_name=getattr(agent_config, "agent_name", None),
             )
 
             # 2. Inject Active Skills
@@ -1296,6 +1381,17 @@ class AgentService:
             def skills_log_callback(skill_id, skill_name, details_msg):
                 matched_skills_to_log.append((skill_id, skill_name, details_msg))
 
+            _sk_start = asyncio.get_running_loop().time()
+            log_chat_stream_stage(
+                logger,
+                event_type="skills_inject",
+                title="技能匹配与注入",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             skills_injection = await self._inject_skills(
                 messages=messages,
                 user_query=user_query,
@@ -1303,6 +1399,18 @@ class AgentService:
                 user_info=user_info,
                 skills_log_callback=skills_log_callback,
                 resource_scope=(debug_options or {}).get("resource_scope"),
+            )
+            log_chat_stream_stage(
+                logger,
+                event_type="skills_inject",
+                title="技能匹配与注入",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=(asyncio.get_running_loop().time() - _sk_start) * 1000,
+                agent_name=getattr(agent_config, "agent_name", None),
+                fields={"skill_count": len(skills_injection or [])},
             )
 
             for skill_id, skill_name, details_msg in matched_skills_to_log:
@@ -1354,6 +1462,20 @@ class AgentService:
                 "intent_evidence": route_intent_evidence,
             }
             explicit_knowledge_context = bool(request_knowledge_dataset_ids or agent_has_knowledge_binding)
+            log_chat_stream_stage(
+                logger,
+                event_type="intent",
+                title="分析用户请求并进行意图识别",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+                fields={
+                    "can_do_data": can_do_data,
+                    "explicit_knowledge_context": explicit_knowledge_context,
+                },
+            )
             if can_do_data and not explicit_knowledge_context:
                 turn_classification = TurnClassification(
                     turn_type=TurnType.DATA_QUERY_REQUEST,
@@ -1382,6 +1504,22 @@ class AgentService:
                 turn_display_label = "ChatBI 请求类别分析"
             else:
                 turn_display_label = turn_type_label(turn_classification.turn_type)
+            log_chat_stream_stage(
+                logger,
+                event_type="intent",
+                title="分析用户请求并进行意图识别",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=turn_intent_elapsed_ms,
+                agent_name=getattr(agent_config, "agent_name", None),
+                fields={
+                    "turn_type": turn_classification.turn_type.value,
+                    "skip_intent_llm": bool(getattr(turn_classification, "skip_intent_llm", False)),
+                    "reasoning": getattr(turn_classification, "reasoning", ""),
+                },
+            )
 
             if turn_classification.turn_type == TurnType.KNOWLEDGE:
                 agent_config = await AgentContextManager.enrich_for_knowledge_turn(
@@ -1399,14 +1537,38 @@ class AgentService:
                     current_turn_attachment_paths=self._current_turn_attachment_paths(messages),
                     require_explicit_dataset=True,
                     trace_buffer=trace_buffer,
+                    db=init_session,
                 )
 
             # 3. Load Memory Context
+            _mem_start = asyncio.get_running_loop().time()
+            log_chat_stream_stage(
+                logger,
+                event_type="memory_load",
+                title="记忆上下文加载(LTM)",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             ltm_profile, ltm_loaded_data, memory_recall_hint, preloaded_memories_text = await self._load_memory_context(
                 user_info=user_info,
                 early_turn_type=early_turn_type,
                 debug_options=debug_options,
                 user_query=user_query,
+            )
+            _mem_elapsed = (asyncio.get_running_loop().time() - _mem_start) * 1000
+            log_chat_stream_stage(
+                logger,
+                event_type="memory_load",
+                title="记忆上下文加载(LTM)",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=_mem_elapsed,
+                agent_name=getattr(agent_config, "agent_name", None),
             )
 
             user_profile = None
@@ -1418,9 +1580,19 @@ class AgentService:
             agent_system_prompt = agent_config.system_prompt
             sub_agents_context = None
             from app.services.ai.skill_resolver import is_main_general_agent
+            _roster_start = asyncio.get_running_loop().time()
+            log_chat_stream_stage(
+                logger,
+                event_type="agent_roster",
+                title="专家清单构建",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             if is_main_general_agent(agent_config):
                 try:
-                    from app.core.orm import AsyncSessionLocal
                     from app.models.agent import AIAgent
                     from app.services.ai.agent_roster import (
                         AGENT_ROSTER_PLACEHOLDER,
@@ -1430,27 +1602,50 @@ class AgentService:
                         resolve_delegable_system_agents_for_user,
                     )
 
-                    async with AsyncSessionLocal() as session:
-                        delegable_agents = await resolve_delegable_system_agents_for_user(
-                            session,
-                            user_info=user_info,
-                            current_agent_id=agent_config.agent_id,
+                    delegable_agents = await resolve_delegable_system_agents_for_user(
+                        init_session,
+                        user_info=user_info,
+                        current_agent_id=agent_config.agent_id,
+                    )
+                    current_agent_row = await init_session.get(AIAgent, agent_config.agent_id)
+                    current_desc = (current_agent_row.description if current_agent_row else "") or ""
+                    if AGENT_ROSTER_PLACEHOLDER in (agent_system_prompt or ""):
+                        roster_md = format_agent_roster_markdown(
+                            delegable_agents,
+                            current_display_name=agent_config.agent_display_name or agent_config.agent_name or "主助手",
+                            current_description=current_desc,
                         )
-                        current_agent_row = await session.get(AIAgent, agent_config.agent_id)
-                        current_desc = (current_agent_row.description if current_agent_row else "") or ""
-                        if AGENT_ROSTER_PLACEHOLDER in (agent_system_prompt or ""):
-                            roster_md = format_agent_roster_markdown(
-                                delegable_agents,
-                                current_display_name=agent_config.agent_display_name or agent_config.agent_name or "主助手",
-                                current_description=current_desc,
-                            )
-                            agent_system_prompt = inject_agent_roster(agent_system_prompt, roster_md)
-                        sub_agents_context = build_sub_agents_context(delegable_agents)
+                        agent_system_prompt = inject_agent_roster(agent_system_prompt, roster_md)
+                    sub_agents_context = build_sub_agents_context(delegable_agents)
+                    runtime_context["delegable_agents"] = list(delegable_agents)
                 except Exception as sa_err:
                     logger.warning(f"Failed to build main-agent roster/sub-agents context: {sa_err}")
+            _roster_elapsed = (asyncio.get_running_loop().time() - _roster_start) * 1000
+            log_chat_stream_stage(
+                logger,
+                event_type="agent_roster",
+                title="专家清单构建",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=_roster_elapsed,
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
 
             from app.core.config import settings
             cache_boundary_enabled, cache_reorder_enabled = await resolve_prompt_assembler_flags()
+            _asm_start = asyncio.get_running_loop().time()
+            log_chat_stream_stage(
+                logger,
+                event_type="prompt_assembly",
+                title="系统提示组装",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="start",
+                status="pending",
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             assembled_prompt = assemble_system_prompt(
                 PromptAssemblyInput(
                     agent_system_prompt=agent_system_prompt,
@@ -1470,6 +1665,18 @@ class AgentService:
                 )
             )
             agent_config.system_prompt = assembled_prompt.full_text
+            _asm_elapsed = (asyncio.get_running_loop().time() - _asm_start) * 1000
+            log_chat_stream_stage(
+                logger,
+                event_type="prompt_assembly",
+                title="系统提示组装",
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                phase="end",
+                status="success",
+                elapsed_ms=_asm_elapsed,
+                agent_name=getattr(agent_config, "agent_name", None),
+            )
             if debug_options and debug_options.get("return_raw_prompt"):
                 debug_options.setdefault("prompt_assembler_meta", {})
                 debug_options["prompt_assembler_meta"] = {
@@ -1522,7 +1729,6 @@ class AgentService:
                     "data": raw_messages
                 }
 
-            from app.services.config_service import ConfigService
             default_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
             actual_model = agent_config.model_name or default_model
             if debug_options and debug_options.get("model"):
@@ -1530,6 +1736,55 @@ class AgentService:
                 logger.info(f"[Debug] Overriding Model to: {actual_model}")
 
             agent_config.model_name = actual_model
+            secondary_agents = getattr(route_details, "secondary_agents", []) if route_details else []
+
+            should_preload_assistant_runtime = (
+                (agent_config.engine_type or "LOCAL") == "LOCAL"
+                and "data_query" not in (agent_config.capabilities or [])
+                and turn_classification.turn_type != TurnType.KNOWLEDGE
+                and not (enable_multi_agent and secondary_agents)
+            )
+            if should_preload_assistant_runtime:
+                try:
+                    model_registry = await AgentConfigProvider.load_model_registry(db=init_session)
+                    primary_llm = await AgentConfigProvider.get_configured_llm(
+                        streaming=True,
+                        config=agent_config,
+                        db=init_session,
+                        model_registry=model_registry,
+                    )
+                    if primary_llm is not None:
+                        runtime_context["primary_llm"] = primary_llm
+
+                    if agent_config.synthesis_model_name:
+                        synthesis_llm = await AgentConfigProvider.get_synthesis_llm(
+                            streaming=True,
+                            config=agent_config,
+                            db=init_session,
+                            model_registry=model_registry,
+                        )
+                    else:
+                        synthesis_llm = primary_llm
+                    if synthesis_llm is not None:
+                        runtime_context["synthesis_llm"] = synthesis_llm
+
+                    runtime_context["fallback_llm"] = await AgentConfigProvider.get_fallback_llm(
+                        streaming=True,
+                        config=agent_config,
+                        exclude_model=str(actual_model or ""),
+                        db=init_session,
+                        model_registry=model_registry,
+                    )
+                except Exception as preload_err:
+                    logger.warning(
+                        "[AgentService] Failed to preload assistant runtime resources: %s",
+                        preload_err,
+                    )
+
+            # The initialization connection must not remain checked out while
+            # the model streams its response.
+            await init_session.close()
+            init_session = None
 
             meta_event: Dict[str, Any] = {
                 "type": "meta",
@@ -1555,8 +1810,6 @@ class AgentService:
             yield meta_event
 
             # 4. Dispatch Executor
-            secondary_agents = getattr(route_details, "secondary_agents", []) if route_details else []
-
             if enable_multi_agent and secondary_agents:
                 async for chunk in self._execute_multi_agent(
                     agent_config,
@@ -1582,6 +1835,17 @@ class AgentService:
                         execution_status = "error"
                     yield chunk
             else:
+                _disp_start = asyncio.get_running_loop().time()
+                log_chat_stream_stage(
+                    logger,
+                    event_type="dispatch",
+                    title="执行器调度(dispatch)",
+                    trace_id=trace_id,
+                    conversation_id=conversation_id,
+                    phase="start",
+                    status="pending",
+                    agent_name=getattr(agent_config, "agent_name", None),
+                )
                 executor = await self._dispatch_executor(
                     agent_config=agent_config,
                     user_query=user_query,
@@ -1594,6 +1858,18 @@ class AgentService:
                     conversation_id=conversation_id,
                     session_turn=session_turn,
                     route_hints=route_hints,
+                    runtime_context=runtime_context,
+                )
+                log_chat_stream_stage(
+                    logger,
+                    event_type="dispatch",
+                    title="执行器调度(dispatch)",
+                    trace_id=trace_id,
+                    conversation_id=conversation_id,
+                    phase="end",
+                    status="success",
+                    elapsed_ms=(asyncio.get_running_loop().time() - _disp_start) * 1000,
+                    agent_name=getattr(agent_config, "agent_name", None),
                 )
 
                 yield {
@@ -1701,6 +1977,10 @@ class AgentService:
                 "status": "error",
             }
         finally:
+            if init_session is not None:
+                await init_session.close()
+                init_session = None
+
             end_time = asyncio.get_running_loop().time()
             duration = (end_time - start_time) * 1000
 

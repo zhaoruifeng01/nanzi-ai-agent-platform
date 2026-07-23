@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import os
-from typing import Optional, Dict, List
+import time
+from typing import Optional, Dict, List, Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.orm import AsyncSessionLocal
@@ -18,72 +20,87 @@ class ConfigService:
     _all_configs_cache: Optional[Dict[str, dict]] = None
     _all_configs_last_fetched: float = 0
     _ALL_CONFIGS_TTL = 60.0  # 60 seconds
+    _all_configs_load_lock = asyncio.Lock()
 
-    @staticmethod
-    async def get_all_from_db() -> Dict[str, dict]:
+    @classmethod
+    def invalidate_cache(cls) -> None:
+        cls._all_configs_cache = None
+        cls._all_configs_last_fetched = 0
+
+    @classmethod
+    def _all_configs_cache_is_fresh(cls) -> bool:
+        return (
+            cls._all_configs_cache is not None
+            and time.time() - cls._all_configs_last_fetched < cls._ALL_CONFIGS_TTL
+        )
+
+    @classmethod
+    async def _fetch_all_configs(cls, session: AsyncSession) -> Dict[str, dict]:
+        result = await session.execute(
+            text(
+                "SELECT `key`, `value`, `description`, `category`, `is_secret` "
+                "FROM system_configs"
+            )
+        )
+        return {
+            row[0]: {
+                "value": row[1],
+                "description": row[2],
+                "category": row[3],
+                "is_secret": bool(row[4]),
+            }
+            for row in result.fetchall()
+        }
+
+    @classmethod
+    async def get_all_from_db(
+        cls,
+        db: Optional[AsyncSession] = None,
+    ) -> Dict[str, dict]:
         """
         Retrieves all configs from DB.
         Returns a dict: { key: { value, description, category, is_secret } }
         Now uses short-term memory cache (60s).
         """
-        import time
-        if ConfigService._all_configs_cache and (time.time() - ConfigService._all_configs_last_fetched < ConfigService._ALL_CONFIGS_TTL):
-            return ConfigService._all_configs_cache
+        if cls._all_configs_cache_is_fresh():
+            return cls._all_configs_cache or {}
 
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(text("SELECT `key`, `value`, `description`, `category`, `is_secret` FROM system_configs"))
-            rows = result.fetchall()
-            configs = {}
-            for row in rows:
-                configs[row[0]] = {
-                    "value": row[1],
-                    "description": row[2],
-                    "category": row[3],
-                    "is_secret": bool(row[4])
-                }
-            
-            # Update Cache
-            ConfigService._all_configs_cache = configs
-            ConfigService._all_configs_last_fetched = time.time()
-            
+        async with cls._all_configs_load_lock:
+            if cls._all_configs_cache_is_fresh():
+                return cls._all_configs_cache or {}
+
+            if db is not None:
+                configs = await cls._fetch_all_configs(db)
+            else:
+                async with AsyncSessionLocal() as session:
+                    configs = await cls._fetch_all_configs(session)
+
+            cls._all_configs_cache = configs
+            cls._all_configs_last_fetched = time.time()
             return configs
 
     @staticmethod
-    async def get(key: str, default: Optional[str] = None) -> Optional[str]:
+    async def get(
+        key: str,
+        default: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[str]:
         """
         Get configuration value.
-        Strategy:
-        1. Check Redis Cache
-        2. Check DB
-        3. Return Default
+        Load the complete configuration table once per process cache window,
+        then resolve individual keys from the in-memory snapshot.
         """
-        # 1. Check Redis
-        redis = await get_redis()
-        if redis:
-            cached_val = await redis.get(f"{CACHE_PREFIX}{key}")
-            if cached_val is not None:
-                return cached_val
-        
-        # 2. Check DB
-        db_val = None
         try:
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    text("SELECT value FROM system_configs WHERE `key` = :key"), 
-                    {"key": key}
-                )
-                row = result.fetchone()
-                if row:
-                    db_val = row[0]
-                    # Cache it if found (even if empty string)
-                    await redis.set(f"{CACHE_PREFIX}{key}", db_val, ex=CACHE_TTL)
+            configs = await ConfigService.get_all_from_db(db=db)
         except Exception as e:
             logger.error(f"Failed to fetch config '{key}' from DB: {e}")
-        
-        if db_val is not None and db_val != "":
-             return db_val
-             
-        # 3. Default
+            return default
+
+        config = configs.get(key)
+        if config:
+            value = config.get("value")
+            if value is not None and value != "":
+                return value
         return default
 
     @staticmethod
@@ -167,9 +184,116 @@ class ConfigService:
             logger.info(f"Config '{key}' updated in DB and Redis. Audit log created.")
         
         # Invalidate Memory Cache
-        ConfigService._all_configs_cache = None
+        ConfigService.invalidate_cache()
             
         return old_value != value
+
+    @staticmethod
+    async def set_configs_batch(
+        items: List[Dict[str, Any]],
+        *,
+        changed_by: str = "system",
+        db: Optional[AsyncSession] = None,
+    ) -> None:
+        """
+        批量写入多个配置项:单事务 + 单 commit + 单次缓存失效。
+        适合一次保存多字段的场景(如品牌设置 9 个字段),把 N×(SELECT+upsert+history+commit)
+        收敛为常数次 round-trip,在跨地域远程 DB 上从 ~16s 降到 ~2-3s。
+
+        items: [{"key","value","description","category","is_secret","change_reason"}, ...]
+        """
+        if not items:
+            return
+        from sqlalchemy import bindparam
+        from app.services.auth_service import AuthService
+
+        session, is_local = await AuthService._get_session(db)
+        try:
+            keys = [it["key"] for it in items]
+
+            # 1. 一次取出所有旧值(判断是否变化 + 审计 old_value)
+            result = await session.execute(
+                text(
+                    "SELECT `key`, `value` FROM system_configs WHERE `key` IN :keys"
+                ).bindparams(bindparam("keys", expanding=True)),
+                {"keys": keys},
+            )
+            old_values = {row[0]: row[1] for row in result.fetchall()}
+
+            # 2. 批量 upsert(多行 VALUES + ON DUPLICATE KEY UPDATE)
+            value_ph: List[str] = []
+            params: Dict[str, Any] = {}
+            for i, it in enumerate(items):
+                value_ph.append(f"(:k{i}, :v{i}, :d{i}, :c{i}, :s{i})")
+                params[f"k{i}"] = it["key"]
+                params[f"v{i}"] = it["value"]
+                params[f"d{i}"] = it.get("description")
+                params[f"c{i}"] = it.get("category", "general")
+                params[f"s{i}"] = bool(it.get("is_secret", False))
+            upsert_sql = (
+                "INSERT INTO system_configs "
+                "(`key`, `value`, `description`, `category`, `is_secret`) "
+                "VALUES " + ", ".join(value_ph) + " "
+                "ON DUPLICATE KEY UPDATE "
+                "`value` = VALUES(`value`), "
+                "`description` = COALESCE(VALUES(`description`), system_configs.`description`), "
+                "`category` = COALESCE(VALUES(`category`), system_configs.`category`), "
+                "`is_secret` = COALESCE(VALUES(`is_secret`), system_configs.`is_secret`)"
+            )
+            await session.execute(text(upsert_sql), params)
+
+            # 3. 批量写审计历史(仅记录值变化的项)
+            hist_ph: List[str] = []
+            hist_params: Dict[str, Any] = {}
+            h = 0
+            for it in items:
+                key = it["key"]
+                old = old_values.get(key)
+                new = it["value"]
+                if old == new:
+                    continue
+                hist_ph.append(f"(:hk{h}, :ho{h}, :hn{h}, :hd{h}, :hb{h}, :ht{h})")
+                hist_params[f"hk{h}"] = key
+                hist_params[f"ho{h}"] = old
+                hist_params[f"hn{h}"] = new
+                hist_params[f"hd{h}"] = (
+                    it.get("change_reason")
+                    or it.get("description")
+                    or "Config updated via set_configs_batch"
+                )
+                hist_params[f"hb{h}"] = changed_by
+                hist_params[f"ht{h}"] = "UPDATE" if old is not None else "CREATE"
+                h += 1
+            if hist_ph:
+                hist_sql = (
+                    "INSERT INTO system_config_history "
+                    "(config_key, old_value, new_value, description, changed_by, change_type) "
+                    "VALUES " + ", ".join(hist_ph)
+                )
+                await session.execute(text(hist_sql), hist_params)
+
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            if is_local:
+                await session.close()
+
+        # 4. Redis 批量刷新(pipeline)
+        redis = await get_redis()
+        if redis:
+            try:
+                pipe = redis.pipeline()
+                for it in items:
+                    pipe.set(f"{CACHE_PREFIX}{it['key']}", it["value"], ex=CACHE_TTL)
+                await pipe.execute()
+            except Exception as e:
+                logger.warning(f"Failed to refresh Redis for batch configs: {e}")
+
+        # 5. 单次内存缓存失效
+        ConfigService.invalidate_cache()
+        logger.info(f"Batch updated {len(items)} configs in a single transaction.")
 
     @staticmethod
     async def get_all_configs_grouped() -> Dict[str, List[dict]]:
@@ -268,7 +392,7 @@ class ConfigService:
             logger.info(f"Config '{key}' value updated. Audit log created.")
         
         # Invalidate Memory Cache
-        ConfigService._all_configs_cache = None
+        ConfigService.invalidate_cache()
             
         return old_value != value
 

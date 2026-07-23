@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     API_SERVICE_ENV: str = "dev"
     API_SERVICE_PORT: int = 8001
     LOG_LEVEL: str = "INFO"  # Aligned with .env
+    CHAT_STREAM_DEBUG: bool = True  # ChatStreamDebug 埋点日志开关;生产可设 false 关闭,排查时 true
     ALLOWED_ORIGINS: List[str] = ["*"]
     APP_PUBLIC_URL: Optional[str] = None
 

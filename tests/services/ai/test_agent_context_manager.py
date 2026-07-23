@@ -17,6 +17,67 @@ ID_DB_ALL_2 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
 
 @pytest.mark.asyncio
+async def test_resolve_agent_config_reuses_caller_session():
+    config = ChatConfig(
+        agent_id="test-agent",
+        agent_name="Test Agent",
+        model_name="glm-5.2",
+        temperature=0.7,
+        system_prompt="prompt",
+        tools=[],
+        capabilities=["chat"],
+        engine_config={},
+    )
+    session = AsyncMock()
+
+    with patch("app.services.ai.context_manager.AsyncSessionLocal") as session_factory, patch(
+        "app.services.ai.context_manager.AgentManagerService.get_active_agent_config",
+        new_callable=AsyncMock,
+        return_value=config,
+    ) as get_config:
+        resolved, route_details = await AgentContextManager.resolve_agent_config(
+            [{"role": "user", "content": "hello"}],
+            agent_id="test-agent",
+            db=session,
+        )
+
+    assert resolved is config
+    assert route_details is None
+    get_config.assert_awaited_once_with(session, agent_id="test-agent")
+    session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_setup_context_reuses_caller_session_for_permissions():
+    config = ChatConfig(
+        agent_id="test-agent",
+        agent_name="Test Agent",
+        model_name="glm-5.2",
+        temperature=0.7,
+        system_prompt="prompt",
+        tools=[],
+        capabilities=["chat"],
+        engine_config={},
+    )
+    session = AsyncMock()
+    access = {"is_admin": False, "accessible_ids": {ID_USER_PERM_1}}
+
+    with patch("app.services.ai.context_manager.AsyncSessionLocal") as session_factory, patch(
+        "app.services.permission_service.PermissionService.get_knowledge_base_access",
+        new_callable=AsyncMock,
+        return_value=access,
+    ):
+        await AgentContextManager.setup_context(
+            config=config,
+            user_info={"user_id": 100, "user_name": "test_user", "role": "user"},
+            db=session,
+        )
+
+    assert config.engine_config["dataset_ids"] == [ID_USER_PERM_1]
+    session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_enrich_for_knowledge_turn_does_not_merge_fallback_agent_tools():
     config = ChatConfig(
         agent_id="sys-agent-chat",

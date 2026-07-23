@@ -1,6 +1,7 @@
 from typing import List, Optional
 import json
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.llm.client import get_llm_async
 from app.services.ai.intent_service import (
     IntentResponse,
@@ -193,24 +194,29 @@ class RouterService:
 
         current_time = time.time()
         
-        # 1. Fetch Agents (with Caching)
-        if self._agents_cache and (current_time - self._last_cache_time < self._cache_ttl):
-            agents_metadata = self._agents_cache
-        else:
-            agents_metadata = await self._fetch_agents_from_db()
-            if agents_metadata:
-                self._agents_cache = agents_metadata
-                self._last_cache_time = current_time
-        
-        if not agents_metadata:
-            logger.warning("No agents available for routing.")
-            return None
+        # 1. Fetch and permission-filter agents in one short DB session. The
+        # session is released before any routing LLM call begins.
+        from app.core.orm import AsyncSessionLocal
 
-        agents_metadata = await self._filter_agents_for_user(
-            agents_metadata,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
+        async with AsyncSessionLocal() as db:
+            if self._agents_cache and (current_time - self._last_cache_time < self._cache_ttl):
+                agents_metadata = self._agents_cache
+            else:
+                agents_metadata = await self._fetch_agents_from_db(db=db)
+                if agents_metadata:
+                    self._agents_cache = agents_metadata
+                    self._last_cache_time = current_time
+
+            if not agents_metadata:
+                logger.warning("No agents available for routing.")
+                return None
+
+            agents_metadata = await self._filter_agents_for_user(
+                agents_metadata,
+                user_id=user_id,
+                is_admin=is_admin,
+                db=db,
+            )
         if not agents_metadata:
             logger.warning("No routeable agents available for user %s.", user_id)
             return None
@@ -372,6 +378,14 @@ class RouterService:
         for attempt in range(2):
             try:
                 llm = await get_llm_async(temperature=0.0)  # Use deterministic output
+                if llm is None or getattr(llm, "native_model", llm) is None:
+                    logger.warning("Router LLM is unavailable; falling back to general chat.")
+                    return self._fallback_to_general(
+                        agents_metadata,
+                        "Router LLM unavailable",
+                        intent_info=intent_info,
+                        request_decision=request_decision,
+                    )
                 chat_client = chat_client_from_handle(llm)
                 attempt_messages = messages
                 if attempt > 0:
@@ -842,26 +856,32 @@ class RouterService:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in allowed else default
 
-    async def _fetch_agents_from_db(self) -> List[dict]:
+    async def _fetch_agents_from_db(
+        self,
+        db: Optional[AsyncSession] = None,
+    ) -> List[dict]:
         from app.core.orm import AsyncSessionLocal
         from app.models.agent import AIAgent
         from sqlalchemy import select
-        
+
+        if db is None:
+            async with AsyncSessionLocal() as session:
+                return await self._fetch_agents_from_db(db=session)
+
         agents_metadata = []
-        async with AsyncSessionLocal() as session:
-            # Only select enabled agents AND system agents for routing
-            result = await session.execute(
-                select(AIAgent).where(AIAgent.is_enabled == True, AIAgent.is_system == True)
-            )
-            agents = result.scalars().all()
-            for agent in agents:
-                agents_metadata.append({
-                    "id": agent.id,
-                    "name": agent.name,
-                    "display_name": agent.display_name or agent.name,  # 中文显示名，用于路由匹配兜底
-                    "description": agent.description or "No description provided.",
-                    "capabilities": agent.capabilities or []
-                })
+        # Only select enabled agents AND system agents for routing
+        result = await db.execute(
+            select(AIAgent).where(AIAgent.is_enabled == True, AIAgent.is_system == True)
+        )
+        agents = result.scalars().all()
+        for agent in agents:
+            agents_metadata.append({
+                "id": agent.id,
+                "name": agent.name,
+                "display_name": agent.display_name or agent.name,  # 中文显示名，用于路由匹配兜底
+                "description": agent.description or "No description provided.",
+                "capabilities": agent.capabilities or []
+            })
         return agents_metadata
 
     async def _filter_agents_for_user(
@@ -870,6 +890,7 @@ class RouterService:
         *,
         user_id: Optional[int],
         is_admin: bool = False,
+        db: Optional[AsyncSession] = None,
     ) -> List[dict]:
         if is_admin or not user_id:
             return agents
@@ -878,11 +899,19 @@ class RouterService:
             from app.core.orm import AsyncSessionLocal
             from app.services.permission_service import PermissionService
 
-            async with AsyncSessionLocal() as session:
-                perms = await PermissionService(session).get_user_permissions(int(user_id))
-                if "admin" in getattr(perms, "roles", []):
-                    return agents
-                allowed_agent_ids = set(getattr(perms.permissions, "agents", []) or [])
+            if db is None:
+                async with AsyncSessionLocal() as session:
+                    return await self._filter_agents_for_user(
+                        agents,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                        db=session,
+                    )
+
+            perms = await PermissionService(db).get_user_permissions(int(user_id))
+            if "admin" in getattr(perms, "roles", []):
+                return agents
+            allowed_agent_ids = set(getattr(perms.permissions, "agents", []) or [])
         except Exception as e:
             logger.warning("Failed to filter route agents for user %s: %s", user_id, e)
             return agents

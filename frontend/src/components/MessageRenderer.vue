@@ -585,39 +585,91 @@ const segments = computed<ContentSegment[]>(() => {
 .chart { height: 100%; width: 100%; }
 .markdown-body :deep(a[href^="http"]) { color: #2563eb !important; text-decoration: underline !important; cursor: pointer !important; }
 
-/* Quick Action Buttons (Universal Styling) */
+/* Quick Action Buttons - StaffDeck 风格(暖纸卡片 + ghost 按钮) */
+/* 推荐区块标题(您可能还想了解/您可以这样继续)作卡片头 */
+.markdown-body :deep(h2:has(+ ul .quick-action-btn)),
+.markdown-body :deep(h3:has(+ ul .quick-action-btn)),
+.markdown-body :deep(h4:has(+ ul .quick-action-btn)) {
+  margin: 1.2em 0 0 !important;
+  padding: 12px 16px 4px !important;
+  background: var(--background, #f7f5ef) !important;
+  border: 0.5px solid var(--chrome-border, #e3e7f1) !important;
+  border-bottom: none !important;
+  border-radius: 10px 10px 0 0 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  color: var(--chrome-muted, #757f9c) !important;
+  text-align: left !important;
+}
+/* 推荐按钮列表作卡片体 */
+.markdown-body :deep(ul:has(.quick-action-btn)) {
+  list-style: none !important;
+  margin: 0 0 1em !important;
+  padding: 8px 12px 12px !important;
+  background: var(--background, #f7f5ef) !important;
+  border: 0.5px solid var(--chrome-border, #e3e7f1) !important;
+  border-top: none !important;
+  border-radius: 0 0 10px 10px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+}
+.markdown-body :deep(ul:has(.quick-action-btn) > li) {
+  list-style: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+/* 按钮:ghost - 白底 + teal 文字 + 0.5px 发丝边 + › 箭头 */
 .markdown-body :deep(.quick-action-btn),
 .markdown-body :deep(a[href^="quick:"]) {
   display: inline-flex !important;
   align-items: center !important;
-  margin: 6px 8px 6px 0 !important;
-  padding: 6px 16px !important;
-  background-color: var(--primary-color, #1677ff) !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
-  border-radius: 12px !important;
-  color: white !important;
+  margin: 0 !important;
+  padding: 7px 12px !important;
+  background: #ffffff !important;
+  border: 0.5px solid var(--chrome-border, #e3e7f1) !important;
+  border-radius: 8px !important;
+  color: var(--primary, #0f766e) !important;
   font-size: 13px !important;
-  font-weight: 800 !important;
+  font-weight: 500 !important;
   text-decoration: none !important;
-  box-shadow: 0 4px 14px -2px var(--primary-color-alpha, rgba(22, 119, 255, 0.3)) !important;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+  box-shadow: none !important;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease !important;
   cursor: pointer !important;
-  position: relative !important;
-  line-height: 1.2 !important;
+  line-height: 1.3 !important;
 }
-
 .markdown-body :deep(.quick-action-btn::before),
 .markdown-body :deep(a[href^="quick:"]::before) {
-  content: "⚡️" !important;
+  content: "›" !important;
   margin-right: 6px !important;
-  font-size: 11px !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: var(--chrome-muted, #757f9c) !important;
+  transition: transform .15s ease, color .15s ease !important;
 }
-
 .markdown-body :deep(.quick-action-btn:hover),
 .markdown-body :deep(a[href^="quick:"]:hover) {
-  filter: brightness(1.05) !important;
-  transform: translateY(-2px) scale(1.03) !important;
-  box-shadow: 0 8px 20px -4px var(--primary-color-alpha, rgba(22, 119, 255, 0.45)) !important;
+  background: var(--primary, #0f766e) !important;
+  border-color: var(--primary, #0f766e) !important;
+  color: var(--primary-foreground, #ffffff) !important;
+  filter: none !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+.markdown-body :deep(.quick-action-btn:hover::before),
+.markdown-body :deep(a[href^="quick:"]:hover::before) {
+  color: var(--primary-foreground, #ffffff) !important;
+  transform: translateX(2px) !important;
+}
+.markdown-body :deep(.quick-action-btn:active),
+.markdown-body :deep(a[href^="quick:"]:active) {
+  transform: translateY(1px) !important;
+}
+/* dark:按钮底改半透白,避免在深色卡片上发白 */
+.dark .markdown-body :deep(.quick-action-btn),
+.dark .markdown-body :deep(a[href^="quick:"]) {
+  background: rgba(255, 255, 255, 0.04) !important;
 }
 
 .markdown-body :deep(.citation-badge) { display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #3b82f6; background-color: #eff6ff; border: 1px solid #dbeafe; border-radius: 4px; padding: 0 4px; margin: 0 2px; cursor: pointer; vertical-align: super; transition: all 0.2s ease; }
@@ -1304,11 +1356,5 @@ const segments = computed<ContentSegment[]>(() => {
 .dark .theme-zen :deep(.markdown-body blockquote) {
   background-color: rgba(163, 230, 53, 0.02) !important;
   color: #a3e635 !important;
-}
-
-/* ==================== 快捷按钮文字颜色强制兜底 (Quick Buttons Contrast Fix) ==================== */
-:deep(.markdown-body .quick-action-btn),
-:deep(.markdown-body a[href^="quick:"]) {
-  color: #ffffff !important;
 }
 </style>

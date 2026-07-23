@@ -1,5 +1,7 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.orm import AsyncSessionLocal
 from app.services.ai.agent_manager import AgentManagerService
 from app.services.ai.router_service import router_service, RouterService
@@ -8,6 +10,15 @@ from app.schemas.agent import ChatConfig
 from app.services.ai.agent_prompts import ContextManagerPrompts
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _session_scope(db: Optional[AsyncSession] = None):
+    if db is not None:
+        yield db
+        return
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
 def _normalize_rag_params(engine_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -37,6 +48,7 @@ class AgentContextManager:
         version_id: Optional[str] = None,
         enable_multi_agent: bool = True,
         user_info: Optional[Dict[str, Any]] = None,
+        db: Optional[AsyncSession] = None,
     ):
         """
         Resolve the appropriate AgentConfig based on inputs or routing.
@@ -48,7 +60,7 @@ class AgentContextManager:
         agent_config = None
         route_details = None
 
-        async with AsyncSessionLocal() as session:
+        async with _session_scope(db) as session:
             if version_id:
                 agent_config = await AgentManagerService.get_version_config(session, version_id)
             elif agent_id:
@@ -94,9 +106,8 @@ class AgentContextManager:
                 if route_result and route_result.agent_id:
                     agent_config = await AgentManagerService.get_active_agent_config(session, agent_id=route_result.agent_id)
 
-        # Fallback: try known general-assistant slugs in DB before synthetic config
-        if not agent_config:
-            async with AsyncSessionLocal() as session:
+            # Fallback: try known general-assistant slugs in DB before synthetic config
+            if not agent_config:
                 for fallback_name in RouterService.FALLBACK_AGENT_NAMES:
                     agent_config = await AgentManagerService.get_active_agent_config(
                         session, agent_name=fallback_name
@@ -105,24 +116,24 @@ class AgentContextManager:
                         logger.info("Resolved fallback agent from DB: %s", fallback_name)
                         break
 
-        if not agent_config:
-            from app.services.config_service import ConfigService
-            default_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
-            fallback_slug = RouterService.FALLBACK_AGENT_NAMES[-1]
+            if not agent_config:
+                from app.services.config_service import ConfigService
+                default_model = await ConfigService.get("llm_model_name") or "DeepSeek-V3.2"
+                fallback_slug = RouterService.FALLBACK_AGENT_NAMES[-1]
 
-            agent_config = ChatConfig(
-                agent_id=fallback_slug,
-                agent_name="General Chat",
-                agent_version="default",
-                model_name=default_model,
-                temperature=0.7,
-                system_prompt=ContextManagerPrompts.GENERAL_CHAT_FALLBACK_SYSTEM_PROMPT,
-                tools=[],
-                capabilities=["chat"],
-                engine_type="LOCAL"
-            )
+                agent_config = ChatConfig(
+                    agent_id=fallback_slug,
+                    agent_name="General Chat",
+                    agent_version="default",
+                    model_name=default_model,
+                    temperature=0.7,
+                    system_prompt=ContextManagerPrompts.GENERAL_CHAT_FALLBACK_SYSTEM_PROMPT,
+                    tools=[],
+                    capabilities=["chat"],
+                    engine_type="LOCAL"
+                )
 
-        return agent_config, route_details
+            return agent_config, route_details
 
     @staticmethod
     async def enrich_for_knowledge_turn(
@@ -169,6 +180,7 @@ class AgentContextManager:
         current_turn_attachment_paths: Optional[List[str]] = None,
         require_explicit_dataset: bool = False,
         trace_buffer: Optional[List[Any]] = None,
+        db: Optional[AsyncSession] = None,
     ):
         """
         Setup the execution context (debug options + agent config).
@@ -239,7 +251,7 @@ class AgentContextManager:
                     from app.services.permission_service import PermissionService
                     from app.models.knowledge import KnowledgeBaseMetadata
                     from sqlalchemy.future import select
-                    async with AsyncSessionLocal() as session:
+                    async with _session_scope(db) as session:
                         permission_service = PermissionService(session)
                         access = await permission_service.get_knowledge_base_access(
                             user_id=u_id_val,

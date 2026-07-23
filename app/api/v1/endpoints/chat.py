@@ -737,6 +737,12 @@ async def create_chat_completion(
     else:
         set_debug_context({}) # Clear/Default
 
+    # ChatStreamDebug 埋点日志按请求开关:debug_options 显式传 chat_stream_debug 时覆盖全局默认(CHAT_STREAM_DEBUG)
+    if "chat_stream_debug" in effective_debug_options:
+        from app.services.ai.stream_debug import set_stream_debug_enabled
+
+        set_stream_debug_enabled(bool(effective_debug_options["chat_stream_debug"]))
+
     if not completion_request.messages:
         raise HTTPException(status_code=400, detail="Messages list cannot be empty")
 

@@ -83,6 +83,7 @@ from app.services.ai.runtime.agentscope.errors import ToolLoopFuseError
 from app.services.ai.runtime.agentscope.tools import RuntimeToolSpec, runtime_tool_spec_from_legacy_tool
 from app.services.ai.runtime.agentscope.tools import build_toolkit
 from app.services.ai.runtime.tool_loop_detector import ToolLoopDetector
+from app.services.ai.stream_debug import log_chat_stream_stage
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +120,14 @@ class AssistantAgentRunner(BaseExecutor):
         conversation_id: Optional[str] = None,
         permission_options: Dict[str, Any] = None,
         route_hints: Optional[Dict[str, Any]] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id, permission_options)
         self.intent_info = None
         self.intent_elapsed_ms = 0.0
         self.turn_classification = None
         self.route_hints = route_hints or {}
+        self.runtime_context = runtime_context or {}
 
     def _runtime_user_id(self) -> str | None:
         if not self.user_info:
@@ -304,6 +307,13 @@ class AssistantAgentRunner(BaseExecutor):
                 delegable_agent_name_aliases,
                 resolve_runnable_delegable_system_agents,
             )
+
+            if "delegable_agents" in self.runtime_context:
+                delegable_agents = self.runtime_context.get("delegable_agents") or []
+                return (
+                    delegable_agent_name_aliases(delegable_agents),
+                    self._build_sub_agent_candidates_by_capability(delegable_agents),
+                )
 
             raw_user_id = None
             is_admin = False
@@ -713,7 +723,30 @@ class AssistantAgentRunner(BaseExecutor):
             return
 
         # 1. Prepare LLM
+        _tools_start = time.time()
+        log_chat_stream_stage(
+            logger,
+            event_type="tools_resolve",
+            title="运行时工具加载",
+            trace_id=self.trace_id,
+            conversation_id=self.conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=self._runtime_agent_name(),
+        )
         tools = await self._resolve_runtime_tools_from_config()
+        log_chat_stream_stage(
+            logger,
+            event_type="tools_resolve",
+            title="运行时工具加载",
+            trace_id=self.trace_id,
+            conversation_id=self.conversation_id,
+            phase="end",
+            status="success",
+            elapsed_ms=(time.time() - _tools_start) * 1000,
+            agent_name=self._runtime_agent_name(),
+            fields={"tool_count": len(tools)},
+        )
 
         # 2. Build Messages
         system_content = self.config.system_prompt or ""
@@ -768,7 +801,12 @@ class AssistantAgentRunner(BaseExecutor):
             yield {"type": "log", "id": f"syn_s_{uuid.uuid4().hex[:8]}", "title": "📝 准备回答", "details": "正在生成回答...", "status": "success"}
 
             # Use Synthesizer for simple mode
-            llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+            llm = self.runtime_context.get("synthesis_llm")
+            if llm is None:
+                llm = await AgentConfigProvider.get_synthesis_llm(
+                    streaming=True,
+                    config=self.config,
+                )
 
             full_content = ""
             content_emitted = False
@@ -784,6 +822,17 @@ class AssistantAgentRunner(BaseExecutor):
                             accumulated_msg += chunk
                         if chunk.content:
                             if not content_emitted:
+                                log_chat_stream_stage(
+                                    logger,
+                                    event_type="generation",
+                                    title="✨ 开始生成回复",
+                                    trace_id=self.trace_id,
+                                    conversation_id=self.conversation_id,
+                                    phase="start",
+                                    status="success",
+                                    agent_name=self._runtime_agent_name(),
+                                    model_name=self.config.model_name,
+                                )
                                 yield {"type": "log", "id": f"gen_s_{uuid.uuid4().hex[:8]}", "title": "✨ 开始生成回复", "status": "success"}
                             content_emitted = True
                             full_content += chunk.content
@@ -1035,7 +1084,12 @@ class AssistantAgentRunner(BaseExecutor):
             tools
             and all(isinstance(t, RuntimeToolSpec) for t in tools)
         ):
-            native_model_handle = await AgentConfigProvider.get_configured_llm(streaming=True, config=self.config)
+            native_model_handle = self.runtime_context.get("primary_llm")
+            if native_model_handle is None:
+                native_model_handle = await AgentConfigProvider.get_configured_llm(
+                    streaming=True,
+                    config=self.config,
+                )
             native_model = getattr(native_model_handle, "native_model", None)
             if native_model is not None:
                 async for chunk in self._execute_with_agentscope_native_agent(
@@ -1121,6 +1175,17 @@ class AssistantAgentRunner(BaseExecutor):
         initial_tool_choice: Any = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         agent_name = self._runtime_agent_name()
+        _na_start = time.time()
+        log_chat_stream_stage(
+            logger,
+            event_type="native_agent",
+            title="原生 Agent 执行(锁+状态加载)",
+            trace_id=self.trace_id,
+            conversation_id=self.conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=agent_name,
+        )
         tools_fingerprint = build_tools_fingerprint(self.config, tools)
         model_name = getattr(native_model, "model", self.config.model_name)
         loop_detector = await self._create_tool_loop_detector()
@@ -1162,6 +1227,18 @@ class AssistantAgentRunner(BaseExecutor):
                             "status": "warning",
                         }
 
+                log_chat_stream_stage(
+                    logger,
+                    event_type="native_agent",
+                    title="原生 Agent 执行(锁+状态加载)",
+                    trace_id=self.trace_id,
+                    conversation_id=self.conversation_id,
+                    phase="end",
+                    status="success",
+                    elapsed_ms=(time.time() - _na_start) * 1000,
+                    agent_name=agent_name,
+                    fields={"restored_state": bool(restored_state)},
+                )
                 agent = await self._build_native_agent(
                     native_model=native_model,
                     tools=tools,
@@ -1200,6 +1277,16 @@ class AssistantAgentRunner(BaseExecutor):
                 )
                 self._session_artifact_turn["user_question"] = state["user_query"]
                 interrupted = False
+                log_chat_stream_stage(
+                    logger,
+                    event_type="native_stream",
+                    title="原生 Agent 流式回复",
+                    trace_id=self.trace_id,
+                    conversation_id=self.conversation_id,
+                    phase="start",
+                    status="pending",
+                    agent_name=agent_name,
+                )
                 async for chunk in self._stream_agentscope_native_events(
                     event_stream=agent.reply_stream(inputs),
                     agent=agent,
@@ -1257,11 +1344,33 @@ class AssistantAgentRunner(BaseExecutor):
         from agentscope.agent import Agent, ReActConfig
         from app.services.ai.runtime.agentscope.middleware import ModelCallStatsMiddleware
 
+        _bn_start = time.time()
+        log_chat_stream_stage(
+            logger,
+            event_type="agent_build",
+            title="AgentScope 原生智能体构建",
+            trace_id=self.trace_id,
+            conversation_id=self.conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=self._runtime_agent_name(),
+        )
+        _t0 = time.time()
         context_config = await load_context_config()
+        _ms_load_ctx = (time.time() - _t0) * 1000
+        _t0 = time.time()
+        fallback_handle = self.runtime_context.get("fallback_llm")
+        fallback_resolved = "fallback_llm" in self.runtime_context
         model_config = await build_model_config(
             config=self.config,
             primary_model_name=primary_model_name,
+            fallback_model=(
+                getattr(fallback_handle, "native_model", None) if fallback_handle else None
+            ),
+            fallback_resolved=fallback_resolved,
         )
+        _ms_model_cfg = (time.time() - _t0) * 1000
+        _t0 = time.time()
         workspace = await get_local_workspace(
             user_id=self._runtime_user_id(),
             user_name=self._runtime_user_name(),
@@ -1270,12 +1379,32 @@ class AssistantAgentRunner(BaseExecutor):
             skills_custom=bool(getattr(self.config, "skills_custom", False)),
             allowed_global_skills=list(getattr(self.config, "skills", None) or []),
         )
+        _ms_workspace = (time.time() - _t0) * 1000
         # 仅挂载 agent 后端配置的工具；workspace 只作 offloader，不自动注入 Grep/Read/Bash 等内置工具。
+        _t0 = time.time()
         toolkit = build_toolkit(
             tools,
             approval_mode=self.permission_options.get("approval_mode"),
             loop_detector=loop_detector,
             user_id=self._runtime_user_id(),
+        )
+        _ms_toolkit = (time.time() - _t0) * 1000
+        log_chat_stream_stage(
+            logger,
+            event_type="agent_build",
+            title="AgentScope 原生智能体构建",
+            trace_id=self.trace_id,
+            conversation_id=self.conversation_id,
+            phase="end",
+            status="success",
+            elapsed_ms=(time.time() - _bn_start) * 1000,
+            agent_name=self._runtime_agent_name(),
+            fields={
+                "load_ctx_ms": round(_ms_load_ctx, 1),
+                "model_cfg_ms": round(_ms_model_cfg, 1),
+                "workspace_ms": round(_ms_workspace, 1),
+                "toolkit_ms": round(_ms_toolkit, 1),
+            },
         )
         middlewares = []
         if self.conversation_id:
@@ -1372,6 +1501,17 @@ class AssistantAgentRunner(BaseExecutor):
                 yield {"type": "thinking", "status": "continuing"}
             if not state["content_emitted"]:
                 state["content_emitted"] = True
+                log_chat_stream_stage(
+                    logger,
+                    event_type="generation",
+                    title="✨ 开始生成回复",
+                    trace_id=self.trace_id,
+                    conversation_id=self.conversation_id,
+                    phase="start",
+                    status="success",
+                    agent_name=self._runtime_agent_name(),
+                    model_name=getattr(native_model, "model", self.config.model_name),
+                )
                 yield {
                     "type": "log",
                     "id": f"gen_start_{uuid.uuid4().hex[:8]}",
@@ -1443,6 +1583,17 @@ class AssistantAgentRunner(BaseExecutor):
             yield {"type": "thinking", "status": "continuing"}
         if not state.get("content_emitted"):
             state["content_emitted"] = True
+            log_chat_stream_stage(
+                logger,
+                event_type="generation",
+                title="✨ 开始生成回复",
+                trace_id=self.trace_id,
+                conversation_id=self.conversation_id,
+                phase="start",
+                status="success",
+                agent_name=self._runtime_agent_name(),
+                model_name=getattr(native_model, "model", self.config.model_name),
+            )
             yield {
                 "type": "log",
                 "id": f"gen_start_{uuid.uuid4().hex[:8]}",
@@ -1543,7 +1694,12 @@ class AssistantAgentRunner(BaseExecutor):
         emitted_any = False
         last_synthesis_chunk = None
         try:
-            llm = await AgentConfigProvider.get_synthesis_llm(streaming=True, config=self.config)
+            llm = self.runtime_context.get("synthesis_llm")
+            if llm is None:
+                llm = await AgentConfigProvider.get_synthesis_llm(
+                    streaming=True,
+                    config=self.config,
+                )
             messages = normalize_messages_for_llm([
                 SystemMessage(content=str(state.get("system_content") or self.config.system_prompt or "")),
                 HumanMessage(
@@ -1558,6 +1714,18 @@ class AssistantAgentRunner(BaseExecutor):
                 emitted_any = True
                 if not state.get("content_emitted"):
                     state["content_emitted"] = True
+                    log_chat_stream_stage(
+                        logger,
+                        event_type="generation",
+                        title="✨ 开始生成回复",
+                        trace_id=self.trace_id,
+                        conversation_id=self.conversation_id,
+                        phase="start",
+                        status="success",
+                        agent_name=self._runtime_agent_name(),
+                        model_name=self.config.model_name,
+                        fields={"source": "synthesis_fallback"},
+                    )
                     yield {
                         "type": "log",
                         "id": f"gen_fb_{uuid.uuid4().hex[:8]}",

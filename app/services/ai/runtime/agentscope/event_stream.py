@@ -6,6 +6,8 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Callable, Dict, List, Protocol
 
+from app.services.ai.stream_debug import log_chat_stream_stage
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,37 +214,79 @@ async def stream_observability_agentscope_events(
     *,
     state: Dict[str, Any],
     agent: Any | None = None,
+    runner: PendingInterruptHost | None = None,
     agent_name: str | None = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     event_type = str(getattr(event, "type", ""))
+    trace_id = getattr(runner, "trace_id", None) if runner is not None else None
+    conversation_id = getattr(runner, "conversation_id", None) if runner is not None else None
 
     if event_type == "REPLY_START":
+        reply_id = getattr(event, "reply_id", "")
+        log_chat_stream_stage(
+            logger,
+            event_type="agent_reply",
+            title="Agent 回复开始",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=getattr(event, "name", agent_name or ""),
+            reply_id=reply_id,
+            fields={"session_id": getattr(event, "session_id", "")},
+        )
         yield {
             "type": "agent_reply",
             "phase": "start",
-            "reply_id": getattr(event, "reply_id", ""),
+            "reply_id": reply_id,
             "session_id": getattr(event, "session_id", ""),
             "agent_name": getattr(event, "name", agent_name or ""),
         }
         return
 
     if event_type == "REPLY_END":
+        reply_id = getattr(event, "reply_id", "")
+        log_chat_stream_stage(
+            logger,
+            event_type="agent_reply",
+            title="Agent 回复结束",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="end",
+            status="success",
+            agent_name=agent_name or "",
+            reply_id=reply_id,
+            fields={"session_id": getattr(event, "session_id", "")},
+        )
         yield {
             "type": "agent_reply",
             "phase": "end",
-            "reply_id": getattr(event, "reply_id", ""),
+            "reply_id": reply_id,
             "session_id": getattr(event, "session_id", ""),
         }
         return
 
     if event_type == "MODEL_CALL_START":
         reply_id = getattr(event, "reply_id", "")
+        model_name = getattr(event, "model_name", "")
         state.setdefault("model_call_started_at", {})[reply_id] = time.time()
+        log_chat_stream_stage(
+            logger,
+            event_type="model_call",
+            title=f"模型调用: {model_name or 'unknown'}",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=agent_name or "",
+            model_name=model_name,
+            reply_id=reply_id,
+        )
         yield {
             "type": "model_call",
             "phase": "start",
             "reply_id": reply_id,
-            "model_name": getattr(event, "model_name", ""),
+            "model_name": model_name,
         }
         return
 
@@ -252,14 +296,32 @@ async def stream_observability_agentscope_events(
         input_tokens = int(getattr(event, "input_tokens", 0) or 0)
         output_tokens = int(getattr(event, "output_tokens", 0) or 0)
         duration_ms = (time.time() - started_at) * 1000
+        model_name = getattr(event, "model_name", "")
         logger.info(
             "[AgentScope] model_call_end agent=%s reply_id=%s model=%s input_tokens=%d output_tokens=%d duration_ms=%.1f",
             agent_name or "",
             reply_id,
-            getattr(event, "model_name", ""),
+            model_name,
             input_tokens,
             output_tokens,
             duration_ms,
+        )
+        log_chat_stream_stage(
+            logger,
+            event_type="model_call",
+            title=f"模型调用: {model_name or 'unknown'}",
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            phase="end",
+            status="success",
+            elapsed_ms=duration_ms,
+            agent_name=agent_name or "",
+            model_name=model_name,
+            reply_id=reply_id,
+            fields={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
         )
         yield {
             "type": "model_call",
@@ -268,6 +330,7 @@ async def stream_observability_agentscope_events(
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "duration_ms": duration_ms,
+            "model_name": model_name,
         }
         compression = maybe_emit_context_compression(
             agent=agent,
@@ -346,6 +409,7 @@ async def map_standard_agentscope_event(
             event,
             state=state,
             agent=agent,
+            runner=runner,
             agent_name=agent_name,
         ):
             yield chunk

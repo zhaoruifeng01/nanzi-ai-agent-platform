@@ -8,6 +8,7 @@ from app.services.ai.intent_service import (
     DataSessionAffinity,
     IntentResponse,
     IntentType,
+    looks_like_greeting,
     resolve_data_agent_session_affinity,
     should_inherit_data_agent_session,
 )
@@ -654,8 +655,17 @@ async def test_route_query_data_evidence_survives_invalid_constrained_route(mock
     assert result.intent_info == evidence
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "你好",
+        "hello,下午好",
+        "hi 你好",
+        "你好，下午好",
+    ],
+)
 @pytest.mark.asyncio
-async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
+async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata, query):
     """纯问候应短路至通用助手，不调用路由 LLM。"""
     service = RouterService()
     mock_chat = _mock_chat_client("{}")
@@ -675,7 +685,7 @@ async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
         mock_get_llm.return_value = object()
         mock_chat_factory.return_value = mock_chat
 
-        result = await service.route_query("你好")
+        result = await service.route_query(query)
 
     assert result is not None
     assert result.agent_id == "agent-general"
@@ -685,6 +695,20 @@ async def test_route_query_greeting_shortcut_skips_llm(mock_agents_metadata):
     assert result.user_action_type == "chat"
     mock_get_llm.assert_not_called()
     mock_chat.generate_text.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("hello,下午好", True),
+        ("hi 你好", True),
+        ("下午好呀", True),
+        ("hello，下午好，可以帮我吗", False),
+        ("你好，查一下所有机房的列表", False),
+    ],
+)
+def test_looks_like_greeting_handles_compound_salutations(query, expected):
+    assert looks_like_greeting(query) is expected
 
 
 @pytest.mark.parametrize(
@@ -894,3 +918,31 @@ async def test_route_query_greeting_compound_still_calls_llm(mock_agents_metadat
 
     assert result.agent_id == "agent-chatbi"
     mock_chat.generate_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_route_query_llm_unavailable_falls_back_without_retry(mock_agents_metadata):
+    """路由模型不可用时应立即兜底，避免 NoneType callable 和重复空重试。"""
+    service = RouterService()
+
+    with patch.object(service, "_fetch_agents_from_db", new_callable=AsyncMock) as mock_fetch, \
+         patch("app.services.ai.router_service.intent_service.identify_intent", new_callable=AsyncMock) as mock_identify, \
+         patch("app.services.ai.router_service.get_llm_async", new_callable=AsyncMock) as mock_get_llm, \
+         patch("app.services.ai.router_service.chat_client_from_handle") as mock_chat_factory:
+
+        mock_fetch.return_value = mock_agents_metadata
+        mock_identify.return_value = IntentResponse(
+            intent=IntentType.UNKNOWN,
+            confidence=0.0,
+            reasoning="LLM service unavailable (configuration missing)",
+            entities=[],
+        )
+        mock_get_llm.return_value = None
+
+        result = await service.route_query("随便聊聊")
+
+    assert result is not None
+    assert result.agent_id == "agent-general"
+    assert result.reasoning == "Fallback: Router LLM unavailable"
+    mock_get_llm.assert_called_once()
+    mock_chat_factory.assert_not_called()

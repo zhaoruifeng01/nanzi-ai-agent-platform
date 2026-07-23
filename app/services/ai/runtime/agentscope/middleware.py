@@ -22,6 +22,8 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Union
 
 from agentscope.middleware import MiddlewareBase
 
+from app.services.ai.stream_debug import log_chat_stream_stage
+
 logger = logging.getLogger(__name__)
 
 STATS_KEY_SUFFIX = "model_call_stats"
@@ -205,6 +207,28 @@ async def _stream_with_stats(
         all_tool_names or False,
         elapsed_ms,
     )
+    log_chat_stream_stage(
+        logger,
+        event_type="llm_call",
+        title=f"LLM 调用: {record_base.get('model_name', '')}",
+        trace_id=record_base.get("trace_id"),
+        conversation_id=record_base.get("conversation_id"),
+        phase="end",
+        status="success",
+        elapsed_ms=elapsed_ms,
+        agent_name=record_base.get("agent_name"),
+        model_name=record_base.get("model_name"),
+        fields={
+            "call_index": record_base.get("call_index", 0),
+            "input_tokens": record["input_tokens"],
+            "output_tokens": record["output_tokens"],
+            "cache_input_tokens": record["cache_input_tokens"],
+            "has_tool_calls": has_tool_calls,
+            "tool_names": all_tool_names,
+            "response_chars": len(final_text or ""),
+            "reasoning_chars": len(final_reasoning or ""),
+        },
+    )
     asyncio.ensure_future(_append_stat_to_redis(redis_key, record))
 
 
@@ -247,7 +271,43 @@ class ModelCallStatsMiddleware(MiddlewareBase):
         input_message_count: int = len(input_kwargs.get("messages", []))
         has_tools_bound: bool = bool(tools)
 
-        result = await next_handler(**input_kwargs)
+        log_chat_stream_stage(
+            logger,
+            event_type="llm_call",
+            title=f"LLM 调用: {model_name}",
+            trace_id=self._trace_id,
+            conversation_id=self._conversation_id,
+            phase="start",
+            status="pending",
+            agent_name=self._agent_name,
+            model_name=model_name,
+            fields={
+                "call_index": call_index,
+                "input_message_count": input_message_count,
+                "has_tools_bound": has_tools_bound,
+            },
+        )
+        try:
+            result = await next_handler(**input_kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.time() - start_ts) * 1000
+            log_chat_stream_stage(
+                logger,
+                event_type="llm_call",
+                title=f"LLM 调用: {model_name}",
+                trace_id=self._trace_id,
+                conversation_id=self._conversation_id,
+                phase="end",
+                status="error",
+                elapsed_ms=elapsed_ms,
+                agent_name=self._agent_name,
+                model_name=model_name,
+                fields={
+                    "call_index": call_index,
+                    "error": str(exc),
+                },
+            )
+            raise
 
         redis_key = _build_redis_key(self._user_id, self._conversation_id)
         record_base = {
@@ -329,6 +389,28 @@ class ModelCallStatsMiddleware(MiddlewareBase):
             cache_input_tokens,
             tool_names or False,
             elapsed_ms,
+        )
+        log_chat_stream_stage(
+            logger,
+            event_type="llm_call",
+            title=f"LLM 调用: {model_name}",
+            trace_id=self._trace_id,
+            conversation_id=self._conversation_id,
+            phase="end",
+            status="success",
+            elapsed_ms=elapsed_ms,
+            agent_name=self._agent_name,
+            model_name=model_name,
+            fields={
+                "call_index": call_index,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_input_tokens": cache_input_tokens,
+                "has_tool_calls": has_tool_calls,
+                "tool_names": tool_names,
+                "response_chars": len(response_text or ""),
+                "reasoning_chars": len(reasoning_content or ""),
+            },
         )
         asyncio.ensure_future(_append_stat_to_redis(redis_key, record))
         return result

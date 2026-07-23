@@ -431,10 +431,27 @@ def looks_like_greeting(user_question: str) -> bool:
     q_lower = q.lower()
     if any(sig in q_lower for sig in _GREETING_COMPOUND_BLOCKERS):
         return False
+    greeting_token_pattern = r"(你好|您好)(吗|呀|啊)?|(早上|下午|晚上|中午)好(呀|啊)?|hi|hello|hey|thanks"
+    greeting_tokens = [
+        token
+        for token in re.split(r"[\s!！?？。．,，、;；~～]+", q_lower)
+        if token
+    ]
+    if (
+        len(greeting_tokens) > 1
+        and all(
+            token in _GREETING_CORE_PHRASES
+            or re.fullmatch(greeting_token_pattern, token)
+            for token in greeting_tokens
+        )
+    ):
+        return True
     q_core = re.sub(r"[\s!！?？。．,，~～]+", "", q_lower)
     if q_core in _GREETING_CORE_PHRASES:
         return True
     if re.fullmatch(r"(你好|您好)(吗|呀|啊)?", q_core):
+        return True
+    if re.fullmatch(r"(早上|下午|晚上|中午)好(呀|啊)?", q_core):
         return True
     if re.fullmatch(r"(hi|hello|hey)", q_core):
         return True

@@ -16,12 +16,14 @@ class AssistantExecutor(BaseExecutor):
         conversation_id: Optional[str] = None,
         permission_options: Dict[str, Any] = None,
         route_hints: Optional[Dict[str, Any]] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(config, trace_id, trace_buffer, debug_options, user_info, conversation_id, permission_options)
         self.intent_info = None
         self.intent_elapsed_ms = 0.0
         self.turn_classification = None
         self.route_hints = route_hints or {}
+        self.runtime_context = runtime_context or {}
 
     async def execute(
         self,
@@ -36,6 +38,7 @@ class AssistantExecutor(BaseExecutor):
             user_info=self.user_info,
             conversation_id=self.conversation_id,
             route_hints=self.route_hints,
+            runtime_context=self.runtime_context,
         )
         runner.intent_info = self.intent_info
         runner.intent_elapsed_ms = self.intent_elapsed_ms

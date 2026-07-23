@@ -1,11 +1,24 @@
 import logging
 import re
-from typing import Optional, Dict
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Mapping, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.agent import ChatConfig
 from app.core.llm.client import get_llm
 from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _session_scope(db: Optional[AsyncSession] = None):
+    if db is not None:
+        yield db
+        return
+    from app.core.orm import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        yield session
 
 class AgentConfigProvider:
     """
@@ -13,11 +26,39 @@ class AgentConfigProvider:
     """
     
     @staticmethod
+    async def load_model_registry(
+        db: Optional[AsyncSession] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Load active model records once and index them by both name and model_id."""
+        from app.models.ai_model import AIModel
+        from sqlalchemy import select
+
+        async with _session_scope(db) as session:
+            result = await session.execute(
+                select(AIModel).where(AIModel.is_active == True)
+            )
+            registry: Dict[str, Dict[str, Any]] = {}
+            for row in result.scalars().all():
+                entry = {
+                    "model_id": row.model_id,
+                    "name": row.name,
+                    "api_key": row.api_key,
+                    "api_base_url": row.api_base_url,
+                    "type": row.type,
+                }
+                for lookup_key in (row.model_id, row.name):
+                    if lookup_key:
+                        registry.setdefault(str(lookup_key), entry)
+            return registry
+
+    @staticmethod
     async def get_configured_llm(
         streaming: bool = True, 
         config: Optional[ChatConfig] = None,
         model_override: Optional[str] = None,
-        temp_override: Optional[float] = None
+        temp_override: Optional[float] = None,
+        db: Optional[AsyncSession] = None,
+        model_registry: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ):
         """
         Instantiates an AgentScope LLM based on system config, agent-specific overrides, or runtime overrides.
@@ -29,7 +70,7 @@ class AgentConfigProvider:
         4. System Defaults
         """
         # Fetch dynamic config from DB
-        llm_config = await ConfigService.get_all_from_db()
+        llm_config = await ConfigService.get_all_from_db(db=db)
         
         def get_val(key, default):
             return llm_config.get(key, {}).get("value") or default
@@ -70,30 +111,33 @@ class AgentConfigProvider:
         # use its specific credentials if available.
         # This allows per-model API keys/BaseURLs.
         try:
-            from app.core.orm import AsyncSessionLocal
-            from app.models.ai_model import AIModel
-            from sqlalchemy import select, or_
-            
-            async with AsyncSessionLocal() as session:
-                # Search for active model matching name or model_id
-                stmt = select(AIModel).where(
-                    AIModel.is_active == True,
-                    or_(AIModel.model_id == model, AIModel.name == model)
-                )
-                result = await session.execute(stmt)
-                ai_model = result.scalars().first()
-                
-                if ai_model:
-                    # Found a registered model, verify if we should override credentials
-                    if ai_model.api_key:
-                        api_key = ai_model.api_key
-                    if ai_model.api_base_url:
-                        base_url = ai_model.api_base_url
-                    
-                    # Update the model string to the actual model_id required by the provider
-                    # (e.g. user selected "My GPT4", acts as "gpt-4o")
-                    model = ai_model.model_id
-                    
+            if model_registry is not None:
+                ai_model = model_registry.get(str(model))
+            else:
+                from app.models.ai_model import AIModel
+                from sqlalchemy import select, or_
+
+                async with _session_scope(db) as session:
+                    stmt = select(AIModel).where(
+                        AIModel.is_active == True,
+                        or_(AIModel.model_id == model, AIModel.name == model)
+                    )
+                    result = await session.execute(stmt)
+                    row = result.scalars().first()
+                    ai_model = None
+                    if row:
+                        ai_model = {
+                            "model_id": row.model_id,
+                            "api_key": row.api_key,
+                            "api_base_url": row.api_base_url,
+                        }
+
+            if ai_model:
+                if ai_model.get("api_key"):
+                    api_key = ai_model["api_key"]
+                if ai_model.get("api_base_url"):
+                    base_url = ai_model["api_base_url"]
+                model = ai_model.get("model_id") or model
         except Exception as e:
             logger.warning(f"Failed to lookup model registry: {e}")
 
@@ -108,7 +152,9 @@ class AgentConfigProvider:
     @staticmethod
     async def get_synthesis_llm(
         streaming: bool = True, 
-        config: Optional[ChatConfig] = None
+        config: Optional[ChatConfig] = None,
+        db: Optional[AsyncSession] = None,
+        model_registry: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ):
         """
         Instantiates the LLM specifically for the Synthesis (final response) phase.
@@ -124,13 +170,17 @@ class AgentConfigProvider:
                 streaming=streaming,
                 config=config,
                 model_override=config.synthesis_model_name,
-                temp_override=config.synthesis_temperature
+                temp_override=config.synthesis_temperature,
+                db=db,
+                model_registry=model_registry,
             )
         
         # Default fallback to primary model
         return await AgentConfigProvider.get_configured_llm(
             streaming=streaming,
-            config=config
+            config=config,
+            db=db,
+            model_registry=model_registry,
         )
 
     @staticmethod
@@ -138,10 +188,12 @@ class AgentConfigProvider:
         streaming: bool = True,
         config: Optional[ChatConfig] = None,
         exclude_model: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+        model_registry: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ):
         """Fallback native model for AgentScope ModelConfig: system default only."""
         try:
-            llm_config = await ConfigService.get_all_from_db()
+            llm_config = await ConfigService.get_all_from_db(db=db)
         except Exception:
             llm_config = {}
 
@@ -156,6 +208,8 @@ class AgentConfigProvider:
                 streaming=streaming,
                 config=config,
                 model_override=candidate,
+                db=db,
+                model_registry=model_registry,
             )
         except Exception:
             return None

@@ -37,6 +37,7 @@ class AgentDispatcher:
         conversation_id: Optional[str] = None,
         shared_turn: Optional[SharedTurn] = None,
         route_hints: Optional[Dict[str, Any]] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
     ) -> BaseExecutor:
         """
         Determines and returns the correct Executor instance.
@@ -153,6 +154,7 @@ class AgentDispatcher:
             conversation_id,
             permission_options=permission_options,
             route_hints=route_hints,
+            runtime_context=runtime_context,
         )
 
         attach_turn_classification(

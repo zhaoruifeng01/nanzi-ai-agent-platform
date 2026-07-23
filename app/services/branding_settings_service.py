@@ -97,66 +97,60 @@ class BrandingSettingsService:
         default_agent_name: str,
         changed_by: str = "system",
     ) -> None:
-        await ConfigService.set_config(
-            cls.CONFIG_ENABLED,
-            "true" if enabled else "false",
-            description="是否启用品牌个性化",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_PRODUCT_NAME,
-            (product_name or DEFAULT_PRODUCT_NAME).strip(),
-            description="产品名称（浏览器标题、侧栏、登录页）",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_LOGIN_SUBTITLE,
-            (login_subtitle or DEFAULT_LOGIN_SUBTITLE).strip(),
-            description="登录页副标题",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_ICON_URL,
-            (icon_url or DEFAULT_ICON_URL).strip(),
-            description="Logo / Favicon 地址",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_HIDE_LOGIN_SSO,
-            "true" if hide_login_sso else "false",
-            description="登录页隐藏 SSO 登录",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_HIDE_VERSION_LINK,
-            "true" if hide_version_link else "false",
-            description="侧栏版本号取消 GitHub 外链",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_CONTACT_MARKDOWN,
-            contact_markdown or "",
-            description="联系信息 Markdown（个人中心 → 关于）",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_COPYRIGHT_TEXT,
-            copyright_text or "",
-            description="登录页底部版权文案",
-            category="branding",
-            changed_by=changed_by,
-        )
-        await ConfigService.set_config(
-            cls.CONFIG_DEFAULT_AGENT_NAME,
-            (default_agent_name or DEFAULT_AGENT_NAME).strip(),
-            description="默认智能助手名称",
-            category="branding",
-            changed_by=changed_by,
-        )
+        items = [
+            {
+                "key": cls.CONFIG_ENABLED,
+                "value": "true" if enabled else "false",
+                "description": "是否启用品牌个性化",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_PRODUCT_NAME,
+                "value": (product_name or DEFAULT_PRODUCT_NAME).strip(),
+                "description": "产品名称（浏览器标题、侧栏、登录页）",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_LOGIN_SUBTITLE,
+                "value": (login_subtitle or DEFAULT_LOGIN_SUBTITLE).strip(),
+                "description": "登录页副标题",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_ICON_URL,
+                "value": (icon_url or DEFAULT_ICON_URL).strip(),
+                "description": "Logo / Favicon 地址",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_HIDE_LOGIN_SSO,
+                "value": "true" if hide_login_sso else "false",
+                "description": "登录页隐藏 SSO 登录",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_HIDE_VERSION_LINK,
+                "value": "true" if hide_version_link else "false",
+                "description": "侧栏版本号取消 GitHub 外链",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_CONTACT_MARKDOWN,
+                "value": contact_markdown or "",
+                "description": "联系信息 Markdown（个人中心 -> 关于）",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_COPYRIGHT_TEXT,
+                "value": copyright_text or "",
+                "description": "登录页底部版权文案",
+                "category": "branding",
+            },
+            {
+                "key": cls.CONFIG_DEFAULT_AGENT_NAME,
+                "value": (default_agent_name or DEFAULT_AGENT_NAME).strip(),
+                "description": "默认智能助手名称",
+                "category": "branding",
+            },
+        ]
+        await ConfigService.set_configs_batch(items, changed_by=changed_by)

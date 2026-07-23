@@ -46,23 +46,25 @@ async def build_model_config(
     *,
     config: ChatConfig | None,
     primary_model_name: str,
+    fallback_model: Any = None,
+    fallback_resolved: bool = False,
 ) -> Any:
     """Build AgentScope ModelConfig with optional fallback model."""
     from agentscope.agent import ModelConfig
     from app.services.ai.config import AgentConfigProvider
 
-    fallback_model = None
-    try:
-        fallback_handle = await AgentConfigProvider.get_fallback_llm(
-            streaming=True,
-            config=config,
-            exclude_model=primary_model_name,
-        )
-        fallback_model = (
-            getattr(fallback_handle, "native_model", None) if fallback_handle else None
-        )
-    except Exception as exc:
-        logger.warning("[agent_runtime] Failed to load fallback model: %s", exc)
+    if not fallback_resolved:
+        try:
+            fallback_handle = await AgentConfigProvider.get_fallback_llm(
+                streaming=True,
+                config=config,
+                exclude_model=primary_model_name,
+            )
+            fallback_model = (
+                getattr(fallback_handle, "native_model", None) if fallback_handle else None
+            )
+        except Exception as exc:
+            logger.warning("[agent_runtime] Failed to load fallback model: %s", exc)
     return ModelConfig(fallback_model=fallback_model, max_retries=0)
 
 
