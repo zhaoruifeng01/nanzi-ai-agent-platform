@@ -2,6 +2,152 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== 自托管字体（StaffDeck 风格改造方案 §3）===== */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/Geist-Variable.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "Alimama ShuHeiTi";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/AlimamaShuHeiTi-Regular.woff2") format("woff2");
+}
+
+@layer base {
+  :root {
+    /* 暖纸底色层 */
+    --background: #f7f5ef;
+    --surface: #ffffff;
+    --surface-subtle: #fbfaf6;
+    --surface-muted: #eeece4;
+
+    /* 文字 */
+    --foreground: #20201d;
+    --muted-foreground: #6d726e;
+
+    /* 边框 */
+    --border: #ded7cc;
+    --border-soft: #e8e2d6;
+
+    /* 青绿主色 */
+    --primary: #0f766e;
+    --primary-foreground: #ffffff;
+    --primary-hover: #0e6b64;
+    --primary-active: #0b5a54;
+    --primary-dark: #0b5a54; /* 兼容旧 hover:bg-primary-dark，= active */
+
+    /* 强调 */
+    --accent: #f6f6f6;
+    --accent-soft: #e1f1ed;
+
+    /* 语义 */
+    --destructive: #dc2626;
+    --success: #04756f;
+    --warning: #b45309;
+
+    /* 冷色镀铬层（控件 chrome） */
+    --chrome-border: #e3e7f1;
+    --chrome-border-hover: #cbd3e6;
+    --chrome-muted: #757f9c;
+    --chrome-muted-2: #8b94aa;
+    --chrome-fg: #18181a;
+
+    /* 头像/状态点 */
+    --avatar-bg: #eef1fb;
+    --avatar-fg: #7e96dc;
+
+    /* 侧边栏（Phase 2 切白底时启用；Phase 0 config 暂用旧深蓝硬编码） */
+    --sidebar: #ffffff;
+    --sidebar-foreground: #858b9c;
+    --sidebar-border: #f4f4f4;
+    --sidebar-accent: #f6f6f6;
+    --sidebar-accent-foreground: #18181a;
+
+    /* 圆角 / 阴影 / 边框 */
+    --radius: 0.625rem; /* 10px */
+    --shadow-raised: 0 -12px 28px rgba(21, 26, 38, 0.04);
+    --shadow-overlay: 0 8px 24px rgba(21, 26, 38, 0.06);
+    --border-hairline: 0.5px;
+
+    /* 动效 */
+    --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+    --duration-fast: 150ms;
+    --duration-base: 200ms;
+    --duration-slow: 300ms;
+
+    /* 字体 */
+    --font-sans: "Geist", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --font-display: "Alimama ShuHeiTi", "Geist", "PingFang SC", sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  }
+
+  .dark {
+    --background: #202126;
+    --surface: #2c2f38;
+    --surface-subtle: #343741;
+    --surface-muted: #3a3e48;
+
+    --foreground: #f0f2f6;
+    --muted-foreground: #8f98aa;
+
+    --border: #2b2d33;
+    --border-soft: #343741;
+
+    --primary: #14b8a6;
+    --primary-foreground: #04201d;
+    --primary-hover: #2dd4bf;
+    --primary-active: #14b8a6;
+    --primary-dark: #14b8a6;
+
+    --accent: #343741;
+    --accent-soft: #113b36;
+
+    --destructive: #ef4444;
+    --success: #2dd4bf;
+    --warning: #b45309;
+
+    --chrome-border: #343741;
+    --chrome-border-hover: #464c5e;
+    --chrome-muted: #8f98aa;
+    --chrome-muted-2: #8f98aa;
+    --chrome-fg: #f0f2f6;
+
+    --avatar-bg: #2c3344;
+    --avatar-fg: #9bb0e8;
+
+    --sidebar: #1a1c20;
+    --sidebar-foreground: #8f98aa;
+    --sidebar-border: #2b2d33;
+    --sidebar-accent: #2c2f38;
+    --sidebar-accent-foreground: #f0f2f6;
+
+    --shadow-raised: 0 -12px 28px rgba(0, 0, 0, 0.24);
+    --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.36);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 标题用展示字体 */
+  h1, h2, h3 {
+    font-family: var(--font-display);
+  }
+}
+
 /* Keep search/filter inputs consistently clearable without changing their layout. */
 input[type="search"]::-webkit-search-cancel-button {
   width: 18px;

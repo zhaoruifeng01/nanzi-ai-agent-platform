@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>nanzi 运营台 · StaffDeck 风格设计稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Alimama+ShuHeiTi&family=Geist:wght@300..700&family=Geist+Mono:wght@400..600&display=swap" rel="stylesheet" />
+<style>
+  /* ===== Token（来自 StaffDeck风格改造方案.md §2.1）===== */
+  :root {
+    --background: #f7f5ef;
+    --surface: #ffffff;
+    --surface-subtle: #fbfaf6;
+    --surface-muted: #eeece4;
+    --foreground: #20201d;
+    --muted-foreground: #6d726e;
+    --border: #ded7cc;
+    --border-soft: #e8e2d6;
+    --primary: #0f766e;
+    --primary-foreground: #ffffff;
+    --primary-hover: #0e6b64;
+    --accent: #f6f6f6;
+    --accent-soft: #e1f1ed;
+    --destructive: #dc2626;
+    --success: #04756f;
+    --warning: #b45309;
+    --chrome-border: #e3e7f1;
+    --chrome-border-hover: #cbd3e6;
+    --chrome-muted: #757f9c;
+    --chrome-muted-2: #8b94aa;
+    --chrome-fg: #18181a;
+    --avatar-bg: #eef1fb;
+    --avatar-fg: #7e96dc;
+    --sidebar: #ffffff;
+    --sidebar-foreground: #858b9c;
+    --sidebar-border: #f4f4f4;
+    --sidebar-accent: #f6f6f6;
+    --sidebar-accent-foreground: #18181a;
+    --radius: 10px;
+    --shadow-raised: 0 -12px 28px rgba(21, 26, 38, 0.04);
+    --shadow-overlay: 0 8px 24px rgba(21, 26, 38, 0.06);
+    --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+    --duration-fast: 150ms;
+    --duration-base: 200ms;
+    --font-sans: "Geist", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --font-display: "Alimama ShuHeiTi", "Geist", "PingFang SC", sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 400; margin: 0; }
+  button { font-family: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+
+  /* ===== App shell ===== */
+  .shell { display: flex; min-height: 100vh; }
+
+  /* ===== Sidebar ===== */
+  .sidebar {
+    width: 220px; flex-shrink: 0;
+    background: var(--sidebar);
+    border-right: 0.5px solid var(--chrome-border);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .brand {
+    height: 56px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 16px;
+    border-bottom: 0.5px solid var(--sidebar-border);
+  }
+  .brand__mark {
+    width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, #0f766e, #14b8a6);
+    display: grid; place-items: center;
+    color: #fff; font-family: var(--font-display); font-size: 15px;
+  }
+  .brand__name { font-size: 13px; font-weight: 600; color: var(--chrome-fg); letter-spacing: -0.01em; }
+  .brand__ver { font-family: var(--font-mono); font-size: 10px; color: var(--chrome-muted-2); letter-spacing: 0.04em; }
+
+  .nav { flex: 1; overflow-y: auto; padding: 10px 10px 16px; }
+  .nav__group { margin-top: 14px; }
+  .nav__group:first-child { margin-top: 4px; }
+  .nav__group-title {
+    font-size: 10px; font-weight: 600; color: var(--chrome-muted-2);
+    text-transform: uppercase; letter-spacing: 0.12em;
+    padding: 6px 10px 4px;
+  }
+  .nav__item {
+    display: flex; align-items: center; gap: 10px;
+    height: 30px; padding: 0 10px; border-radius: 7px;
+    font-size: 12.5px; color: var(--sidebar-foreground);
+    transition: background var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out);
+  }
+  .nav__item:hover { background: var(--sidebar-accent); color: var(--sidebar-accent-foreground); }
+  .nav__item--active { background: var(--accent-soft); color: var(--primary); font-weight: 600; }
+  .nav__icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
+  .nav__item--active .nav__icon { opacity: 1; }
+
+  .usercard {
+    flex-shrink: 0; border-top: 0.5px solid var(--sidebar-border);
+    padding: 10px; display: flex; align-items: center; gap: 10px;
+    border-radius: 0; cursor: pointer;
+    transition: background var(--duration-base) var(--ease-out);
+  }
+  .usercard:hover { background: var(--sidebar-accent); }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    background: var(--avatar-bg); color: var(--avatar-fg);
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 600;
+  }
+  .usercard__name { font-size: 12px; font-weight: 500; color: var(--chrome-fg); line-height: 1.2; }
+  .usercard__role { font-size: 10.5px; color: var(--chrome-muted); }
+
+  /* ===== Main column ===== */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* ===== Topbar ===== */
+  .topbar {
+    height: 52px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px;
+    background: var(--surface);
+    border-bottom: 0.5px solid var(--chrome-border);
+  }
+  .crumb { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--chrome-muted); }
+  .crumb__sep { color: var(--chrome-border-hover); }
+  .crumb__current { color: var(--chrome-fg); font-weight: 500; }
+  .topbar__right { display: flex; align-items: center; gap: 12px; }
+
+  .pulse {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 28px; padding: 0 11px;
+    background: var(--surface); border: 0.5px solid var(--chrome-border);
+    border-radius: 999px;
+    font-size: 11.5px; color: var(--chrome-fg);
+  }
+  .pulse__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); position: relative; }
+  .pulse__dot::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--success);
+    animation: ping 2s var(--ease-out) infinite;
+  }
+  @keyframes ping { 0% { transform: scale(1); opacity: 0.6; } 80%,100% { transform: scale(2.6); opacity: 0; } }
+  .pulse__num { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pulse__label { color: var(--chrome-muted); }
+
+  .iconbtn {
+    width: 30px; height: 30px; border-radius: 8px;
+    border: 0.5px solid var(--chrome-border); background: var(--surface);
+    color: var(--chrome-muted);
+    display: grid; place-items: center;
+    transition: border-color var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out);
+  }
+  .iconbtn:hover { border-color: var(--chrome-border-hover); color: var(--chrome-fg); }
+  .bell { position: relative; }
+  .bell__badge {
+    position: absolute; top: -3px; right: -3px;
+    min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
+    background: var(--destructive); color: #fff;
+    font-size: 9px; font-weight: 600; line-height: 14px; text-align: center;
+    border: 1.5px solid var(--surface);
+  }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 30px; padding: 0 14px; border-radius: 8px;
+    border: 0.5px solid var(--chrome-border); background: var(--surface);
+    color: var(--chrome-muted); font-size: 12px; font-weight: 500;
+    transition: border-color var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out), background var(--duration-base) var(--ease-out);
+  }
+  .btn:hover { border-color: var(--chrome-border-hover); color: var(--chrome-fg); }
+  .btn:active { transform: translateY(1px); }
+  .btn--primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+  .btn--primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: var(--primary-foreground); }
+  .btn--ghost { border-color: transparent; background: transparent; }
+  .btn--ghost:hover { background: var(--accent); }
+
+  /* ===== Content ===== */
+  .content { padding: 22px 24px 48px; max-width: 1320px; width: 100%; }
+
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .page-head__eyebrow {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--primary);
+    letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 6px;
+  }
+  .page-head__title { font-size: 24px; color: var(--foreground); letter-spacing: -0.01em; }
+  .page-head__sub { font-size: 12.5px; color: var(--muted-foreground); margin-top: 4px; }
+  .page-head__tools { display: flex; gap: 8px; flex-shrink: 0; }
+
+  .seg { display: inline-flex; border: 0.5px solid var(--chrome-border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg__opt {
+    height: 30px; padding: 0 13px; border: 0; background: transparent;
+    font-size: 12px; color: var(--chrome-muted);
+    border-right: 0.5px solid var(--chrome-border);
+    transition: background var(--duration-base) var(--ease-out), color var(--duration-base) var(--ease-out);
+  }
+  .seg__opt:last-child { border-right: 0; }
+  .seg__opt:hover { color: var(--chrome-fg); }
+  .seg__opt--active { background: var(--accent-soft); color: var(--primary); font-weight: 600; }
+
+  /* ===== SIGNATURE: 统计读数带 =====
+     不是 5 张独立彩色卡，而是一条共享底座、发丝竖线分隔的仪表读数带。
+     数字用 mono + tabular-nums 成为视觉节奏；常态冷静，异常才染色。 */
+  .strip {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    background: var(--surface);
+    border: 0.5px solid var(--chrome-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .strip__cell {
+    padding: 16px 18px 14px;
+    border-right: 0.5px solid var(--border-soft);
+    display: flex; flex-direction: column; gap: 5px;
+    position: relative;
+  }
+  .strip__cell:last-child { border-right: 0; }
+  .strip__label {
+    font-size: 10.5px; color: var(--chrome-muted);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .strip__value {
+    font-family: var(--font-mono); font-size: 27px; font-weight: 500;
+    color: var(--foreground); font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em; line-height: 1.1;
+  }
+  .strip__unit { font-family: var(--font-sans); font-size: 13px; font-weight: 500; color: var(--muted-foreground); margin-left: 2px; }
+  .strip__sub { font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; line-height: 1.45; }
+  .strip__trend { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .strip__trend--up { color: var(--success); }
+  .strip__trend--down { color: var(--destructive); }
+  .strip__trend--flat { color: var(--chrome-muted); }
+  .strip__cell--danger .strip__value { color: var(--destructive); }
+  .strip__cell--warning .strip__value { color: var(--warning); }
+
+  /* ===== Panel base ===== */
+  .panel {
+    background: var(--surface);
+    border: 0.5px solid var(--chrome-border);
+    border-radius: var(--radius);
+  }
+  .panel__head {
+    height: 42px; padding: 0 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 0.5px solid var(--border-soft);
+  }
+  .panel__title { font-size: 13px; font-weight: 600; color: var(--chrome-fg); display: flex; align-items: center; gap: 8px; }
+  .panel__title::before { content: ""; width: 3px; height: 12px; background: var(--primary); border-radius: 2px; }
+  .panel__meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--chrome-muted); }
+  .panel__body { padding: 18px; }
+
+  /* ===== Health panel: 2/3 + 1/3 ===== */
+  .health { display: grid; grid-template-columns: 1.28fr 0.72fr; gap: 16px; margin-bottom: 16px; }
+  .health__charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .chart-cap { font-size: 11px; color: var(--chrome-muted); text-align: center; margin-bottom: 10px; letter-spacing: 0.04em; }
+
+  /* 工具调用分布：横向条形矩阵（替代饼图的 cockpit 读法） */
+  .toolrow { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .toolrow__name { width: 72px; flex-shrink: 0; font-size: 11.5px; color: var(--chrome-fg); }
+  .toolrow__track { flex: 1; height: 18px; background: var(--surface-muted); border-radius: 4px; overflow: hidden; }
+  .toolrow__bar { height: 100%; border-radius: 4px; background: var(--primary); opacity: 0.85; }
+  .toolrow__bar--2 { background: #14b8a6; }
+  .toolrow__bar--3 { background: #5e9b8a; }
+  .toolrow__bar--4 { background: #8aa39a; }
+  .toolrow__bar--5 { background: #b8c2bd; }
+  .toolrow__pct { width: 40px; flex-shrink: 0; text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--chrome-muted); font-variant-numeric: tabular-nums; }
+
+  /* 耗时趋势：inline SVG 折线 */
+  .latency { width: 100%; height: 132px; display: block; }
+
+  /* 核心指标侧栏 */
+  .kpi { display: flex; flex-direction: column; gap: 10px; }
+  .kpi__row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 13px 14px; background: var(--surface-subtle); border-radius: 8px;
+    border: 0.5px solid var(--border-soft);
+  }
+  .kpi__name { font-size: 11.5px; color: var(--muted-foreground); }
+  .kpi__val { font-family: var(--font-mono); font-size: 18px; font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+  .kpi__val--warn { color: var(--warning); }
+  .kpi__unit { font-family: var(--font-sans); font-size: 11px; color: var(--muted-foreground); margin-left: 2px; }
+
+  /* ===== Perf + Token ===== */
+  .row-3 { display: grid; grid-template-columns: 1.28fr 0.72fr; gap: 16px; margin-bottom: 16px; }
+
+  /* 性能面板里的 agent 行 */
+  .agentrow {
+    display: grid; grid-template-columns: 1.6fr 0.8fr 0.8fr 0.8fr 0.7fr;
+    align-items: center; gap: 12px;
+    padding: 9px 0; border-bottom: 0.5px solid var(--border-soft);
+    font-size: 12px;
+  }
+  .agentrow:last-child { border-bottom: 0; }
+  .agentrow__name { color: var(--chrome-fg); font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .agentrow__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex-shrink: 0; }
+  .agentrow__dot--warn { background: var(--warning); }
+  .agentrow__num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--chrome-fg); text-align: right; }
+  .agentrow__head { color: var(--chrome-muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; padding-bottom: 6px; }
+  .spark { width: 100%; height: 22px; display: block; }
+
+  /* Token 分布：堆叠条 */
+  .tokendist { display: flex; flex-direction: column; gap: 14px; }
+  .tokendist__bar { height: 34px; border-radius: 7px; overflow: hidden; display: flex; border: 0.5px solid var(--border-soft); }
+  .tokendist__seg { height: 100%; }
+  .tokendist__legend { display: flex; flex-direction: column; gap: 8px; }
+  .leg { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+  .leg__sw { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+  .leg__name { color: var(--chrome-fg); flex: 1; }
+  .leg__val { font-family: var(--font-mono); color: var(--chrome-muted); font-variant-numeric: tabular-nums; }
+
+  /* ===== Recent (1/2 + 1/2) ===== */
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .list { display: flex; flex-direction: column; }
+  .list__item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 0.5px solid var(--border-soft); }
+  .list__item:last-child { border-bottom: 0; }
+  .list__main { flex: 1; min-width: 0; }
+  .list__top { display: flex; align-items: center; gap: 8px; }
+  .list__name { font-size: 12.5px; color: var(--chrome-fg); font-weight: 500; }
+  .list__sub { font-size: 11px; color: var(--chrome-muted); font-family: var(--font-mono); }
+  .list__time { font-size: 11px; color: var(--chrome-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 19px; padding: 0 7px; border-radius: 5px;
+    font-size: 10.5px; font-weight: 500;
+    border: 0.5px solid transparent;
+  }
+  .badge--ok { background: var(--accent-soft); color: var(--success); border-color: rgba(4,117,111,0.18); }
+  .badge--warn { background: #fdf3e7; color: var(--warning); border-color: rgba(180,83,9,0.18); }
+  .badge--err { background: #fbe9e9; color: var(--destructive); border-color: rgba(220,38,38,0.18); }
+  .badge--neutral { background: var(--surface-muted); color: var(--chrome-muted); }
+
+  /* ===== Failures ===== */
+  .failrow {
+    display: grid; grid-template-columns: auto 1fr auto auto;
+    align-items: center; gap: 14px;
+    padding: 11px 0; border-bottom: 0.5px solid var(--border-soft);
+    font-size: 12px;
+  }
+  .failrow:last-child { border-bottom: 0; }
+  .failrow__trace { font-family: var(--font-mono); font-size: 11px; color: var(--primary); }
+  .failrow__msg { color: var(--chrome-fg); }
+  .failrow__time { font-family: var(--font-mono); font-size: 11px; color: var(--chrome-muted); }
+  .failrow__agent { font-size: 11.5px; color: var(--muted-foreground); }
+  .link { color: var(--primary); font-size: 11.5px; font-weight: 500; }
+  .link:hover { text-decoration: underline; }
+
+  .draft-note {
+    position: fixed; bottom: 14px; right: 14px;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--chrome-muted);
+    background: var(--surface); border: 0.5px solid var(--chrome-border);
+    padding: 6px 10px; border-radius: 7px; box-shadow: var(--shadow-overlay);
+    z-index: 50;
+  }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 960px) {
+    .sidebar { display: none; }
+    .strip { grid-template-columns: repeat(2, 1fr); }
+    .strip__cell { border-bottom: 0.5px solid var(--border-soft); }
+    .health, .row-3, .row-2 { grid-template-columns: 1fr; }
+    .health__charts { grid-template-columns: 1fr; }
+    .content { padding: 16px; }
+  }
+  @media (max-width: 560px) {
+    .strip { grid-template-columns: 1fr; }
+    .agentrow { grid-template-columns: 1.4fr 0.8fr 0.7fr; }
+    .agentrow .col-hide-sm { display: none; }
+    .page-head { flex-direction: column; align-items: stretch; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand__mark">南</div>
+      <div>
+        <div class="brand__name">nanzi 智能体平台</div>
+        <div class="brand__ver">v2.4.1</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav__group">
+        <div class="nav__item nav__item--active">
+          <svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+          概览
+        </div>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">智能助手</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>我的工作台</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>智能助手</a>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">智能体开发平台</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>智能体中心</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>技能工作台</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>记忆工作台</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>提示词工坊</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>任务调度台</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>智能体测评</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>接口调试台</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>组件调试台</a>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">ChatBI 开发平台</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7c0 1.657 3.582 3 8 3s8-1.343 8-3-3.582-3-8-3-8 1.343-8 3zm0 0v5c0 1.657 3.582 3 8 3s8-1.343 8-3V7M4 12v5c0 1.657 3.582 3 8 3s8-1.343 8-3v-5"/></svg>数据源管理</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>元数据管理</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>案例集管理</a>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">知识库开发平台</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z"/></svg>知识库管理</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>检索测试</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>运营分析</a>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">日志 &amp; TOKEN 分析</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>审计日志</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>聊天日志</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>Token 统计</a>
+      </div>
+
+      <div class="nav__group">
+        <div class="nav__group-title">系统管理</div>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>用户管理</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>角色管理</a>
+        <a class="nav__item"><svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>系统配置</a>
+      </div>
+    </nav>
+
+    <div class="usercard">
+      <div class="avatar">赵</div>
+      <div style="flex:1; min-width:0;">
+        <div class="usercard__name">赵瑞峰</div>
+        <div class="usercard__role">管理员</div>
+      </div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--chrome-muted)"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+    </div>
+  </aside>
+
+  <!-- ===== Main ===== -->
+  <div class="main">
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="crumb">
+        <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor" style="color:var(--chrome-muted)"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        <span class="crumb__current">概览</span>
+      </div>
+      <div class="topbar__right">
+        <span class="pulse">
+          <span class="pulse__dot"></span>
+          <span class="pulse__num">12</span>
+          <span class="pulse__label">在线</span>
+        </span>
+        <button class="iconbtn bell" aria-label="通知">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+          <span class="bell__badge">3</span>
+        </button>
+        <button class="btn btn--ghost" style="color:var(--destructive);">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+          退出
+        </button>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <main class="content">
+      <!-- Page head -->
+      <div class="page-head">
+        <div>
+          <div class="page-head__eyebrow">OPERATIONS · 今日</div>
+          <h1 class="page-head__title">系统概览</h1>
+          <p class="page-head__sub">平台运行状态与智能体健康度</p>
+        </div>
+        <div class="page-head__tools">
+          <div class="seg" role="tablist" aria-label="周期">
+            <button class="seg__opt seg__opt--active">今日</button>
+            <button class="seg__opt">本周</button>
+            <button class="seg__opt">本月</button>
+          </div>
+          <button class="iconbtn" aria-label="刷新" title="刷新数据">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- SIGNATURE: 统计读数带 -->
+      <section class="strip" aria-label="核心指标">
+        <div class="strip__cell">
+          <div class="strip__label">总用户数</div>
+          <div class="strip__value">1,284</div>
+          <div class="strip__trend strip__trend--up">↗ +18 较昨日</div>
+        </div>
+        <div class="strip__cell">
+          <div class="strip__label">活跃用户 <span style="color:var(--chrome-muted-2); text-transform:none; letter-spacing:0;">· 7天</span></div>
+          <div class="strip__value">376</div>
+          <div class="strip__trend strip__trend--up">↗ +6.4%</div>
+        </div>
+        <div class="strip__cell">
+          <div class="strip__label">API 调用</div>
+          <div class="strip__value">128,492</div>
+          <div class="strip__trend strip__trend--up">↗ +12.1%</div>
+        </div>
+        <div class="strip__cell">
+          <div class="strip__label">Token 消耗</div>
+          <div class="strip__value">2.41<span class="strip__unit">M</span></div>
+          <div class="strip__sub">输入 1.61M · 输出 0.82M</div>
+        </div>
+        <div class="strip__cell">
+          <div class="strip__label">成功率</div>
+          <div class="strip__value">99.2<span class="strip__unit">%</span></div>
+          <div class="strip__sub">127,465 / 128,492</div>
+        </div>
+      </section>
+
+      <!-- 智能体健康度 -->
+      <section class="health">
+        <div class="panel">
+          <div class="panel__head">
+            <div class="panel__title">智能体运行健康度</div>
+            <div class="panel__meta">24h</div>
+          </div>
+          <div class="panel__body">
+            <div class="health__charts">
+              <div>
+                <div class="chart-cap">工具调用分布</div>
+                <div class="toolrow"><div class="toolrow__name">知识检索</div><div class="toolrow__track"><div class="toolrow__bar" style="width:38%"></div></div><div class="toolrow__pct">38%</div></div>
+                <div class="toolrow"><div class="toolrow__name">SQL 生成</div><div class="toolrow__track"><div class="toolrow__bar toolrow__bar--2" style="width:24%"></div></div><div class="toolrow__pct">24%</div></div>
+                <div class="toolrow"><div class="toolrow__name">API 调用</div><div class="toolrow__track"><div class="toolrow__bar toolrow__bar--3" style="width:18%"></div></div><div class="toolrow__pct">18%</div></div>
+                <div class="toolrow"><div class="toolrow__name">代码解释</div><div class="toolrow__track"><div class="toolrow__bar toolrow__bar--4" style="width:12%"></div></div><div class="toolrow__pct">12%</div></div>
+                <div class="toolrow"><div class="toolrow__name">文件解析</div><div class="toolrow__track"><div class="toolrow__bar toolrow__bar--5" style="width:8%"></div></div><div class="toolrow__pct">8%</div></div>
+              </div>
+              <div>
+                <div class="chart-cap">执行耗时趋势（24h）</div>
+                <svg class="latency" viewBox="0 0 300 130" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="lat" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#b45309" stop-opacity="0.18"/>
+                      <stop offset="100%" stop-color="#b45309" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <line x1="0" y1="32" x2="300" y2="32" stroke="#e8e2d6" stroke-width="0.5" stroke-dasharray="3 3"/>
+                  <line x1="0" y1="74" x2="300" y2="74" stroke="#e8e2d6" stroke-width="0.5" stroke-dasharray="3 3"/>
+                  <path d="M0,90 L25,78 L50,84 L75,60 L100,68 L125,46 L150,58 L175,40 L200,52 L225,36 L250,48 L275,62 L300,54 L300,130 L0,130 Z" fill="url(#lat)"/>
+                  <path d="M0,90 L25,78 L50,84 L75,60 L100,68 L125,46 L150,58 L175,40 L200,52 L225,36 L250,48 L275,62 L300,54" fill="none" stroke="#b45309" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                </svg>
+                <div style="display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:10px; color:var(--chrome-muted); margin-top:4px;">
+                  <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div class="panel__title">核心指标</div>
+          </div>
+          <div class="panel__body">
+            <div class="kpi">
+              <div class="kpi__row">
+                <span class="kpi__name">工具成功率</span>
+                <span class="kpi__val">96.8<span class="kpi__unit">%</span></span>
+              </div>
+              <div class="kpi__row">
+                <span class="kpi__name">平均执行耗时</span>
+                <span class="kpi__val kpi__val--warn">1,240<span class="kpi__unit">ms</span></span>
+              </div>
+              <div class="kpi__row">
+                <span class="kpi__name">总工具调用</span>
+                <span class="kpi__val">48,219</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 性能 + Token 分布 -->
+      <section class="row-3">
+        <div class="panel">
+          <div class="panel__head">
+            <div class="panel__title">智能体性能</div>
+            <a class="link">全部 →</a>
+          </div>
+          <div class="panel__body" style="padding-top:8px; padding-bottom:8px;">
+            <div class="agentrow">
+              <div class="agentrow__head">智能体</div>
+              <div class="agentrow__head" style="text-align:right;">调用</div>
+              <div class="agentrow__head col-hide-sm" style="text-align:right;">成功率</div>
+              <div class="agentrow__head col-hide-sm" style="text-align:right;">耗时</div>
+              <div class="agentrow__head" style="text-align:right;">趋势</div>
+            </div>
+            <div class="agentrow">
+              <div class="agentrow__name"><span class="agentrow__dot"></span>财务助手</div>
+              <div class="agentrow__num">42,180</div>
+              <div class="agentrow__num col-hide-sm">99.4%</div>
+              <div class="agentrow__num col-hide-sm">980ms</div>
+              <svg class="spark" viewBox="0 0 80 22" preserveAspectRatio="none"><polyline points="0,16 10,14 20,17 30,10 40,12 50,7 60,9 70,5 80,8" fill="none" stroke="#0f766e" stroke-width="1.5"/></svg>
+            </div>
+            <div class="agentrow">
+              <div class="agentrow__name"><span class="agentrow__dot"></span>知识问答</div>
+              <div class="agentrow__num">31,502</div>
+              <div class="agentrow__num col-hide-sm">99.1%</div>
+              <div class="agentrow__num col-hide-sm">760ms</div>
+              <svg class="spark" viewBox="0 0 80 22" preserveAspectRatio="none"><polyline points="0,12 10,15 20,11 30,13 40,9 50,11 60,8 70,10 80,7" fill="none" stroke="#0f766e" stroke-width="1.5"/></svg>
+            </div>
+            <div class="agentrow">
+              <div class="agentrow__name"><span class="agentrow__dot agentrow__dot--warn"></span>数据分析</div>
+              <div class="agentrow__num">18,940</div>
+              <div class="agentrow__num col-hide-sm">94.2%</div>
+              <div class="agentrow__num col-hide-sm" style="color:var(--warning);">1,860ms</div>
+              <svg class="spark" viewBox="0 0 80 22" preserveAspectRatio="none"><polyline points="0,8 10,10 20,7 30,12 40,9 50,14 60,11 70,16 80,13" fill="none" stroke="#b45309" stroke-width="1.5"/></svg>
+            </div>
+            <div class="agentrow">
+              <div class="agentrow__name"><span class="agentrow__dot"></span>合同审阅</div>
+              <div class="agentrow__num">9,233</div>
+              <div class="agentrow__num col-hide-sm">98.7%</div>
+              <div class="agentrow__num col-hide-sm">1,120ms</div>
+              <svg class="spark" viewBox="0 0 80 22" preserveAspectRatio="none"><polyline points="0,14 10,12 20,13 30,10 40,11 50,8 60,10 70,7 80,9" fill="none" stroke="#0f766e" stroke-width="1.5"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div class="panel__title">Token 分布</div>
+            <div class="panel__meta">按智能体</div>
+          </div>
+          <div class="panel__body">
+            <div class="tokendist">
+              <div class="tokendist__bar">
+                <div class="tokendist__seg" style="width:42%; background:#0f766e;"></div>
+                <div class="tokendist__seg" style="width:26%; background:#14b8a6;"></div>
+                <div class="tokendist__seg" style="width:18%; background:#5e9b8a;"></div>
+                <div class="tokendist__seg" style="width:14%; background:#b8c2bd;"></div>
+              </div>
+              <div class="tokendist__legend">
+                <div class="leg"><span class="leg__sw" style="background:#0f766e;"></span><span class="leg__name">财务助手</span><span class="leg__val">1.01M</span></div>
+                <div class="leg"><span class="leg__sw" style="background:#14b8a6;"></span><span class="leg__name">知识问答</span><span class="leg__val">627K</span></div>
+                <div class="leg"><span class="leg__sw" style="background:#5e9b8a;"></span><span class="leg__name">数据分析</span><span class="leg__val">434K</span></div>
+                <div class="leg"><span class="leg__sw" style="background:#b8c2bd;"></span><span class="leg__name">合同审阅</span><span class="leg__val">337K</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 最近用户 + 最近调用 -->
+      <section class="row-2">
+        <div class="panel">
+          <div class="panel__head"><div class="panel__title">最近活跃用户</div><a class="link">全部 →</a></div>
+          <div class="panel__body">
+            <div class="list">
+              <div class="list__item">
+                <div class="avatar">陈</div>
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">陈晓东</span><span class="badge badge--neutral">User</span></div>
+                  <div class="list__sub">财务助手 · 42 次调用</div>
+                </div>
+                <div class="list__time">2 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="avatar">王</div>
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">王丽</span><span class="badge badge--neutral">User</span></div>
+                  <div class="list__sub">知识问答 · 18 次调用</div>
+                </div>
+                <div class="list__time">7 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="avatar">李</div>
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">李强</span><span class="badge badge--neutral">User</span></div>
+                  <div class="list__sub">数据分析 · 9 次调用</div>
+                </div>
+                <div class="list__time">14 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="avatar">孙</div>
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">孙婷婷</span><span class="badge badge--neutral">User</span></div>
+                  <div class="list__sub">合同审阅 · 3 次调用</div>
+                </div>
+                <div class="list__time">26 分钟前</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><div class="panel__title">最近调用</div><a class="link">全部 →</a></div>
+          <div class="panel__body">
+            <div class="list">
+              <div class="list__item">
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">本月报销汇总</span><span class="badge badge--ok">成功</span></div>
+                  <div class="list__sub">财务助手 · 1,240ms · 8.2K tok</div>
+                </div>
+                <div class="list__time">2 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">差旅政策问答</span><span class="badge badge--ok">成功</span></div>
+                  <div class="list__sub">知识问答 · 760ms · 3.1K tok</div>
+                </div>
+                <div class="list__time">7 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">销售明细透视</span><span class="badge badge--warn">超时</span></div>
+                  <div class="list__sub">数据分析 · 8,200ms · 12.4K tok</div>
+                </div>
+                <div class="list__time">14 分钟前</div>
+              </div>
+              <div class="list__item">
+                <div class="list__main">
+                  <div class="list__top"><span class="list__name">合同条款提取</span><span class="badge badge--ok">成功</span></div>
+                  <div class="list__sub">合同审阅 · 1,120ms · 5.6K tok</div>
+                </div>
+                <div class="list__time">26 分钟前</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 最近失败 -->
+      <section class="panel">
+        <div class="panel__head">
+          <div class="panel__title">最近失败</div>
+          <div class="panel__meta">近 24h · 3 条</div>
+        </div>
+        <div class="panel__body" style="padding-top:4px; padding-bottom:4px;">
+          <div class="failrow">
+            <span class="badge badge--err">超时</span>
+            <div>
+              <div class="failrow__msg">工具执行超时：SQL 生成超过 8s 阈值</div>
+              <div class="failrow__agent">数据分析 · trace <span class="failrow__trace">a3f9c2-1e4b</span></div>
+            </div>
+            <span class="failrow__time">14:23</span>
+            <a class="link">查看追踪 →</a>
+          </div>
+          <div class="failrow">
+            <span class="badge badge--err">异常</span>
+            <div>
+              <div class="failrow__msg">知识检索失败：embedding 服务 503</div>
+              <div class="failrow__agent">知识问答 · trace <span class="failrow__trace">b7e1d8-09c3</span></div>
+            </div>
+            <span class="failrow__time">11:08</span>
+            <a class="link">查看追踪 →</a>
+          </div>
+          <div class="failrow">
+            <span class="badge badge--warn">降级</span>
+            <div>
+              <div class="failrow__msg">模型限流，已降级到备用模型</div>
+              <div class="failrow__agent">财务助手 · trace <span class="failrow__trace">c2a4f6-77b1</span></div>
+            </div>
+            <span class="failrow__time">09:41</span>
+            <a class="link">查看追踪 →</a>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="draft-note">nanzi × StaffDeck · 设计稿 v1 · 暖纸 #f7f5ef / teal #0f766e</div>
+</body>
+</html>

@@ -371,7 +371,7 @@ const filteredMenuGroups = computed(() => {
 </script>
 
 <template>
-  <div class="h-screen bg-gray-50 flex overflow-hidden relative">
+  <div class="h-screen bg-background flex overflow-hidden relative">
     <!-- Mobile Overlay -->
     <div 
       v-if="isMobile && showMobileSidebar" 
@@ -381,7 +381,7 @@ const filteredMenuGroups = computed(() => {
 
     <!-- Sidebar -->
     <aside
-      class="bg-sidebar text-white shadow-xl flex flex-col z-30 transition-all duration-300 ease-in-out flex-shrink-0"
+      class="bg-sidebar backdrop-blur-[9.5px] border-r border-chrome-border flex flex-col z-30 transition-all duration-300 ease-in-out flex-shrink-0"
       :class="[
         isMobile ? 'fixed inset-y-0 left-0 h-full' : 'relative',
         isMobile 
@@ -391,7 +391,7 @@ const filteredMenuGroups = computed(() => {
     >
       <!-- Brand Header -->
       <div
-        class="h-16 flex items-center bg-sidebar border-b border-gray-700 overflow-hidden whitespace-nowrap"
+        class="h-16 flex items-center bg-sidebar border-b border-sidebar-border overflow-hidden whitespace-nowrap"
         :class="isCollapsed ? 'justify-center px-0' : 'px-4'"
       >
         <img
@@ -401,14 +401,14 @@ const filteredMenuGroups = computed(() => {
         />
         <transition name="fade">
           <div v-if="!isCollapsed" class="ml-2.5 flex flex-col justify-center -translate-y-0.5">
-            <span class="text-[13px] font-semibold leading-tight">{{ branding.product_name }}</span>
+            <span class="text-[13px] font-semibold leading-tight text-chrome-fg">{{ branding.product_name }}</span>
             <component
               :is="repoUrl ? 'a' : 'span'"
               :href="repoUrl || undefined"
               :target="repoUrl ? '_blank' : undefined"
               :rel="repoUrl ? 'noopener noreferrer' : undefined"
-              class="group flex items-center text-[10px] text-gray-500 font-medium tracking-wider leading-none mt-0.5 transition-colors"
-              :class="repoUrl ? 'hover:text-white' : ''"
+              class="group flex items-center text-[10px] text-chrome-muted-2 font-medium tracking-wider leading-none mt-0.5 transition-colors"
+              :class="repoUrl ? 'hover:text-chrome-fg' : ''"
               :title="repoUrl ? 'View on GitHub' : undefined"
             >
               <svg
@@ -436,7 +436,7 @@ const filteredMenuGroups = computed(() => {
           <button 
             v-if="!isCollapsed && group.title" 
             type="button"
-            class="py-2 flex items-center justify-between gap-2 text-left text-[10px] font-black text-gray-500 uppercase tracking-[0.15em] select-none hover:text-gray-300 transition-colors"
+            class="py-2 flex items-center justify-between gap-2 text-left text-[10px] font-black text-chrome-muted-2 uppercase tracking-[0.15em] select-none hover:text-chrome-muted transition-colors"
             :class="isCollapsed ? 'w-full justify-center px-0 mx-0' : 'w-[calc(100%-1.5rem)] mx-3 px-3'"
             :aria-expanded="!isGroupCollapsed(group)"
             @click.stop="toggleMenuGroup(group)"
@@ -452,7 +452,7 @@ const filteredMenuGroups = computed(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
-          <div v-else-if="isCollapsed && group.title" class="h-px bg-gray-700/50 mx-4 my-2"></div>
+          <div v-else-if="isCollapsed && group.title" class="h-px bg-sidebar-border mx-4 my-2"></div>
 
           <!-- Group Items -->
           <transition name="menu-group">
@@ -464,8 +464,8 @@ const filteredMenuGroups = computed(() => {
                 class="group flex items-center py-2 text-sm font-medium transition-all duration-200 whitespace-nowrap"
                 :class="[
                   isItemActive(item)
-                    ? 'bg-primary text-white shadow-md'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+                    ? 'bg-accent-soft text-primary'
+                    : 'text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
                   isCollapsed ? 'justify-center px-0 mx-0 rounded-none' : 'px-4 mx-3 rounded-xl',
                 ]"
               >
@@ -504,21 +504,21 @@ const filteredMenuGroups = computed(() => {
       <!-- User Profile (Clickable) -->
       <button
         @click="openUserInfo"
-        class="py-4 bg-sidebar border-t border-gray-700 flex items-center overflow-hidden whitespace-nowrap hover:bg-gray-800 transition-colors w-full text-left focus:outline-none focus:ring-2 focus:ring-primary"
+        class="py-4 bg-sidebar border-t border-sidebar-border flex items-center overflow-hidden whitespace-nowrap hover:bg-sidebar-accent transition-colors w-full text-left focus:outline-none focus:ring-2 focus:ring-primary"
         :class="isCollapsed ? 'justify-center px-0' : 'px-4'"
         title="查看个人信息"
       >
         <div
-          class="h-8 w-8 rounded-full bg-gray-500 flex flex-shrink-0 items-center justify-center text-xs font-bold text-white uppercase"
+          class="h-8 w-8 rounded-full bg-avatar-bg flex flex-shrink-0 items-center justify-center text-xs font-bold text-avatar-fg uppercase"
         >
           {{ userInfo.user_name ? userInfo.user_name.substring(0, 2) : "USER" }}
         </div>
         <transition name="fade">
           <div v-if="!isCollapsed" class="ml-3 flex-1">
-            <p class="text-sm font-medium text-white">
+            <p class="text-sm font-medium text-chrome-fg">
               {{ userInfo.user_name || "Loading..." }}
             </p>
-            <p class="text-xs text-gray-400">
+            <p class="text-xs text-chrome-muted">
               {{ userInfo.role === "admin" ? "管理员" : "普通用户" }}
             </p>
           </div>
@@ -526,7 +526,7 @@ const filteredMenuGroups = computed(() => {
         <transition name="fade">
           <svg
             v-if="!isCollapsed"
-            class="h-4 w-4 text-gray-400"
+            class="h-4 w-4 text-chrome-muted"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -677,7 +677,7 @@ const filteredMenuGroups = computed(() => {
       <!-- Main Scrollable Content -->
       <main 
         ref="dashboardContentRef"
-        class="flex-1 overflow-y-auto bg-gray-100 custom-scrollbar"
+        class="flex-1 overflow-y-auto bg-background custom-scrollbar"
         :class="dashboardContentSpacing"
       >
         <router-view v-slot="{ Component }">
