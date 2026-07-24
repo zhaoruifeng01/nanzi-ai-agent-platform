@@ -4,7 +4,7 @@ from app.services.config_service import ConfigService
 
 DEFAULT_PRODUCT_NAME = "Hose·智能体平台"
 DEFAULT_LOGIN_SUBTITLE = "Hose Intelligent Agent Platform"
-DEFAULT_ICON_URL = "/favicon.png"
+DEFAULT_ICON_URL = "/branding/icon.png"
 DEFAULT_AGENT_NAME = "Hose · AI"
 # 历史默认名：读取时映射到新兜底，不写库
 _LEGACY_DEFAULT_AGENT_NAMES = frozenset({"Hose智能助手", "Hose · 智能助手"})
@@ -43,8 +43,7 @@ class BrandingSettingsService:
             or DEFAULT_PRODUCT_NAME,
             "login_subtitle": (await ConfigService.get(cls.CONFIG_LOGIN_SUBTITLE, DEFAULT_LOGIN_SUBTITLE) or "").strip()
             or DEFAULT_LOGIN_SUBTITLE,
-            "icon_url": (await ConfigService.get(cls.CONFIG_ICON_URL, DEFAULT_ICON_URL) or "").strip()
-            or DEFAULT_ICON_URL,
+            "icon_url": DEFAULT_ICON_URL,
             "hide_login_sso": await cls._get_bool(cls.CONFIG_HIDE_LOGIN_SSO, False),
             "hide_version_link": await cls._get_bool(cls.CONFIG_HIDE_VERSION_LINK, False),
             "contact_markdown": (await ConfigService.get(cls.CONFIG_CONTACT_MARKDOWN, "")) or "",
@@ -74,7 +73,7 @@ class BrandingSettingsService:
             "enabled": True,
             "product_name": raw["product_name"],
             "login_subtitle": raw["login_subtitle"],
-            "icon_url": raw["icon_url"],
+            "icon_url": DEFAULT_ICON_URL,
             "hide_login_sso": raw["hide_login_sso"],
             "hide_version_link": raw["hide_version_link"],
             "contact_markdown": raw["contact_markdown"],
@@ -114,12 +113,6 @@ class BrandingSettingsService:
                 "key": cls.CONFIG_LOGIN_SUBTITLE,
                 "value": (login_subtitle or DEFAULT_LOGIN_SUBTITLE).strip(),
                 "description": "登录页副标题",
-                "category": "branding",
-            },
-            {
-                "key": cls.CONFIG_ICON_URL,
-                "value": (icon_url or DEFAULT_ICON_URL).strip(),
-                "description": "Logo / Favicon 地址",
                 "category": "branding",
             },
             {

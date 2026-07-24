@@ -29,6 +29,52 @@ def _bytes_to_vector(blob: bytes) -> List[float]:
     return list(struct.unpack(f"{n}f", blob))
 
 
+def _decode_key(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _find_in_ft_payload(raw: Any, target_key: str) -> Any:
+    """Recursively locate a field in FT.INFO / nested RediSearch payloads."""
+    if isinstance(raw, dict):
+        for key, val in raw.items():
+            if _decode_key(key) == target_key:
+                return val
+        for val in raw.values():
+            found = _find_in_ft_payload(val, target_key)
+            if found is not None:
+                return found
+        return None
+    if isinstance(raw, (list, tuple)):
+        for idx, item in enumerate(raw):
+            if _decode_key(item) == target_key and idx + 1 < len(raw):
+                return raw[idx + 1]
+        for item in raw:
+            found = _find_in_ft_payload(item, target_key)
+            if found is not None:
+                return found
+    return None
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, bytes):
+        try:
+            return int(value.decode("utf-8", errors="replace"))
+        except ValueError:
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _cosine(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -80,6 +126,10 @@ class MemoryIndexService:
         return MEMORY_REDIS_INDEX_NAME
 
     @staticmethod
+    def _extract_index_vector_dim(info: Any) -> Optional[int]:
+        return _coerce_int(_find_in_ft_payload(info, "dim"))
+
+    @staticmethod
     async def summary_ttl_seconds() -> int:
         days = await MemoryConfigService.get_int("memory_summary_ttl_days", 30)
         return max(1, days) * 86400
@@ -94,6 +144,14 @@ class MemoryIndexService:
         try:
             info = await redis.execute_command("FT.INFO", idx)
             if info:
+                existing_dim = MemoryIndexService._extract_index_vector_dim(info)
+                if existing_dim is not None and existing_dim != dim:
+                    logger.warning(
+                        "[MemoryIndex] Existing index %s dim=%s != configured memory_embedding_dimensions=%s",
+                        idx,
+                        existing_dim,
+                        dim,
+                    )
                 return True
         except Exception:
             pass
@@ -637,10 +695,17 @@ class MemoryIndexService:
     async def index_status() -> Dict[str, Any]:
         redis = await get_redis()
         idx = await MemoryIndexService.index_name()
+        configured_dim = await EmbeddingClient.get_dimensions()
         if not redis:
-            return {"available": False, "index_name": idx, "message": "Redis 不可用"}
+            return {
+                "available": False,
+                "index_name": idx,
+                "configured_dim": configured_dim,
+                "message": "Redis 不可用",
+            }
         try:
             info = await redis.execute_command("FT.INFO", idx)
+            index_dim = MemoryIndexService._extract_index_vector_dim(info)
             
             # 清理嵌套结构中可能存在的非标准浮点数（如 NaN, Infinity），以防止 JSON 序列化失败
             import math
@@ -655,11 +720,66 @@ class MemoryIndexService:
                     return [_sanitize(x) for x in obj]
                 return obj
 
-            return {"available": True, "index_name": idx, "info": _sanitize(info)}
+            dimension_mismatch = index_dim is not None and index_dim != configured_dim
+            return {
+                "available": not dimension_mismatch,
+                "index_name": idx,
+                "configured_dim": configured_dim,
+                "index_vector_dim": index_dim,
+                "dimension_mismatch": dimension_mismatch,
+                "message": (
+                    f"索引维度 {index_dim} 与记忆 Embedding 配置维度 {configured_dim} 不一致，请重建记忆索引与向量数据"
+                    if dimension_mismatch
+                    else "索引已就绪"
+                ),
+                "info": _sanitize(info),
+            }
         except Exception as e:
-            return {"available": False, "index_name": idx, "message": str(e)}
+            return {
+                "available": False,
+                "index_name": idx,
+                "configured_dim": configured_dim,
+                "message": str(e),
+            }
 
     @staticmethod
-    async def rebuild_index() -> Dict[str, Any]:
+    async def rebuild_index(force: bool = False) -> Dict[str, Any]:
+        """检查/创建索引；force=True 时先删除旧索引及关联向量文档再按当前维度重建。"""
+        redis = await get_redis()
+        idx = await MemoryIndexService.index_name()
+        dropped = False
+        dropped_docs = 0
+        if force and redis:
+            # 统计将被连带删除的会话摘要文档数（DROPINDEX DD 会删 PREFIX 下的 HASH）
+            try:
+                async for _ in redis.scan_iter(match=f"{SUMMARY_KEY_PREFIX}*", count=500):
+                    dropped_docs += 1
+            except Exception:
+                pass
+            try:
+                await redis.execute_command("FT.DROPINDEX", idx, "DD")
+                dropped = True
+                logger.info(
+                    "[MemoryIndex] Force dropped index %s with %s docs", idx, dropped_docs
+                )
+            except Exception as e:
+                logger.warning("[MemoryIndex] FT.DROPINDEX failed (ignored): %s", e)
         await MemoryIndexService.ensure_index()
-        return {"status": "success", "message": "索引已检查/创建（已有 HASH 文档会自动纳入 PREFIX 索引）"}
+        status = await MemoryIndexService.index_status()
+        if force:
+            message = (
+                f"索引已强制重建：删除 {dropped_docs} 条摘要文档后按维度 "
+                f"{status.get('configured_dim')} 重建"
+            )
+        else:
+            message = "索引已检查/创建（已有 HASH 文档会自动纳入 PREFIX 索引）"
+        return {
+            "status": "success",
+            "message": message,
+            "force": force,
+            "dropped": dropped,
+            "dropped_docs": dropped_docs,
+            "index_vector_dim": status.get("index_vector_dim"),
+            "configured_dim": status.get("configured_dim"),
+            "dimension_mismatch": status.get("dimension_mismatch"),
+        }

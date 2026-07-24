@@ -5,7 +5,7 @@ import axios from 'axios'
 import { useBranding } from '../composables/useBranding'
 
 const router = useRouter()
-const { branding, loadBranding } = useBranding()
+const { branding, loadBranding, handleBrandingIconError } = useBranding()
 const activeTab = ref<'sso' | 'password' | 'apikey'>('password')
 const ssoEnabled = ref(false)
 const apiKey = ref('')
@@ -277,7 +277,7 @@ const handleLogin = async () => {
         <!-- Mobile Header (Visible only on small screens) -->
         <div class="lg:hidden pt-8 px-10 pb-0 animate-fade-in">
             <div class="flex items-center gap-3 mb-2">
-                <img :src="iconUrl" class="w-8 h-8 rounded-lg drop-shadow-md object-cover" alt="Logo" />
+                <img :src="iconUrl" class="w-8 h-8 rounded-lg drop-shadow-md object-cover" alt="Logo" @error="handleBrandingIconError" />
                 <h1 class="text-xl font-bold text-slate-900 tracking-tight">{{ productName }}</h1>
             </div>
             <p class="text-xs text-slate-500 tracking-wide uppercase">{{ loginSubtitle }}</p>

@@ -11,13 +11,8 @@
   src: url("/fonts/Geist-Variable.woff2") format("woff2-variations");
 }
 
-@font-face {
-  font-family: "Alimama ShuHeiTi";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/AlimamaShuHeiTi-Regular.woff2") format("woff2");
-}
+/* Alimama ShuHeiTi 走 Google Fonts CDN(index.html 引入),自托管 woff2 未就绪前不在此声明,
+   避免请求 /fonts/AlimamaShuHeiTi-Regular.woff2 返回 HTML 触发 OTS 解码报错。 */
 
 @layer base {
   :root {

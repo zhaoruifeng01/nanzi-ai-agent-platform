@@ -256,11 +256,12 @@ async def get_index_status(
 
 @router.post("/index/rebuild")
 async def rebuild_index(
+    force: bool = Query(False, description="强制重建：先删除旧索引及关联向量文档，再按当前维度重建"),
     user: Dict = Depends(require_permission("element", "element:memory:config_index")),
     _health: Dict = Depends(require_memory_vector_ready),
 ):
     RedisVectorHealthService.invalidate_cache()
-    return {"status": "success", "data": await MemoryIndexService.rebuild_index()}
+    return {"status": "success", "data": await MemoryIndexService.rebuild_index(force=force)}
 
 
 @router.get("/summaries")

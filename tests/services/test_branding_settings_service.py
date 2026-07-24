@@ -25,6 +25,7 @@ async def test_get_public_branding_disabled_uses_defaults():
                 "hide_version_link": True,
                 "contact_markdown": "联系管理员",
                 "copyright_text": "© Test",
+                "default_agent_name": "Custom Agent",
             }
         ),
     ):
@@ -55,6 +56,7 @@ async def test_get_public_branding_enabled_returns_custom():
                 "hide_version_link": True,
                 "contact_markdown": "**技术支持**",
                 "copyright_text": "© 2026 Demo",
+                "default_agent_name": "企业助手",
             }
         ),
     ):
@@ -62,6 +64,7 @@ async def test_get_public_branding_enabled_returns_custom():
 
     assert result["enabled"] is True
     assert result["product_name"] == "企业智能体平台"
+    assert result["icon_url"] == DEFAULT_ICON_URL
     assert result["hide_login_sso"] is True
     assert result["contact_markdown"] == "**技术支持**"
     assert result["copyright_text"] == "© 2026 Demo"
@@ -69,7 +72,7 @@ async def test_get_public_branding_enabled_returns_custom():
 
 @pytest.mark.asyncio
 async def test_update_settings_persists_all_keys():
-    with patch("app.services.branding_settings_service.ConfigService.set_config", new=AsyncMock()) as mock_set:
+    with patch("app.services.branding_settings_service.ConfigService.set_configs_batch", new=AsyncMock()) as mock_set:
         await BrandingSettingsService.update_settings(
             enabled=True,
             product_name="A",
@@ -79,11 +82,13 @@ async def test_update_settings_persists_all_keys():
             hide_version_link=True,
             contact_markdown="hello",
             copyright_text="© Co",
+            default_agent_name="Agent",
             changed_by="admin",
         )
 
-    assert mock_set.await_count == 8
-    keys = [call.kwargs.get("key") or call.args[0] for call in mock_set.await_args_list]
+    mock_set.assert_awaited_once()
+    keys = [item["key"] for item in mock_set.await_args.args[0]]
     assert BrandingSettingsService.CONFIG_ENABLED in keys
+    assert BrandingSettingsService.CONFIG_ICON_URL not in keys
     assert BrandingSettingsService.CONFIG_CONTACT_MARKDOWN in keys
     assert BrandingSettingsService.CONFIG_COPYRIGHT_TEXT in keys

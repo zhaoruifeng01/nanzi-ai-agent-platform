@@ -170,15 +170,15 @@
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
-        <RecentUsersCard :users="activities?.recent_users" />
+        <RecentUsersCard :users="activities?.recent_users ?? []" />
         <RecentCallsCard
-          :calls="activities?.recent_calls"
+          :calls="activities?.recent_calls ?? []"
           mode="compact"
         />
       </div>
 
       <RecentFailuresCard
-        :errors="agentStats?.recent_errors"
+        :errors="agentStats?.recent_errors ?? []"
         @view-trace="goToAgentDebug"
       />
     </template>
@@ -324,7 +324,7 @@
 
       <RecentCallsCard
         title="我的最近调用"
-        :calls="activities?.recent_calls"
+        :calls="activities?.recent_calls ?? []"
         mode="detailed"
       />
 

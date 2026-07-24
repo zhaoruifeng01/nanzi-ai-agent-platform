@@ -6,7 +6,7 @@ from app.core.config import settings
 from app.core import redis
 from app.services.config_service import ConfigService
 from app.schemas.branding import BrandingSettingsUpdate
-from app.services.branding_settings_service import BrandingSettingsService
+from app.services.branding_settings_service import BrandingSettingsService, DEFAULT_ICON_URL
 from app.schemas.system_config import ConfigHistoryItem
 import logging
 import asyncio
@@ -16,12 +16,12 @@ import time
 
 router = APIRouter()
 
-BRANDING_UPLOAD_DIR = "data/branding"
+PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+)
+BRANDING_UPLOAD_DIR = os.path.join(PROJECT_ROOT, "data", "branding")
 ALLOWED_ICON_TYPES = {
     "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/webp": ".webp",
-    "image/svg+xml": ".svg",
 }
 MAX_ICON_BYTES = 512 * 1024
 
@@ -612,23 +612,23 @@ async def upload_branding_icon(
     file: UploadFile = File(...),
     user: Dict = Depends(require_permission("element", "element:system:config_save")),
 ):
-    """上传品牌 Logo / Favicon（PNG/JPEG/WebP/SVG，最大 512KB）。"""
+    """上传品牌 Logo / Favicon，覆盖默认静态图标（PNG，最大 512KB）。"""
     content_type = (file.content_type or "").lower()
     ext = ALLOWED_ICON_TYPES.get(content_type)
     if not ext:
-        raise HTTPException(status_code=400, detail="仅支持 PNG、JPEG、WebP、SVG 图片")
+        raise HTTPException(status_code=400, detail="仅支持 PNG 图片")
 
     data = await file.read()
     if len(data) > MAX_ICON_BYTES:
         raise HTTPException(status_code=400, detail="图片大小不能超过 512KB")
 
     os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
-    filename = f"icon{ext}"
+    filename = "icon.png"
     save_path = os.path.join(BRANDING_UPLOAD_DIR, filename)
     with open(save_path, "wb") as f:
         f.write(data)
 
-    icon_url = f"/branding/{filename}?t={int(time.time())}"
+    icon_url = f"{DEFAULT_ICON_URL}?t={int(time.time())}"
     return {"icon_url": icon_url}
 
 
@@ -707,4 +707,3 @@ async def manual_cleanup_logs(
     except Exception as e:
         logging.error(f"Failed to cleanup logs: {e}")
         raise HTTPException(status_code=500, detail=f"清理历史日志失败: {str(e)}")
-

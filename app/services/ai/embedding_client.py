@@ -58,7 +58,10 @@ class EmbeddingClient:
         else:
             url = f"{base}/v1/embeddings"
 
+        dimensions = await EmbeddingClient.get_dimensions(use_global=use_global)
         payload = {"model": model, "input": text}
+        if dimensions > 0:
+            payload["dimensions"] = dimensions
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
         async with httpx.AsyncClient(timeout=60.0) as client:

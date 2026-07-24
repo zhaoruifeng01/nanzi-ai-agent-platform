@@ -183,6 +183,7 @@ const CONFIG_GROUPS: {
 ]
 
 const showRebuildConfirm = ref(false)
+const showForceRebuildConfirm = ref(false)
 const showDeleteConfirm = ref(false)
 const rowToDelete = ref<SummaryRow | null>(null)
 
@@ -370,23 +371,34 @@ const saveConfigs = async () => {
   }
 }
 
+const testingEmbedding = ref(false)
 const testEmbedding = async () => {
-  if (!memoryFeaturesEnabled.value) return
+  if (!memoryFeaturesEnabled.value || testingEmbedding.value) return
+  testingEmbedding.value = true
   try {
     const res = await axios.post('/api/portal/memory/test-embedding')
     showToast(`Embedding 成功，维度 ${res.data?.dimensions}`, 'success')
   } catch (e: any) {
     showToast(e.response?.data?.detail || '测试失败', 'error')
+  } finally {
+    testingEmbedding.value = false
   }
 }
 
-const loadIndexStatus = async () => {
+const refreshingIndex = ref(false)
+const loadIndexStatus = async (feedback = false) => {
   if (!memoryFeaturesEnabled.value) return
+  if (feedback) refreshingIndex.value = true
   try {
     const res = await axios.get('/api/portal/memory/index/status')
     indexStatus.value = res.data?.data
+    if (feedback) {
+      showToast(indexStatusLabel.value || '索引状态已刷新', 'success')
+    }
   } catch (e: any) {
     showToast(e.response?.data?.detail || '获取索引状态失败', 'error')
+  } finally {
+    if (feedback) refreshingIndex.value = false
   }
 }
 
@@ -400,6 +412,22 @@ const confirmRebuildIndex = async () => {
   try {
     const res = await axios.post('/api/portal/memory/index/rebuild')
     showToast(res.data?.data?.message || '完成', 'success')
+    await loadIndexStatus()
+  } catch (e: any) {
+    showToast(e.response?.data?.detail || '操作失败', 'error')
+  }
+}
+
+const requestForceRebuild = () => {
+  if (!memoryFeaturesEnabled.value || !summaryEnabled.value) return
+  showForceRebuildConfirm.value = true
+}
+
+const confirmForceRebuild = async () => {
+  showForceRebuildConfirm.value = false
+  try {
+    const res = await axios.post('/api/portal/memory/index/rebuild?force=true')
+    showToast(res.data?.data?.message || '重建完成', 'success')
     await loadIndexStatus()
   } catch (e: any) {
     showToast(e.response?.data?.detail || '操作失败', 'error')
@@ -771,20 +799,22 @@ onMounted(async () => {
           <button
             v-if="canSave && summaryEnabled"
             type="button"
-            class="rounded-lg border border-gray-300 bg-white px-2 py-2 text-center text-xs shadow-sm hover:bg-gray-50 disabled:opacity-40 sm:px-3 sm:text-sm"
+            :disabled="testingEmbedding"
+            class="rounded-lg border border-gray-300 bg-white px-2 py-2 text-center text-xs shadow-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed sm:px-3 sm:text-sm"
             title="测试 Embedding"
             @click="testEmbedding"
           >
-            测试 Embedding
+            {{ testingEmbedding ? '测试中...' : '测试 Embedding' }}
           </button>
           <button
             v-if="canIndex && summaryEnabled"
             type="button"
-            class="rounded-lg border border-gray-300 bg-white px-2 py-2 text-center text-xs shadow-sm hover:bg-gray-50 sm:px-3 sm:text-sm"
+            :disabled="refreshingIndex"
+            class="rounded-lg border border-gray-300 bg-white px-2 py-2 text-center text-xs shadow-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed sm:px-3 sm:text-sm"
             title="刷新索引状态"
-            @click="loadIndexStatus"
+            @click="loadIndexStatus(true)"
           >
-            刷新索引
+            {{ refreshingIndex ? '刷新中...' : '刷新索引' }}
           </button>
           <button
             v-if="canIndex && summaryEnabled"
@@ -794,6 +824,15 @@ onMounted(async () => {
             @click="requestRebuildIndex"
           >
             检查/创建索引
+          </button>
+          <button
+            v-if="canIndex && summaryEnabled"
+            type="button"
+            class="rounded-lg border border-red-300 bg-red-50 px-2 py-2 text-center text-xs text-red-700 shadow-sm hover:bg-red-100 sm:px-3 sm:text-sm"
+            title="删除旧索引与全部会话摘要向量数据，按当前维度重新创建"
+            @click="requestForceRebuild"
+          >
+            重建索引
           </button>
         </div>
       </div>
@@ -1465,6 +1504,15 @@ onMounted(async () => {
       type="warning"
       @confirm="confirmRebuildIndex"
       @cancel="showRebuildConfirm = false"
+    />
+    <ConfirmModal
+      v-if="showForceRebuildConfirm"
+      title="重建索引"
+      message="将删除现有 RediSearch 索引及其关联的全部会话摘要向量数据，并按当前配置维度重新创建索引。历史聊天记录不受影响，摘要会在后续对话中自动重新生成。此操作不可撤销，确认继续？"
+      confirm-text="确认重建"
+      type="danger"
+      @confirm="confirmForceRebuild"
+      @cancel="showForceRebuildConfirm = false"
     />
     <ConfirmModal
       v-if="showDeleteConfirm && rowToDelete"

@@ -22,6 +22,7 @@ import logging
 import datetime
 import uuid
 import os
+import shutil
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.core.orm import get_db_session
@@ -332,8 +333,11 @@ base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 frontend_dist = os.path.join(base_dir, "frontend", "dist")
 assets_path = os.path.join(frontend_dist, "assets")
 
-if os.path.exists(assets_path):
-    app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+# Always mount the Vite assets path. If the backend starts before the frontend
+# build creates dist/assets, StaticFiles will still serve files created later;
+# otherwise /assets/*.js falls through to the SPA fallback as text/html.
+os.makedirs(assets_path, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
 
 # 确保 data/uploads 持久化文件上传目录存在并挂载静态托管
 uploads_dir = os.path.join(base_dir, "data", "uploads")
@@ -342,6 +346,15 @@ app.mount("/static/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 branding_dir = os.path.join(base_dir, "data", "branding")
 os.makedirs(branding_dir, exist_ok=True)
+branding_icon = os.path.join(branding_dir, "icon.png")
+if not os.path.exists(branding_icon):
+    for default_icon in (
+        os.path.join(frontend_dist, "favicon.png"),
+        os.path.join(base_dir, "frontend", "public", "favicon.png"),
+    ):
+        if os.path.exists(default_icon):
+            shutil.copyfile(default_icon, branding_icon)
+            break
 app.mount("/branding", StaticFiles(directory=branding_dir), name="branding")
 
 
@@ -350,6 +363,17 @@ async def serve_spa(full_path: str):
     # Skip API routes (handled above)
     if full_path.startswith("api"):
          raise HTTPException(status_code=404, detail="API Not Found")
+
+    # Do not serve index.html for module/static asset URLs. Returning HTML for a
+    # missing JS/CSS/WASM file causes strict MIME failures and masks the real
+    # missing-asset problem in the browser console.
+    asset_like_prefixes = ("assets/", "src/", "@vite/", "node_modules/")
+    asset_like_exts = (
+        ".js", ".mjs", ".ts", ".tsx", ".css", ".wasm", ".map",
+        ".json", ".woff", ".woff2", ".ttf", ".otf",
+    )
+    if full_path.startswith(asset_like_prefixes) or full_path.endswith(asset_like_exts):
+         raise HTTPException(status_code=404, detail="Static asset not found")
 
     # Check if file exists in frontend_dist (for favicon.ico, favicon.png, etc.)
     file_path = os.path.join(frontend_dist, full_path)

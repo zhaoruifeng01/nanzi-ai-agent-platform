@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import axios from '@/utils/axios'
 import { useToast } from '../composables/useToast'
 import { useUser } from '../composables/useUser'
+import { DEFAULT_ICON_URL } from '@/constants/branding'
 import { modelApi, type AIModel } from '../api/model'
 import ModelRegistry from '../components/system/ModelRegistry.vue'
 import ToolRegistry from '../components/system/ToolRegistry.vue'
@@ -308,7 +309,7 @@ const brandingConfig = ref({
   enabled: false,
   product_name: 'Hose·智能体平台',
   login_subtitle: 'Hose Intelligent Agent Platform',
-  icon_url: '/favicon.png',
+  icon_url: DEFAULT_ICON_URL,
   hide_login_sso: false,
   hide_version_link: false,
   contact_markdown: '',
@@ -325,7 +326,7 @@ const fetchBrandingConfig = async () => {
       enabled: !!data.enabled,
       product_name: data.product_name || 'Hose·智能体平台',
       login_subtitle: data.login_subtitle || 'Hose Intelligent Agent Platform',
-      icon_url: data.icon_url || '/favicon.png',
+      icon_url: data.icon_url || DEFAULT_ICON_URL,
       hide_login_sso: !!data.hide_login_sso,
       hide_version_link: !!data.hide_version_link,
       contact_markdown: data.contact_markdown || '',
@@ -418,10 +419,14 @@ const uploadBrandingIconDirectly = async (fileOrBlob: File | Blob, filename = 'i
   brandingIconUploading.value = true
   try {
     const form = new FormData()
-    const uploadFile = fileOrBlob instanceof File ? fileOrBlob : new File([fileOrBlob], filename, { type: fileOrBlob.type })
+    const uploadFile = new File([fileOrBlob], filename, { type: 'image/png' })
     form.append('file', uploadFile)
     const res = await axios.post('/api/portal/system/branding/icon', form)
-    brandingConfig.value.icon_url = res.data.icon_url
+    brandingConfig.value.icon_url = res.data.icon_url || DEFAULT_ICON_URL
+    const { useBranding } = await import('../composables/useBranding')
+    const { branding, applyFavicon } = useBranding()
+    branding.value = { ...branding.value, icon_url: brandingConfig.value.icon_url }
+    applyFavicon(brandingConfig.value.icon_url)
     showToast('图标上传成功', 'success')
   } catch (err: any) {
     showToast(err.response?.data?.detail || '上传失败', 'error')
@@ -436,16 +441,10 @@ const onBrandingIconSelected = (e: Event) => {
   input.value = ''
   if (!file) return
 
-  // 如果是 SVG，不需要裁剪，直接上传
-  if (file.type === 'image/svg+xml') {
-    uploadBrandingIconDirectly(file)
-    return
-  }
-
   // 验证是否是支持的图片类型
   const supported = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp']
   if (!supported.includes(file.type)) {
-    showToast('仅支持 PNG、JPEG、WebP、SVG 图片', 'error')
+    showToast('仅支持 PNG、JPEG、WebP 图片', 'error')
     return
   }
 
@@ -514,11 +513,10 @@ const handleCropperConfirm = () => {
 
     canvas.toBlob((blob) => {
       if (blob) {
-        const ext = cropperImageType.value === 'image/webp' ? 'webp' : 'png'
-        uploadBrandingIconDirectly(blob, `icon.${ext}`)
+        uploadBrandingIconDirectly(blob, 'icon.png')
       }
       showCropper.value = false
-    }, cropperImageType.value, 0.9)
+    }, 'image/png', 0.9)
   }
 }
 
@@ -1595,16 +1593,17 @@ onMounted(() => {
               <label class="block text-sm font-medium text-gray-700 mb-1">Logo / Favicon</label>
               <div class="flex items-center gap-4">
                 <img
-                  :src="brandingConfig.icon_url || '/favicon.png'"
+                  :src="brandingConfig.icon_url || DEFAULT_ICON_URL"
                   alt="Logo 预览"
                   class="w-12 h-12 rounded-lg border border-gray-200 object-cover bg-white"
                 />
                 <div class="flex-1 space-y-2">
                   <input
-                    v-model="brandingConfig.icon_url"
+                    :value="brandingConfig.icon_url || DEFAULT_ICON_URL"
                     type="text"
-                    class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm font-mono"
-                    placeholder="/favicon.png 或 /branding/icon.png"
+                    readonly
+                    class="block w-full rounded-lg border-gray-200 bg-gray-50 text-gray-500 shadow-sm text-sm font-mono"
+                    placeholder="/branding/icon.png"
                   />
                   <button
                     type="button"
@@ -1617,13 +1616,13 @@ onMounted(() => {
                   <input
                     ref="brandingIconInput"
                     type="file"
-                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    accept="image/png,image/jpeg,image/webp"
                     class="hidden"
                     @change="onBrandingIconSelected"
                   />
                 </div>
               </div>
-              <p class="text-xs text-gray-400 mt-1">用于登录页、侧栏左上角与浏览器标签图标（PNG/JPEG/WebP/SVG，最大 512KB）</p>
+              <p class="text-xs text-gray-400 mt-1">上传后覆盖默认静态 Logo，用于登录页、侧栏左上角与浏览器标签图标（PNG/JPEG/WebP，最大 512KB）</p>
             </div>
 
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 py-2 border-t border-gray-100">

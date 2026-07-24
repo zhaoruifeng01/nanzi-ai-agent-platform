@@ -102,6 +102,13 @@ async def test_search_summaries_uses_redis_knn_when_query_embedding_exists():
         "app.services.ai.memory_index_service.get_redis_binary",
         new_callable=AsyncMock,
         return_value=binary_redis,
+    ), patch(
+        "app.services.ai.memory_index_service.MemoryConfigService.get_float",
+        new_callable=AsyncMock,
+        return_value=7.0,
+    ), patch(
+        "app.services.ai.memory_index_service.MemoryIndexService._apply_ebbinghaus_decay",
+        side_effect=lambda items, _base_half_life: items,
     ):
         items = await MemoryIndexService.search_summaries(
             "9", query="Redis", query_embedding=[1.0, 0.0, 0.0, 0.0], limit=3
@@ -124,3 +131,42 @@ async def test_search_summaries_uses_redis_knn_when_query_embedding_exists():
     assert command[0] == "FT.SEARCH"
     assert "KNN" in command[2]
     assert "vec" in command
+
+
+def test_extract_memory_index_vector_dim_from_ft_info():
+    info = [
+        "index_name",
+        "nanzi:idx:memory:session_summary",
+        "attributes",
+        [["identifier", "embedding", "type", "VECTOR", "dim", 4096]],
+    ]
+    assert MemoryIndexService._extract_index_vector_dim(info) == 4096
+
+
+@pytest.mark.asyncio
+async def test_index_status_reports_dimension_mismatch():
+    redis = AsyncMock()
+    redis.execute_command = AsyncMock(
+        return_value=[
+            "index_name",
+            "nanzi:idx:memory:session_summary",
+            "attributes",
+            [["identifier", "embedding", "type", "VECTOR", "dim", 4096]],
+        ]
+    )
+
+    with patch(
+        "app.services.ai.memory_index_service.get_redis",
+        new_callable=AsyncMock,
+        return_value=redis,
+    ), patch(
+        "app.services.ai.memory_index_service.EmbeddingClient.get_dimensions",
+        new_callable=AsyncMock,
+        return_value=1024,
+    ):
+        status = await MemoryIndexService.index_status()
+
+    assert status["available"] is False
+    assert status["configured_dim"] == 1024
+    assert status["index_vector_dim"] == 4096
+    assert status["dimension_mismatch"] is True

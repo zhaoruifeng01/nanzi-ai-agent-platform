@@ -1,6 +1,6 @@
 export const DEFAULT_PRODUCT_NAME = 'Hose·智能体平台'
 export const DEFAULT_LOGIN_SUBTITLE = 'Hose Intelligent Agent Platform'
-export const DEFAULT_ICON_URL = '/favicon.png'
+export const DEFAULT_ICON_URL = '/branding/icon.png'
 export const DEFAULT_REPO_URL = 'https://github.com/RandyChen1985/nanzi-ai-agent-platform'
 export const DEFAULT_AGENT_NAME = 'Hose · AI'
 

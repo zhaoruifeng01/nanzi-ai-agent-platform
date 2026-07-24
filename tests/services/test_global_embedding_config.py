@@ -107,6 +107,79 @@ async def test_get_dimensions_global_fallback_default():
         dim = await EmbeddingClient.get_dimensions(use_global=True)
         assert dim == 1024
 
+
+@pytest.mark.asyncio
+async def test_embed_text_passes_memory_dimensions():
+    async def mock_memory_get(key, default=None):
+        configs = {
+            "memory_embedding_base_url": "https://memory-embed.yovole.com/v1",
+            "memory_embedding_api_key": "memory-key",
+            "memory_embedding_model": "memory-model-v2",
+        }
+        return configs.get(key, default)
+
+    async def mock_memory_get_int(key, default):
+        if key == "memory_embedding_dimensions":
+            return 1024
+        return default
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value={"data": [{"embedding": [0.1, 0.2]}]})
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=mock_resp)
+
+    class MockClientContext:
+        async def __aenter__(self):
+            return mock_client
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with patch("app.services.ai.embedding_client.MemoryConfigService.get", side_effect=mock_memory_get), \
+         patch("app.services.ai.embedding_client.MemoryConfigService.get_int", side_effect=mock_memory_get_int), \
+         patch("app.services.ai.embedding_client.ConfigService.get", return_value=None), \
+         patch("app.services.ai.embedding_client.httpx.AsyncClient", return_value=MockClientContext()):
+        embedding = await EmbeddingClient.embed_text("hello")
+
+    assert embedding == [0.1, 0.2]
+    payload = mock_client.post.await_args.kwargs["json"]
+    assert payload["model"] == "memory-model-v2"
+    assert payload["dimensions"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_embed_text_passes_global_dimensions():
+    async def mock_config_get(key, default=None):
+        configs = {
+            "embed_api_url": "https://global-embed.yovole.com/v1",
+            "embed_api_key": "global-key",
+            "embed_model_name": "global-model-v1",
+            "embed_dimensions": "2048",
+        }
+        return configs.get(key, default)
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value={"data": [{"embedding": [0.3, 0.4]}]})
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=mock_resp)
+
+    class MockClientContext:
+        async def __aenter__(self):
+            return mock_client
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with patch("app.services.ai.embedding_client.ConfigService.get", side_effect=mock_config_get), \
+         patch("app.services.ai.embedding_client.httpx.AsyncClient", return_value=MockClientContext()):
+        embedding = await EmbeddingClient.embed_text("hello", use_global=True)
+
+    assert embedding == [0.3, 0.4]
+    payload = mock_client.post.await_args.kwargs["json"]
+    assert payload["model"] == "global-model-v1"
+    assert payload["dimensions"] == 2048
+
+
 @pytest.mark.asyncio
 async def test_global_embed_connection_api():
     # Test connection endpoint logic for global_embed
@@ -188,5 +261,4 @@ async def test_search_examples_top_k_resolution():
             authorized_dataset_ids=[1],
             top_k=8
         )
-
 

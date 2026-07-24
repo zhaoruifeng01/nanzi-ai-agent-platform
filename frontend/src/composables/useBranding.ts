@@ -30,6 +30,15 @@ export function resolveRepoUrl(): string {
   return DEFAULT_REPO_URL
 }
 
+export function handleBrandingIconError(event: Event) {
+  const img = event.target as HTMLImageElement | null
+  if (!img) return
+  const fallbackUrl = DEFAULT_BRANDING.icon_url
+  if (img.getAttribute('src') !== fallbackUrl) {
+    img.src = fallbackUrl
+  }
+}
+
 export async function loadBranding(force = false): Promise<PublicBranding> {
   if (!force && loadPromise) return loadPromise
 
@@ -55,6 +64,7 @@ export function useBranding() {
     loadBranding,
     applyDocumentTitle,
     applyFavicon,
+    handleBrandingIconError,
     resolveRepoUrl,
   }
 }

@@ -253,7 +253,7 @@
         </div>
       </div>
       <!-- Skeleton Loading State -->
-      <div v-if="isInitialLoading" class="space-y-6">
+      <div v-if="isBlockingInitialLoad" class="space-y-6">
         <div v-for="i in 3" :key="i" class="flex items-start space-x-3">
           <div
             class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 animate-pulse"
@@ -268,7 +268,7 @@
           </div>
         </div>
         <div class="flex flex-col items-center justify-center pt-8 animate-pulse">
-            <span class="text-[10px] font-bold text-gray-300 uppercase tracking-widest mb-2">正在安全同步环境上下文</span>
+            <span class="text-[10px] font-bold text-gray-300 uppercase tracking-widest mb-2">{{ initialLoadingText }}</span>
             <div class="flex space-x-1">
                 <div class="w-1 h-1 bg-gray-200 rounded-full animate-bounce"></div>
                 <div class="w-1 h-1 bg-gray-200 rounded-full animate-bounce [animation-delay:0.2s]"></div>
@@ -297,7 +297,7 @@
         <div class="w-12 h-[1px] bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent mt-2"></div>
       </div>
       <!-- History Loading Indicator -->
-      <div v-if="isLoadingHistory" class="w-full flex justify-center py-4 animate-fade-in-up">
+      <div v-if="isLoadingHistory && !isBlockingInitialLoad" class="w-full flex justify-center py-4 animate-fade-in-up">
         <div class="flex items-center gap-2 bg-gray-50/90 dark:bg-gray-800/90 px-4 py-1.5 rounded-full border border-gray-100 dark:border-gray-700 shadow-sm backdrop-blur-sm">
             <svg class="w-4 h-4 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -5469,31 +5469,27 @@ const validateToken = async (): Promise<boolean> => {
 const initChat = async () => {
   isInitialLoading.value = true;
   try {
-    // 1. Validate Token First (The only blocking step)
+    // 1. Validate Token First
     const isValid = await validateToken();
     if (!isValid) {
       hasPermission.value = false;
-      isInitialLoading.value = false;
       return;
     }
     hasPermission.value = true;
-    // 2. Clear skeleton as soon as auth is confirmed
-    isInitialLoading.value = false;
-    // 3. Set default welcome message if not provided
+    // 2. Set default welcome message if not provided
     if (!config.welcomeMessage) {
       const displayName = accountInfo.value?.real_name || accountInfo.value?.user_name || "";
       const greeting = displayName ? `您好，${displayName}！` : "您好！";
       config.welcomeMessage = `${greeting}我是Hose智能体，很高兴为您服务。`;
     }
-    // 4. Background tasks (non-blocking)
+    // 3. Background tasks (non-blocking)
     Promise.all([fetchModels(), fetchAccountInfo(), fetchSlashCommands()]).catch(err => {
       console.warn("[Init] Non-critical background loading failed:", err.message);
     });
-    // 5. Preload Agents & Validate Expert Mode / URL agent lock
+    // 4. Preload Agents & Validate Expert Mode / URL agent lock
     if (urlPinnedAgentKey.value) {
       const ok = await resolveUrlPinnedAgent();
       if (!ok) {
-        isInitialLoading.value = false;
         return;
       }
     }
@@ -5515,7 +5511,7 @@ const initChat = async () => {
             }
         }
     }).catch(e => console.warn("Failed to preload agents", e));
-    // 6. Workbench/host explicit resume wins; otherwise fetch the active conversation.
+    // 5. Workbench/host explicit resume wins; otherwise fetch the active conversation.
     let loadedCid = false;
     if (requestedConversationId) {
       conversationId.value = requestedConversationId;
@@ -5545,12 +5541,14 @@ const initChat = async () => {
       }
     }
 
-    // 7. Load history if exists
+    // 6. Load history before rendering the welcome panel. Only show welcome after
+    // the first history request confirms this conversation is empty.
     if (conversationId.value) {
-      fetchConversationHistory(false).catch(e => console.error("[Init] History load failed:", e));
+      await fetchConversationHistory(false);
     }
   } catch (e) {
     console.error("Init chat failed", e);
+  } finally {
     isInitialLoading.value = false;
   }
 };
@@ -5559,6 +5557,12 @@ const historyOffset = ref(0);
 const hasMoreHistory = ref(true);
 const HISTORY_LIMIT = 20;
 const isLoadingHistory = ref(false);
+const isBlockingInitialLoad = computed(() => isInitialLoading.value || (isLoadingHistory.value && messages.value.length === 0));
+const initialLoadingText = computed(() =>
+  isLoadingHistory.value && messages.value.length === 0
+    ? "正在加载历史记录..."
+    : "正在安全同步环境上下文"
+);
 const fetchConversationHistory = async (isLoadMore = false) => {
   if (!conversationId.value) return;
   if (isLoadMore && !hasMoreHistory.value) return;

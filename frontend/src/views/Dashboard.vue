@@ -9,7 +9,7 @@ import PortalNotificationBell from "../components/PortalNotificationBell.vue";
 
 const router = useRouter();
 const route = useRoute();
-const { branding, loadBranding, applyDocumentTitle, resolveRepoUrl } = useBranding();
+const { branding, loadBranding, applyDocumentTitle, handleBrandingIconError, resolveRepoUrl } = useBranding();
 const repoUrl = computed(() => resolveRepoUrl());
 const isCollapsed = ref(false);
 const showMobileSidebar = ref(false);
@@ -398,6 +398,7 @@ const filteredMenuGroups = computed(() => {
           :src="branding.icon_url"
           class="w-8 h-8 flex-shrink-0 rounded-lg object-cover"
           alt="Logo"
+          @error="handleBrandingIconError"
         />
         <transition name="fade">
           <div v-if="!isCollapsed" class="ml-2.5 flex flex-col justify-center -translate-y-0.5">
